@@ -1,4 +1,4 @@
-# mu-raw
+# mu_raw
 
 This package is part of the mu-image project and provides utilities for working with raw image data, including DNG file generation.
 

@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="mu-raw",
+    name="mu_raw",
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
@@ -13,7 +13,7 @@ setup(
     author="mu-files",
     author_email="info@mu-files.com",
     description="DNG and raw image processing utilities",
-    url="https://github.com/mu-files/mu-image/tree/main/mu-raw",
+    url="https://github.com/mu-files/mu-image/tree/main/mu_raw",
     project_urls={
         'Source': 'https://github.com/mu-files/mu-image',
         'Bug Reports': 'https://github.com/mu-files/mu-image/issues',

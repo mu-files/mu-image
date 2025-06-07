@@ -4,7 +4,7 @@ A collection of Python packages for image processing.
 
 ## Packages
 
-### mu-raw
+### mu_raw
 
 Utilities for working with raw image data, including DNG file generation.
 
