@@ -39,13 +39,6 @@ TAG_CALIBRATIONILLUMINANT1 = TIFF.TAGS['CalibrationIlluminant1']
 
 # Default values for tags
 ORIENTATION_HORIZONTAL = 1
-# Common Bayer patterns: RGGB, BGGR, GRBG, GBRG
-BAYER_PATTERN_MAP = {
-    'RGGB': (0, 1, 1, 2),  # R G / G B
-    'BGGR': (2, 1, 1, 0),  # B G / G R
-    'GRBG': (1, 0, 2, 1),  # G R / B G
-    'GBRG': (1, 2, 0, 1)   # G B / R G
-}
 
 # illuminants take values defined in the Exif standard by LightSource tag
 CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
@@ -60,14 +53,14 @@ def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) ->
     """Generate an 8-bit RGB thumbnail from raw CFA data."""
     print(f"Generating thumbnail for Bayer pattern: {bayer_pattern_key}")
 
-    bayer_to_rgb_map = {
+    bayer_to_cvrgb_map = {
         'RGGB': cv2.COLOR_BAYER_BG2RGB,
         'BGGR': cv2.COLOR_BAYER_RG2RGB,
         'GRBG': cv2.COLOR_BAYER_GB2RGB,
         'GBRG': cv2.COLOR_BAYER_GR2RGB
     }
     
-    cv_bayer_code = bayer_to_rgb_map.get(bayer_pattern_key)
+    cv_bayer_code = bayer_to_cvrgb_map.get(bayer_pattern_key)
 
     if not cv_bayer_code:
         msg = (f"Unknown or unsupported Bayer pattern key: "
@@ -178,6 +171,14 @@ def write_dng(
     camera_model_ascii_null = camera_model + '\x00'
     camera_model_utf8_bytes_null = (camera_model + '\x00').encode('utf-8')
 
+    # Common Bayer patterns: RGGB, BGGR, GRBG, GBRG
+    bayer_pattern_map = {
+        'RGGB': (0, 1, 1, 2),  # R G / G B
+        'BGGR': (2, 1, 1, 0),  # B G / G R
+        'GRBG': (1, 0, 2, 1),  # G R / B G
+        'GBRG': (1, 2, 0, 1)   # G B / R G
+    }
+
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
         processed_raw_data = raw_data.astype(np.uint16)
@@ -189,7 +190,7 @@ def write_dng(
     main_image_dng_metadata_tags = [
         (TAG_ORIENTATION, TIFF.DATA_DTYPES['H'], 1, ORIENTATION_HORIZONTAL, False),
         (TAG_CFAPATTERN, TIFF.DATA_DTYPES['B'], 4, 
-        bytes(BAYER_PATTERN_MAP.get(cfa_pattern, BAYER_PATTERN_MAP['RGGB'])), False),
+        bytes(bayer_pattern_map.get(cfa_pattern, bayer_pattern_map['RGGB'])), False),
         (TAG_COLORMATRIX1, 10, 9, color_matrix1_values_flat, False),
         (TAG_CALIBRATIONILLUMINANT1, TIFF.DATA_DTYPES['H'], 1,
             illuminant, False),
