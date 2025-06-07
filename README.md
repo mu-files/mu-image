@@ -1,28 +1,28 @@
-# Raw Image Processing Utilities
+# mu-image
 
-This package provides utilities for working with raw image data, including DNG file generation.
+A collection of Python packages for image processing.
 
-## Installation
+## Packages
+
+### mu-raw
+
+Utilities for working with raw image data, including DNG file generation.
 
 ```bash
-# Install in development mode
+pip install mu-raw
+```
+
+## Development
+
+This is a multi-package repository. Each package is in its own directory with its own `setup.py`.
+
+To install a package in development mode:
+
+```bash
+cd mu-raw
 pip install -e .
 ```
 
-## Usage
+## License
 
-```python
-from raw import dng
-
-# Write a DNG file
-dng.write_dng(
-    raw_data=your_raw_data,
-    destination_file=Path("output.dng"),
-    bits_per_pixel=16,
-    camera_make="Your Camera",
-    camera_model="Model XYZ",
-    cfa_pattern='RGGB',
-    jxl_distance=0.175,
-    generate_thumbnail=True
-)
-```
+MIT
