@@ -4,12 +4,12 @@ A collection of Python packages for image processing.
 
 ## Packages
 
-### mu_raw
+### muraw
 
 Utilities for working with raw image data, including DNG file generation.
 
 ```bash
-pip install mu-raw
+pip install muraw
 ```
 
 ## Development
@@ -19,7 +19,7 @@ This is a multi-package repository. Each package is in its own directory with it
 To install a package in development mode:
 
 ```bash
-cd mu-raw
+cd muraw
 pip install -e .
 ```
 

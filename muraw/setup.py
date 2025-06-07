@@ -1,9 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="mu_raw",
+    name="muraw",  # Package name follows PEP 8 lowercase with no underscores
     version="0.1.0",
-    packages=find_packages(),
+    packages=find_packages(where="."),
+    package_dir={"": "."},
+    py_modules=['dng'],
     install_requires=[
         'numpy>=1.20.0',
         'opencv-python-headless>=4.5.0',
@@ -13,10 +15,6 @@ setup(
     author="mu-files",
     author_email="info@mu-files.com",
     description="DNG and raw image processing utilities",
-    url="https://github.com/mu-files/mu-image/tree/main/mu_raw",
-    project_urls={
-        'Source': 'https://github.com/mu-files/mu-image',
-        'Bug Reports': 'https://github.com/mu-files/mu-image/issues',
-    },
-    python_requires='>=3.7',
+    python_requires='>=3.8',
+    zip_safe=False,
 )
