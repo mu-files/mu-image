@@ -40,6 +40,14 @@ TAG_CALIBRATIONILLUMINANT1 = TIFF.TAGS['CalibrationIlluminant1']
 # Default values for tags
 ORIENTATION_HORIZONTAL = 1
 
+# Mapping of bayer pattern names to their corresponding values
+#BAYER_PATTERN_MAP = {
+#    'RGGB': 'RGGB',
+#    'GRBG': 'GRBG',
+#    'BGGR': 'BGGR',
+#    'GBRG': 'GBRG',
+#}
+
 # illuminants take values defined in the Exif standard by LightSource tag
 CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
 CALIBRATIONILLUMINANT_D55 = 20  # Standard D55 (warm daylight at sunrise or sunset)
@@ -106,6 +114,8 @@ def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) ->
     print(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
     return thumbnail_resized
 
+# TODO: pass in data, destination, bpp, make, crop, model, exiftags, cfa, list of preview/thumbs,
+# calibration matrix and illiuminant, jxl_dist and effort 
 def write_dng(
     raw_data: np.ndarray,
     destination_file: Path,
@@ -187,6 +197,8 @@ def write_dng(
     else:
         processed_raw_data = raw_data
 
+    # TODO: make this a class the directly takes the 'string names' from tifffile for tag name and datat type
+    #       eg (Orientation, 'H', 1, val) and default last arg to False
     main_image_dng_metadata_tags = [
         (TAG_ORIENTATION, TIFF.DATA_DTYPES['H'], 1, ORIENTATION_HORIZONTAL, False),
         (TAG_CFAPATTERN, TIFF.DATA_DTYPES['B'], 4, 
@@ -294,6 +306,8 @@ def write_dng(
                 )
                 print(f"Thumbnail (SubIFD 1) written to {destination_file}")
             else:
+                # TODO: merge with case above there are very few differences, will be easier to
+                #       maintain if we can
                 # No thumbnail, write Main Raw Image to IFD 0
                 print(f"Writing main DNG image data to IFD 0...")
                 main_image_final_args = imwrite_kwargs.copy()
