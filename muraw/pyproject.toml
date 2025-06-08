@@ -6,11 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "muraw"
 version = "0.1.0"
 description = "DNG and raw image processing utilities"
-authors = [{name = "mu-files", email = "info@mu-files.com"}]
-requires-python = ">=3.8"
+authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
+urls = { Homepage = "https://github.com/mu-files/mu-image" }
+requires-python = ">=3.12"
 dependencies = [
-    "numpy>=1.20.0",
-    "opencv-python-headless>=4.5.0",
-    "tifffile>=2021.0.0",
-    "astropy>=5.0.0",
+    "opencv-python-headless>=4.9.0",
+    "numpy>=2.0.0",
+    "astropy>=6.1.0",
+    "tifffile>=2025.6.1",
 ]
+
+[tool.setuptools]
+packages = ["muraw"]
+package-dir = {"muraw" = "."}
