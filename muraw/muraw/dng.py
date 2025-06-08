@@ -10,43 +10,62 @@ from typing import Optional, Dict, Tuple, Union, List, Any
 import tifffile
 from tifffile import TIFF
 
-# Standard TIFF Tag Codes
-TAG_MAKE = TIFF.TAGS['Make']
-TAG_MODEL = TIFF.TAGS['Model']
-TAG_ORIENTATION = TIFF.TAGS['Orientation']
-TAG_NEWSUBFILETYPE = TIFF.TAGS['NewSubfileType']
-TAG_IMAGE_WIDTH = TIFF.TAGS['ImageWidth']
-TAG_IMAGE_LENGTH = TIFF.TAGS['ImageLength']
-TAG_BITS_PER_SAMPLE = TIFF.TAGS['BitsPerSample']
-TAG_SAMPLES_PER_PIXEL = TIFF.TAGS['SamplesPerPixel']
+# helper class to convert create a list of tags for tifffile.TiffWriter
+class MetadataTags:
+    BAYER_PATTERN_MAP = {
+        'RGGB': (0, 1, 1, 2),  # R G / G B
+        'BGGR': (2, 1, 1, 0),  # B G / G R
+        'GRBG': (1, 0, 2, 1),  # G R / B G
+        'GBRG': (1, 2, 0, 1)   # G B / R G
+    }
 
-# DNG Specific or Critical TIFF Tag Codes
-TAG_CFAREPEATPATTERNDIM = TIFF.TAGS['CFARepeatPatternDim']
-TAG_CFAPATTERN = TIFF.TAGS['CFAPattern']
-TAG_CFAPLANECOLOR = TIFF.TAGS['CFAPlaneColor']
-TAG_DNGVERSION = TIFF.TAGS['DNGVersion']
-TAG_DNGBACKWARDVERSION = TIFF.TAGS['DNGBackwardVersion']
-TAG_UNIQUECAMERAMODEL = TIFF.TAGS['UniqueCameraModel']
-TAG_LOCALIZEDCAMERAMODEL = TIFF.TAGS['LocalizedCameraModel']
-TAG_BLACKLEVEL = TIFF.TAGS['BlackLevel']
-TAG_WHITELEVEL = TIFF.TAGS['WhiteLevel']
-TAG_COLORMATRIX1 = TIFF.TAGS['ColorMatrix1']
-TAG_ANALOGBALANCE = TIFF.TAGS['AnalogBalance']
-TAG_ASSHOTNEUTRAL = TIFF.TAGS['AsShotNeutral']
-TAG_BASELINEEXPOSURE = TIFF.TAGS['BaselineExposure']
-TAG_PREVIEWCOLORSPACE = TIFF.TAGS['PreviewColorSpace']
-TAG_CALIBRATIONILLUMINANT1 = TIFF.TAGS['CalibrationIlluminant1']
+    @staticmethod
+    def _matrix_to_rational_tuple(matrix: np.ndarray, denominator: int = 10000) -> tuple:
+        """Converts a NumPy float matrix to a flat tuple of (numerator, denominator) pairs."""
+        rational_pairs = []
+        for r in range(matrix.shape[0]):
+            for c in range(matrix.shape[1]):
+                val = matrix[r, c]
+                numerator = int(round(val * denominator))
+                rational_pairs.append((numerator, denominator))
+        return tuple(item for pair in rational_pairs for item in pair)
+
+    def __init__(self):
+        self._tags = []
+
+    def add_tag(self, tag):
+        # Expects tag to be (tag_name_str, dtype_char_str, count, value)
+        # writeonce is hardcoded to False for simplicity in this version of the class
+        tag_formatted_contents = (TIFF.TAGS[tag[0]], TIFF.DATA_DTYPES[tag[1]], 
+            tag[2], tag[3], False)
+        self._tags.append(tag_formatted_contents)
+
+    def add_string_tag(self, tag_name_str, string_value):
+        """Helper to add a standard ASCII string tag with null termination."""
+        string_value_with_null = string_value + '\x00'
+        length = len(string_value_with_null)
+        self.add_tag((tag_name_str, 's', length, string_value_with_null))
+
+    def add_cfa_pattern_tag(self, cfa_pattern_key: str):
+        """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
+        pattern_tuple = self.BAYER_PATTERN_MAP.get(cfa_pattern_key, self.BAYER_PATTERN_MAP['RGGB'])
+        pattern_bytes = bytes(pattern_tuple)
+        self.add_tag(('CFAPattern', 'B', 4, pattern_bytes))
+
+    def add_matrix_as_rational_tag(self, tag_name_str: str, float_matrix_np: np.ndarray, 
+                                 tiff_type_char: str, num_rational_pairs: int, 
+                                 denominator: int = 10000):
+        """Converts a float matrix to rationals and adds it as a tag."""
+        flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
+        self.add_tag((tag_name_str, tiff_type_char, num_rational_pairs, flat_tuple_values))
+
+    def get_tags(self):
+        self._tags.sort(key=lambda x: x[0])
+        return self._tags
+        
 
 # Default values for tags
 ORIENTATION_HORIZONTAL = 1
-
-# Mapping of bayer pattern names to their corresponding values
-#BAYER_PATTERN_MAP = {
-#    'RGGB': 'RGGB',
-#    'GRBG': 'GRBG',
-#    'BGGR': 'BGGR',
-#    'GBRG': 'GBRG',
-#}
 
 # illuminants take values defined in the Exif standard by LightSource tag
 CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
@@ -55,7 +74,7 @@ CALIBRATIONILLUMINANT_D65 = 21  # Standard D65 (daylight)
 CALIBRATIONILLUMINANT_D75 = 22  # Standard D75 (north sky daylight)
 PREVIEWCOLORSPACE_SRGB = 1
 DNG_VERSION_1_7_1_0 = (1, 7, 1, 0)
-DNG_BACKWARD_VERSION_1_4_0_0 = (1, 4, 0, 0)
+DNG_BCKWRD_VERSION_1_4_0_0 = (1, 4, 0, 0)
 
 def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) -> Optional[np.ndarray]:
     """Generate an 8-bit RGB thumbnail from raw CFA data."""
@@ -156,6 +175,7 @@ def write_dng(
         except Exception as e:
             print(f"Warning: Unexpected error generating thumbnail: {e}. Proceeding without thumbnail.")
 
+    # format the DNG specific tags for CFAs
     color_matrix_floats = np.array([
         [1.402600, -0.642900, -0.063300],
         [0.348200, 0.441700, 0.2185],
@@ -163,31 +183,11 @@ def write_dng(
     ], dtype=np.float64)
     illuminant = CALIBRATIONILLUMINANT_D55
 
-    # Convert color matrix to rational pairs
-    denominator = 10000  
-    color_matrix_rational_pairs = []
-    for r in range(color_matrix_floats.shape[0]):
-        for c in range(color_matrix_floats.shape[1]):
-            val = color_matrix_floats[r, c]
-            numerator = int(round(val * denominator))
-            color_matrix_rational_pairs.append((numerator, denominator))
-    color_matrix1_values_flat = tuple(item for pair in color_matrix_rational_pairs for item in pair)
-
     # TODO: come up with a way to calculate this
     _as_shot_neutral_orig = ((1,1), (1,1), (1,1))
     as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
 
-    camera_make_ascii_null = camera_make + '\x00'
-    camera_model_ascii_null = camera_model + '\x00'
     camera_model_utf8_bytes_null = (camera_model + '\x00').encode('utf-8')
-
-    # Common Bayer patterns: RGGB, BGGR, GRBG, GBRG
-    bayer_pattern_map = {
-        'RGGB': (0, 1, 1, 2),  # R G / G B
-        'BGGR': (2, 1, 1, 0),  # B G / G R
-        'GRBG': (1, 0, 2, 1),  # G R / B G
-        'GBRG': (1, 2, 0, 1)   # G B / R G
-    }
 
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
@@ -197,131 +197,74 @@ def write_dng(
     else:
         processed_raw_data = raw_data
 
-    # TODO: make this a class the directly takes the 'string names' from tifffile for tag name and datat type
-    #       eg (Orientation, 'H', 1, val) and default last arg to False
-    main_image_dng_metadata_tags = [
-        (TAG_ORIENTATION, TIFF.DATA_DTYPES['H'], 1, ORIENTATION_HORIZONTAL, False),
-        (TAG_CFAPATTERN, TIFF.DATA_DTYPES['B'], 4, 
-        bytes(bayer_pattern_map.get(cfa_pattern, bayer_pattern_map['RGGB'])), False),
-        (TAG_COLORMATRIX1, 10, 9, color_matrix1_values_flat, False),
-        (TAG_CALIBRATIONILLUMINANT1, TIFF.DATA_DTYPES['H'], 1,
-            illuminant, False),
-        (TAG_ASSHOTNEUTRAL, 5, 3, as_shot_neutral_values_flat, False),
-        (TAG_MAKE, 's', len(camera_make_ascii_null),
-            camera_make_ascii_null, False),
-        (TAG_MODEL, 's', len(camera_model_ascii_null),
-            camera_model_ascii_null, False),
-        (TAG_UNIQUECAMERAMODEL, 's', len(camera_model_ascii_null),
-            camera_model_ascii_null, False),
-        (TAG_LOCALIZEDCAMERAMODEL, TIFF.DATA_DTYPES['B'],
-            len(camera_model_utf8_bytes_null), camera_model_utf8_bytes_null, False),
-        (TAG_CFAREPEATPATTERNDIM, TIFF.DATA_DTYPES['H'], 2, (2,2), False),
-        (TAG_CFAPLANECOLOR, TIFF.DATA_DTYPES['B'], 3, (0,1,2), True),
-        (TAG_DNGVERSION, TIFF.DATA_DTYPES['B'], 4, DNG_VERSION_1_7_1_0, False),
-        (TAG_DNGBACKWARDVERSION, TIFF.DATA_DTYPES['B'], 4,
-            DNG_BACKWARD_VERSION_1_4_0_0, False)
-    ]
-
-    preview_extratags = []
-    if thumbnail_image is not None and thumbnail_image.ndim == 3 and thumbnail_image.shape[2] == 3 and thumbnail_image.dtype == np.uint8:
-        preview_extratags.extend([
-            (TAG_PREVIEWCOLORSPACE, TIFF.DATA_DTYPES['I'], 1, PREVIEWCOLORSPACE_SRGB, False)
-        ])
-        preview_extratags.sort(key=lambda x: x[0])
-
-    # Sort extratags by tag ID (the first element of each tuple)
-    main_image_dng_metadata_tags.sort(key=lambda x: x[0])
+    dng_tags = MetadataTags()
+    dng_tags.add_tag(('Orientation', 'H', 1, ORIENTATION_HORIZONTAL))
+    dng_tags.add_cfa_pattern_tag(cfa_pattern)
+    dng_tags.add_matrix_as_rational_tag('ColorMatrix1', color_matrix_floats, '2i', 9)
+    dng_tags.add_tag(('CalibrationIlluminant1', 'H', 1, illuminant))
+    dng_tags.add_tag(('AsShotNeutral', '2I', 3, as_shot_neutral_values_flat))
+    dng_tags.add_string_tag('Make', camera_make)
+    dng_tags.add_string_tag('Model', camera_model)
+    dng_tags.add_string_tag('UniqueCameraModel', camera_model)
+    dng_tags.add_tag(('LocalizedCameraModel', 'B',
+        len(camera_model_utf8_bytes_null), camera_model_utf8_bytes_null))
+    dng_tags.add_tag(('CFARepeatPatternDim', 'H', 2, (2,2)))
+    dng_tags.add_tag(('CFAPlaneColor', 'B', 3, (0,1,2)))
+    dng_tags.add_tag(('DNGVersion', 'B', 4, DNG_VERSION_1_7_1_0))
+    dng_tags.add_tag(('DNGBackwardVersion', 'B', 4, DNG_BCKWRD_VERSION_1_4_0_0))
 
     try:
-        imwrite_kwargs = {
-            'photometric': 'cfa',
-            'extratags': main_image_dng_metadata_tags,
-            'software': "allsky/raw"
-        }
-
-        if jxl_distance is not None:
-            if not (0.0 <= jxl_distance <= 15.0):
-                print(
-                    f"Warning: JXL distance {jxl_distance} is outside the "
-                    f"typical range [0.0, 15.0]. "
-                )
-            imwrite_kwargs['compression'] = 'JPEGXL_DNG'
-            imwrite_kwargs['compressionargs'] = {'distance': jxl_distance}
-            print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}")
-        else:
-            print("Writing DNG with no explicit JXL compression.")
-
-        # Thumbnail / SubIFD handling
-        thumbnail_ifd_dict = None
-        if thumbnail_image is not None and thumbnail_image.ndim == 3 and thumbnail_image.shape[2] == 3 and thumbnail_image.dtype == np.uint8:
-            thumb_h, thumb_w = thumbnail_image.shape[:2]
-            print(f"Including thumbnail: {thumb_w}x{thumb_h}, RGB, JPEG compressed.")
-
-            # Define tags for the thumbnail SubIFD
-            thumbnail_tags = []
-            # (TAG_ORIENTATION, TIFF.DATA_DTYPES['H'], 1, ORIENTATION_HORIZONTAL, False), # Example if needed
-
-            thumbnail_ifd_dict = {
-                'data': thumbnail_image,
-                'tags': thumbnail_tags,
-                'photometric': 'rgb',  # Interprets data as RGB
-                'planarconfig': 1,     # Standard for RGB: 1 = CONTIG
-                'compression': 'jpeg',  # JPEG compression for thumbnail
-                'compressionargs': {'level': 90}  # JPEG quality (0-100, higher is better)
-            }
-        elif thumbnail_image is not None:
-            print(f"Warning: Thumbnail image provided but not in expected uint8 HxWx3 RGB format. "
-                  f"Shape: {thumbnail_image.shape}, Dtype: {thumbnail_image.dtype}. Skipping thumbnail.")
-
-        # Use TiffWriter for more control, especially with SubIFDs
         with tifffile.TiffWriter(destination_file, bigtiff=False) as tif:
-            if thumbnail_ifd_dict:
-                # Write Main Raw Image to IFD 0 first
-                print(f"Writing main DNG image data to IFD 0...")
-                main_image_ifd0_args = imwrite_kwargs.copy()
-                main_image_ifd0_args['subfiletype'] = 0  # Full-resolution image
+            # Prepare main image arguments
+            main_image_ifd0_args = {
+                'subfiletype': 0,
+                'photometric': 'cfa',
+                'extratags': dng_tags.get_tags(),
+                'software': "allsky/raw"
+            }
+            if thumbnail_image is not None:
                 main_image_ifd0_args['subifds'] = 1      # Indicates it HAS a SubIFD (the thumbnail)
-                main_image_ifd0_args['extratags'] = main_image_dng_metadata_tags  # Ensure correct tags
 
-                tif.write(
-                    processed_raw_data,
-                    **main_image_ifd0_args
-                )
-                print("Main DNG image data (IFD 0) written.")
+            if jxl_distance is not None:
+                if not (0.0 <= jxl_distance <= 15.0):
+                    print(
+                        f"Warning: JXL distance {jxl_distance} is outside the "
+                        f"typical range [0.0, 15.0]. "
+                    )
+                main_image_ifd0_args['compression'] = 'JPEGXL_DNG'
+                main_image_ifd0_args['compressionargs'] = {'distance': jxl_distance}
+                print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}")
+
+            # Write Main Raw Image to IFD 0
+            tif.write(
+                processed_raw_data,
+                **main_image_ifd0_args
+            )
+            print("Main DNG image data (IFD 0) written.")
+
+            if thumbnail_image is not None:
+                # Prepare thumbnail specific tags
+                preview_extratags = MetadataTags() # Still using MetadataTags for thumbnail tags
+                preview_extratags.add_tag(('PreviewColorSpace', 'I', 1, PREVIEWCOLORSPACE_SRGB))
 
                 # Write Thumbnail to SubIFD 1
-                print(f"Writing thumbnail to SubIFD 1...")
                 thumb_subifd_args = {
-                    'photometric': thumbnail_ifd_dict['photometric'],
-                    'planarconfig': thumbnail_ifd_dict['planarconfig'],
-                    'compression': thumbnail_ifd_dict['compression'],
-                    'compressionargs': thumbnail_ifd_dict['compressionargs'],
-                    'subfiletype': 1,  # Reduced resolution image
+                    'photometric': 'rgb',  # Interprets data as RGB
+                    'planarconfig': 1,     # Standard for RGB: 1 = CONTIG
+                    'compression': 'jpeg', # JPEG compression for thumbnail
+                    'compressionargs': {'level': 90},  # JPEG quality (0-100, higher is better)
+                    'extratags': preview_extratags.get_tags(),
+                    'subfiletype': 1,  # Reduced resolution image (standard for DNG previews)
                     'subifds': 0       # No further SubIFDs
                 }
                 tif.write(
-                    thumbnail_ifd_dict['data'],
-                    extratags=preview_extratags,
+                    thumbnail_image, # Use the thumbnail_image directly
                     **thumb_subifd_args
                 )
                 print(f"Thumbnail (SubIFD 1) written to {destination_file}")
-            else:
-                # TODO: merge with case above there are very few differences, will be easier to
-                #       maintain if we can
-                # No thumbnail, write Main Raw Image to IFD 0
-                print(f"Writing main DNG image data to IFD 0...")
-                main_image_final_args = imwrite_kwargs.copy()
-                main_image_final_args['subfiletype'] = 0  # Full-resolution image
-                main_image_final_args['subifds'] = 0     # No SubIFDs
-                main_image_final_args['extratags'] = main_image_dng_metadata_tags  # Ensure correct tags
-
-                tif.write(
-                    processed_raw_data,
-                    **main_image_final_args
-                )
-                print(f"Main DNG image data (IFD 0) written to {destination_file}")
             
-            print(f"Successfully wrote DNG file to {destination_file}")
+        print(f"Successfully wrote DNG file to {destination_file}")
+
     except Exception as e:
         print(f"Error saving DNG file with tifffile.TiffWriter: {e}")
         raise
