@@ -18,4 +18,3 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["muraw"]
-package-dir = {"muraw" = "."}
