@@ -52,12 +52,11 @@ class MetadataTags:
         pattern_bytes = bytes(pattern_tuple)
         self.add_tag(('CFAPattern', 'B', 4, pattern_bytes))
 
-    def add_matrix_as_rational_tag(self, tag_name_str: str, float_matrix_np: np.ndarray, 
-                                 tiff_type_char: str, num_rational_pairs: int, 
+    def add_matrix_as_rational_tag(self, tag_name_str: str, float_matrix_np: np.ndarray,
                                  denominator: int = 10000):
         """Converts a float matrix to rationals and adds it as a tag."""
         flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
-        self.add_tag((tag_name_str, tiff_type_char, num_rational_pairs, flat_tuple_values))
+        self.add_tag((tag_name_str, '2i', 9, flat_tuple_values))
 
     def get_tags(self):
         self._tags.sort(key=lambda x: x[0])
@@ -68,13 +67,50 @@ class MetadataTags:
 ORIENTATION_HORIZONTAL = 1
 
 # illuminants take values defined in the Exif standard by LightSource tag
-CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
+CALIBRATIONILLUMINANT_UNKNOWN = 0
 CALIBRATIONILLUMINANT_D55 = 20  # Standard D55 (warm daylight at sunrise or sunset)
 CALIBRATIONILLUMINANT_D65 = 21  # Standard D65 (daylight)
 CALIBRATIONILLUMINANT_D75 = 22  # Standard D75 (north sky daylight)
+CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
+
 PREVIEWCOLORSPACE_SRGB = 1
 DNG_VERSION_1_7_1_0 = (1, 7, 1, 0)
 DNG_BCKWRD_VERSION_1_4_0_0 = (1, 4, 0, 0)
+
+# Camera Color Profiles
+class CameraProfiles:
+    def __init__(self):
+        # Initial definition with human-readable keys
+        initial_profiles = {
+            "ASI676MC": {
+                "color_matrix1": np.array([
+                    [1.402600, -0.642900, -0.063300],
+                    [0.348200, 0.441700, 0.2185],
+                    [0.327800, -0.009700, 0.840500]
+                ], dtype=np.float64),
+                "illuminant1": CALIBRATIONILLUMINANT_D55
+            },
+            # Add other camera models here, e.g.:
+            # "AnotherCameraModel": {
+            #     "color_matrix": np.array([...]),
+            #     "illuminant": CALIBRATIONILLUMINANT_DAYLIGHT # Or another specific illuminant
+            # },
+            "DEFAULT": {
+                "color_matrix1": np.identity(3, dtype=np.float64),
+                "illuminant1": CALIBRATIONILLUMINANT_UNKNOWN
+            }
+        }
+        # Internal storage with uppercase keys for case-insensitive lookup
+        self._normalized_profiles = {k.upper(): v for k, v in initial_profiles.items()}
+
+    def get(self, camera_model_str: str) -> dict:
+        """Retrieve a camera profile using case-insensitive key matching."""
+        return self._normalized_profiles.get(
+            camera_model_str.upper(), 
+            self._normalized_profiles.get("DEFAULT", {})
+        )
+
+_CAMERA_PROFILES_INSTANCE = CameraProfiles()
 
 def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) -> Optional[np.ndarray]:
     """Generate an 8-bit RGB thumbnail from raw CFA data."""
@@ -133,8 +169,8 @@ def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) ->
     print(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
     return thumbnail_resized
 
-# TODO: pass in data, destination, bpp, make, crop, model, exiftags, cfa, list of preview/thumbs,
-# calibration matrix and illiuminant, jxl_dist and effort 
+# TODO: pass in crop, exiftags, list of preview/thumbs, calibration matrix and illuminant 
+
 def write_dng(
     raw_data: np.ndarray,
     destination_file: Path,
@@ -143,6 +179,7 @@ def write_dng(
     camera_model: str = "Unknown",
     cfa_pattern: str = 'RGGB',
     jxl_distance: Optional[float] = None,
+    jxl_effort: Optional[int] = None, #None, # Add jxl_effort parameter
     generate_thumbnail: bool = True
 ) -> None:
     """Write raw data to a DNG file using tifffile.
@@ -155,7 +192,9 @@ def write_dng(
         camera_model: Model of the camera
         cfa_pattern: CFA pattern string, e.g., 'RGGB'
         jxl_distance: JPEG XL Butteraugli distance. Lower is higher quality.
-                     See comments in code for details. Default: None (no JXL compression).
+                     Default: None (no JXL compression).
+        jxl_effort: JPEG XL compression effort (1-9). Higher is more compression/slower.
+                    Only used if jxl_distance is also specified. Default: None (codec default).
         generate_thumbnail: Whether to generate a thumbnail image. Default: True
     """
     if raw_data.ndim != 2:
@@ -175,13 +214,12 @@ def write_dng(
         except Exception as e:
             print(f"Warning: Unexpected error generating thumbnail: {e}. Proceeding without thumbnail.")
 
-    # format the DNG specific tags for CFAs
-    color_matrix_floats = np.array([
-        [1.402600, -0.642900, -0.063300],
-        [0.348200, 0.441700, 0.2185],
-        [0.327800, -0.009700, 0.840500]
-    ], dtype=np.float64)
-    illuminant = CALIBRATIONILLUMINANT_D55
+    # format the DNG specific tags
+    # Get camera profile based on camera_model
+    # Fallback to "default" profile if camera_model not found
+    profile = _CAMERA_PROFILES_INSTANCE.get(camera_model)
+    color_matrix_floats = profile["color_matrix1"]
+    illuminant = profile["illuminant1"]
 
     # TODO: come up with a way to calculate this
     _as_shot_neutral_orig = ((1,1), (1,1), (1,1))
@@ -200,7 +238,7 @@ def write_dng(
     dng_tags = MetadataTags()
     dng_tags.add_tag(('Orientation', 'H', 1, ORIENTATION_HORIZONTAL))
     dng_tags.add_cfa_pattern_tag(cfa_pattern)
-    dng_tags.add_matrix_as_rational_tag('ColorMatrix1', color_matrix_floats, '2i', 9)
+    dng_tags.add_matrix_as_rational_tag('ColorMatrix1', color_matrix_floats)
     dng_tags.add_tag(('CalibrationIlluminant1', 'H', 1, illuminant))
     dng_tags.add_tag(('AsShotNeutral', '2I', 3, as_shot_neutral_values_flat))
     dng_tags.add_string_tag('Make', camera_make)
@@ -231,9 +269,21 @@ def write_dng(
                         f"Warning: JXL distance {jxl_distance} is outside the "
                         f"typical range [0.0, 15.0]. "
                     )
-                main_image_ifd0_args['compression'] = 'JPEGXL_DNG'
-                main_image_ifd0_args['compressionargs'] = {'distance': jxl_distance}
-                print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}")
+                # For JXL, distance 0.0 is mathematically lossless.
+                # A distance of 1.0 is visually lossless for most people.
+                # Distances around 1.5-2.0 are good for high quality lossy.
+                # tifffile uses imagecodecs, which uses libjxl.
+                # libjxl effort values are typically 1 (fastest) to 9 (most effort).
+                # Default effort in libjxl is 7 ('falcon') if not specified.
+                compression_type = 'JPEGXL_DNG' # Ensure DNG-specific JXL type
+                compressionargs = {'distance': jxl_distance}
+                if jxl_effort is not None:
+                    compressionargs['effort'] = jxl_effort
+                    print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}")
+                else:
+                    print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance} (default effort)")
+                main_image_ifd0_args['compression'] = compression_type
+                main_image_ifd0_args['compressionargs'] = compressionargs
 
             # Write Main Raw Image to IFD 0
             tif.write(
