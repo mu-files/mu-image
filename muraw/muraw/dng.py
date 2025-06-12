@@ -46,6 +46,12 @@ class MetadataTags:
         length = len(string_value_with_null)
         self.add_tag((tag_name_str, 's', length, string_value_with_null))
 
+    def extend(self, other: 'MetadataTags') -> None:
+        """Add all tags from another MetadataTags instance."""
+        if not isinstance(other, MetadataTags):
+            raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
+        self._tags.extend(other._tags)
+
     def add_cfa_pattern_tag(self, cfa_pattern_key: str):
         """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
         pattern_tuple = self.BAYER_PATTERN_MAP.get(cfa_pattern_key, self.BAYER_PATTERN_MAP['RGGB'])
@@ -143,25 +149,16 @@ def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) ->
         thumbnail_rgb_8bit = thumbnail_rgb_full
 
     # Resize
-    max_thumb_dim = 256
-    h_full, w_full = thumbnail_rgb_8bit.shape[:2]
-    if h_full == 0 or w_full == 0:
-        print("Warning: Thumbnail has zero dimension after scaling. Skipping resize.")
-        return None
-        
+    h_full, w_full = thumbnail_rgb_8bit.shape[:2] 
     if h_full > w_full:
-        new_h = max_thumb_dim
-        new_w = int(w_full * (max_thumb_dim / h_full))
+        new_h = int(max(h_full/4, 256))
+        new_w = int(w_full * (new_h / h_full))
     else:
-        new_w = max_thumb_dim
-        new_h = int(h_full * (max_thumb_dim / w_full))
-    
-    if new_w == 0 or new_h == 0:
-        print(f"Warning: Calculated new thumbnail dimensions are zero "
-              f"({new_w}x{new_h}). Skipping resize.")
-        return None
+        new_w = int(max(w_full/4, 256))
+        new_h = int(h_full * (new_w / w_full))
 
-    thumbnail_resized = cv2.resize(thumbnail_rgb_8bit, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    thumbnail_resized = cv2.resize(
+        thumbnail_rgb_8bit, (new_w, new_h), interpolation=cv2.INTER_AREA)
     
     # No rotation, as main DNG data is not currently rotated in write_dng
     print(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
@@ -217,6 +214,9 @@ def write_dng(
                     Only used if jxl_distance is also specified. Default: None (codec default).
         generate_thumbnail: Whether to generate a thumbnail image. Default: True
     """
+
+    # TODO: implement param validation here - raw_data not none, W/H even, cfa pattern valid, bpp <= 16
+
     if raw_data.ndim != 2:
         raise ValueError(
             f"Expected 2D raw_data (height, width), got shape {raw_data.shape}"
@@ -248,7 +248,7 @@ def write_dng(
 
     # Generate thumbnail if requested
     thumbnail_image = None
-    if generate_thumbnail and cfa_pattern is not None:
+    if generate_thumbnail:
         try:
             thumbnail_image = _generate_dng_thumbnail(raw_data, cfa_pattern.upper())
             if thumbnail_image is not None:
@@ -273,15 +273,18 @@ def write_dng(
 
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
+        bits_per_pixel = 16
         processed_raw_data = raw_data.astype(np.uint16)
     elif bits_per_pixel <= 8 and raw_data.dtype != np.uint8:
+        bits_per_pixel = 8
         processed_raw_data = raw_data.astype(np.uint8)
     else:
         processed_raw_data = raw_data
 
+    # the tag names are from tifffile.py TiffTagRegistry
+    # the tag types are from tifffile.py DATA_DTYPES
     dng_tags = MetadataTags()
     dng_tags.add_tag(('Orientation', 'H', 1, ORIENTATION_HORIZONTAL))
-    dng_tags.add_cfa_pattern_tag(cfa_pattern)
     dng_tags.add_matrix_as_rational_tag('ColorMatrix1', color_matrix_floats)
     dng_tags.add_tag(('CalibrationIlluminant1', 'H', 1, illuminant))
     dng_tags.add_tag(('AsShotNeutral', '2I', 3, as_shot_neutral_values_flat))
@@ -290,22 +293,46 @@ def write_dng(
     dng_tags.add_string_tag('UniqueCameraModel', camera_model)
     dng_tags.add_tag(('LocalizedCameraModel', 'B',
         len(camera_model_utf8_bytes_null), camera_model_utf8_bytes_null))
-    dng_tags.add_tag(('CFARepeatPatternDim', 'H', 2, (2,2)))
-    dng_tags.add_tag(('CFAPlaneColor', 'B', 3, (0,1,2)))
     dng_tags.add_tag(('DNGVersion', 'B', 4, (1, 7, 1, 0)))
     dng_tags.add_tag(('DNGBackwardVersion', 'B', 4, (1, 7, 1, 0)))
 
+    dng_cfa_tags = MetadataTags()
+    dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
+    dng_cfa_tags.add_tag(('CFARepeatPatternDim', 'H', 2, (2,2)))
+    dng_cfa_tags.add_tag(('CFAPlaneColor', 'B', 3, (0,1,2)))
+
     try:
         with tifffile.TiffWriter(destination_file, bigtiff=False) as tif:
+            if thumbnail_image is not None:
+                # Prepare thumbnail specific tags
+                dng_tags.add_tag(('PreviewColorSpace', 'I', 1, PREVIEWCOLORSPACE_SRGB))
+
+                # Write Thumbnail to SubIFD 0
+                thumb_ifd_args = {
+                    'photometric': 'rgb',  # Interprets data as RGB
+                    'planarconfig': 1,     # Standard for RGB: 1 = CONTIG
+                    'compression': 'jpeg', # JPEG compression for thumbnail
+                    'compressionargs': {'level': 90},  # JPEG quality (0-100, higher is better)
+                    'extratags': dng_tags.get_tags(),
+                    'subfiletype': 1,  # Reduced resolution image (standard for DNG previews)
+                    'subifds': 1,      # Has main image as subifd
+                    'software': "muraw"
+                }
+                # set datasize to max uncompressed size to avoid writing strips
+                datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
+                tif.write(
+                    thumbnail_image, # Use the thumbnail_image directly
+                    **thumb_ifd_args,
+                    rowsperstrip = datasize
+                )
+
             # Prepare main image arguments
-            main_image_ifd0_args = {
+            main_image_ifd_args = {
                 'subfiletype': 0,
                 'photometric': 'cfa',
-                'extratags': dng_tags.get_tags(),
-                'software': "allsky/raw"
+                'subifds': 0,
+                'software': "muraw"
             }
-            if thumbnail_image is not None:
-                main_image_ifd0_args['subifds'] = 1      # Indicates it HAS a SubIFD (the thumbnail)
 
             if jxl_distance is not None:
                 if not (0.0 <= jxl_distance <= 15.0):
@@ -321,48 +348,33 @@ def write_dng(
                 # Default effort in libjxl is 7 ('falcon') if not specified.
                 compression_type = 'JPEGXL_DNG' # Ensure DNG-specific JXL type
                 compressionargs = {'distance': jxl_distance}
-                if jxl_effort is not None:
-                    compressionargs['effort'] = jxl_effort
-                    print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}")
-                else:
-                    print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance} (default effort)")
-                main_image_ifd0_args['compression'] = compression_type
-                main_image_ifd0_args['compressionargs'] = compressionargs
+                if jxl_effort is None:
+                    jxl_effort = 5
+                compressionargs['effort'] = jxl_effort
+                print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}")
+
+                main_image_ifd_args['compression'] = compression_type
+                main_image_ifd_args['compressionargs'] = compressionargs
 
                 # if compressing, need to swizzle the CFA data and indicate
                 # this via tags
-
                 processed_raw_data = swizzle_cfa_data(processed_raw_data)
-                dng_tags.add_tag(('ColumnInterleaveFactor', 'H', 1, 2))
-                dng_tags.add_tag(('RowInterleaveFactor', 'H', 1, 2))
+                dng_cfa_tags.add_tag(('ColumnInterleaveFactor', 'H', 1, 2))
+                dng_cfa_tags.add_tag(('RowInterleaveFactor', 'H', 1, 2))
+                dng_cfa_tags.add_tag(('JXLDistance', 'f', 1, jxl_distance))
+                dng_cfa_tags.add_tag(('JXLEffort', 'I', 1, jxl_effort))
 
-            # Write Main Raw Image to IFD 0
+            if thumbnail_image is None:
+                dng_cfa_tags.extend(dng_tags)
+            main_image_ifd_args['extratags'] = dng_cfa_tags.get_tags()
+
+            # Write Main Raw Image to IFD 
+            datasize = processed_raw_data.shape[0] * processed_raw_data.shape[1] * bits_per_pixel/8
             tif.write(
                 processed_raw_data,
-                **main_image_ifd0_args
+                **main_image_ifd_args,
+                rowsperstrip = datasize
             )
-            print("Main DNG image data (IFD 0) written.")
-
-            if thumbnail_image is not None:
-                # Prepare thumbnail specific tags
-                preview_extratags = MetadataTags() # Still using MetadataTags for thumbnail tags
-                preview_extratags.add_tag(('PreviewColorSpace', 'I', 1, PREVIEWCOLORSPACE_SRGB))
-
-                # Write Thumbnail to SubIFD 1
-                thumb_subifd_args = {
-                    'photometric': 'rgb',  # Interprets data as RGB
-                    'planarconfig': 1,     # Standard for RGB: 1 = CONTIG
-                    'compression': 'jpeg', # JPEG compression for thumbnail
-                    'compressionargs': {'level': 90},  # JPEG quality (0-100, higher is better)
-                    'extratags': preview_extratags.get_tags(),
-                    'subfiletype': 1,  # Reduced resolution image (standard for DNG previews)
-                    'subifds': 0       # No further SubIFDs
-                }
-                tif.write(
-                    thumbnail_image, # Use the thumbnail_image directly
-                    **thumb_subifd_args
-                )
-                print(f"Thumbnail (SubIFD 1) written to {destination_file}")
             
         print(f"Successfully wrote DNG file to {destination_file}")
 
