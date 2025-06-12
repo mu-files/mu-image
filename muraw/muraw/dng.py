@@ -116,40 +116,11 @@ class CameraProfiles:
 
 _CAMERA_PROFILES_INSTANCE = CameraProfiles()
 
-def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) -> Optional[np.ndarray]:
-    """Generate an 8-bit RGB thumbnail from raw CFA data."""
-    print(f"Generating thumbnail for Bayer pattern: {bayer_pattern_key}")
-
-    bayer_to_cvrgb_map = {
-        'RGGB': cv2.COLOR_BAYER_BG2RGB,
-        'BGGR': cv2.COLOR_BAYER_RG2RGB,
-        'GRBG': cv2.COLOR_BAYER_GB2RGB,
-        'GBRG': cv2.COLOR_BAYER_GR2RGB
-    }
-    
-    cv_bayer_code = bayer_to_cvrgb_map.get(bayer_pattern_key)
-
-    if not cv_bayer_code:
-        msg = (f"Unknown or unsupported Bayer pattern key: "
-               f"'{bayer_pattern_key}'")
-        raise ValueError(msg)
-
-    # Ensure data is suitable for cv2.cvtColor (typically uint8 or uint16 for Bayer)
-    if raw_cfa_data.dtype != np.uint16 and raw_cfa_data.dtype != np.uint8:
-        msg = (f"Unsupported raw data dtype for thumbnail generation: "
-               f"{raw_cfa_data.dtype}. Expected uint8 or uint16.")
-        raise ValueError(msg)
-    
-    thumbnail_rgb_full = cv2.cvtColor(raw_cfa_data, cv_bayer_code)
-
-    # Scale to 8-bit
-    if thumbnail_rgb_full.dtype == np.uint16:
-        thumbnail_rgb_8bit = (thumbnail_rgb_full / 256).astype(np.uint8)  # Simple 16-bit to 8-bit scaling
-    elif thumbnail_rgb_full.dtype == np.uint8:
-        thumbnail_rgb_8bit = thumbnail_rgb_full
+def _generate_dng_thumbnail(color_data: np.ndarray) -> Optional[np.ndarray]:
+    """Generate an 8-bit RGB thumbnail from color data."""
 
     # Resize
-    h_full, w_full = thumbnail_rgb_8bit.shape[:2] 
+    h_full, w_full = color_data.shape[:2] 
     if h_full > w_full:
         new_h = int(max(h_full/4, 256))
         new_w = int(w_full * (new_h / h_full))
@@ -158,7 +129,7 @@ def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) ->
         new_h = int(h_full * (new_w / w_full))
 
     thumbnail_resized = cv2.resize(
-        thumbnail_rgb_8bit, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        color_data, (new_w, new_h), interpolation=cv2.INTER_AREA)
     
     # No rotation, as main DNG data is not currently rotated in write_dng
     print(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
@@ -191,10 +162,9 @@ def write_dng(
     camera_make: str = "Unknown",
     camera_model: str = "Unknown",
     cfa_pattern: str = 'RGGB',
-    crop_region: Optional[tuple[int, int, int, int]] = None, # (left, top, width, height)
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
-    generate_thumbnail: bool = True
+    color_data: Optional[np.ndarray] = None  # Optional color data for preview
 ) -> None:
     """Write raw data to a DNG file using tifffile.
     
@@ -222,35 +192,11 @@ def write_dng(
             f"Expected 2D raw_data (height, width), got shape {raw_data.shape}"
         )
 
-    # Apply crop if specified
-    if crop_region is not None:
-        if not (isinstance(crop_region, tuple) and len(crop_region) == 4 and 
-                all(isinstance(val, int) for val in crop_region)):
-            raise ValueError(
-                "crop_region must be a tuple of 4 integers (left, top, width, height)"
-            )
-        left, top, width, height = crop_region
-        img_h, img_w = raw_data.shape
-
-        if not (left % 2 == 0 and top % 2 == 0 and width % 2 == 0 and height % 2 == 0):
-            raise ValueError(
-                f"All elements of crop_region (left, top, width, height) must be even numbers. Got: {crop_region}"
-            )
-
-        if not (0 <= left < img_w and 0 <= top < img_h and 
-                width > 0 and height > 0 and 
-                left + width <= img_w and top + height <= img_h):
-            raise ValueError(
-                f"Invalid crop_region {crop_region} for image dimensions {(img_h, img_w)}"
-            )
-        
-        raw_data = raw_data[top:top+height, left:left+width]
-
     # Generate thumbnail if requested
     thumbnail_image = None
-    if generate_thumbnail:
+    if color_data is not None:
         try:
-            thumbnail_image = _generate_dng_thumbnail(raw_data, cfa_pattern.upper())
+            thumbnail_image = _generate_dng_thumbnail(color_data)
             if thumbnail_image is not None:
                 print(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
         except ValueError as e:
