@@ -74,8 +74,6 @@ CALIBRATIONILLUMINANT_D75 = 22  # Standard D75 (north sky daylight)
 CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
 
 PREVIEWCOLORSPACE_SRGB = 1
-DNG_VERSION_1_7_1_0 = (1, 7, 1, 0)
-DNG_BCKWRD_VERSION_1_4_0_0 = (1, 4, 0, 0)
 
 # Camera Color Profiles
 class CameraProfiles:
@@ -169,7 +167,25 @@ def _generate_dng_thumbnail(raw_cfa_data: np.ndarray, bayer_pattern_key: str) ->
     print(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
     return thumbnail_resized
 
-# TODO: pass in crop, exiftags, list of preview/thumbs, calibration matrix and illuminant 
+def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
+    """Swizzle RGGB CFA data into a 2x2 grid of R, G1, G2, B sub-images."""
+
+    # Extract the four channels assuming RGGB pattern
+    # R pixels: top-left of each 2x2 block (e.g., raw_data[0,0], raw_data[0,2], ... raw_data[2,0], ...)
+    r_channel = raw_data[0::2, 0::2]
+    # G1 pixels: top-right of each 2x2 block (e.g., raw_data[0,1], raw_data[0,3], ...)
+    g1_channel = raw_data[0::2, 1::2]
+    # G2 pixels: bottom-left of each 2x2 block (e.g., raw_data[1,0], raw_data[1,2], ...)
+    g2_channel = raw_data[1::2, 0::2]
+    # B pixels: bottom-right of each 2x2 block (e.g., raw_data[1,1], raw_data[1,3], ...)
+    b_channel = raw_data[1::2, 1::2]
+
+    # Assemble the swizzled data using np.block
+    swizzled_data = np.block([[r_channel, g1_channel], [g2_channel, b_channel]])
+
+    return swizzled_data
+
+# TODO: pass in exiftags, list of preview/thumbs, calibration matrix and illuminant 
 
 def write_dng(
     raw_data: np.ndarray,
@@ -178,8 +194,9 @@ def write_dng(
     camera_make: str = "Unknown",
     camera_model: str = "Unknown",
     cfa_pattern: str = 'RGGB',
+    crop_region: Optional[tuple[int, int, int, int]] = None, # (left, top, width, height)
     jxl_distance: Optional[float] = None,
-    jxl_effort: Optional[int] = None, #None, # Add jxl_effort parameter
+    jxl_effort: Optional[int] = None,
     generate_thumbnail: bool = True
 ) -> None:
     """Write raw data to a DNG file using tifffile.
@@ -191,6 +208,9 @@ def write_dng(
         camera_make: Make of the camera
         camera_model: Model of the camera
         cfa_pattern: CFA pattern string, e.g., 'RGGB'
+        crop_region: Optional tuple (left, top, width, height) to crop the raw_data.
+                     Coordinates are 0-indexed. Default: None (no crop).
+                     Crop coordinates must be even numbers.
         jxl_distance: JPEG XL Butteraugli distance. Lower is higher quality.
                      Default: None (no JXL compression).
         jxl_effort: JPEG XL compression effort (1-9). Higher is more compression/slower.
@@ -201,6 +221,30 @@ def write_dng(
         raise ValueError(
             f"Expected 2D raw_data (height, width), got shape {raw_data.shape}"
         )
+
+    # Apply crop if specified
+    if crop_region is not None:
+        if not (isinstance(crop_region, tuple) and len(crop_region) == 4 and 
+                all(isinstance(val, int) for val in crop_region)):
+            raise ValueError(
+                "crop_region must be a tuple of 4 integers (left, top, width, height)"
+            )
+        left, top, width, height = crop_region
+        img_h, img_w = raw_data.shape
+
+        if not (left % 2 == 0 and top % 2 == 0 and width % 2 == 0 and height % 2 == 0):
+            raise ValueError(
+                f"All elements of crop_region (left, top, width, height) must be even numbers. Got: {crop_region}"
+            )
+
+        if not (0 <= left < img_w and 0 <= top < img_h and 
+                width > 0 and height > 0 and 
+                left + width <= img_w and top + height <= img_h):
+            raise ValueError(
+                f"Invalid crop_region {crop_region} for image dimensions {(img_h, img_w)}"
+            )
+        
+        raw_data = raw_data[top:top+height, left:left+width]
 
     # Generate thumbnail if requested
     thumbnail_image = None
@@ -222,7 +266,7 @@ def write_dng(
     illuminant = profile["illuminant1"]
 
     # TODO: come up with a way to calculate this
-    _as_shot_neutral_orig = ((1,1), (1,1), (1,1))
+    _as_shot_neutral_orig = ((72,100), (100,100), (100,100))
     as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
 
     camera_model_utf8_bytes_null = (camera_model + '\x00').encode('utf-8')
@@ -248,8 +292,8 @@ def write_dng(
         len(camera_model_utf8_bytes_null), camera_model_utf8_bytes_null))
     dng_tags.add_tag(('CFARepeatPatternDim', 'H', 2, (2,2)))
     dng_tags.add_tag(('CFAPlaneColor', 'B', 3, (0,1,2)))
-    dng_tags.add_tag(('DNGVersion', 'B', 4, DNG_VERSION_1_7_1_0))
-    dng_tags.add_tag(('DNGBackwardVersion', 'B', 4, DNG_BCKWRD_VERSION_1_4_0_0))
+    dng_tags.add_tag(('DNGVersion', 'B', 4, (1, 7, 1, 0)))
+    dng_tags.add_tag(('DNGBackwardVersion', 'B', 4, (1, 7, 1, 0)))
 
     try:
         with tifffile.TiffWriter(destination_file, bigtiff=False) as tif:
@@ -284,6 +328,13 @@ def write_dng(
                     print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance} (default effort)")
                 main_image_ifd0_args['compression'] = compression_type
                 main_image_ifd0_args['compressionargs'] = compressionargs
+
+                # if compressing, need to swizzle the CFA data and indicate
+                # this via tags
+
+                processed_raw_data = swizzle_cfa_data(processed_raw_data)
+                dng_tags.add_tag(('ColumnInterleaveFactor', 'H', 1, 2))
+                dng_tags.add_tag(('RowInterleaveFactor', 'H', 1, 2))
 
             # Write Main Raw Image to IFD 0
             tif.write(
