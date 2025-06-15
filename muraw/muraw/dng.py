@@ -2,6 +2,7 @@
 
 This module handles DNG file creation and related functionality.
 """
+
 from pathlib import Path
 import cv2
 import numpy as np
@@ -14,14 +15,16 @@ from tifffile import TIFF, PHOTOMETRIC
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
     BAYER_PATTERN_MAP = {
-        'RGGB': (0, 1, 1, 2),  # R G / G B
-        'BGGR': (2, 1, 1, 0),  # B G / G R
-        'GRBG': (1, 0, 2, 1),  # G R / B G
-        'GBRG': (1, 2, 0, 1)   # G B / R G
+        "RGGB": (0, 1, 1, 2),  # R G / G B
+        "BGGR": (2, 1, 1, 0),  # B G / G R
+        "GRBG": (1, 0, 2, 1),  # G R / B G
+        "GBRG": (1, 2, 0, 1),  # G B / R G
     }
 
     @staticmethod
-    def _matrix_to_rational_tuple(matrix: np.ndarray, denominator: int = 10000) -> tuple:
+    def _matrix_to_rational_tuple(
+        matrix: np.ndarray, denominator: int = 10000
+    ) -> tuple:
         """Converts a NumPy float matrix to a flat tuple of (numerator, denominator) pairs."""
         rational_pairs = []
         for r in range(matrix.shape[0]):
@@ -37,38 +40,53 @@ class MetadataTags:
     def add_tag(self, tag):
         # Expects tag to be (tag_name_str, dtype_char_str, count, value)
         # writeonce is hardcoded to False for simplicity in this version of the class
-        tag_formatted_contents = (TIFF.TAGS[tag[0]], TIFF.DATA_DTYPES[tag[1]], 
-            tag[2], tag[3], False)
+        tag_formatted_contents = (
+            TIFF.TAGS[tag[0]],
+            TIFF.DATA_DTYPES[tag[1]],
+            tag[2],
+            tag[3],
+            False,
+        )
         self._tags.append(tag_formatted_contents)
 
     def add_string_tag(self, tag_name_str, string_value):
         """Helper to add a standard ASCII string tag with null termination."""
-        string_value_with_null = string_value + '\x00'
+        string_value_with_null = string_value + "\x00"
         length = len(string_value_with_null)
-        self.add_tag((tag_name_str, 's', length, string_value_with_null))
+        self.add_tag((tag_name_str, "s", length, string_value_with_null))
 
-    def extend(self, other: 'MetadataTags') -> None:
+    def extend(self, other: "MetadataTags") -> None:
         """Add all tags from another MetadataTags instance."""
         if not isinstance(other, MetadataTags):
-            raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
+            raise TypeError(
+                f"Expected MetadataTags instance, got {type(other).__name__}"
+            )
         self._tags.extend(other._tags)
 
     def add_cfa_pattern_tag(self, cfa_pattern_key: str):
         """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
-        pattern_tuple = self.BAYER_PATTERN_MAP.get(cfa_pattern_key, self.BAYER_PATTERN_MAP['RGGB'])
+        pattern_tuple = self.BAYER_PATTERN_MAP.get(
+            cfa_pattern_key, self.BAYER_PATTERN_MAP["RGGB"]
+        )
         pattern_bytes = bytes(pattern_tuple)
-        self.add_tag(('CFAPattern', 'B', 4, pattern_bytes))
+        self.add_tag(("CFAPattern", "B", 4, pattern_bytes))
 
-    def add_matrix_as_rational_tag(self, tag_name_str: str, float_matrix_np: np.ndarray,
-                                 denominator: int = 10000):
+    def add_matrix_as_rational_tag(
+        self,
+        tag_name_str: str,
+        float_matrix_np: np.ndarray,
+        denominator: int = 10000,
+    ):
         """Converts a float matrix to rationals and adds it as a tag."""
-        flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
-        self.add_tag((tag_name_str, '2i', 9, flat_tuple_values))
+        flat_tuple_values = MetadataTags._matrix_to_rational_tuple(
+            float_matrix_np, denominator
+        )
+        self.add_tag((tag_name_str, "2i", 9, flat_tuple_values))
 
     def get_tags(self):
         self._tags.sort(key=lambda x: x[0])
         return self._tags
-        
+
 
 # Default values for tags
 ORIENTATION_HORIZONTAL = 1
@@ -82,18 +100,22 @@ CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during e
 
 PREVIEWCOLORSPACE_SRGB = 1
 
+
 # Camera Color Profiles
 class CameraProfiles:
     def __init__(self):
         # Initial definition with human-readable keys
         initial_profiles = {
             "ASI676MC": {
-                "color_matrix1": np.array([
-                    [1.402600, -0.642900, -0.063300],
-                    [0.348200, 0.441700, 0.2185],
-                    [0.327800, -0.009700, 0.840500]
-                ], dtype=np.float64),
-                "illuminant1": CALIBRATIONILLUMINANT_D55
+                "color_matrix1": np.array(
+                    [
+                        [1.402600, -0.642900, -0.063300],
+                        [0.348200, 0.441700, 0.2185],
+                        [0.327800, -0.009700, 0.840500],
+                    ],
+                    dtype=np.float64,
+                ),
+                "illuminant1": CALIBRATIONILLUMINANT_D55,
             },
             # Add other camera models here, e.g.:
             # "AnotherCameraModel": {
@@ -102,39 +124,47 @@ class CameraProfiles:
             # },
             "DEFAULT": {
                 "color_matrix1": np.identity(3, dtype=np.float64),
-                "illuminant1": CALIBRATIONILLUMINANT_UNKNOWN
-            }
+                "illuminant1": CALIBRATIONILLUMINANT_UNKNOWN,
+            },
         }
         # Internal storage with uppercase keys for case-insensitive lookup
-        self._normalized_profiles = {k.upper(): v for k, v in initial_profiles.items()}
+        self._normalized_profiles = {
+            k.upper(): v for k, v in initial_profiles.items()
+        }
 
     def get(self, camera_model_str: str) -> dict:
         """Retrieve a camera profile using case-insensitive key matching."""
         return self._normalized_profiles.get(
-            camera_model_str.upper(), 
-            self._normalized_profiles.get("DEFAULT", {})
+            camera_model_str.upper(),
+            self._normalized_profiles.get("DEFAULT", {}),
         )
 
+
 _CAMERA_PROFILES_INSTANCE = CameraProfiles()
+
 
 def _generate_dng_thumbnail(color_data: np.ndarray) -> Optional[np.ndarray]:
     """Generate an 8-bit RGB thumbnail from color data."""
 
     # Resize
-    h_full, w_full = color_data.shape[:2] 
+    h_full, w_full = color_data.shape[:2]
     if h_full > w_full:
-        new_h = int(max(h_full/4, 256))
+        new_h = int(max(h_full / 4, 256))
         new_w = int(w_full * (new_h / h_full))
     else:
-        new_w = int(max(w_full/4, 256))
+        new_w = int(max(w_full / 4, 256))
         new_h = int(h_full * (new_w / w_full))
 
     thumbnail_resized = cv2.resize(
-        color_data, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    
+        color_data, (new_w, new_h), interpolation=cv2.INTER_AREA
+    )
+
     # No rotation, as main DNG data is not currently rotated in write_dng
-    print(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
+    print(
+        f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}"
+    )
     return thumbnail_resized
+
 
 def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     """Swizzle RGGB CFA data into a 2x2 grid of R, G1, G2, B sub-images."""
@@ -153,6 +183,7 @@ def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     swizzled_data = np.block([[r_channel, g1_channel], [g2_channel, b_channel]])
 
     return swizzled_data
+
 
 def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
     """Deswizzle CFA data from a 2x2 grid of R, G1, G2, B sub-images back to RGGB."""
@@ -179,15 +210,16 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
     original_data = np.empty_like(swizzled_data)
 
     # Place the channels back into the original RGGB pattern
-    original_data[0::2, 0::2] = r_channel    # R pixels
-    original_data[0::2, 1::2] = g1_channel   # G1 pixels (top-right G)
-    original_data[1::2, 0::2] = g2_channel   # G2 pixels (bottom-left G)
-    original_data[1::2, 1::2] = b_channel    # B pixels
+    original_data[0::2, 0::2] = r_channel  # R pixels
+    original_data[0::2, 1::2] = g1_channel  # G1 pixels (top-right G)
+    original_data[1::2, 0::2] = g2_channel  # G2 pixels (bottom-left G)
+    original_data[1::2, 1::2] = b_channel  # B pixels
 
     return original_data
 
 
-# TODO: pass in exiftags, list of preview/thumbs, calibration matrix and illuminant 
+# TODO: pass in exiftags, list of preview/thumbs, calibration matrix and illuminant
+
 
 def write_dng(
     raw_data: np.ndarray,
@@ -195,13 +227,13 @@ def write_dng(
     bits_per_pixel: int,
     camera_make: str = "Unknown",
     camera_model: str = "Unknown",
-    cfa_pattern: str = 'RGGB',
+    cfa_pattern: str = "RGGB",
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
-    color_data: Optional[np.ndarray] = None  # Optional color data for preview
+    color_data: Optional[np.ndarray] = None,  # Optional color data for preview
 ) -> None:
     """Write raw data to a DNG file using tifffile.
-    
+
     Args:
         raw_data: Raw image data as numpy array (H, W)
         destination_file: Path where to save the DNG file
@@ -232,11 +264,17 @@ def write_dng(
         try:
             thumbnail_image = _generate_dng_thumbnail(color_data)
             if thumbnail_image is not None:
-                print(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
+                print(
+                    f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}"
+                )
         except ValueError as e:
-            print(f"Warning: Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
+            print(
+                f"Warning: Could not generate DNG thumbnail: {e}. Proceeding without thumbnail."
+            )
         except Exception as e:
-            print(f"Warning: Unexpected error generating thumbnail: {e}. Proceeding without thumbnail.")
+            print(
+                f"Warning: Unexpected error generating thumbnail: {e}. Proceeding without thumbnail."
+            )
 
     # format the DNG specific tags
     # Get camera profile based on camera_model
@@ -246,10 +284,12 @@ def write_dng(
     illuminant = profile["illuminant1"]
 
     # TODO: come up with a way to calculate this
-    _as_shot_neutral_orig = ((72,100), (100,100), (100,100))
-    as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
+    _as_shot_neutral_orig = ((72, 100), (100, 100), (100, 100))
+    as_shot_neutral_values_flat = tuple(
+        item for pair in _as_shot_neutral_orig for item in pair
+    )
 
-    camera_model_utf8_bytes_null = (camera_model + '\x00').encode('utf-8')
+    camera_model_utf8_bytes_null = (camera_model + "\x00").encode("utf-8")
 
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
@@ -264,54 +304,66 @@ def write_dng(
     # the tag names are from tifffile.py TiffTagRegistry
     # the tag types are from tifffile.py DATA_DTYPES
     dng_tags = MetadataTags()
-    dng_tags.add_tag(('Orientation', 'H', 1, ORIENTATION_HORIZONTAL))
-    dng_tags.add_matrix_as_rational_tag('ColorMatrix1', color_matrix_floats)
-    dng_tags.add_tag(('CalibrationIlluminant1', 'H', 1, illuminant))
-    dng_tags.add_tag(('AsShotNeutral', '2I', 3, as_shot_neutral_values_flat))
-    dng_tags.add_string_tag('Make', camera_make)
-    dng_tags.add_string_tag('Model', camera_model)
-    dng_tags.add_string_tag('UniqueCameraModel', camera_model)
-    dng_tags.add_tag(('LocalizedCameraModel', 'B',
-        len(camera_model_utf8_bytes_null), camera_model_utf8_bytes_null))
-    dng_tags.add_tag(('DNGVersion', 'B', 4, (1, 7, 1, 0)))
-    dng_tags.add_tag(('DNGBackwardVersion', 'B', 4, (1, 7, 1, 0)))
+    dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
+    dng_tags.add_matrix_as_rational_tag("ColorMatrix1", color_matrix_floats)
+    dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, illuminant))
+    dng_tags.add_tag(("AsShotNeutral", "2I", 3, as_shot_neutral_values_flat))
+    dng_tags.add_string_tag("Make", camera_make)
+    dng_tags.add_string_tag("Model", camera_model)
+    dng_tags.add_string_tag("UniqueCameraModel", camera_model)
+    dng_tags.add_tag(
+        (
+            "LocalizedCameraModel",
+            "B",
+            len(camera_model_utf8_bytes_null),
+            camera_model_utf8_bytes_null,
+        )
+    )
+    dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
+    dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
 
     dng_cfa_tags = MetadataTags()
     dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
-    dng_cfa_tags.add_tag(('CFARepeatPatternDim', 'H', 2, (2,2)))
-    dng_cfa_tags.add_tag(('CFAPlaneColor', 'B', 3, (0,1,2)))
+    dng_cfa_tags.add_tag(("CFARepeatPatternDim", "H", 2, (2, 2)))
+    dng_cfa_tags.add_tag(("CFAPlaneColor", "B", 3, (0, 1, 2)))
 
     try:
         with tifffile.TiffWriter(destination_file, bigtiff=False) as tif:
             if thumbnail_image is not None:
                 # Prepare thumbnail specific tags
-                dng_tags.add_tag(('PreviewColorSpace', 'I', 1, PREVIEWCOLORSPACE_SRGB))
+                dng_tags.add_tag(
+                    ("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB)
+                )
 
                 # Write Thumbnail to SubIFD 0
                 thumb_ifd_args = {
-                    'photometric': 'rgb',  # Interprets data as RGB
-                    'planarconfig': 1,     # Standard for RGB: 1 = CONTIG
-                    'compression': 'jpeg', # JPEG compression for thumbnail
-                    'compressionargs': {'level': 90},  # JPEG quality (0-100, higher is better)
-                    'extratags': dng_tags.get_tags(),
-                    'subfiletype': 1,  # Reduced resolution image (standard for DNG previews)
-                    'subifds': 1,      # Has main image as subifd
-                    'software': "muraw"
+                    "photometric": "rgb",  # Interprets data as RGB
+                    "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
+                    "compression": "jpeg",  # JPEG compression for thumbnail
+                    "compressionargs": {
+                        "level": 90
+                    },  # JPEG quality (0-100, higher is better)
+                    "extratags": dng_tags.get_tags(),
+                    "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
+                    "subifds": 1,  # Has main image as subifd
+                    "software": "muraw",
                 }
                 # set datasize to max uncompressed size to avoid writing strips
-                datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
+                datasize = (
+                    thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
+                )
                 tif.write(
-                    thumbnail_image, # Use the thumbnail_image directly
+                    thumbnail_image,  # Use the thumbnail_image directly
                     **thumb_ifd_args,
-                    rowsperstrip = datasize
+                    rowsperstrip=datasize,
                 )
 
             # Prepare main image arguments
             main_image_ifd_args = {
-                'subfiletype': 0,
-                'photometric': 'cfa',
-                'subifds': 0,
-                'software': "muraw"
+                "subfiletype": 0,
+                "photometric": "cfa",
+                "subifds": 0,
+                "software": "muraw",
             }
 
             if jxl_distance is not None:
@@ -326,36 +378,41 @@ def write_dng(
                 # tifffile uses imagecodecs, which uses libjxl.
                 # libjxl effort values are typically 1 (fastest) to 9 (most effort).
                 # Default effort in libjxl is 7 ('falcon') if not specified.
-                compression_type = 'JPEGXL_DNG' # Ensure DNG-specific JXL type
-                compressionargs = {'distance': jxl_distance}
+                compression_type = "JPEGXL_DNG"  # Ensure DNG-specific JXL type
+                compressionargs = {"distance": jxl_distance}
                 if jxl_effort is None:
                     jxl_effort = 5
-                compressionargs['effort'] = jxl_effort
-                print(f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}")
+                compressionargs["effort"] = jxl_effort
+                print(
+                    f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}"
+                )
 
-                main_image_ifd_args['compression'] = compression_type
-                main_image_ifd_args['compressionargs'] = compressionargs
+                main_image_ifd_args["compression"] = compression_type
+                main_image_ifd_args["compressionargs"] = compressionargs
 
                 # if compressing, need to swizzle the CFA data and indicate
                 # this via tags
                 processed_raw_data = swizzle_cfa_data(processed_raw_data)
-                dng_cfa_tags.add_tag(('ColumnInterleaveFactor', 'H', 1, 2))
-                dng_cfa_tags.add_tag(('RowInterleaveFactor', 'H', 1, 2))
-                dng_cfa_tags.add_tag(('JXLDistance', 'f', 1, jxl_distance))
-                dng_cfa_tags.add_tag(('JXLEffort', 'I', 1, jxl_effort))
+                dng_cfa_tags.add_tag(("ColumnInterleaveFactor", "H", 1, 2))
+                dng_cfa_tags.add_tag(("RowInterleaveFactor", "H", 1, 2))
+                dng_cfa_tags.add_tag(("JXLDistance", "f", 1, jxl_distance))
+                dng_cfa_tags.add_tag(("JXLEffort", "I", 1, jxl_effort))
 
             if thumbnail_image is None:
                 dng_cfa_tags.extend(dng_tags)
-            main_image_ifd_args['extratags'] = dng_cfa_tags.get_tags()
+            main_image_ifd_args["extratags"] = dng_cfa_tags.get_tags()
 
-            # Write Main Raw Image to IFD 
-            datasize = processed_raw_data.shape[0] * processed_raw_data.shape[1] * bits_per_pixel/8
-            tif.write(
-                processed_raw_data,
-                **main_image_ifd_args,
-                rowsperstrip = datasize
+            # Write Main Raw Image to IFD
+            datasize = (
+                processed_raw_data.shape[0]
+                * processed_raw_data.shape[1]
+                * bits_per_pixel
+                / 8
             )
-            
+            tif.write(
+                processed_raw_data, **main_image_ifd_args, rowsperstrip=datasize
+            )
+
         print(f"Successfully wrote DNG file to {destination_file}")
 
     except Exception as e:
@@ -366,18 +423,22 @@ def write_dng(
 class DngFile(tifffile.TiffFile):
     """A TIFF file with DNG-specific extensions and helper methods."""
 
-    _bayer_pattern_bytes_to_str_map = {bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()}
+    _bayer_pattern_bytes_to_str_map = {
+        bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _iter_all_pages_recursive(self, pages_list: Optional[List[tifffile.TiffPage]]):
+    def _iter_all_pages_recursive(
+        self, pages_list: Optional[List[tifffile.TiffPage]]
+    ):
         """Recursively iterates through all TIFF pages, including nested ones."""
         if pages_list is None:
             return
         for page in pages_list:
             yield page
-            if page.pages: # Check if there are sub-pages
+            if page.pages:  # Check if there are sub-pages
                 yield from self._iter_all_pages_recursive(page.pages)
 
     def get_raw_pages_info(self) -> List[Tuple[int, str, tuple]]:
@@ -387,19 +448,25 @@ class DngFile(tifffile.TiffFile):
         page_id is the 0-based index of the page in the flattened list of all TIFF pages.
         """
         info_list = []
-        for current_page_id, p in enumerate(self._iter_all_pages_recursive(self.pages)):
-            if p.photometric and p.photometric.name in ('CFA', 'LINEAR_RAW'):
+        for current_page_id, p in enumerate(
+            self._iter_all_pages_recursive(self.pages)
+        ):
+            if p.photometric and p.photometric.name in ("CFA", "LINEAR_RAW"):
                 info_list.append((current_page_id, p.photometric.name, p.shape))
         return info_list
 
-    def _get_page_by_id(self, target_page_id: int) -> Optional[tifffile.TiffPage]:
+    def _get_page_by_id(
+        self, target_page_id: int
+    ) -> Optional[tifffile.TiffPage]:
         """Helper to retrieve a specific TiffPage by its flattened, 0-based ID."""
         for i, page in enumerate(self._iter_all_pages_recursive(self.pages)):
             if i == target_page_id:
                 return page
         return None
 
-    def get_raw_cfa_by_id(self, target_page_id: int) -> Tuple[Optional[np.ndarray], str]:
+    def get_raw_cfa_by_id(
+        self, target_page_id: int
+    ) -> Tuple[Optional[np.ndarray], str]:
         """Retrieves the raw data array, CFA pattern for a specific page ID.
 
         Uses a 0-based page_id corresponding to the absolute index in the flattened list of all TIFF pages.
@@ -410,31 +477,40 @@ class DngFile(tifffile.TiffFile):
         if p is None:
             return None, f"Page with ID {target_page_id} not found."
 
-        if not (p.photometric and p.photometric.name == 'CFA'):
+        if not (p.photometric and p.photometric.name == "CFA"):
             photometric_name = p.photometric.name if p.photometric else "None"
-            return None, f"Page at ID {target_page_id} is not CFA (photometric: {photometric_name}).", None, None
+            return (
+                None,
+                f"Page at ID {target_page_id} is not CFA (photometric: {photometric_name}).",
+                None,
+                None,
+            )
 
         raw_data_arr = p.asarray()
 
-        col_interleave_tag = p.tags.get(TIFF.TAGS['ColumnInterleaveFactor'])
-        row_interleave_tag = p.tags.get(TIFF.TAGS['RowInterleaveFactor'])
+        col_interleave_tag = p.tags.get(TIFF.TAGS["ColumnInterleaveFactor"])
+        row_interleave_tag = p.tags.get(TIFF.TAGS["RowInterleaveFactor"])
 
         if (
-            col_interleave_tag is not None and col_interleave_tag.value == 2 and
-            row_interleave_tag is not None and row_interleave_tag.value == 2
+            col_interleave_tag is not None
+            and col_interleave_tag.value == 2
+            and row_interleave_tag is not None
+            and row_interleave_tag.value == 2
         ):
             raw_data_arr = deswizzle_cfa_data(raw_data_arr)
 
-        cfa_pattern_tag = p.tags.get(TIFF.TAGS['CFAPattern'])
+        cfa_pattern_tag = p.tags.get(TIFF.TAGS["CFAPattern"])
         if cfa_pattern_tag:
             cfa_bytes = cfa_pattern_tag.value
             if isinstance(cfa_bytes, bytes):
-                cfa_pattern_str = self._bayer_pattern_bytes_to_str_map.get(cfa_bytes, "CFA_pattern_unknown_value_in_map")
+                cfa_pattern_str = self._bayer_pattern_bytes_to_str_map.get(
+                    cfa_bytes, "CFA_pattern_unknown_value_in_map"
+                )
             else:
                 cfa_pattern_str = "CFA_pattern_tag_invalid_format_not_bytes"
         else:
             cfa_pattern_str = "CFA_pattern_tag_missing_or_empty"
-        
+
         return raw_data_arr, cfa_pattern_str
 
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
@@ -442,9 +518,9 @@ class DngFile(tifffile.TiffFile):
         p = self._get_page_by_id(target_page_id)
 
         if p is None:
-            return None 
+            return None
 
-        if not (p.photometric and p.photometric.name == 'LINEAR_RAW'):
+        if not (p.photometric and p.photometric.name == "LINEAR_RAW"):
             return None
 
         raw_data_arr = p.asarray()
