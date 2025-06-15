@@ -15,18 +15,12 @@ def generate_dng_structure_report(
     dng_file: DngFile, dng_file_path_for_naming: Path, output_dir: Path
 ) -> None:
     """Reads DNG structure and writes detailed info to a text file."""
-    output_txt_path = (
-        output_dir / f"{dng_file_path_for_naming.stem}_structure_report.txt"
-    )
+    output_txt_path = output_dir / f"{dng_file_path_for_naming.stem}_structure_report.txt"
 
     dng_subfiletype_map = {0: "main", 1: "preview"}  # NewSubFileType
 
-    with open(
-        output_txt_path, "w"
-    ) as f_out:  # dng_file is now passed as an argument
-        f_out.write(
-            f"--- Structure Report for: {dng_file_path_for_naming.name} ---\n\n"
-        )
+    with open(output_txt_path, "w") as f_out:  # dng_file is now passed as an argument
+        f_out.write(f"--- Structure Report for: {dng_file_path_for_naming.name} ---\n\n")
         try:
             # The DngFile object (tif) is now passed as 'dng_file'
             tif = dng_file
@@ -36,9 +30,7 @@ def generate_dng_structure_report(
             f_out.write(
                 f"Found {len(raw_pages_info)} raw page(s) with CFA or LinearRaw interpretation:\n"
             )
-            for idx, (page_id_val, photometric_name, shape_tuple) in enumerate(
-                raw_pages_info
-            ):
+            for idx, (page_id_val, photometric_name, shape_tuple) in enumerate(raw_pages_info):
                 f_out.write(
                     f"  - Raw Page (list index {idx}, page_id {page_id_val}): photometric='{photometric_name}', shape={shape_tuple}\n"
                 )
@@ -54,26 +46,14 @@ def generate_dng_structure_report(
                     page_array_str = f"Error getting array: {e_array}"
 
                 subfiletype_str = (
-                    page.subfiletype.name
-                    if page.subfiletype is not None
-                    else "unknown"
+                    page.subfiletype.name if page.subfiletype is not None else "unknown"
                 )
                 photometric_str = (
-                    page.photometric.name
-                    if page.photometric is not None
-                    else "unknown"
+                    page.photometric.name if page.photometric is not None else "unknown"
                 )
-                newsubfiletype_tag = page.tags.get(
-                    254
-                )  # NewSubFileType ID is 254
-                dng_type_val = (
-                    newsubfiletype_tag.value
-                    if newsubfiletype_tag is not None
-                    else -1
-                )
-                dng_type_str = dng_subfiletype_map.get(
-                    dng_type_val, "unknown DNG type"
-                )
+                newsubfiletype_tag = page.tags.get(254)  # NewSubFileType ID is 254
+                dng_type_val = newsubfiletype_tag.value if newsubfiletype_tag is not None else -1
+                dng_type_str = dng_subfiletype_map.get(dng_type_val, "unknown DNG type")
 
                 f_out.write(
                     f"\nTop-Level Page {i}: Shape={page_array_str}, TIFF_type='{subfiletype_str}', DNG_type='{dng_type_str}', Photometric='{photometric_str}'\n"
@@ -84,9 +64,7 @@ def generate_dng_structure_report(
                     value_type_str = type(tag_obj.value).__name__
                     value_str = str(tag_obj.value)
                     if len(value_str) > 128:
-                        value_str = (
-                            f"<value is {len(value_str)} chars, truncated>"
-                        )
+                        value_str = f"<value is {len(value_str)} chars, truncated>"
                     f_out.write(
                         f"    {tag_name_str} ({tag_id}) [type: {value_type_str}]: {value_str}\n"
                     )
@@ -102,9 +80,7 @@ def generate_dng_structure_report(
                             if nested_array is not None:
                                 nested_array_str = str(nested_array.shape)
                         except Exception as e_nested_array:
-                            nested_array_str = (
-                                f"Error getting array: {e_nested_array}"
-                            )
+                            nested_array_str = f"Error getting array: {e_nested_array}"
 
                         nested_subfiletype_str = (
                             nested_page.subfiletype.name
@@ -139,9 +115,7 @@ def generate_dng_structure_report(
                                 f"        {tag_name_str} ({tag_id}) [type: {value_type_str}]: {value_str}\n"
                             )
                 else:
-                    f_out.write(
-                        f"  -> No nested 'pages' attribute found on Page {i}.\n"
-                    )
+                    f_out.write(f"  -> No nested 'pages' attribute found on Page {i}.\n")
         except Exception as e_main:
             f_out.write(
                 f"\n!!! Error processing DNG file {dng_file_path_for_naming.name} for report: {e_main} !!!\n"
@@ -150,9 +124,7 @@ def generate_dng_structure_report(
 
             traceback.print_exc(file=f_out)
 
-        f_out.write(
-            f"\n--- End of Report for: {dng_file_path_for_naming.name} ---\n"
-        )
+        f_out.write(f"\n--- End of Report for: {dng_file_path_for_naming.name} ---\n")
     # This print goes to console, not the file, to indicate completion
     print(f"    Structure report generated: {output_txt_path.name}")
 
@@ -173,9 +145,7 @@ def _decode_and_save_cfa_page(
 
     debayer_code = BAYER_PATTERNS_TO_CV2.get(cfa_pattern)
     if debayer_code is None:
-        print(
-            f"          -> Could not debayer: Unknown CFA pattern '{cfa_pattern}'."
-        )
+        print(f"          -> Could not debayer: Unknown CFA pattern '{cfa_pattern}'.")
         # Try to save raw data scaled if it's 2D (monochrome)
         if len(raw_cfa_data.shape) == 2:
             scaled_gray_data: Optional[np.ndarray] = None  # Ensure it's defined
@@ -187,9 +157,7 @@ def _decode_and_save_cfa_page(
 
             if scaled_gray_data is not None:
                 cv2.imwrite(str(output_jpeg_path), scaled_gray_data)
-                print(
-                    f"          -> Saved scaled grayscale raw data to {output_jpeg_path.name}"
-                )
+                print(f"          -> Saved scaled grayscale raw data to {output_jpeg_path.name}")
             else:
                 # This will be hit if dtype was not uint16 or uint8
                 print(
@@ -235,18 +203,12 @@ def _decode_and_save_cfa_page(
             f"          WARNING: Debayered image has unexpected dtype {color_image_full_depth.dtype}. Attempting to normalize and scale."
         )
         try:
-            min_val, max_val = np.min(color_image_full_depth), np.max(
-                color_image_full_depth
-            )
+            min_val, max_val = np.min(color_image_full_depth), np.max(color_image_full_depth)
             if max_val > min_val:
-                norm_data = (color_image_full_depth - min_val) / (
-                    max_val - min_val
-                )
+                norm_data = (color_image_full_depth - min_val) / (max_val - min_val)
                 color_image_8bit = (norm_data * 255).astype(np.uint8)
             else:
-                color_image_8bit = np.zeros_like(
-                    color_image_full_depth, dtype=np.uint8
-                )
+                color_image_8bit = np.zeros_like(color_image_full_depth, dtype=np.uint8)
         except Exception:
             print(
                 f"          Could not convert debayered image of dtype {color_image_full_depth.dtype} to 8-bit."
@@ -257,9 +219,7 @@ def _decode_and_save_cfa_page(
     print(f"          -> Saved debayered image to {output_jpeg_path.name}")
 
 
-def _decode_and_save_linear_page(
-    raw_linear_data: np.ndarray, output_jpeg_path: Path
-) -> None:
+def _decode_and_save_linear_page(raw_linear_data: np.ndarray, output_jpeg_path: Path) -> None:
     """Decodes a LinearRaw data array, scales based on data type, and saves it as a JPEG image."""
     print(
         f"        -> LinearRaw Data: shape={raw_linear_data.shape}, dtype={raw_linear_data.dtype}"
@@ -281,19 +241,11 @@ def _decode_and_save_linear_page(
     final_image_to_save: np.ndarray = processed_image_8bit
     # For color LinearRaw (3 channels), DNG usually stores as RGB.
     # OpenCV imwrite expects BGR for color images.
-    if (
-        len(processed_image_8bit.shape) == 3
-        and processed_image_8bit.shape[2] == 3
-    ):
-        final_image_to_save = cv2.cvtColor(
-            processed_image_8bit, cv2.COLOR_RGB2BGR
-        )
+    if len(processed_image_8bit.shape) == 3 and processed_image_8bit.shape[2] == 3:
+        final_image_to_save = cv2.cvtColor(processed_image_8bit, cv2.COLOR_RGB2BGR)
     elif not (
         len(processed_image_8bit.shape) == 2
-        or (
-            len(processed_image_8bit.shape) == 3
-            and processed_image_8bit.shape[2] == 1
-        )
+        or (len(processed_image_8bit.shape) == 3 and processed_image_8bit.shape[2] == 1)
     ):
         print(
             f"        -> LinearRaw data after scaling has unexpected shape {processed_image_8bit.shape}. Attempting to save as is."
@@ -315,12 +267,12 @@ def decode_and_save_dng_images(
         )
 
         if not raw_pages_info:
-            print(
-                "    Image Generation: No CFA or LinearRaw pages found for processing."
-            )
+            print("    Image Generation: No CFA or LinearRaw pages found for processing.")
             return
 
-        for page_id, photo_interp, shape in raw_pages_info:
+        for page_id, shape, tags in raw_pages_info:
+            photo_interp = tags.get("PhotometricInterpretation")
+
             # Construct a unique name for each page if there are multiple raw pages
             base_name = dng_file_path_for_naming.stem
             if len(raw_pages_info) > 1:
@@ -334,36 +286,31 @@ def decode_and_save_dng_images(
             )
 
             if photo_interp == "CFA":
+                cfa_pattern_str = tags.get("CFAPattern")
+
                 print(
-                    f"      Attempting to get CFA data for page ID {page_id}..."
+                    f"      Attempting to get CFA data for page ID {page_id}... (Pattern from tags: {cfa_pattern_str})"
                 )
-                raw_cfa_data, cfa_pattern = dng_file.get_raw_cfa_by_id(page_id)
+                # get_raw_cfa_by_id now primarily returns the data, pattern is from tags
+                raw_cfa_data = dng_file.get_raw_cfa_by_id(page_id)
                 if raw_cfa_data is not None:
-                    _decode_and_save_cfa_page(
-                        raw_cfa_data, cfa_pattern, output_jpeg_path
-                    )
+
+                    _decode_and_save_cfa_page(raw_cfa_data, cfa_pattern_str, output_jpeg_path)
                 else:
-                    # cfa_pattern contains the error message if raw_cfa_data is None
-                    error_msg = (
-                        f": {cfa_pattern}"
-                        if isinstance(cfa_pattern, str) and cfa_pattern
+                    error_suffix = (
+                        f": {error_msg_cfa}"
+                        if isinstance(error_msg_cfa, str) and error_msg_cfa
                         else ""
                     )
-                    print(
-                        f"        -> Failed to get CFA data for page ID {page_id}{error_msg}"
-                    )
+                    print(f"        -> Failed to get CFA data for page ID {page_id}{error_suffix}")
             elif photo_interp == "LINEAR_RAW":
-                print(
-                    f"      Attempting to get LinearRaw data for page ID {page_id}..."
-                )
+                print(f"      Attempting to get LinearRaw data for page ID {page_id}...")
                 raw_linear_data = dng_file.get_raw_linear_by_id(page_id)
                 if raw_linear_data is not None:
-                    _decode_and_save_linear_page(
-                        raw_linear_data, output_jpeg_path
-                    )
+                    _decode_and_save_linear_page(raw_linear_data, output_jpeg_path)
                 else:
                     print(
-                        f"        -> Failed to get LinearRaw data for page ID {page_id}"
+                        f"        -> Failed to get LinearRaw data for page ID {page_id} (or page is not LINEAR_RAW)."
                     )
             else:
                 print(
@@ -397,29 +344,21 @@ def main():
         try:
             dng_obj = DngFile(dng_file_path)
         except Exception as e:
-            print(
-                f"  CRITICAL: Could not open or parse DNG file {dng_file_path.name}: {e}"
-            )
+            print(f"  CRITICAL: Could not open or parse DNG file {dng_file_path.name}: {e}")
             print(f"  Skipping all processing for this file.")
             continue  # Move to the next DNG file
 
         # If we reach here, dng_obj was successfully created
         try:
-            generate_dng_structure_report(
-                dng_obj, dng_file_path, TEST_OUTPUT_DIR
-            )
+            generate_dng_structure_report(dng_obj, dng_file_path, TEST_OUTPUT_DIR)
         except Exception as e:
-            print(
-                f"  Error generating structure report for {dng_file_path.name}: {e}"
-            )
+            print(f"  Error generating structure report for {dng_file_path.name}: {e}")
             # We can still attempt to decode images even if the report fails
 
         try:
             decode_and_save_dng_images(dng_obj, dng_file_path, TEST_OUTPUT_DIR)
         except Exception as e:
-            print(
-                f"  Error calling decode_and_save_dng_images for {dng_file_path.name}: {e}"
-            )
+            print(f"  Error calling decode_and_save_dng_images for {dng_file_path.name}: {e}")
 
 
 if __name__ == "__main__":

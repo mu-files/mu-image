@@ -22,9 +22,7 @@ class MetadataTags:
     }
 
     @staticmethod
-    def _matrix_to_rational_tuple(
-        matrix: np.ndarray, denominator: int = 10000
-    ) -> tuple:
+    def _matrix_to_rational_tuple(matrix: np.ndarray, denominator: int = 10000) -> tuple:
         """Converts a NumPy float matrix to a flat tuple of (numerator, denominator) pairs."""
         rational_pairs = []
         for r in range(matrix.shape[0]):
@@ -58,16 +56,12 @@ class MetadataTags:
     def extend(self, other: "MetadataTags") -> None:
         """Add all tags from another MetadataTags instance."""
         if not isinstance(other, MetadataTags):
-            raise TypeError(
-                f"Expected MetadataTags instance, got {type(other).__name__}"
-            )
+            raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
         self._tags.extend(other._tags)
 
     def add_cfa_pattern_tag(self, cfa_pattern_key: str):
         """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
-        pattern_tuple = self.BAYER_PATTERN_MAP.get(
-            cfa_pattern_key, self.BAYER_PATTERN_MAP["RGGB"]
-        )
+        pattern_tuple = self.BAYER_PATTERN_MAP.get(cfa_pattern_key, self.BAYER_PATTERN_MAP["RGGB"])
         pattern_bytes = bytes(pattern_tuple)
         self.add_tag(("CFAPattern", "B", 4, pattern_bytes))
 
@@ -78,9 +72,7 @@ class MetadataTags:
         denominator: int = 10000,
     ):
         """Converts a float matrix to rationals and adds it as a tag."""
-        flat_tuple_values = MetadataTags._matrix_to_rational_tuple(
-            float_matrix_np, denominator
-        )
+        flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
         self.add_tag((tag_name_str, "2i", 9, flat_tuple_values))
 
     def get_tags(self):
@@ -96,7 +88,9 @@ CALIBRATIONILLUMINANT_UNKNOWN = 0
 CALIBRATIONILLUMINANT_D55 = 20  # Standard D55 (warm daylight at sunrise or sunset)
 CALIBRATIONILLUMINANT_D65 = 21  # Standard D65 (daylight)
 CALIBRATIONILLUMINANT_D75 = 22  # Standard D75 (north sky daylight)
-CALIBRATIONILLUMINANT_D50 = 23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
+CALIBRATIONILLUMINANT_D50 = (
+    23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
+)
 
 PREVIEWCOLORSPACE_SRGB = 1
 
@@ -128,9 +122,7 @@ class CameraProfiles:
             },
         }
         # Internal storage with uppercase keys for case-insensitive lookup
-        self._normalized_profiles = {
-            k.upper(): v for k, v in initial_profiles.items()
-        }
+        self._normalized_profiles = {k.upper(): v for k, v in initial_profiles.items()}
 
     def get(self, camera_model_str: str) -> dict:
         """Retrieve a camera profile using case-insensitive key matching."""
@@ -155,9 +147,7 @@ def _generate_dng_thumbnail(color_data: np.ndarray) -> Optional[np.ndarray]:
         new_w = int(max(w_full / 4, 256))
         new_h = int(h_full * (new_w / w_full))
 
-    thumbnail_resized = cv2.resize(
-        color_data, (new_w, new_h), interpolation=cv2.INTER_AREA
-    )
+    thumbnail_resized = cv2.resize(color_data, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     # No rotation, as main DNG data is not currently rotated in write_dng
     print(
@@ -254,9 +244,7 @@ def write_dng(
     # TODO: implement param validation here - raw_data not none, W/H even, cfa pattern valid, bpp <= 16
 
     if raw_data.ndim != 2:
-        raise ValueError(
-            f"Expected 2D raw_data (height, width), got shape {raw_data.shape}"
-        )
+        raise ValueError(f"Expected 2D raw_data (height, width), got shape {raw_data.shape}")
 
     # Generate thumbnail if requested
     thumbnail_image = None
@@ -264,13 +252,9 @@ def write_dng(
         try:
             thumbnail_image = _generate_dng_thumbnail(color_data)
             if thumbnail_image is not None:
-                print(
-                    f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}"
-                )
+                print(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
         except ValueError as e:
-            print(
-                f"Warning: Could not generate DNG thumbnail: {e}. Proceeding without thumbnail."
-            )
+            print(f"Warning: Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
         except Exception as e:
             print(
                 f"Warning: Unexpected error generating thumbnail: {e}. Proceeding without thumbnail."
@@ -285,9 +269,7 @@ def write_dng(
 
     # TODO: come up with a way to calculate this
     _as_shot_neutral_orig = ((72, 100), (100, 100), (100, 100))
-    as_shot_neutral_values_flat = tuple(
-        item for pair in _as_shot_neutral_orig for item in pair
-    )
+    as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
 
     camera_model_utf8_bytes_null = (camera_model + "\x00").encode("utf-8")
 
@@ -331,27 +313,21 @@ def write_dng(
         with tifffile.TiffWriter(destination_file, bigtiff=False) as tif:
             if thumbnail_image is not None:
                 # Prepare thumbnail specific tags
-                dng_tags.add_tag(
-                    ("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB)
-                )
+                dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
 
                 # Write Thumbnail to SubIFD 0
                 thumb_ifd_args = {
                     "photometric": "rgb",  # Interprets data as RGB
                     "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
                     "compression": "jpeg",  # JPEG compression for thumbnail
-                    "compressionargs": {
-                        "level": 90
-                    },  # JPEG quality (0-100, higher is better)
+                    "compressionargs": {"level": 90},  # JPEG quality (0-100, higher is better)
                     "extratags": dng_tags.get_tags(),
                     "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
                     "subifds": 1,  # Has main image as subifd
                     "software": "muraw",
                 }
                 # set datasize to max uncompressed size to avoid writing strips
-                datasize = (
-                    thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
-                )
+                datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
                 tif.write(
                     thumbnail_image,  # Use the thumbnail_image directly
                     **thumb_ifd_args,
@@ -404,14 +380,9 @@ def write_dng(
 
             # Write Main Raw Image to IFD
             datasize = (
-                processed_raw_data.shape[0]
-                * processed_raw_data.shape[1]
-                * bits_per_pixel
-                / 8
+                processed_raw_data.shape[0] * processed_raw_data.shape[1] * bits_per_pixel / 8
             )
-            tif.write(
-                processed_raw_data, **main_image_ifd_args, rowsperstrip=datasize
-            )
+            tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=datasize)
 
         print(f"Successfully wrote DNG file to {destination_file}")
 
@@ -427,12 +398,24 @@ class DngFile(tifffile.TiffFile):
         bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()
     }
 
+    def _translate_dng_tag_value(self, tag_name: str, tag_value) -> str:
+        # TODO: complete list of photometric interpretation values
+        #       convert matrix rationals to float arrays
+        if tag_name == "CFAPattern":
+            cfa_bytes = tag_value
+            if isinstance(cfa_bytes, bytes):
+                tag_value = self._bayer_pattern_bytes_to_str_map.get(cfa_bytes, tag_value)
+        elif tag_name == "PhotometricInterpretation":
+            if tag_value == PHOTOMETRIC.CFA:
+                tag_value = "CFA"
+            elif tag_value == PHOTOMETRIC.LINEAR_RAW:
+                tag_value = "LINEAR_RAW"
+        return tag_value
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _iter_all_pages_recursive(
-        self, pages_list: Optional[List[tifffile.TiffPage]]
-    ):
+    def _iter_all_pages_recursive(self, pages_list: Optional[List[tifffile.TiffPage]]):
         """Recursively iterates through all TIFF pages, including nested ones."""
         if pages_list is None:
             return
@@ -441,88 +424,120 @@ class DngFile(tifffile.TiffFile):
             if page.pages:  # Check if there are sub-pages
                 yield from self._iter_all_pages_recursive(page.pages)
 
-    def get_raw_pages_info(self) -> List[Tuple[int, str, tuple]]:
+    def get_raw_pages_info(self) -> List[Tuple[int, tuple, Dict[str, Any]]]:
         """
         Returns info for pages with 'CFA' or 'LINEAR_RAW' interpretation.
-        Each item in the list is a tuple: (page_id, photometric_name, shape).
+        Each item in the list is a tuple: (page_id, shape, tags_dict).
         page_id is the 0-based index of the page in the flattened list of all TIFF pages.
+        tags_dict contains relevant DNG tags from global and page-specific IFDs.
         """
-        info_list = []
-        for current_page_id, p in enumerate(
-            self._iter_all_pages_recursive(self.pages)
-        ):
-            if p.photometric and p.photometric.name in ("CFA", "LINEAR_RAW"):
-                info_list.append((current_page_id, p.photometric.name, p.shape))
+
+        test_val = (TIFF.TAGS["Orientation"], "Orientation")
+
+        global_tags = [
+            "Make",
+            "Model",
+            "DNGVersion",
+            "DNGBackwardVersion",
+            "Orientation",
+            "ColorMatrix1",
+            "ColorMatrix2",
+            "ColorMatrix3",
+            "CalibrationIlluminant1",
+            "CalibrationIlluminant2",
+            "CalibrationIlluminant3",
+            "AnalogBalance",
+            "AsShotNeutral",
+            "BaselineExposure",
+        ]
+
+        cfa_subifd_tags = [
+            "PhotometricInterpretation",
+            "Compression",
+            "SamplesPerPixel",
+            "PlanarConfiguration",
+            "CFARepeatPatternDim",
+            "CFAPattern",
+            "CFAPlaneColor",
+            "BlackLevel",
+            "WhiteLevel",
+            "ColumnInterleaveFactor",
+            "RowInterleaveFactor",
+            "JXLDistance",
+            "JXLEffort",
+        ]
+
+        info_list: List[Tuple[int, tuple, Dict[str, Any]]] = []
+        global_tags_data: Dict[str, Any] = {}
+
+        # 1. Read Global Tags from the first page (IFD0)
+        if self.pages and len(self.pages) > 0:
+            first_page = self.pages[0]
+            for tag_name in global_tags:
+                tag_id = TIFF.TAGS[tag_name]
+                if tag_id in first_page.tags:
+                    page_tag = first_page.tags[tag_id]
+                    global_tags_data[tag_name] = page_tag.value
+
+        # 2. Iterate through all pages
+        for current_page_id, page in enumerate(self._iter_all_pages_recursive(self.pages)):
+            if page.photometric and page.photometric.name in (
+                "CFA",
+                "LINEAR_RAW",
+            ):
+                current_page_tags: Dict[str, Any] = {}
+                # Start with a copy of global tags
+                current_page_tags.update(global_tags_data)
+
+                # Iterate through all tags on this page's IFD.
+                # If the tag's name is in cfa_globaltags OR cfa_subifd_tags,
+                # use its page-specific value, overwriting any global default.
+                for lut in [global_tags, cfa_subifd_tags]:
+                    for tag_name in lut:
+                        tag_id = TIFF.TAGS[tag_name]
+                        if tag_id in page.tags:
+                            page_tag = page.tags[tag_id]
+                            current_page_tags[tag_name] = self._translate_dng_tag_value(
+                                tag_name, page_tag.value
+                            )
+
+                info_list.append((current_page_id, page.shape, current_page_tags))
+
         return info_list
 
-    def _get_page_by_id(
-        self, target_page_id: int
-    ) -> Optional[tifffile.TiffPage]:
+    def _get_page_by_id(self, target_page_id: int) -> Optional[tifffile.TiffPage]:
         """Helper to retrieve a specific TiffPage by its flattened, 0-based ID."""
         for i, page in enumerate(self._iter_all_pages_recursive(self.pages)):
             if i == target_page_id:
                 return page
         return None
 
-    def get_raw_cfa_by_id(
-        self, target_page_id: int
-    ) -> Tuple[Optional[np.ndarray], str]:
-        """Retrieves the raw data array, CFA pattern for a specific page ID.
+    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
+        """Retrieves the raw data array for a specific 'CFA' page by its ID."""
 
-        Uses a 0-based page_id corresponding to the absolute index in the flattened list of all TIFF pages.
-        Returns: Tuple of (raw_data_array, cfa_pattern_string)
-        """
         p = self._get_page_by_id(target_page_id)
 
-        if p is None:
-            return None, f"Page with ID {target_page_id} not found."
-
-        if not (p.photometric and p.photometric.name == "CFA"):
-            photometric_name = p.photometric.name if p.photometric else "None"
-            return (
-                None,
-                f"Page at ID {target_page_id} is not CFA (photometric: {photometric_name}).",
-                None,
-                None,
-            )
-
-        raw_data_arr = p.asarray()
+        if p is None or p.photometric is None or p.photometric.name != "CFA":
+            return None
 
         col_interleave_tag = p.tags.get(TIFF.TAGS["ColumnInterleaveFactor"])
         row_interleave_tag = p.tags.get(TIFF.TAGS["RowInterleaveFactor"])
-
         if (
             col_interleave_tag is not None
             and col_interleave_tag.value == 2
             and row_interleave_tag is not None
             and row_interleave_tag.value == 2
         ):
-            raw_data_arr = deswizzle_cfa_data(raw_data_arr)
+            return deswizzle_cfa_data(p.asarray())
 
-        cfa_pattern_tag = p.tags.get(TIFF.TAGS["CFAPattern"])
-        if cfa_pattern_tag:
-            cfa_bytes = cfa_pattern_tag.value
-            if isinstance(cfa_bytes, bytes):
-                cfa_pattern_str = self._bayer_pattern_bytes_to_str_map.get(
-                    cfa_bytes, "CFA_pattern_unknown_value_in_map"
-                )
-            else:
-                cfa_pattern_str = "CFA_pattern_tag_invalid_format_not_bytes"
-        else:
-            cfa_pattern_str = "CFA_pattern_tag_missing_or_empty"
-
-        return raw_data_arr, cfa_pattern_str
+        return p.asarray()
 
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
         """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID."""
+
         p = self._get_page_by_id(target_page_id)
 
-        if p is None:
+        if p is None or p.photometric is None or p.photometric.name != "LINEAR_RAW":
             return None
 
-        if not (p.photometric and p.photometric.name == "LINEAR_RAW"):
-            return None
-
-        raw_data_arr = p.asarray()
-
-        return raw_data_arr
+        return p.asarray()
