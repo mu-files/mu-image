@@ -8,7 +8,8 @@ import numpy as np
 from typing import Optional, Dict, Tuple, Union, List, Any
 
 import tifffile
-from tifffile import TIFF
+from tifffile import TIFF, PHOTOMETRIC
+
 
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
@@ -152,6 +153,39 @@ def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     swizzled_data = np.block([[r_channel, g1_channel], [g2_channel, b_channel]])
 
     return swizzled_data
+
+def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
+    """Deswizzle CFA data from a 2x2 grid of R, G1, G2, B sub-images back to RGGB."""
+    h_swizzled, w_swizzled = swizzled_data.shape
+    if h_swizzled % 2 != 0 or w_swizzled % 2 != 0:
+        raise ValueError("Swizzled data dimensions must be even.")
+
+    # Calculate half dimensions for quadrant extraction
+    h_half, w_half = h_swizzled // 2, w_swizzled // 2
+
+    # Extract the four channels from the swizzled data
+    # R is top-left quadrant
+    r_channel = swizzled_data[0:h_half, 0:w_half]
+    # G1 (first green) is top-right quadrant
+    g1_channel = swizzled_data[0:h_half, w_half:w_swizzled]
+    # G2 (second green) is bottom-left quadrant
+    g2_channel = swizzled_data[h_half:h_swizzled, 0:w_half]
+    # B is bottom-right quadrant
+    b_channel = swizzled_data[h_half:h_swizzled, w_half:w_swizzled]
+
+    # Create an empty array for the original interleaved data
+    # Its dimensions will be the same as the swizzled_data because each sub-image
+    # was H/2 x W/2, and they are re-interleaved into a H x W image.
+    original_data = np.empty_like(swizzled_data)
+
+    # Place the channels back into the original RGGB pattern
+    original_data[0::2, 0::2] = r_channel    # R pixels
+    original_data[0::2, 1::2] = g1_channel   # G1 pixels (top-right G)
+    original_data[1::2, 0::2] = g2_channel   # G2 pixels (bottom-left G)
+    original_data[1::2, 1::2] = b_channel    # B pixels
+
+    return original_data
+
 
 # TODO: pass in exiftags, list of preview/thumbs, calibration matrix and illuminant 
 
@@ -327,3 +361,92 @@ def write_dng(
     except Exception as e:
         print(f"Error saving DNG file with tifffile.TiffWriter: {e}")
         raise
+
+
+class DngFile(tifffile.TiffFile):
+    """A TIFF file with DNG-specific extensions and helper methods."""
+
+    _bayer_pattern_bytes_to_str_map = {bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _iter_all_pages_recursive(self, pages_list: Optional[List[tifffile.TiffPage]]):
+        """Recursively iterates through all TIFF pages, including nested ones."""
+        if pages_list is None:
+            return
+        for page in pages_list:
+            yield page
+            if page.pages: # Check if there are sub-pages
+                yield from self._iter_all_pages_recursive(page.pages)
+
+    def get_raw_pages_info(self) -> List[Tuple[int, str, tuple]]:
+        """
+        Returns info for pages with 'CFA' or 'LINEAR_RAW' interpretation.
+        Each item in the list is a tuple: (page_id, photometric_name, shape).
+        page_id is the 0-based index of the page in the flattened list of all TIFF pages.
+        """
+        info_list = []
+        for current_page_id, p in enumerate(self._iter_all_pages_recursive(self.pages)):
+            if p.photometric and p.photometric.name in ('CFA', 'LINEAR_RAW'):
+                info_list.append((current_page_id, p.photometric.name, p.shape))
+        return info_list
+
+    def _get_page_by_id(self, target_page_id: int) -> Optional[tifffile.TiffPage]:
+        """Helper to retrieve a specific TiffPage by its flattened, 0-based ID."""
+        for i, page in enumerate(self._iter_all_pages_recursive(self.pages)):
+            if i == target_page_id:
+                return page
+        return None
+
+    def get_raw_cfa_by_id(self, target_page_id: int) -> Tuple[Optional[np.ndarray], str]:
+        """Retrieves the raw data array, CFA pattern for a specific page ID.
+
+        Uses a 0-based page_id corresponding to the absolute index in the flattened list of all TIFF pages.
+        Returns: Tuple of (raw_data_array, cfa_pattern_string)
+        """
+        p = self._get_page_by_id(target_page_id)
+
+        if p is None:
+            return None, f"Page with ID {target_page_id} not found."
+
+        if not (p.photometric and p.photometric.name == 'CFA'):
+            photometric_name = p.photometric.name if p.photometric else "None"
+            return None, f"Page at ID {target_page_id} is not CFA (photometric: {photometric_name}).", None, None
+
+        raw_data_arr = p.asarray()
+
+        col_interleave_tag = p.tags.get(TIFF.TAGS['ColumnInterleaveFactor'])
+        row_interleave_tag = p.tags.get(TIFF.TAGS['RowInterleaveFactor'])
+
+        if (
+            col_interleave_tag is not None and col_interleave_tag.value == 2 and
+            row_interleave_tag is not None and row_interleave_tag.value == 2
+        ):
+            raw_data_arr = deswizzle_cfa_data(raw_data_arr)
+
+        cfa_pattern_tag = p.tags.get(TIFF.TAGS['CFAPattern'])
+        if cfa_pattern_tag:
+            cfa_bytes = cfa_pattern_tag.value
+            if isinstance(cfa_bytes, bytes):
+                cfa_pattern_str = self._bayer_pattern_bytes_to_str_map.get(cfa_bytes, "CFA_pattern_unknown_value_in_map")
+            else:
+                cfa_pattern_str = "CFA_pattern_tag_invalid_format_not_bytes"
+        else:
+            cfa_pattern_str = "CFA_pattern_tag_missing_or_empty"
+        
+        return raw_data_arr, cfa_pattern_str
+
+    def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
+        """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID."""
+        p = self._get_page_by_id(target_page_id)
+
+        if p is None:
+            return None 
+
+        if not (p.photometric and p.photometric.name == 'LINEAR_RAW'):
+            return None
+
+        raw_data_arr = p.asarray()
+
+        return raw_data_arr
