@@ -2,8 +2,9 @@ import sys
 from pathlib import Path
 import cv2
 import numpy as np
-from typing import Optional
+from typing import Optional, Dict
 from muraw.dng import DngFile
+from muraw.color import process_cfa_raw, process_linear_raw
 from tifffile import TIFF
 
 # Corrected path to test files, relative to this test script
@@ -130,129 +131,57 @@ def generate_dng_structure_report(
 
 
 def _decode_and_save_cfa_page(
-    raw_cfa_data: np.ndarray, cfa_pattern: str, output_jpeg_path: Path
+    raw_cfa_data: np.ndarray, tags: Dict, output_jpeg_path: Path
 ) -> None:
-    """Decodes a CFA data array, scales based on data type, and saves it as a JPEG image."""
-    BAYER_PATTERNS_TO_CV2 = {
-        "RGGB": cv2.COLOR_BAYER_RG2RGB,
-        "BGGR": cv2.COLOR_BAYER_BG2RGB,
-        "GRBG": cv2.COLOR_BAYER_GR2RGB,
-        "GBRG": cv2.COLOR_BAYER_GB2RGB,
-    }
+    """Decodes a CFA data array using process_cfa_raw, scales, and saves as JPEG."""
+
+    # Extract CFA pattern from tags for logging, process_cfa_raw will do its own extraction and validation
+    cfa_pattern_item = tags.get('CFAPattern') # Item might be a string or a TiffTag-like object
+    if cfa_pattern_item is None:
+        cfa_pattern_str = "Not Found in tags"
+    elif isinstance(cfa_pattern_item, str):
+        cfa_pattern_str = cfa_pattern_item  # Directly use the string if that's what we got
+    else:
+        cfa_pattern_str = f"Unexpected format ({type(cfa_pattern_item).__name__})"
+    
     print(
-        f"        -> CFA Data: shape={raw_cfa_data.shape}, dtype={raw_cfa_data.dtype}, Pattern='{cfa_pattern}'"
+        f"        -> CFA Data: shape={raw_cfa_data.shape}, dtype={raw_cfa_data.dtype}, Pattern='{cfa_pattern_str}' (from tags for logging)"
     )
 
-    debayer_code = BAYER_PATTERNS_TO_CV2.get(cfa_pattern)
-    if debayer_code is None:
-        print(f"          -> Could not debayer: Unknown CFA pattern '{cfa_pattern}'.")
-        # Try to save raw data scaled if it's 2D (monochrome)
-        if len(raw_cfa_data.shape) == 2:
-            scaled_gray_data: Optional[np.ndarray] = None  # Ensure it's defined
-            if raw_cfa_data.dtype == np.uint16:
-                scaled_gray_data = (raw_cfa_data // 256).astype(np.uint8)
-            elif raw_cfa_data.dtype == np.uint8:
-                scaled_gray_data = raw_cfa_data
-            # For other dtypes, scaled_gray_data remains None in this specific scenario
-
-            if scaled_gray_data is not None:
-                cv2.imwrite(str(output_jpeg_path), scaled_gray_data)
-                print(f"          -> Saved scaled grayscale raw data to {output_jpeg_path.name}")
-            else:
-                # This will be hit if dtype was not uint16 or uint8
-                print(
-                    f"          WARNING: Unsupported dtype {raw_cfa_data.dtype} for direct grayscale saving of unknown CFA pattern. Image not saved."
-                )
-        return  # This return is for the 'if debayer_code is None:' block
-
-    """
-    TODO: handle this code later 
-    # Handle White Level
-    wl = 65535.0 # Default for 16-bit data if not specified or invalid
-    if white_level is not None:
-        if isinstance(white_level, (list, tuple, np.ndarray)):
-            # If white level is an array (e.g. per channel for some formats), use the mean for simple scaling.
-            # A more sophisticated approach might scale each channel independently if needed before debayering.
-            current_wl = np.mean(white_level)
-            if current_wl > 0:
-                wl = float(current_wl)
-            print(f"          DEBUG: CFA White level is an array, using mean: {wl}")
-        elif float(white_level) > 0:
-            wl = float(white_level)
-        else:
-            print(f"          WARNING: CFA White level is not positive ({white_level}). Using default {wl}.")
-    else:
-        print(f"          WARNING: CFA White level is None. Using default {wl}.")
-
-    # Scaling: (data - 0) / white_level
-    scaled_data = np.clip(float_data / wl, 0.0, 1.0)
-    """
-
-    # Debayer the image (e.g., uint16 CFA -> uint16 RGB)
-    color_image_full_depth = cv2.cvtColor(raw_cfa_data, debayer_code)
+    try:
+        # Use process_cfa_raw from muraw.color module
+        color_image_full_depth = process_cfa_raw(raw_cfa_data, tags)
+    except Exception as e:
+        print(f"          ERROR: Failed to process CFA data using process_cfa_raw: {e}")
+        # Print error and return to prevent crash during test report generation.
+        return
 
     # Scale to 8-bit based on original data type
     if color_image_full_depth.dtype == np.uint16:
         color_image_8bit = (color_image_full_depth // 256).astype(np.uint8)
     elif color_image_full_depth.dtype == np.uint8:
         color_image_8bit = color_image_full_depth
-    else:
-        # This case should ideally not happen if input raw_cfa_data is uint8 or uint16
-        # and cvtColor preserves depth for these types with corresponding debayer codes.
-        print(
-            f"          WARNING: Debayered image has unexpected dtype {color_image_full_depth.dtype}. Attempting to normalize and scale."
-        )
-        try:
-            min_val, max_val = np.min(color_image_full_depth), np.max(color_image_full_depth)
-            if max_val > min_val:
-                norm_data = (color_image_full_depth - min_val) / (max_val - min_val)
-                color_image_8bit = (norm_data * 255).astype(np.uint8)
-            else:
-                color_image_8bit = np.zeros_like(color_image_full_depth, dtype=np.uint8)
-        except Exception:
-            print(
-                f"          Could not convert debayered image of dtype {color_image_full_depth.dtype} to 8-bit."
-            )
-            return
 
     cv2.imwrite(str(output_jpeg_path), color_image_8bit)
     print(f"          -> Saved debayered image to {output_jpeg_path.name}")
 
 
-def _decode_and_save_linear_page(raw_linear_data: np.ndarray, output_jpeg_path: Path) -> None:
+def _decode_and_save_linear_page(raw_linear_data: np.ndarray, tags: Dict, output_jpeg_path: Path) -> None:
     """Decodes a LinearRaw data array, scales based on data type, and saves it as a JPEG image."""
     print(
         f"        -> LinearRaw Data: shape={raw_linear_data.shape}, dtype={raw_linear_data.dtype}"
     )
 
-    processed_image_8bit: Optional[np.ndarray] = None
+    color_image_full_depth = process_linear_raw(raw_linear_data, tags)
 
-    if raw_linear_data.dtype == np.uint16:
-        processed_image_8bit = (raw_linear_data // 256).astype(np.uint8)
-    elif raw_linear_data.dtype == np.uint8:
-        processed_image_8bit = raw_linear_data
+    # Scale to 8-bit based on original data type
+    if color_image_full_depth.dtype == np.uint16:
+        color_image_8bit = (color_image_full_depth // 256).astype(np.uint8)
+    elif color_image_full_depth.dtype == np.uint8:
+        color_image_8bit = color_image_full_depth
 
-    if processed_image_8bit is None:
-        print(
-            f"          Failed to process LinearRaw data for {output_jpeg_path.name}. Skipping save."
-        )
-        return
+    cv2.imwrite(str(output_jpeg_path), color_image_8bit)
 
-    final_image_to_save: np.ndarray = processed_image_8bit
-    # For color LinearRaw (3 channels), DNG usually stores as RGB.
-    # OpenCV imwrite expects BGR for color images.
-    if len(processed_image_8bit.shape) == 3 and processed_image_8bit.shape[2] == 3:
-        final_image_to_save = cv2.cvtColor(processed_image_8bit, cv2.COLOR_RGB2BGR)
-    elif not (
-        len(processed_image_8bit.shape) == 2
-        or (len(processed_image_8bit.shape) == 3 and processed_image_8bit.shape[2] == 1)
-    ):
-        print(
-            f"        -> LinearRaw data after scaling has unexpected shape {processed_image_8bit.shape}. Attempting to save as is."
-        )
-        # It might be an issue, but try to save anyway if cv2 can handle it.
-
-    cv2.imwrite(str(output_jpeg_path), final_image_to_save)
     print(f"          -> Saved LinearRaw image to {output_jpeg_path.name}")
 
 
@@ -295,7 +224,7 @@ def decode_and_save_dng_images(
                 raw_cfa_data = dng_file.get_raw_cfa_by_id(page_id)
                 if raw_cfa_data is not None:
 
-                    _decode_and_save_cfa_page(raw_cfa_data, cfa_pattern_str, output_jpeg_path)
+                    _decode_and_save_cfa_page(raw_cfa_data, tags, output_jpeg_path)
                 else:
                     error_suffix = (
                         f": {error_msg_cfa}"
@@ -307,7 +236,8 @@ def decode_and_save_dng_images(
                 print(f"      Attempting to get LinearRaw data for page ID {page_id}...")
                 raw_linear_data = dng_file.get_raw_linear_by_id(page_id)
                 if raw_linear_data is not None:
-                    _decode_and_save_linear_page(raw_linear_data, output_jpeg_path)
+
+                    _decode_and_save_linear_page(raw_linear_data, tags, output_jpeg_path)
                 else:
                     print(
                         f"        -> Failed to get LinearRaw data for page ID {page_id} (or page is not LINEAR_RAW)."

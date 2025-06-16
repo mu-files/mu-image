@@ -6,7 +6,7 @@ This module handles DNG file creation and related functionality.
 from pathlib import Path
 import cv2
 import numpy as np
-from typing import Optional, Dict, Tuple, Union, List, Any
+from typing import Optional, List, Dict, Tuple, Union, Any
 
 import tifffile
 from tifffile import TIFF, PHOTOMETRIC
@@ -392,24 +392,57 @@ def write_dng(
 
 
 class DngFile(tifffile.TiffFile):
+
     """A TIFF file with DNG-specific extensions and helper methods."""
 
-    _bayer_pattern_bytes_to_str_map = {
-        bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()
-    }
+    @staticmethod
+    def _rational_tuple_to_matrix(tag_value: tuple) -> np.ndarray:
+        """
+        Converts a flat tuple of 18 signed integers, representing 9 rational
+        numbers (n1, d1, n2, d2, ..., n9, d9), into a 3x3 float NumPy array.
+        """
+        if not isinstance(tag_value, tuple) or len(tag_value) != 18:
+            raise ValueError(
+                f"Input must be a flat tuple of 18 integers for a 3x3 matrix. "
+                f"Expected 18 elements, got {len(tag_value) if isinstance(tag_value, tuple) else type(tag_value)}."
+            )
 
-    def _translate_dng_tag_value(self, tag_name: str, tag_value) -> str:
+        float_values = []
+        for i in range(0, 18, 2): # Iterate 9 times, taking 2 elements each time
+            num = tag_value[i]
+            den = tag_value[i+1]
+            float_values.append(float(num) / float(den))
+
+        return np.array(float_values).reshape((3, 3))
+
+    @staticmethod
+    def _translate_dng_tag_value(tag_name: str, tag_value) -> Any:
+    
+        _bayer_pattern_bytes_to_str_map = {
+            bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()
+        }
+
+        MATRIX_TAG_NAMES = {"ColorMatrix1", "ColorMatrix2", "ColorMatrix3"}
+
         # TODO: complete list of photometric interpretation values
-        #       convert matrix rationals to float arrays
         if tag_name == "CFAPattern":
             cfa_bytes = tag_value
             if isinstance(cfa_bytes, bytes):
-                tag_value = self._bayer_pattern_bytes_to_str_map.get(cfa_bytes, tag_value)
+                tag_value = _bayer_pattern_bytes_to_str_map.get(cfa_bytes, tag_value)
         elif tag_name == "PhotometricInterpretation":
             if tag_value == PHOTOMETRIC.CFA:
                 tag_value = "CFA"
             elif tag_value == PHOTOMETRIC.LINEAR_RAW:
                 tag_value = "LINEAR_RAW"
+        elif tag_name in MATRIX_TAG_NAMES:
+            try:
+                tag_value = DngFile._rational_tuple_to_matrix(tag_value)
+            except (ValueError, ZeroDivisionError, TypeError, AttributeError) as e:
+                raise ValueError(
+                    f"Error converting DNG tag '{tag_name}' to matrix. Original error: {e}. "
+                    f"Value type: {type(tag_value)}, Value: {str(tag_value)[:100]}"
+                ) from e
+
         return tag_value
 
     def __init__(self, *args, **kwargs):
@@ -477,14 +510,12 @@ class DngFile(tifffile.TiffFile):
                 tag_id = TIFF.TAGS[tag_name]
                 if tag_id in first_page.tags:
                     page_tag = first_page.tags[tag_id]
-                    global_tags_data[tag_name] = page_tag.value
+                    global_tags_data[tag_name] = self._translate_dng_tag_value(
+                        tag_name, page_tag.value)
 
         # 2. Iterate through all pages
         for current_page_id, page in enumerate(self._iter_all_pages_recursive(self.pages)):
-            if page.photometric and page.photometric.name in (
-                "CFA",
-                "LINEAR_RAW",
-            ):
+            if page.photometric and page.photometric.name in ("CFA", "LINEAR_RAW",):
                 current_page_tags: Dict[str, Any] = {}
                 # Start with a copy of global tags
                 current_page_tags.update(global_tags_data)
