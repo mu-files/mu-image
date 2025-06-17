@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Optional
+import time
 
 # --- Core Image (macOS specific) DNG Processing ---
 
@@ -61,20 +62,22 @@ RAW_FILTER_OPTION_MAP = {
 
 def process_dng_with_core_image(
     dng_file_path: str,
-    icc_profile_path: str = None,
+    icc_profile_path: Optional[str] = None,
     raw_filter_options: Optional[dict] = None,
+    use_gpu: bool = False,
 ) -> Optional[np.ndarray]:
-
     """
-    Processes a DNG file using macOS Core Image CIRAWFilter.
+    Processes a DNG file using Core Image on macOS.
 
     Args:
-        dng_file_path: Absolute path to the DNG file.
-        temperature: Optional color temperature (e.g., 2000-50000).
-        tint: Optional tint adjustment (e.g., -150 to +150).
+        dng_file_path: Path to the DNG file.
+        icc_profile_path: Optional path to an ICC profile for color management.
+        raw_filter_options: Dictionary of options for CIRAWFilter.
+        use_gpu: If False (default), forces software (CPU) rendering.
+                 If True, uses GPU-accelerated rendering if available.
 
     Returns:
-        A NumPy array (height, width, 3) with RGB data, or None on error.
+        A NumPy array (RGB, uint8) if successful, otherwise None. on error.
     """
     if not core_image_available:
         print(
@@ -84,6 +87,7 @@ def process_dng_with_core_image(
         return None
 
     try:
+        start_time = time.perf_counter()
         image_url = NSURL.fileURLWithPath_(dng_file_path)
         if not image_url:
             print(f"Error: Could not create NSURL for path: {dng_file_path}")
@@ -149,6 +153,15 @@ def process_dng_with_core_image(
             print("Error: Failed to create CIRAWFilter. Check file path and permissions.")
             return None
 
+        # Validate that we actually got a CIRAWFilter instance
+        filter_class_name = raw_filter.className()
+        if filter_class_name != "CIRAWFilterImpl":
+            print(
+                f"Warning: Expected a CIRAWFilter but got {filter_class_name}. "
+                f"The provided file may not be a supported raw format. "
+                f"Raw-specific options will likely be ignored."
+            )
+
         # Request the output image
         output_ci_image = raw_filter.outputImage()
         extent = output_ci_image.extent()
@@ -193,8 +206,15 @@ def process_dng_with_core_image(
             if icc_profile_path is None:
                  print("No profile path provided. Using sRGB for working and output spaces.")
 
-        # Create the CIContext with the chosen working space.
+        # Create the CIContext with the chosen working space and rendering options.
         context_options = {kCIContextWorkingColorSpace: working_space_ns}
+        if not use_gpu:
+            from Quartz import kCIContextUseSoftwareRenderer
+            context_options[kCIContextUseSoftwareRenderer] = True
+            print("Forcing software rendering (CPU).")
+        else:
+            print("Using hardware-accelerated rendering (GPU) where available.")
+
         context = CIContext.contextWithOptions_(context_options)
 
         # Render the CIImage to the bitmap buffer.
@@ -209,6 +229,11 @@ def process_dng_with_core_image(
 
         # Convert to NumPy array and reshape. Then slice off the alpha channel to return RGB.
         rgba_image = np.frombuffer(bitmap_buffer, dtype=pixel_dtype).reshape((height, width, 4))
+
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        print(f"Core Image processing finished in {duration:.4f} seconds.")
+
         return rgba_image[:, :, :3]
 
     except Exception as e:

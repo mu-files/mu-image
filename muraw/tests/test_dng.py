@@ -1,4 +1,6 @@
 import sys
+import os
+import pytest
 from pathlib import Path
 import cv2
 import numpy as np
@@ -425,6 +427,75 @@ def test_process_dng():
             print(f"  Error calling decode_and_save_dng_images for {dng_file_path.name}: {e}")
 
 
+def test_cpu_rendering_flag(capsys):
+    """Verify that the use_gpu flag correctly toggles CPU/GPU rendering mode for different DNGs."""
+    if not core_image_available:
+        pytest.skip("Core Image not available on this system.")
+
+    target_dng_path = TEST_FILES_DIR / "iphone.linearRGB.lossy.dng"
+    if not target_dng_path.exists():
+        pytest.skip(f"Test DNG file not found: {target_dng_path}")
+
+    # Test 1: Forcing CPU rendering
+    print(f"\n--- Testing CPU Rendering for {target_dng_path.name} ---")
+    process_dng_with_core_image(str(target_dng_path), use_gpu=False)
+    captured_cpu = capsys.readouterr()
+    assert "Forcing software rendering (CPU)." in captured_cpu.out
+    assert "Core Image processing finished in" in captured_cpu.out
+    print(f"Successfully verified CPU rendering message for {target_dng_path.name}.")
+
+    # Test 2: Allowing GPU rendering (default)
+    print(f"\n--- Testing GPU Rendering for {target_dng_path.name} ---")
+    process_dng_with_core_image(str(target_dng_path), use_gpu=True)
+    captured_gpu = capsys.readouterr()
+    assert "Using hardware-accelerated rendering (GPU) where available." in captured_gpu.out
+    assert "Core Image processing finished in" in captured_gpu.out
+    print(f"Successfully verified GPU rendering message for {target_dng_path.name}.")
+
+
+def test_process_non_raw_file_warns_user(capsys):
+    """Verify that processing a non-raw file (JPEG) triggers the expected warning."""
+    if not core_image_available:
+        pytest.skip("Core Image not available on this system.")
+
+    # 1. Create a dummy JPEG file
+    dummy_jpeg_path = TEST_OUTPUT_DIR / "dummy_test_image.jpg"
+    dummy_image_data = np.zeros((10, 10, 3), dtype=np.uint8)  # Small black image
+    cv2.imwrite(str(dummy_jpeg_path), dummy_image_data)
+
+    # 2. Process the dummy JPEG with the Core Image function
+    print(f"\n--- Testing Non-Raw File Warning --- ")
+    print(f"Processing {dummy_jpeg_path} to check for filter type warning...")
+    process_dng_with_core_image(str(dummy_jpeg_path))
+
+    # 3. Capture stdout and assert the warning is present
+    captured = capsys.readouterr()
+    assert "Warning: Expected a CIRAWFilter but got CIPhotoFilter" in captured.out
+    print("Successfully verified warning for non-raw file type.")
+
+    # 4. Clean up the dummy file
+    dummy_jpeg_path.unlink()
+
+
 if __name__ == "__main__":
+    # First, run the original comprehensive test function
+    print("\n--- Running Original Comprehensive Core Image Tests ---")
     test_process_dng_with_core_image()
-    #test_process_dng()
+    # test_process_dng() # This was the other commented out original call
+
+    # Then, add the specific iPhone DNG GPU/CPU test
+    if core_image_available:
+        print("\n\n--- Specific Test: iPhone DNG GPU vs CPU ---")
+        iphone_dng_path = TEST_FILES_DIR / "iphone.linearRGB.lossy.dng"
+        if iphone_dng_path.exists():
+            print("\n--- Processing iPhone DNG with GPU ---")
+            process_dng_with_core_image(str(iphone_dng_path), use_gpu=True)
+            
+            print("\n--- Processing iPhone DNG with CPU ---")
+            process_dng_with_core_image(str(iphone_dng_path), use_gpu=False)
+        else:
+            print(f"Error: iPhone DNG file not found at {iphone_dng_path} for specific GPU/CPU test.")
+    else:
+        print("Core Image / PyObjC is not available. Cannot run specific iPhone GPU/CPU test.")
+
+    print("\n\n--- All Direct Script Tests Finished ---")
