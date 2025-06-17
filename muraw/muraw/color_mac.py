@@ -5,27 +5,66 @@ from typing import Optional
 
 # PyObjC imports - these will only work on macOS
 try:
-    from Foundation import NSURL, NSData, NSMutableData
+    import Quartz
+    from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint 
     from Quartz import (
         CIFilter,
         CIContext,
         NSColorSpace,
-        kCIFormatRGBA8, # 8-bit integer
-        kCIFormatRGBA16, # 16-bit unsigned integer RGBA
-        kCIContextOutputColorSpace,
+        kCIFormatRGBA16,
         kCIContextWorkingColorSpace,
     )
     core_image_available = True
 except ImportError:
     core_image_available = False
 
+# Map user-friendly names to (QuartzConstantName, ValueTypeCategory)
+# ValueTypeCategory helps in wrapping the Python value correctly.
+RAW_FILTER_OPTION_MAP = {
+    # Floats
+    "baselineExposure": ("kCIInputBaselineExposureKey", "float"),
+    "boostAmount": ("kCIInputBoostKey", "float"),
+    "boostShadowAmount": ("kCIInputBoostShadowAmountKey", "float"),
+    "colorNoiseReductionAmount": ("kCIInputColorNoiseReductionAmountKey", "float"),
+    "contrastAmount": ("kCIInputContrastKey", "float"), # Standard CIFilter key
+    "detailAmount": ("kCIInputNoiseReductionDetailAmountKey", "float"),
+    "exposure": ("kCIInputEVKey", "float"),
+    "extendedDynamicRangeAmount": ("kCIInputExtendedDynamicRangeAmountKey", "float"),
+    "localToneMapAmount": ("kCIInputLocalToneMapAmountKey", "float"),
+    "luminanceNoiseReductionAmount": ("kCIInputLuminanceNoiseReductionAmountKey", "float"),
+    "moireReductionAmount": ("kCIInputMoireAmountKey", "float"),
+    "neutralTemperature": ("kCIInputNeutralTemperatureKey", "float"),
+    "neutralTint": ("kCIInputNeutralTintKey", "float"),
+    "noiseReductionAmount": ("kCIInputNoiseReductionAmountKey", "float"),
+    "noiseReductionContrastAmount": ("kCIInputNoiseReductionContrastAmountKey", "float"),
+    "noiseReductionSharpnessAmount": ("kCIInputNoiseReductionSharpnessAmountKey", "float"),
+    "scaleFactor": ("kCIInputScaleFactorKey", "float"),
+    "shadowBias": ("kCIInputBiasKey", "float"),
+    "sharpnessAmount": ("kCIInputSharpnessKey", "float"),
+
+    # Bools
+    "isChromaticNoiseTrackingEnabled": ("kCIInputEnableChromaticNoiseTrackingKey", "bool"),
+    "isDraftModeEnabled": ("kCIInputAllowDraftModeKey", "bool"),
+    "isEDRModeEnabled": ("kCIInputEnableEDRModeKey", "bool"),
+    "isGamutMappingEnabled": ("kCIInputDisableGamutMapKey", "bool_inverted"), # True means set kCIInputDisableGamutMapKey to False
+    "isLensCorrectionEnabled": ("kCIInputEnableVendorLensCorrectionKey", "bool"),
+    "isSharpeningEnabled": ("kCIInputEnableSharpeningKey", "bool"),
+    "ignoreImageOrientation": ("kCIInputIgnoreImageOrientationKey", "bool"),
+
+    # Integers
+    "imageOrientation": ("kCIInputImageOrientationKey", "int"),
+
+    # CGPoints (expected as (x, y) tuples)
+    "neutralChromaticity": (("kCIInputNeutralChromaticityXKey", "kCIInputNeutralChromaticityYKey"), "point_xy_floats"),
+    "neutralLocation": ("kCIInputNeutralLocationKey", "point_nsvalue"),
+}
 
 def process_dng_with_core_image(
     dng_file_path: str,
     icc_profile_path: str = None,
-    temperature: Optional[float] = None, # e.g., 6500 for D65
-    tint: Optional[float] = None,       # e.g., -150 to +150
+    raw_filter_options: Optional[dict] = None,
 ) -> Optional[np.ndarray]:
+
     """
     Processes a DNG file using macOS Core Image CIRAWFilter.
 
@@ -50,7 +89,65 @@ def process_dng_with_core_image(
             print(f"Error: Could not create NSURL for path: {dng_file_path}")
             return None
 
-        raw_filter = CIFilter.filterWithImageURL_options_(image_url, None)
+        # --- Prepare CIRAWFilter Options ---
+        options = {}
+        if raw_filter_options:
+            for key, value in raw_filter_options.items():
+                if key not in RAW_FILTER_OPTION_MAP:
+                    print(f"Warning: Unknown RAW filter option key: {key}. Skipping.")
+                    continue
+
+                map_entry = RAW_FILTER_OPTION_MAP[key]
+                quartz_key_name_or_tuple, value_type = map_entry
+                objc_value = None
+
+                try:
+                    if value_type == "float":
+                        objc_value = NSNumber.numberWithFloat_(float(value))
+                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                        options[quartz_key] = objc_value
+                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
+                    elif value_type == "bool":
+                        objc_value = NSNumber.numberWithBool_(bool(value))
+                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                        options[quartz_key] = objc_value
+                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
+                    elif value_type == "bool_inverted":
+                        objc_value = NSNumber.numberWithBool_(not bool(value))
+                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                        options[quartz_key] = objc_value
+                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {bool(value)} (inverted to {not bool(value)} for key)")
+                    elif value_type == "int":
+                        objc_value = NSNumber.numberWithInt_(int(value))
+                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                        options[quartz_key] = objc_value
+                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
+                    elif value_type == "point_xy_floats":
+                        # Expects value to be a tuple (x, y)
+                        key_x_name, key_y_name = quartz_key_name_or_tuple
+                        quartz_key_x = getattr(Quartz, key_x_name)
+                        quartz_key_y = getattr(Quartz, key_y_name)
+                        options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
+                        options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
+                        print(f"Setting RAW option {key} (X: {key_x_name}, Y: {key_y_name}) to {value}")
+                    elif value_type == "point_nsvalue":
+                        # Expects value to be a tuple (x, y)
+                        ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
+                        objc_value = NSValue.valueWithPoint_(ns_point)
+                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                        options[quartz_key] = objc_value
+                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
+                    else:
+                        print(f"Warning: Unsupported value type '{value_type}' for key {key}. Skipping.")
+                except AttributeError:
+                    print(f"Warning: Quartz constant for '{quartz_key_name_or_tuple}' not found. Option {key} cannot be set. Skipping.")
+                except Exception as e:
+                    print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
+
+        raw_filter = CIFilter.filterWithImageURL_options_(image_url, options or None)
+        if not raw_filter:
+            print("Error: Failed to create CIRAWFilter. Check file path and permissions.")
+            return None
 
         # Request the output image
         output_ci_image = raw_filter.outputImage()
@@ -66,8 +163,6 @@ def process_dng_with_core_image(
         # Create a mutable buffer for the bitmap data
         bitmap_buffer = NSMutableData.dataWithLength_(height * row_bytes)
 
-
-        
         # --- Create the Working and Output Color Spaces ---
         from Quartz import CGColorSpaceCreateWithICCProfile
 

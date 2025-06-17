@@ -257,48 +257,132 @@ def decode_and_save_dng_images(
 
 
 def test_process_dng_with_core_image():
-    """Processes all DNG files in TEST_FILES_DIR using Core Image and saves them.
-    This test directly calls muraw.color_mac.process_dng_with_core_image.
-    """
+    """Processes DNG files using Core Image, including specific white balance tests."""
+    if not core_image_available:
+        print("Core Image not available on this system. Skipping test.")
+        return
+
     if not TEST_FILES_DIR.is_dir():
         print(f"Error: Test files directory not found: {TEST_FILES_DIR}")
         return
 
-    dng_files = sorted(list(TEST_FILES_DIR.glob("*.dng")))
-    if not dng_files:
-        print(f"No DNG files found in {TEST_FILES_DIR} for Core Image test.")
-        return
-
-    print(f"\n--- Running Core Image Processing Test for all DNGs ---")
     TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    for dng_file_path in dng_files:
-        print(f"\n  Processing with Core Image: {dng_file_path.name}")
-        if not dng_file_path.exists():
-            print(f"    Error: DNG file not found at {dng_file_path}, skipping.")
-            continue
+    # --- Test 1: Specific White Balance Variations on a single file ---
+    print("\n--- Running Core Image White Balance Variation Test ---")
+    target_dng_path = TEST_FILES_DIR / "asi676mc.lossless.preview1.dng"
 
-        if core_image_available:
-            # Directly call the function from color_mac, providing a standard daylight
-            # temperature (6500K) and a neutral tint to test white balance control.
-            core_image_result = process_dng_with_core_image(
-                str(dng_file_path), temperature=6500.0, tint=0.0
+    if not target_dng_path.exists():
+        print(f"Skipping white balance tests, file not found: {target_dng_path}")
+    else:
+        wb_tests = [
+            {"suffix": "neutral_6500k", "options": {"neutralTemperature": 6500.0, "neutralTint": 0.0}},
+            {"suffix": "cool_4000k", "options": {"neutralTemperature": 4000.0, "neutralTint": 0.0}},
+            {"suffix": "warm_9000k", "options": {"neutralTemperature": 9000.0, "neutralTint": 0.0}},
+            {"suffix": "green_tint", "options": {"neutralTemperature": 6500.0, "neutralTint": -100.0}},
+            {"suffix": "magenta_tint", "options": {"neutralTemperature": 6500.0, "neutralTint": 100.0}},
+            {
+                "suffix": "kitchen_sink", 
+                "options": {
+                    # White Balance & Exposure
+                    "neutralTemperature": 5500.0,
+                    "neutralTint": 10.0,
+                    "exposure": 0.5,
+                    "baselineExposure": 0.1,
+                    "shadowBias": 0.02, # Mapped to kCIInputBiasKey
+
+                    # Boosting and Tone Mapping
+                    "boostAmount": 0.8,
+                    "boostShadowAmount": 0.2,
+                    "localToneMapAmount": 0.4,
+
+                    # Noise Reduction
+                    "colorNoiseReductionAmount": 0.5,
+                    "luminanceNoiseReductionAmount": 0.6,
+                    "noiseReductionAmount": 0.5, # General NR
+                    "noiseReductionContrastAmount": 0.5,
+                    "noiseReductionSharpnessAmount": 0.5,
+                    "detailAmount": 0.7, # Specific to NR
+
+                    # Detail and Scaling
+                    "contrastAmount": 1.1,
+                    "sharpnessAmount": 0.4,
+                    "moireReductionAmount": 0.1,
+                    "scaleFactor": 1.0,
+
+                    # Boolean Flags
+                    "isDraftModeEnabled": True,
+                    "isLensCorrectionEnabled": True,
+                    "isGamutMappingEnabled": True, # Inverted to False
+                    "isSharpeningEnabled": True,
+                    "isChromaticNoiseTrackingEnabled": True,
+                    "isEDRModeEnabled": False,
+                    "ignoreImageOrientation": False,
+
+                    # Integer Flags
+                    "imageOrientation": 1, # 1 = up, default
+                }
+            },
+            {
+                "suffix": "neutral_chromaticity",
+                "options": {
+                    "neutralChromaticity": (0.35, 0.38), # Example values, check DNG metadata for actuals if needed
+                    "exposure": 0.5
+                }
+            },
+            {
+                "suffix": "neutral_location",
+                "options": {
+                    "neutralLocation": (100.0, 150.0), # Example pixel coordinates
+                    "exposure": 0.5
+                }
+            },
+        ]
+
+        for test_case in wb_tests:
+            print(f"\n  Processing WB test '{test_case['suffix']}' on {target_dng_path.name}")
+            current_options = test_case.get("options", {})
+            
+            output_image = process_dng_with_core_image(
+                str(target_dng_path),
+                raw_filter_options=current_options if current_options else None,
             )
-            if core_image_result is not None:
-                output_filename = TEST_OUTPUT_DIR / f"{dng_file_path.stem}_core_image.tif"  # Changed to .tif
+
+            if output_image is not None:
+                output_filename = TEST_OUTPUT_DIR / f"{target_dng_path.stem}_core_image_{test_case['suffix']}.tif"
                 try:
-                    # Convert RGB to BGR for OpenCV's imwrite function
-                    bgr_image = cv2.cvtColor(core_image_result, cv2.COLOR_RGB2BGR)
+                    bgr_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
                     cv2.imwrite(str(output_filename), bgr_image)
-                    print(f"    Successfully saved Core Image output to: {output_filename}")
+                    print(f"    Successfully saved WB test output to: {output_filename}")
                 except Exception as e_save:
-                    print(f"    Error saving Core Image output for {dng_file_path.name}: {e_save}")
+                    print(f"    Error saving WB test output: {e_save}")
             else:
-                print(f"    Core Image processing (from color_mac) failed or returned None for {dng_file_path.name}.")
+                print(f"    Core Image processing failed for WB test '{test_case['suffix']}'.")
+
+    # --- Test 2: General processing for all DNGs with default settings ---
+    print("\n--- Running General Core Image Processing Test for all DNGs ---")
+    dng_files = sorted(list(TEST_FILES_DIR.glob("*.dng")))
+    if not dng_files:
+        print(f"No DNG files found in {TEST_FILES_DIR} for general test.")
+        return
+
+    for dng_file_path in dng_files:
+        print(f"\n  Processing with Core Image (defaults): {dng_file_path.name}")
+        # Call with no temp/tint to use the filter's defaults
+        output_image = process_dng_with_core_image(str(dng_file_path), raw_filter_options=None)
+        
+        if output_image is not None:
+            output_filename = TEST_OUTPUT_DIR / f"{dng_file_path.stem}_core_image_default.tif"
+            try:
+                bgr_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(output_filename), bgr_image)
+                print(f"    Successfully saved Core Image output to: {output_filename}")
+            except Exception as e_save:
+                print(f"    Error saving Core Image output for {dng_file_path.name}: {e_save}")
         else:
-            print(f"    Core Image not available on this system. Skipping {dng_file_path.name}.")
-    
-    print("\n--- Core Image Processing Test Finished ---")
+            print(f"    Core Image processing failed for {dng_file_path.name}.")
+
+    print("\n--- Core Image Processing Tests Finished ---")
 
 def test_process_dng():
     if not TEST_FILES_DIR.is_dir():
