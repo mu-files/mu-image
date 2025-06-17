@@ -5,6 +5,7 @@ import numpy as np
 from typing import Optional, Dict
 from muraw.dng import DngFile
 from muraw.color import process_cfa_raw, process_linear_raw
+from muraw.color_mac import core_image_available, process_dng_with_core_image
 from tifffile import TIFF
 
 # Corrected path to test files, relative to this test script
@@ -255,7 +256,51 @@ def decode_and_save_dng_images(
         traceback.print_exc()  # Add more detailed traceback
 
 
-def main():
+def test_process_dng_with_core_image():
+    """Processes all DNG files in TEST_FILES_DIR using Core Image and saves them.
+    This test directly calls muraw.color_mac.process_dng_with_core_image.
+    """
+    if not TEST_FILES_DIR.is_dir():
+        print(f"Error: Test files directory not found: {TEST_FILES_DIR}")
+        return
+
+    dng_files = sorted(list(TEST_FILES_DIR.glob("*.dng")))
+    if not dng_files:
+        print(f"No DNG files found in {TEST_FILES_DIR} for Core Image test.")
+        return
+
+    print(f"\n--- Running Core Image Processing Test for all DNGs ---")
+    TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    for dng_file_path in dng_files:
+        print(f"\n  Processing with Core Image: {dng_file_path.name}")
+        if not dng_file_path.exists():
+            print(f"    Error: DNG file not found at {dng_file_path}, skipping.")
+            continue
+
+        if core_image_available:
+            # Directly call the function from color_mac, providing a standard daylight
+            # temperature (6500K) and a neutral tint to test white balance control.
+            core_image_result = process_dng_with_core_image(
+                str(dng_file_path), temperature=6500.0, tint=0.0
+            )
+            if core_image_result is not None:
+                output_filename = TEST_OUTPUT_DIR / f"{dng_file_path.stem}_core_image.tif"  # Changed to .tif
+                try:
+                    # Convert RGB to BGR for OpenCV's imwrite function
+                    bgr_image = cv2.cvtColor(core_image_result, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(output_filename), bgr_image)
+                    print(f"    Successfully saved Core Image output to: {output_filename}")
+                except Exception as e_save:
+                    print(f"    Error saving Core Image output for {dng_file_path.name}: {e_save}")
+            else:
+                print(f"    Core Image processing (from color_mac) failed or returned None for {dng_file_path.name}.")
+        else:
+            print(f"    Core Image not available on this system. Skipping {dng_file_path.name}.")
+    
+    print("\n--- Core Image Processing Test Finished ---")
+
+def test_process_dng():
     if not TEST_FILES_DIR.is_dir():
         print(f"Error: Test files directory not found: {TEST_FILES_DIR}")
         sys.exit(1)
@@ -265,6 +310,11 @@ def main():
     if not dng_files:
         print(f"No DNG files found in {TEST_FILES_DIR}")
         return
+
+    # --- Call the simple test for the first DNG file ---
+
+
+    print("\n--- Starting Full DNG Processing Loop (existing tests) ---")
 
     for dng_file_path in dng_files:
         print(f"\n--- Processing file: {dng_file_path.name} ---")
@@ -292,4 +342,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    test_process_dng_with_core_image()
+    #test_process_dng()

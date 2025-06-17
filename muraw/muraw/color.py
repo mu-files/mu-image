@@ -195,23 +195,6 @@ def process_linear_raw(image_data: np.ndarray, tags: Dict) -> np.ndarray:
 
     transform_matrix = XYZ_to_sRGB_D65 @ adaptation @ camera_to_xyz @ white_balance_matrix
 
-    '''
-    transform_matrix = np.array([
-        [ 2.6821, -0.6639, -0.0906],
-        [-0.2692,  1.6096,  -0.5751],
-        [0.0603, -0.5266, 1.9638]
-    ], dtype=np.float32)
-    '''
-
-    '''
-    rgb2bgr = np.array([
-        [ 0.,0.,1.],
-        [ 0.,1.,0.],
-        [ 1.,0.,0.]
-    ], dtype=np.float32)
-    transform_matrix = rgb2bgr * transform_matrix * rgb2bgr
-    '''
-
     # Normalize Input Data to [0, 1]
     processed_data = image_data.copy() 
 
