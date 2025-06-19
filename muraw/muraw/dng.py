@@ -11,15 +11,15 @@ from typing import Optional, List, Dict, Tuple, Union, Any
 import tifffile
 from tifffile import TIFF, PHOTOMETRIC
 
+BAYER_PATTERN_MAP = {
+    "RGGB": (0, 1, 1, 2),  # R G / G B
+    "BGGR": (2, 1, 1, 0),  # B G / G R
+    "GRBG": (1, 0, 2, 1),  # G R / B G
+    "GBRG": (1, 2, 0, 1),  # G B / R G
+}
 
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
-    BAYER_PATTERN_MAP = {
-        "RGGB": (0, 1, 1, 2),  # R G / G B
-        "BGGR": (2, 1, 1, 0),  # B G / G R
-        "GRBG": (1, 0, 2, 1),  # G R / B G
-        "GBRG": (1, 2, 0, 1),  # G B / R G
-    }
 
     @staticmethod
     def _matrix_to_rational_tuple(matrix: np.ndarray, denominator: int = 10000) -> tuple:
@@ -36,15 +36,21 @@ class MetadataTags:
         self._tags = []
 
     def add_tag(self, tag):
-        # Expects tag to be (tag_name_str, dtype_char_str, count, value)
-        # writeonce is hardcoded to False for simplicity in this version of the class
-        tag_formatted_contents = (
-            TIFF.TAGS[tag[0]],
-            TIFF.DATA_DTYPES[tag[1]],
-            tag[2],
-            tag[3],
-            False,
-        )
+        tag_code = -1
+
+        if isinstance(tag[0], str):
+            tag_code = TIFF.TAGS[tag[0]]
+        elif isinstance(tag[0], int):
+            tag_code = tag[0]
+
+        tag_formatted_contents = (tag_code, TIFF.DATA_DTYPES[tag[1]], tag[2], tag[3], False)
+        
+        # Check for duplicates and overwrite if one is found, else append
+        for i, existing_tag in enumerate(self._tags):
+            if existing_tag[0] == tag_code:
+                self._tags[i] = tag_formatted_contents
+                return
+
         self._tags.append(tag_formatted_contents)
 
     def add_string_tag(self, tag_name_str, string_value):
@@ -61,7 +67,7 @@ class MetadataTags:
 
     def add_cfa_pattern_tag(self, cfa_pattern_key: str):
         """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
-        pattern_tuple = self.BAYER_PATTERN_MAP.get(cfa_pattern_key, self.BAYER_PATTERN_MAP["RGGB"])
+        pattern_tuple = BAYER_PATTERN_MAP.get(cfa_pattern_key, BAYER_PATTERN_MAP["RGGB"])
         pattern_bytes = bytes(pattern_tuple)
         self.add_tag(("CFAPattern", "B", 4, pattern_bytes))
 
@@ -74,6 +80,19 @@ class MetadataTags:
         """Converts a float matrix to rationals and adds it as a tag."""
         flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
         self.add_tag((tag_name_str, "2i", 9, flat_tuple_values))
+
+    def add_exif_dict(self, exif_dict: dict):
+        # TODO: need to add more comprehensive list but just select those we need for now
+        for ifd_name in ['0th', 'Exif']:
+            if ifd_name in exif_dict and isinstance(exif_dict[ifd_name], dict):
+                for tag_id, value in exif_dict[ifd_name].items():
+                    if isinstance(value, str):
+                        str_value = value
+                        self.add_string_tag(tag_id, str_value)
+                    elif tag_id == TIFF.TAGS["ExposureTime"]:
+                        # ExposureTime is an unsigned rational (numerator, denominator).
+                        self.add_tag((tag_id, "2I", 1, value))
+                    # TODO: Add other specific, non-string tag handlers here (e.g., shorts, longs).
 
     def get_tags(self):
         self._tags.sort(key=lambda x: x[0])
@@ -221,6 +240,7 @@ def write_dng(
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
     color_data: Optional[np.ndarray] = None,  # Optional color data for preview
+    exif_dict: Optional[dict] = None # Optional EXIF data in dict format used by piexif
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -239,6 +259,7 @@ def write_dng(
         jxl_effort: JPEG XL compression effort (1-9). Higher is more compression/slower.
                     Only used if jxl_distance is also specified. Default: None (codec default).
         generate_thumbnail: Whether to generate a thumbnail image. Default: True
+        exif_bytes: Optional bytes object containing the EXIF data segment.
     """
 
     # TODO: implement param validation here - raw_data not none, W/H even, cfa pattern valid, bpp <= 16
@@ -283,6 +304,21 @@ def write_dng(
     else:
         processed_raw_data = raw_data
 
+    '''
+    DATA TYPES (2nd argument to add_tag) used in tifffile.py below have following mapping:
+        'B': unsigned byte
+        's': ascii string
+        'H': unsigned short
+        'I': unsigned long
+        '2I': unsigned rational
+        'b': signed byte
+        'h': signed short
+        'i': signed long
+        '2i': signed rational
+        'f': float
+        'd': double
+    '''
+
     # the tag names are from tifffile.py TiffTagRegistry
     # the tag types are from tifffile.py DATA_DTYPES
     dng_tags = MetadataTags()
@@ -303,6 +339,8 @@ def write_dng(
     )
     dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
     dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
+    if( exif_dict is not None ):
+        dng_tags.add_exif_dict(exif_dict)
 
     dng_cfa_tags = MetadataTags()
     dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
@@ -316,6 +354,7 @@ def write_dng(
                 dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
 
                 # Write Thumbnail to SubIFD 0
+                # TODO: could overwrite software if that tag is present in exif_dict
                 thumb_ifd_args = {
                     "photometric": "rgb",  # Interprets data as RGB
                     "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
@@ -376,6 +415,7 @@ def write_dng(
 
             if thumbnail_image is None:
                 dng_cfa_tags.extend(dng_tags)
+            
             main_image_ifd_args["extratags"] = dng_cfa_tags.get_tags()
 
             # Write Main Raw Image to IFD
@@ -419,7 +459,7 @@ class DngFile(tifffile.TiffFile):
     def _translate_dng_tag_value(tag_name: str, tag_value) -> Any:
     
         _bayer_pattern_bytes_to_str_map = {
-            bytes(v): k for k, v in MetadataTags.BAYER_PATTERN_MAP.items()
+            bytes(v): k for k, v in BAYER_PATTERN_MAP.items()
         }
 
         MATRIX_TAG_NAMES = {"ColorMatrix1", "ColorMatrix2", "ColorMatrix3"}
