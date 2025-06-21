@@ -1,13 +1,17 @@
-import numpy as np
-from typing import Optional
+import os
+import sys
 import time
+from pathlib import Path
+from typing import IO, Any, List, Optional, Tuple, Union
+
+import numpy as np
 
 # --- Core Image (macOS specific) DNG Processing ---
 
 # PyObjC imports - these will only work on macOS
 try:
     import Quartz
-    from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint 
+    from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint, NSData 
     from Quartz import (
         CIFilter,
         CIContext,
@@ -61,16 +65,16 @@ RAW_FILTER_OPTION_MAP = {
 }
 
 def process_dng_with_core_image(
-    dng_file_path: str,
+    dng_input: Union[str, os.PathLike, IO[bytes]],
     icc_profile_path: Optional[str] = None,
     raw_filter_options: Optional[dict] = None,
     use_gpu: bool = False,
 ) -> Optional[np.ndarray]:
     """
-    Processes a DNG file using Core Image on macOS.
+    Processes a DNG file using Core Image on macOS from a path or file-like object.
 
     Args:
-        dng_file_path: Path to the DNG file.
+        dng_input: Path to a DNG file, or a file-like object providing DNG data.
         icc_profile_path: Optional path to an ICC profile for color management.
         raw_filter_options: Dictionary of options for CIRAWFilter.
         use_gpu: If False (default), forces software (CPU) rendering.
@@ -88,10 +92,6 @@ def process_dng_with_core_image(
 
     try:
         start_time = time.perf_counter()
-        image_url = NSURL.fileURLWithPath_(dng_file_path)
-        if not image_url:
-            print(f"Error: Could not create NSURL for path: {dng_file_path}")
-            return None
 
         # --- Prepare CIRAWFilter Options ---
         options = {}
@@ -148,7 +148,28 @@ def process_dng_with_core_image(
                 except Exception as e:
                     print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
 
-        raw_filter = CIFilter.filterWithImageURL_options_(image_url, options or None)
+        # --- Create CIRAWFilter ---
+        raw_filter = None
+        if isinstance(dng_input, (str, os.PathLike)):
+            # Use the more efficient URL-based method for file paths
+            image_url = NSURL.fileURLWithPath_(str(dng_input))
+            raw_filter = CIFilter.filterWithImageURL_options_(image_url, options or None)
+        elif hasattr(dng_input, "read"):
+            # For file-like objects, read into memory and use the data-based method
+            dng_data = dng_input.read()
+            if not dng_data:
+                print("Error: DNG data from file-like object is empty.")
+                return None
+
+            from Quartz import kCGImageSourceTypeIdentifierHint
+            options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
+            ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
+            raw_filter = CIFilter.filterWithImageData_options_(ns_data, options or None)
+        else:
+            raise TypeError(
+                "dng_input must be a file path, path-like object, or a "
+                "file-like object with a read() method."
+            )
         if not raw_filter:
             print("Error: Failed to create CIRAWFilter. Check file path and permissions.")
             return None
