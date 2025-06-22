@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+
 from pathlib import Path
 from typing import IO, Any, List, Optional, Tuple, Union
 
@@ -93,78 +94,77 @@ def process_dng_with_core_image(
     try:
         start_time = time.perf_counter()
 
-        # --- Prepare CIRAWFilter Options ---
-        options = {}
-        if raw_filter_options:
-            for key, value in raw_filter_options.items():
-                if key not in RAW_FILTER_OPTION_MAP:
-                    print(f"Warning: Unknown RAW filter option key: {key}. Skipping.")
-                    continue
+        # --- Prepare Filter Options ---
+        # Make a copy of the options to avoid modifying the original dict
+        options_copy = dict(raw_filter_options) if raw_filter_options else {}
 
-                map_entry = RAW_FILTER_OPTION_MAP[key]
-                quartz_key_name_or_tuple, value_type = map_entry
-                objc_value = None
+        # Handle our custom options that are not part of CIRAWFilter first
+        contrast_strength = options_copy.pop('contrastStrength', None)
 
-                try:
-                    if value_type == "float":
-                        objc_value = NSNumber.numberWithFloat_(float(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        options[quartz_key] = objc_value
-                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
-                    elif value_type == "bool":
-                        objc_value = NSNumber.numberWithBool_(bool(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        options[quartz_key] = objc_value
-                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
-                    elif value_type == "bool_inverted":
-                        objc_value = NSNumber.numberWithBool_(not bool(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        options[quartz_key] = objc_value
-                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {bool(value)} (inverted to {not bool(value)} for key)")
-                    elif value_type == "int":
-                        objc_value = NSNumber.numberWithInt_(int(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        options[quartz_key] = objc_value
-                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
-                    elif value_type == "point_xy_floats":
-                        # Expects value to be a tuple (x, y)
-                        key_x_name, key_y_name = quartz_key_name_or_tuple
-                        quartz_key_x = getattr(Quartz, key_x_name)
-                        quartz_key_y = getattr(Quartz, key_y_name)
-                        options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
-                        options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
-                        print(f"Setting RAW option {key} (X: {key_x_name}, Y: {key_y_name}) to {value}")
-                    elif value_type == "point_nsvalue":
-                        # Expects value to be a tuple (x, y)
-                        ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
-                        objc_value = NSValue.valueWithPoint_(ns_point)
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        options[quartz_key] = objc_value
-                        print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
-                    else:
-                        print(f"Warning: Unsupported value type '{value_type}' for key {key}. Skipping.")
-                except AttributeError:
-                    print(f"Warning: Quartz constant for '{quartz_key_name_or_tuple}' not found. Option {key} cannot be set. Skipping.")
-                except Exception as e:
-                    print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
+        # Prepare options specifically for the CIRAWFilter
+        raw_options = {}
+        for key, value in options_copy.items():
+            if key not in RAW_FILTER_OPTION_MAP:
+                print(f"Warning: Unknown RAW filter option key: {key}. Skipping.")
+                continue
+
+            map_entry = RAW_FILTER_OPTION_MAP[key]
+            quartz_key_name_or_tuple, value_type = map_entry
+            try:
+                if value_type == "float":
+                    objc_value = NSNumber.numberWithFloat_(float(value))
+                    quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                    raw_options[quartz_key] = objc_value
+                    print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {float(value):.2f}")
+                elif value_type == "bool":
+                    objc_value = NSNumber.numberWithBool_(bool(value))
+                    quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                    raw_options[quartz_key] = objc_value
+                    print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
+                elif value_type == "bool_inverted":
+                    objc_value = NSNumber.numberWithBool_(not bool(value))
+                    quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                    raw_options[quartz_key] = objc_value
+                    print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {bool(value)} (inverted to {not bool(value)} for key)")
+                elif value_type == "int":
+                    objc_value = NSNumber.numberWithInt_(int(value))
+                    quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                    raw_options[quartz_key] = objc_value
+                    print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to {value}")
+                elif value_type == "point_xy_floats":
+                    key_x_name, key_y_name = quartz_key_name_or_tuple
+                    quartz_key_x = getattr(Quartz, key_x_name)
+                    quartz_key_y = getattr(Quartz, key_y_name)
+                    raw_options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
+                    raw_options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
+                    print(f"Setting RAW option {key} (X: {key_x_name}, Y: {key_y_name}) to ({float(value[0]):.2f}, {float(value[1]):.2f})")
+                elif value_type == "point_nsvalue":
+                    ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
+                    objc_value = NSValue.valueWithPoint_(ns_point)
+                    quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                    raw_options[quartz_key] = objc_value
+                    print(f"Setting RAW option {key} ({quartz_key_name_or_tuple}) to ({float(value[0]):.2f}, {float(value[1]):.2f})")
+                else:
+                    print(f"Warning: Unsupported value type '{value_type}' for key {key}. Skipping.")
+            except AttributeError:
+                print(f"Warning: Quartz constant for '{quartz_key_name_or_tuple}' not found. Option {key} cannot be set. Skipping.")
+            except Exception as e:
+                print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
 
         # --- Create CIRAWFilter ---
         raw_filter = None
         if isinstance(dng_input, (str, os.PathLike)):
-            # Use the more efficient URL-based method for file paths
             image_url = NSURL.fileURLWithPath_(str(dng_input))
-            raw_filter = CIFilter.filterWithImageURL_options_(image_url, options or None)
+            raw_filter = CIFilter.filterWithImageURL_options_(image_url, raw_options or None)
         elif hasattr(dng_input, "read"):
-            # For file-like objects, read into memory and use the data-based method
             dng_data = dng_input.read()
             if not dng_data:
                 print("Error: DNG data from file-like object is empty.")
                 return None
-
             from Quartz import kCGImageSourceTypeIdentifierHint
-            options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
+            raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
             ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
-            raw_filter = CIFilter.filterWithImageData_options_(ns_data, options or None)
+            raw_filter = CIFilter.filterWithImageData_options_(ns_data, raw_options or None)
         else:
             raise TypeError(
                 "dng_input must be a file path, path-like object, or a "
@@ -183,8 +183,46 @@ def process_dng_with_core_image(
                 f"Raw-specific options will likely be ignored."
             )
 
-        # Request the output image
+        # Request the output image from the first filter
         output_ci_image = raw_filter.outputImage()
+
+        # --- Apply Gamma Correction & Tone Curve ---
+        # --- Apply Tone Curve for Contrast (S-Curve) ---
+        # The CIRAWFilter outputs data in a standard (gamma-corrected) color space.
+        # The tone curve is applied to this data. The logic below re-parameterizes
+        # the user's preferred curve shape using the 'contrastStrength' parameter.
+        if contrast_strength is not None:
+            from Quartz import CIVector
+
+            strength = float(contrast_strength)
+            print(f"Applying custom tone curve with strength: {strength:.2f}")
+
+            s = min(max(strength, 0.0), 1.0)  # Clamp strength to [0, 1]
+
+            # These factors are derived from the user's preferred curve at strength=0.6.
+            # They define the maximum deviation from a linear curve at strength=1.0.
+            SHADOW_PULL_FACTOR = 0.3
+            HIGHLIGHT_PUSH_FACTOR = 0.015
+
+            # This curve was prototyped in Photoshop post gamma at control points
+            # (0.25, 0.5, 0.8) to take the 1/2.2 root of those values to be
+            # in linear space
+            p0 = CIVector.vectorWithX_Y_(0.0, 0.0)
+            p1 = CIVector.vectorWithX_Y_(0.53, 0.53 - s * SHADOW_PULL_FACTOR)
+            p2 = CIVector.vectorWithX_Y_(0.73, 0.73)
+            p3 = CIVector.vectorWithX_Y_(0.90, 0.90 + s * HIGHLIGHT_PUSH_FACTOR)
+            p4 = CIVector.vectorWithX_Y_(1.0, 1.0)
+
+            tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
+            tone_curve_filter.setValue_forKey_(output_ci_image, "inputImage")
+            tone_curve_filter.setValue_forKey_(p0, "inputPoint0")
+            tone_curve_filter.setValue_forKey_(p1, "inputPoint1")
+            tone_curve_filter.setValue_forKey_(p2, "inputPoint2")
+            tone_curve_filter.setValue_forKey_(p3, "inputPoint3")
+            tone_curve_filter.setValue_forKey_(p4, "inputPoint4")
+
+            # The output for the rest of the pipeline is now the result of this filter
+            output_ci_image = tone_curve_filter.outputImage()
         extent = output_ci_image.extent()
         width = int(extent.size.width)
         height = int(extent.size.height)
