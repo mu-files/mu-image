@@ -7,7 +7,7 @@ import numpy as np
 from typing import Optional, Dict
 from muraw.dng import DngFile
 from muraw.color import process_cfa_raw, process_linear_raw
-from muraw.color_mac import core_image_available, process_dng_with_core_image
+from muraw.color_mac import core_image_available, CoreImageContext
 from tifffile import TIFF
 
 # Corrected path to test files, relative to this test script
@@ -258,173 +258,81 @@ def decode_and_save_dng_images(
         traceback.print_exc()  # Add more detailed traceback
 
 
-def test_process_dng_with_core_image():
-    """Processes DNG files using Core Image, including specific white balance tests."""
-    if not core_image_available:
-        print("Core Image not available on this system. Skipping test.")
-        return
+@pytest.mark.skipif(not core_image_available, reason="Core Image not available on this system.")
+def test_core_image_processing():
+    """Tests Core Image DNG processing, including white balance."""
+    TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+    dng_files_to_test = [f for f in TEST_FILES_DIR.glob("*.dng")]
 
-    if not TEST_FILES_DIR.is_dir():
-        print(f"Error: Test files directory not found: {TEST_FILES_DIR}")
-        return
+    if not dng_files_to_test:
+        pytest.skip("No DNG files found in the test directory.")
 
-    TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"\n--- Testing Core Image DNG Processing ---")
+    print(f"Found {len(dng_files_to_test)} DNG file(s) to process.")
 
-    # --- Test 1: Specific White Balance Variations on a single file ---
-    print("\n--- Running Core Image White Balance Variation Test ---")
-    target_dng_path = TEST_FILES_DIR / "asi676mc.lossless.preview1.dng"
-
-    if not target_dng_path.exists():
-        print(f"Skipping white balance tests, file not found: {target_dng_path}")
-    else:
-        wb_tests = [
-            {"suffix": "neutral_6500k", "options": {"neutralTemperature": 6500.0, "neutralTint": 0.0}},
-            {"suffix": "cool_4000k", "options": {"neutralTemperature": 4000.0, "neutralTint": 0.0}},
-            {"suffix": "warm_9000k", "options": {"neutralTemperature": 9000.0, "neutralTint": 0.0}},
-            {"suffix": "green_tint", "options": {"neutralTemperature": 6500.0, "neutralTint": -100.0}},
-            {"suffix": "magenta_tint", "options": {"neutralTemperature": 6500.0, "neutralTint": 100.0}},
-            {
-                "suffix": "kitchen_sink", 
-                "options": {
-                    # White Balance & Exposure
-                    "neutralTemperature": 5500.0,
-                    "neutralTint": 10.0,
-                    "exposure": 0.5,
-                    "baselineExposure": 0.1,
-                    "shadowBias": 0.02, # Mapped to kCIInputBiasKey
-
-                    # Boosting and Tone Mapping
-                    "boostAmount": 0.8,
-                    "boostShadowAmount": 0.2,
-                    "localToneMapAmount": 0.4,
-
-                    # Noise Reduction
-                    "colorNoiseReductionAmount": 0.5,
-                    "luminanceNoiseReductionAmount": 0.6,
-                    "noiseReductionAmount": 0.5, # General NR
-                    "noiseReductionContrastAmount": 0.5,
-                    "noiseReductionSharpnessAmount": 0.5,
-                    "detailAmount": 0.7, # Specific to NR
-
-                    # Detail and Scaling
-                    "contrastAmount": 1.1,
-                    "sharpnessAmount": 0.4,
-                    "moireReductionAmount": 0.1,
-                    "scaleFactor": 1.0,
-
-                    # Boolean Flags
-                    "isDraftModeEnabled": True,
-                    "isLensCorrectionEnabled": True,
-                    "isGamutMappingEnabled": True, # Inverted to False
-                    "isSharpeningEnabled": True,
-                    "isChromaticNoiseTrackingEnabled": True,
-                    "isEDRModeEnabled": False,
-                    "ignoreImageOrientation": False,
-
-                    # Integer Flags
-                    "imageOrientation": 1, # 1 = up, default
-                }
-            },
-            {
-                "suffix": "neutral_chromaticity",
-                "options": {
-                    "neutralChromaticity": (0.35, 0.38), # Example values, check DNG metadata for actuals if needed
-                    "exposure": 0.5
-                }
-            },
-            {
-                "suffix": "neutral_location",
-                "options": {
-                    "neutralLocation": (100.0, 150.0), # Example pixel coordinates
-                    "exposure": 0.5
-                }
-            },
-        ]
-
-        for test_case in wb_tests:
-            print(f"\n  Processing WB test '{test_case['suffix']}' on {target_dng_path.name}")
-            current_options = test_case.get("options", {})
-            
-            output_image = process_dng_with_core_image(
-                str(target_dng_path),
-                raw_filter_options=current_options if current_options else None,
+    with CoreImageContext() as context:
+        for dng_file_path in dng_files_to_test:
+            print(f"\nProcessing file: {dng_file_path.name}")
+            output_jpg_path_default = (
+                TEST_OUTPUT_DIR / f"{dng_file_path.stem}_core_image_default.jpg"
             )
 
-            if output_image is not None:
-                output_filename = TEST_OUTPUT_DIR / f"{target_dng_path.stem}_core_image_{test_case['suffix']}.tif"
-                try:
-                    bgr_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(str(output_filename), bgr_image)
-                    print(f"    Successfully saved WB test output to: {output_filename}")
-                except Exception as e_save:
-                    print(f"    Error saving WB test output: {e_save}")
-            else:
-                print(f"    Core Image processing failed for WB test '{test_case['suffix']}'.")
-
-    # --- Test 2: General processing for all DNGs with default settings ---
-    print("\n--- Running General Core Image Processing Test for all DNGs ---")
-    dng_files = sorted(list(TEST_FILES_DIR.glob("*.dng")))
-    if not dng_files:
-        print(f"No DNG files found in {TEST_FILES_DIR} for general test.")
-        return
-
-    for dng_file_path in dng_files:
-        print(f"\n  Processing with Core Image (defaults): {dng_file_path.name}")
-        # Call with no temp/tint to use the filter's defaults
-        output_image = process_dng_with_core_image(str(dng_file_path), raw_filter_options=None)
-        
-        if output_image is not None:
-            output_filename = TEST_OUTPUT_DIR / f"{dng_file_path.stem}_core_image_default.tif"
+            # Test 1: Process with default settings (as-shot white balance)
             try:
-                bgr_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(str(output_filename), bgr_image)
-                print(f"    Successfully saved Core Image output to: {output_filename}")
-            except Exception as e_save:
-                print(f"    Error saving Core Image output for {dng_file_path.name}: {e_save}")
-        else:
-            print(f"    Core Image processing failed for {dng_file_path.name}.")
+                output_image = context.process_dng(str(dng_file_path))
+                if output_image is not None:
+                    # Convert to 8-bit if it's 16-bit
+                    if output_image.dtype == np.uint16:
+                        output_image = (output_image / 256).astype(np.uint8)
+                    # Convert RGB to BGR for OpenCV
+                    bgr_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(output_jpg_path_default), bgr_image)
+                    print(f"  -> Saved default processed image to {output_jpg_path_default.name}")
+                else:
+                    print("  -> Core Image processing with default settings returned None.")
+            except Exception as e:
+                print(f"  -> Error during default processing: {e}")
 
-    print("\n--- Core Image Processing Tests Finished ---")
+            # Test 2: Process with custom neutral white balance (temp/tint)
+            # This is a common operation, so it's a good test case.
+            output_jpg_path_wb = (
+                TEST_OUTPUT_DIR / f"{dng_file_path.stem}_core_image_wb_5500k.jpg"
+            )
+            wb_options = {"neutralTemperature": 5500, "neutralTint": 0}
+            try:
+                output_image_wb = context.process_dng(
+                    str(dng_file_path), raw_filter_options=wb_options
+                )
+                if output_image_wb is not None:
+                    if output_image_wb.dtype == np.uint16:
+                        output_image_wb = (output_image_wb / 256).astype(np.uint8)
+                    bgr_image_wb = cv2.cvtColor(output_image_wb, cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(str(output_jpg_path_wb), bgr_image_wb)
+                    print(f"  -> Saved custom WB processed image to {output_jpg_path_wb.name}")
+                else:
+                    print("  -> Core Image processing with custom WB returned None.")
+            except Exception as e:
+                print(f"  -> Error during custom WB processing: {e}")
 
-def test_process_dng():
-    if not TEST_FILES_DIR.is_dir():
-        print(f"Error: Test files directory not found: {TEST_FILES_DIR}")
-        sys.exit(1)
-
-    dng_files = sorted(list(TEST_FILES_DIR.glob("*.dng")))
-
-    if not dng_files:
-        print(f"No DNG files found in {TEST_FILES_DIR}")
-        return
-
-    # --- Call the simple test for the first DNG file ---
-
-
-    print("\n--- Starting Full DNG Processing Loop (existing tests) ---")
-
-    for dng_file_path in dng_files:
-        print(f"\n--- Processing file: {dng_file_path.name} ---")
-        TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        dng_obj: Optional[DngFile] = None
+        # Test 3: Process a file that doesn't exist to check for graceful handling
+        print("\n--- Testing non-existent file ---")
+        non_existent_file = TEST_FILES_DIR / "non_existent_file.dng"
         try:
-            dng_obj = DngFile(dng_file_path)
+            output_image = context.process_dng(str(non_existent_file))
+            assert output_image is None, "Processing a non-existent file should return None."
+            print("  -> Correctly handled non-existent file (returned None).")
         except Exception as e:
-            print(f"  CRITICAL: Could not open or parse DNG file {dng_file_path.name}: {e}")
-            print(f"  Skipping all processing for this file.")
-            continue  # Move to the next DNG file
+            pytest.fail(f"Processing a non-existent file raised an unexpected exception: {e}")
 
-        # If we reach here, dng_obj was successfully created
+        # Test 4: Process with no options specified (should work like default)
+        print("\n--- Testing with raw_filter_options=None ---")
+        dng_file_path = dng_files_to_test[0] # Use the first file for this quick test
         try:
-            generate_dng_structure_report(dng_obj, dng_file_path, TEST_OUTPUT_DIR)
+            output_image = context.process_dng(str(dng_file_path), raw_filter_options=None)
+            assert output_image is not None, "Processing with options=None should succeed."
+            print("  -> Correctly handled raw_filter_options=None.")
         except Exception as e:
-            print(f"  Error generating structure report for {dng_file_path.name}: {e}")
-            # We can still attempt to decode images even if the report fails
-
-        try:
-            decode_and_save_dng_images(dng_obj, dng_file_path, TEST_OUTPUT_DIR)
-        except Exception as e:
-            print(f"  Error calling decode_and_save_dng_images for {dng_file_path.name}: {e}")
+            pytest.fail(f"Processing with raw_filter_options=None raised an exception: {e}")
 
 
 def test_cpu_rendering_flag(capsys):
@@ -438,7 +346,8 @@ def test_cpu_rendering_flag(capsys):
 
     # Test 1: Forcing CPU rendering
     print(f"\n--- Testing CPU Rendering for {target_dng_path.name} ---")
-    process_dng_with_core_image(str(target_dng_path), use_gpu=False)
+    with CoreImageContext(use_gpu=False) as context:
+        context.process_dng(str(target_dng_path))
     captured_cpu = capsys.readouterr()
     assert "Forcing software rendering (CPU)." in captured_cpu.out
     assert "Core Image processing finished in" in captured_cpu.out
@@ -446,7 +355,8 @@ def test_cpu_rendering_flag(capsys):
 
     # Test 2: Allowing GPU rendering (default)
     print(f"\n--- Testing GPU Rendering for {target_dng_path.name} ---")
-    process_dng_with_core_image(str(target_dng_path), use_gpu=True)
+    with CoreImageContext(use_gpu=True) as context:
+        context.process_dng(str(target_dng_path))
     captured_gpu = capsys.readouterr()
     assert "Using hardware-accelerated rendering (GPU) where available." in captured_gpu.out
     assert "Core Image processing finished in" in captured_gpu.out
@@ -466,7 +376,8 @@ def test_process_non_raw_file_warns_user(capsys):
     # 2. Process the dummy JPEG with the Core Image function
     print(f"\n--- Testing Non-Raw File Warning --- ")
     print(f"Processing {dummy_jpeg_path} to check for filter type warning...")
-    process_dng_with_core_image(str(dummy_jpeg_path))
+    with CoreImageContext() as context:
+        context.process_dng(str(dummy_jpeg_path))
 
     # 3. Capture stdout and assert the warning is present
     captured = capsys.readouterr()
@@ -479,8 +390,8 @@ def test_process_non_raw_file_warns_user(capsys):
 
 if __name__ == "__main__":
     # First, run the original comprehensive test function
-    print("\n--- Running Original Comprehensive Core Image Tests ---")
-    test_process_dng_with_core_image()
+    print("\n--- Running Core Image Processing Tests ---")
+    test_core_image_processing()
     # test_process_dng() # This was the other commented out original call
 
     # Then, add the specific iPhone DNG GPU/CPU test
@@ -489,10 +400,12 @@ if __name__ == "__main__":
         iphone_dng_path = TEST_FILES_DIR / "iphone.linearRGB.lossy.dng"
         if iphone_dng_path.exists():
             print("\n--- Processing iPhone DNG with GPU ---")
-            process_dng_with_core_image(str(iphone_dng_path), use_gpu=True)
-            
+            with CoreImageContext(use_gpu=True) as context:
+                context.process_dng(str(iphone_dng_path))
+
             print("\n--- Processing iPhone DNG with CPU ---")
-            process_dng_with_core_image(str(iphone_dng_path), use_gpu=False)
+            with CoreImageContext(use_gpu=False) as context:
+                context.process_dng(str(iphone_dng_path))
         else:
             print(f"Error: iPhone DNG file not found at {iphone_dng_path} for specific GPU/CPU test.")
     else:
