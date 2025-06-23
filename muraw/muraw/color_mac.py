@@ -12,6 +12,7 @@ import numpy as np
 # PyObjC imports - these will only work on macOS
 try:
     import Quartz
+    import Foundation
     from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint, NSData 
     from Quartz import (
         CIFilter,
@@ -91,6 +92,7 @@ def process_dng_with_core_image(
         )
         return None
 
+    pool = Foundation.NSAutoreleasePool.alloc().init()
     try:
         start_time = time.perf_counter()
 
@@ -300,6 +302,8 @@ def process_dng_with_core_image(
         print(f"An error occurred during Core Image processing: {e}")
         traceback.print_exc()
         return None
+    finally:
+        del pool
 
 
 def list_available_rgb_color_spaces():
