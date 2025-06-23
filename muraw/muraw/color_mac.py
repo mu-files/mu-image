@@ -144,8 +144,6 @@ class CoreImageContext:
         if self._closed:
             raise RuntimeError("Cannot process DNG with a closed context.")
         try:
-            start_time = time.perf_counter()
-
             # --- Prepare Filter Options ---
             options_copy = dict(raw_filter_options) if raw_filter_options else {}
             contrast_strength = options_copy.pop('contrastStrength', None)
@@ -253,10 +251,6 @@ class CoreImageContext:
             )
 
             rgba_image = np.frombuffer(bitmap_buffer, dtype=pixel_dtype).reshape((height, width, 4))
-
-            end_time = time.perf_counter()
-            duration = end_time - start_time
-            print(f"Core Image processing finished in {duration:.4f} seconds.")
 
             return rgba_image[:, :, :3]
 
