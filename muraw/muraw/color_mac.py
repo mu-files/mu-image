@@ -68,11 +68,8 @@ RAW_FILTER_OPTION_MAP = {
 
 class CoreImageContext:
     """
-    A persistent context for processing DNG files using Core Image.
-
-    This class creates and holds a CIContext, which is a heavyweight object.
-    For batch processing, create one instance of this class and reuse it to
-    render multiple images. This prevents resource leaks and improves performance.
+    Manages the lifecycle of a Core Image context for rendering DNG files.
+    This class is a context manager, ensuring resources are properly released for a single operation.
     """
 
     def __init__(self, use_gpu: bool = False, icc_profile_path: Optional[str] = None):
@@ -104,7 +101,6 @@ class CoreImageContext:
                     custom_cg_space
                 )
                 output_space_cg = custom_cg_space
-                print(f"Successfully created color space from profile: {icc_profile_path}")
             else:
                 print(
                     f"Warning: Failed to create color space from '{icc_profile_path}'. "
@@ -115,150 +111,17 @@ class CoreImageContext:
             srgb_ns_space = NSColorSpace.sRGBColorSpace()
             working_space_ns = srgb_ns_space
             output_space_cg = srgb_ns_space.CGColorSpace()
-            if icc_profile_path is None:
-                print("No profile path provided. Using sRGB for working and output spaces.")
 
         context_options = {kCIContextWorkingColorSpace: working_space_ns}
         if not use_gpu:
             context_options[kCIContextUseSoftwareRenderer] = True
-            print("Forcing software rendering (CPU).")
-        else:
-            print("Using hardware-accelerated rendering (GPU) where available.")
 
         self.context = CIContext.contextWithOptions_(context_options)
         self.output_space_cg = output_space_cg
-        self.pool = Foundation.NSAutoreleasePool.alloc().init()
         self._closed = False
 
         if not self.context:
             raise RuntimeError("Failed to create Core Image context.")
-
-    def process_dng(
-        self,
-        dng_input: Union[str, os.PathLike, IO[bytes]],
-        raw_filter_options: Optional[dict] = None,
-    ) -> Optional[np.ndarray]:
-        """
-        Processes a DNG file using the persistent Core Image context.
-        """
-        if self._closed:
-            raise RuntimeError("Cannot process DNG with a closed context.")
-        try:
-            # --- Prepare Filter Options ---
-            options_copy = dict(raw_filter_options) if raw_filter_options else {}
-            contrast_strength = options_copy.pop('contrastStrength', None)
-
-            raw_options = {}
-            for key, value in options_copy.items():
-                if key not in RAW_FILTER_OPTION_MAP:
-                    print(f"Warning: Unknown RAW filter option key: {key}. Skipping.")
-                    continue
-
-                map_entry = RAW_FILTER_OPTION_MAP[key]
-                quartz_key_name_or_tuple, value_type = map_entry
-                try:
-                    if value_type == "float":
-                        objc_value = NSNumber.numberWithFloat_(float(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        raw_options[quartz_key] = objc_value
-                    elif value_type == "bool":
-                        objc_value = NSNumber.numberWithBool_(bool(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        raw_options[quartz_key] = objc_value
-                    elif value_type == "bool_inverted":
-                        objc_value = NSNumber.numberWithBool_(not bool(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        raw_options[quartz_key] = objc_value
-                    elif value_type == "int":
-                        objc_value = NSNumber.numberWithInt_(int(value))
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        raw_options[quartz_key] = objc_value
-                    elif value_type == "point_xy_floats":
-                        key_x_name, key_y_name = quartz_key_name_or_tuple
-                        quartz_key_x = getattr(Quartz, key_x_name)
-                        quartz_key_y = getattr(Quartz, key_y_name)
-                        raw_options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
-                        raw_options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
-                    elif value_type == "point_nsvalue":
-                        ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
-                        objc_value = NSValue.valueWithPoint_(ns_point)
-                        quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                        raw_options[quartz_key] = objc_value
-                except AttributeError:
-                    print(f"Warning: Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
-                except Exception as e:
-                    print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
-
-            # --- Create CIRAWFilter ---
-            if isinstance(dng_input, (str, os.PathLike)):
-                image_url = NSURL.fileURLWithPath_(str(dng_input))
-                raw_filter = CIFilter.filterWithImageURL_options_(image_url, raw_options or None)
-            elif hasattr(dng_input, "read"):
-                dng_data = dng_input.read()
-                if not dng_data:
-                    print("Error: DNG data from file-like object is empty.")
-                    return None
-                from Quartz import kCGImageSourceTypeIdentifierHint
-                raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
-                ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
-                raw_filter = CIFilter.filterWithImageData_options_(ns_data, raw_options or None)
-            else:
-                raise TypeError("dng_input must be a file path or a file-like object.")
-
-            if not raw_filter:
-                print("Error: Failed to create CIRAWFilter.")
-                return None
-
-            output_ci_image = raw_filter.outputImage()
-
-            # --- Apply Tone Curve for Contrast ---
-            if contrast_strength is not None:
-                from Quartz import CIVector
-                s = min(max(float(contrast_strength), 0.0), 1.0)
-                SHADOW_PULL_FACTOR = 0.3
-                HIGHLIGHT_PUSH_FACTOR = 0.015
-                p0 = CIVector.vectorWithX_Y_(0.0, 0.0)
-                p1 = CIVector.vectorWithX_Y_(0.53, 0.53 - s * SHADOW_PULL_FACTOR)
-                p2 = CIVector.vectorWithX_Y_(0.73, 0.73)
-                p3 = CIVector.vectorWithX_Y_(0.90, 0.90 + s * HIGHLIGHT_PUSH_FACTOR)
-                p4 = CIVector.vectorWithX_Y_(1.0, 1.0)
-                tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
-                tone_curve_filter.setValue_forKey_(output_ci_image, "inputImage")
-                tone_curve_filter.setValue_forKey_(p0, "inputPoint0")
-                tone_curve_filter.setValue_forKey_(p1, "inputPoint1")
-                tone_curve_filter.setValue_forKey_(p2, "inputPoint2")
-                tone_curve_filter.setValue_forKey_(p3, "inputPoint3")
-                tone_curve_filter.setValue_forKey_(p4, "inputPoint4")
-                output_ci_image = tone_curve_filter.outputImage()
-
-            extent = output_ci_image.extent()
-            width = int(extent.size.width)
-            height = int(extent.size.height)
-
-            # --- Render to Bitmap ---
-            pixel_format = kCIFormatRGBA16
-            pixel_dtype = np.uint16
-            row_bytes = width * 8
-            bitmap_buffer = NSMutableData.dataWithLength_(height * row_bytes)
-
-            self.context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
-                output_ci_image,
-                bitmap_buffer,
-                row_bytes,
-                extent,
-                pixel_format,
-                self.output_space_cg,
-            )
-
-            rgba_image = np.frombuffer(bitmap_buffer, dtype=pixel_dtype).reshape((height, width, 4))
-
-            return rgba_image[:, :, :3]
-
-        except Exception as e:
-            import traceback
-            print(f"An error occurred during Core Image processing: {e}")
-            traceback.print_exc()
-            return None
 
     def close(self):
         """Explicitly release the Core Image resources."""
@@ -266,12 +129,9 @@ class CoreImageContext:
             return
 
         if hasattr(self, "context"):
-            del self.context
-        if hasattr(self, "pool"):
-            del self.pool
+            self.context = None
 
         self._closed = True
-        print("Core Image context and pool released.")
 
     def __enter__(self):
         return self
@@ -279,9 +139,141 @@ class CoreImageContext:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def __del__(self):
-        # Fallback for cases where close() isn't explicitly called
-        self.close()
+
+def process_dng(
+    dng_input: Union[str, os.PathLike, IO[bytes]],
+    raw_filter_options: Optional[dict] = None,
+    use_gpu: bool = False,
+    icc_profile_path: Optional[str] = None,
+) -> Optional[np.ndarray]:
+    """
+    Processes a DNG file by creating a temporary Core Image context for the operation.
+    This ensures no state is carried over between calls.
+    """
+    if not core_image_available:
+        raise RuntimeError("Core Image is not available on this system.")
+
+    from objc import autorelease_pool
+
+    with autorelease_pool():
+        with CoreImageContext(use_gpu=use_gpu, icc_profile_path=icc_profile_path) as context:
+            try:
+                # --- Prepare Filter Options ---
+                options_copy = dict(raw_filter_options) if raw_filter_options else {}
+                contrast_strength = options_copy.pop('contrastStrength', None)
+
+                raw_options = {}
+                for key, value in options_copy.items():
+                    if key not in RAW_FILTER_OPTION_MAP:
+                        print(f"Warning: Unknown RAW filter option key: {key}. Skipping.")
+                        continue
+
+                    map_entry = RAW_FILTER_OPTION_MAP[key]
+                    quartz_key_name_or_tuple, value_type = map_entry
+                    try:
+                        if value_type == "float":
+                            objc_value = NSNumber.numberWithFloat_(float(value))
+                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                            raw_options[quartz_key] = objc_value
+                        elif value_type == "bool":
+                            objc_value = NSNumber.numberWithBool_(bool(value))
+                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                            raw_options[quartz_key] = objc_value
+                        elif value_type == "bool_inverted":
+                            objc_value = NSNumber.numberWithBool_(not bool(value))
+                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                            raw_options[quartz_key] = objc_value
+                        elif value_type == "int":
+                            objc_value = NSNumber.numberWithInt_(int(value))
+                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                            raw_options[quartz_key] = objc_value
+                        elif value_type == "point_xy_floats":
+                            key_x_name, key_y_name = quartz_key_name_or_tuple
+                            quartz_key_x = getattr(Quartz, key_x_name)
+                            quartz_key_y = getattr(Quartz, key_y_name)
+                            raw_options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
+                            raw_options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
+                        elif value_type == "point_nsvalue":
+                            ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
+                            objc_value = NSValue.valueWithPoint_(ns_point)
+                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
+                            raw_options[quartz_key] = objc_value
+                    except AttributeError:
+                        print(f"Warning: Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
+                    except Exception as e:
+                        print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
+
+                # --- Create CIRAWFilter ---
+                if isinstance(dng_input, (str, os.PathLike)):
+                    image_url = NSURL.fileURLWithPath_(str(dng_input))
+                    raw_filter = CIFilter.filterWithImageURL_options_(image_url, raw_options or None)
+                elif hasattr(dng_input, "read"):
+                    dng_data = dng_input.read()
+                    if not dng_data:
+                        print("Error: DNG data from file-like object is empty.")
+                        return None
+                    from Quartz import kCGImageSourceTypeIdentifierHint
+                    raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
+                    ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
+                    raw_filter = CIFilter.filterWithImageData_options_(ns_data, raw_options or None)
+                else:
+                    raise TypeError("dng_input must be a file path or a file-like object.")
+
+                if not raw_filter:
+                    print("Error: Failed to create CIRAWFilter.")
+                    return None
+
+                output_ci_image = raw_filter.outputImage()
+
+                # --- Apply Tone Curve for Contrast ---
+                if contrast_strength is not None:
+                    from Quartz import CIVector
+                    s = min(max(float(contrast_strength), 0.0), 1.0)
+                    SHADOW_PULL_FACTOR = 0.3
+                    HIGHLIGHT_PUSH_FACTOR = 0.015
+                    p0 = CIVector.vectorWithX_Y_(0.0, 0.0)
+                    p1 = CIVector.vectorWithX_Y_(0.53, 0.53 - s * SHADOW_PULL_FACTOR)
+                    p2 = CIVector.vectorWithX_Y_(0.73, 0.73)
+                    p3 = CIVector.vectorWithX_Y_(0.90, 0.90 + s * HIGHLIGHT_PUSH_FACTOR)
+                    p4 = CIVector.vectorWithX_Y_(1.0, 1.0)
+                    tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
+                    tone_curve_filter.setValue_forKey_(output_ci_image, "inputImage")
+                    tone_curve_filter.setValue_forKey_(p0, "inputPoint0")
+                    tone_curve_filter.setValue_forKey_(p1, "inputPoint1")
+                    tone_curve_filter.setValue_forKey_(p2, "inputPoint2")
+                    tone_curve_filter.setValue_forKey_(p3, "inputPoint3")
+                    tone_curve_filter.setValue_forKey_(p4, "inputPoint4")
+                    output_ci_image = tone_curve_filter.outputImage()
+
+                extent = output_ci_image.extent()
+                width = int(extent.size.width)
+                height = int(extent.size.height)
+
+                # --- Render to Bitmap ---
+                pixel_format = kCIFormatRGBA16
+                pixel_dtype = np.uint16
+                row_bytes = width * 8
+                bitmap_buffer = NSMutableData.dataWithLength_(height * row_bytes)
+
+                context.context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
+                    output_ci_image,
+                    bitmap_buffer,
+                    row_bytes,
+                    extent,
+                    pixel_format,
+                    context.output_space_cg,
+                )
+
+                rgba_image = np.frombuffer(bitmap_buffer, dtype=pixel_dtype).reshape((height, width, 4)).copy()
+
+                return rgba_image[:, :, :3]
+
+            except Exception as e:
+                import traceback
+                print(f"An error occurred during Core Image processing: {e}")
+                traceback.print_exc()
+                return None
+
 
 
 def list_available_rgb_color_spaces():

@@ -9,11 +9,11 @@ from .dng import (
     write_dng,
     BAYER_PATTERN_MAP,
 )
-from .color_mac import CoreImageContext
+from .color_mac import process_dng
 
 __all__ = [
     'DngFile',
     'write_dng',
     'BAYER_PATTERN_MAP',
-    'CoreImageContext',
+    'process_dng',
 ]
