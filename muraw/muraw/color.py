@@ -1,6 +1,7 @@
-import numpy as np
-from typing import Dict
 import cv2
+import numpy as np
+
+from typing import Dict
 
 def process_cfa_raw(image_data: np.ndarray, tags: Dict) -> np.ndarray:
     """

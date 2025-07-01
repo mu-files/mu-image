@@ -1,11 +1,10 @@
-import os
-import sys
-import time
-
-from pathlib import Path
-from typing import IO, Any, List, Optional, Tuple, Union
-
+import logging
 import numpy as np
+import os
+
+from typing import IO, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 # --- Core Image (macOS specific) DNG Processing ---
 
@@ -94,7 +93,7 @@ class CoreImageContext:
                     profile_data = f.read()
                 custom_cg_space = CGColorSpaceCreateWithICCProfile(profile_data)
             except IOError as e:
-                print(f"Warning: Could not read profile '{icc_profile_path}': {e}")
+                logger.warning(f"Could not read profile '{icc_profile_path}': {e}")
 
             if custom_cg_space:
                 working_space_ns = NSColorSpace.alloc().initWithCGColorSpace_(
@@ -102,8 +101,8 @@ class CoreImageContext:
                 )
                 output_space_cg = custom_cg_space
             else:
-                print(
-                    f"Warning: Failed to create color space from '{icc_profile_path}'. "
+                logger.warning(
+                    f"Failed to create color space from '{icc_profile_path}'. "
                     f"Falling back to sRGB."
                 )
 
@@ -165,7 +164,7 @@ def process_dng(
                 raw_options = {}
                 for key, value in options_copy.items():
                     if key not in RAW_FILTER_OPTION_MAP:
-                        print(f"Warning: Unknown RAW filter option key: {key}. Skipping.")
+                        logger.warning(f"Unknown RAW filter option key: {key}. Skipping.")
                         continue
 
                     map_entry = RAW_FILTER_OPTION_MAP[key]
@@ -199,9 +198,9 @@ def process_dng(
                             quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
                             raw_options[quartz_key] = objc_value
                     except AttributeError:
-                        print(f"Warning: Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
+                        logger.warning(f"Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
                     except Exception as e:
-                        print(f"Warning: Error processing option {key} with value {value}: {e}. Skipping.")
+                        logger.warning(f"Error processing option {key} with value {value}: {e}. Skipping.")
 
                 # --- Create CIRAWFilter ---
                 if isinstance(dng_input, (str, os.PathLike)):
@@ -210,8 +209,7 @@ def process_dng(
                 elif hasattr(dng_input, "read"):
                     dng_data = dng_input.read()
                     if not dng_data:
-                        print("Error: DNG data from file-like object is empty.")
-                        return None
+                        raise ValueError("DNG data from file-like object is empty.")
                     from Quartz import kCGImageSourceTypeIdentifierHint
                     raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
                     ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
@@ -220,8 +218,7 @@ def process_dng(
                     raise TypeError("dng_input must be a file path or a file-like object.")
 
                 if not raw_filter:
-                    print("Error: Failed to create CIRAWFilter.")
-                    return None
+                    raise RuntimeError("Failed to create CIRAWFilter.")
 
                 output_ci_image = raw_filter.outputImage()
 
@@ -269,40 +266,6 @@ def process_dng(
                 return rgba_image[:, :, :3]
 
             except Exception as e:
-                import traceback
-                print(f"An error occurred during Core Image processing: {e}")
-                traceback.print_exc()
-                return None
+                raise RuntimeError(f"An error occurred during Core Image processing: {e}") from e
 
-
-
-def list_available_rgb_color_spaces():
-    """
-    Queries and prints all available RGB color spaces registered on the system.
-    """
-    if not core_image_available:
-        print("Cannot list methods, PyObjC/Quartz not available.")
-        return
-
-    print("\n--- Available Registered RGB NSColorSpaces ---")
-    # The constant NSColorModelRGB is not reliably exposed by PyObjC in this environment.
-    # We will use its underlying integer value, which is 1.
-    NSColorModelRGB = 1
-    
-    # This is the correct, modern API to get a list of all spaces for a model.
-    available_spaces = NSColorSpace.availableColorSpacesWithModel_(NSColorModelRGB)
-    
-    if not available_spaces:
-        print("No registered RGB color spaces found.")
-    else:
-        for space in available_spaces:
-            # localizedName provides the user-friendly name.
-            print(f"- {space.localizedName()}")
-            
-    print("--- End of List ---\n")
-
-
-if __name__ == '__main__':
-    # When this script is run directly, list the available color spaces.
-    list_available_rgb_color_spaces()
 

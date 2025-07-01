@@ -2,14 +2,15 @@
 
 This module handles DNG file creation and related functionality.
 """
+import cv2
+import logging
+import numpy as np
 
 from pathlib import Path
-import cv2
-import numpy as np
-from typing import Optional, List, Dict, Tuple, Union, Any
+from tifffile import PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
+from typing import Optional, List, Dict, Tuple, Any
 
-import tifffile
-from tifffile import TIFF, PHOTOMETRIC
+logger = logging.getLogger(__name__)
 
 BAYER_PATTERN_MAP = {
     "RGGB": (0, 1, 1, 2),  # R G / G B
@@ -145,10 +146,10 @@ class CameraProfiles:
 
     def get(self, camera_model_str: str) -> dict:
         """Retrieve a camera profile using case-insensitive key matching."""
-        return self._normalized_profiles.get(
-            camera_model_str.upper(),
-            self._normalized_profiles.get("DEFAULT", {}),
-        )
+        profile = self._normalized_profiles.get(camera_model_str.upper())
+        if profile is None:
+            logger.warning(f"Camera profile for '{camera_model_str}' not found.")
+        return profile
 
 
 _CAMERA_PROFILES_INSTANCE = CameraProfiles()
@@ -169,9 +170,7 @@ def _generate_dng_thumbnail(color_data: np.ndarray) -> Optional[np.ndarray]:
     thumbnail_resized = cv2.resize(color_data, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     # No rotation, as main DNG data is not currently rotated in write_dng
-    print(
-        f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}"
-    )
+    logger.info(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
     return thumbnail_resized
 
 
@@ -251,16 +250,15 @@ def write_dng(
         camera_make: Make of the camera
         camera_model: Model of the camera
         cfa_pattern: CFA pattern string, e.g., 'RGGB'
-        crop_region: Optional tuple (left, top, width, height) to crop the raw_data.
-                     Coordinates are 0-indexed. Default: None (no crop).
-                     Crop coordinates must be even numbers.
         jxl_distance: JPEG XL Butteraugli distance. Lower is higher quality.
                      Default: None (no JXL compression).
         jxl_effort: JPEG XL compression effort (1-9). Higher is more compression/slower.
                     Only used if jxl_distance is also specified. Default: None (codec default).
-        generate_thumbnail: Whether to generate a thumbnail image. Default: True
-        exif_bytes: Optional bytes object containing the EXIF data segment.
+        color_data: Optional color data for preview
+        exif_dict: Optional EXIF data in dict format used by piexif
     """
+
+    logger.info(f"Writing DNG to {destination_file}")
 
     # TODO: implement param validation here - raw_data not none, W/H even, cfa pattern valid, bpp <= 16
 
@@ -272,14 +270,9 @@ def write_dng(
     if color_data is not None:
         try:
             thumbnail_image = _generate_dng_thumbnail(color_data)
-            if thumbnail_image is not None:
-                print(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
-        except ValueError as e:
-            print(f"Warning: Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
+            logger.info(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
         except Exception as e:
-            print(
-                f"Warning: Unexpected error generating thumbnail: {e}. Proceeding without thumbnail."
-            )
+            logger.warning(f"Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
 
     # format the DNG specific tags
     # Get camera profile based on camera_model
@@ -348,7 +341,7 @@ def write_dng(
     dng_cfa_tags.add_tag(("CFAPlaneColor", "B", 3, (0, 1, 2)))
 
     try:
-        with tifffile.TiffWriter(destination_file, bigtiff=False) as tif:
+        with TiffWriter(destination_file, bigtiff=False) as tif:
             if thumbnail_image is not None:
                 # Prepare thumbnail specific tags
                 dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
@@ -383,8 +376,8 @@ def write_dng(
 
             if jxl_distance is not None:
                 if not (0.0 <= jxl_distance <= 15.0):
-                    print(
-                        f"Warning: JXL distance {jxl_distance} is outside the "
+                    logger.warning(
+                        f"JXL distance {jxl_distance} is outside the "
                         f"typical range [0.0, 15.0]. "
                     )
                 # For JXL, distance 0.0 is mathematically lossless.
@@ -398,7 +391,7 @@ def write_dng(
                 if jxl_effort is None:
                     jxl_effort = 5
                 compressionargs["effort"] = jxl_effort
-                print(
+                logger.info(
                     f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}"
                 )
 
@@ -424,14 +417,14 @@ def write_dng(
             )
             tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=datasize)
 
-        print(f"Successfully wrote DNG file to {destination_file}")
+        logger.info(f"Successfully wrote DNG file to {destination_file}")
 
     except Exception as e:
-        print(f"Error saving DNG file with tifffile.TiffWriter: {e}")
+        logger.error(f"Error saving DNG file with TiffWriter: {e}")
         raise
 
 
-class DngFile(tifffile.TiffFile):
+class DngFile(TiffFile):
 
     """A TIFF file with DNG-specific extensions and helper methods."""
 
@@ -488,7 +481,7 @@ class DngFile(tifffile.TiffFile):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _iter_all_pages_recursive(self, pages_list: Optional[List[tifffile.TiffPage]]):
+    def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
         """Recursively iterates through all TIFF pages, including nested ones."""
         if pages_list is None:
             return
@@ -576,7 +569,7 @@ class DngFile(tifffile.TiffFile):
 
         return info_list
 
-    def _get_page_by_id(self, target_page_id: int) -> Optional[tifffile.TiffPage]:
+    def _get_page_by_id(self, target_page_id: int) -> Optional[TiffPage]:
         """Helper to retrieve a specific TiffPage by its flattened, 0-based ID."""
         for i, page in enumerate(self._iter_all_pages_recursive(self.pages)):
             if i == target_page_id:
