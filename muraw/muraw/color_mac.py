@@ -169,6 +169,22 @@ def process_dng(
 
                     map_entry = RAW_FILTER_OPTION_MAP[key]
                     quartz_key_name_or_tuple, value_type = map_entry
+
+                    # --- Validate Input Types ---
+                    if value_type == "float" and not isinstance(value, (float, int)):
+                        raise TypeError(f"Invalid type for '{key}'. Expected float, got {type(value).__name__}.")
+                    if value_type == "bool" and not isinstance(value, bool):
+                        raise TypeError(f"Invalid type for '{key}'. Expected bool, got {type(value).__name__}.")
+                    if value_type == "bool_inverted" and not isinstance(value, bool):
+                        raise TypeError(f"Invalid type for '{key}'. Expected bool, got {type(value).__name__}.")
+                    if value_type == "int" and not isinstance(value, int):
+                        raise TypeError(f"Invalid type for '{key}'. Expected int, got {type(value).__name__}.")
+                    if value_type in ("point_xy_floats", "point_nsvalue"):
+                        if not isinstance(value, (list, tuple)) or len(value) != 2:
+                            raise TypeError(f"Invalid type or format for '{key}'. Expected a list/tuple of 2 numbers, got {value}.")
+                        if not all(isinstance(v, (float, int)) for v in value):
+                            raise TypeError(f"Invalid item types for '{key}'. Both items must be numbers, got {[type(v).__name__ for v in value]}.")
+
                     try:
                         if value_type == "float":
                             objc_value = NSNumber.numberWithFloat_(float(value))
