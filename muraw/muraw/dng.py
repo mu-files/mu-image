@@ -93,6 +93,9 @@ class MetadataTags:
                     elif tag_id == TIFF.TAGS["ExposureTime"]:
                         # ExposureTime is an unsigned rational (numerator, denominator).
                         self.add_tag((tag_id, "2I", 1, value))
+                    elif tag_id == TIFF.TAGS["MakerNote"]:
+                        # MakerNote is a byte array.
+                        self.add_tag((tag_id, "B", len(value), value))
                     # TODO: Add other specific, non-string tag handlers here (e.g., shorts, longs).
 
     def get_tags(self):
