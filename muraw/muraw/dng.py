@@ -8,7 +8,7 @@ import numpy as np
 
 from pathlib import Path
 from tifffile import PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Type, Union
 
 logger = logging.getLogger(__name__)
 
@@ -608,3 +608,52 @@ class DngFile(TiffFile):
             return None
 
         return p.asarray()
+
+    def get_tag(
+        self,
+        tag_name: str,
+        ifd: Optional[int] = None,
+        return_type: Optional[Type] = None,
+    ) -> Union[Any, None]:
+        """Retrieves a metadata tag's value from the DNG file.
+
+        Args:
+            tag_name: The name of the tag to retrieve (e.g., "ExposureTime").
+            ifd: Optional integer specifying the IFD to search. If None, all IFDs are searched.
+            return_type: The desired type for the return value (e.g., float, int, str).
+
+        Returns:
+            The tag's value, converted to `return_type` if possible. Returns None if the tag
+            is not found or if type conversion fails.
+        """
+        try:
+            tag_id = TIFF.TAGS[tag_name]
+        except KeyError:
+            logger.warning(f"Tag '{tag_name}' not found in TIFF tag registry.")
+            return None
+
+        pages_to_search = [self.pages[ifd]] if ifd is not None and ifd < len(self.pages) else self.pages
+
+        for page in pages_to_search:
+            if tag_id in page.tags:
+                tag = page.tags[tag_id]
+                value = tag.value
+
+                if return_type is None:
+                    return value
+
+                try:
+                    if return_type is float and isinstance(value, tuple) and len(value) == 2:
+                        # Handle rational to float conversion
+                        num, den = value
+                        return float(num / den) if den != 0 else 0.0
+                    else:
+                        return return_type(value)
+                except (TypeError, ValueError) as e:
+                    logger.warning(
+                        f"Could not convert tag '{tag_name}' value '{value}' to type {return_type}: {e}"
+                    )
+                    return None
+
+        return None
+
