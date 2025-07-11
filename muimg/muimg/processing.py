@@ -1,0 +1,203 @@
+import logging
+import queue
+import threading
+
+from datetime import datetime, timedelta
+from typing import Callable, Iterable, Any
+
+logger = logging.getLogger(__name__)
+
+
+class ProcessingPipeline:
+    """Manages a producer-consumer-writer workflow with multiple worker threads."""
+
+    def __init__(
+        self,
+        producer: Callable[[], Iterable[Any]],
+        consumer: Callable[[Any], Any],
+        writer: Callable[[Any], None] = None,
+        num_workers: int = 4,
+        queue_size: int = None,
+        writer_queue_size: int = None,
+    ):
+        """
+        Initializes the processing pipeline.
+
+        Args:
+            producer: A callable that returns an iterable of items.
+            consumer: A callable that takes an item and processes it. If a writer
+                      is provided, this function should return the result to be
+                      written.
+            writer: An optional callable that takes a processed item from the
+                    consumer and writes it (e.g., to disk).
+            num_workers: The number of concurrent consumer threads.
+            queue_size: Max size of the task queue. Defaults to num_workers * 4.
+            writer_queue_size: Max size of the writer queue. Defaults to queue_size.
+        """
+        if not callable(producer):
+            raise TypeError("Producer must be a callable that returns an iterable.")
+        if not callable(consumer):
+            raise TypeError("Consumer must be a callable.")
+        if writer and not callable(writer):
+            raise TypeError("Writer must be a callable if provided.")
+
+        self.producer = producer
+        self.consumer = consumer
+        self.writer = writer
+        self.num_workers = num_workers
+
+        if queue_size is None:
+            queue_size = num_workers * 4
+        self.task_queue = queue.Queue(maxsize=queue_size)
+
+        # For monitoring
+        self._stop_event = threading.Event()
+        self._task_queue_samples = []
+        self._task_queue_empty_time = 0
+
+        # Writer-specific setup
+        self.writer_queue = None
+        if self.writer:
+            if writer_queue_size is None:
+                writer_queue_size = queue_size
+            self.writer_queue = queue.Queue(maxsize=writer_queue_size)
+            self._writer_queue_samples = []
+            self._writer_queue_empty_time = 0
+
+    def _producer_thread(self):
+        """Internal method to run the producer and populate the task queue."""
+        logger.info(f"--- Starting producer thread (target: {self.producer.__name__}) ---")
+        try:
+            for item in self.producer():
+                self.task_queue.put(item)
+        finally:
+            logger.info(f"--- Producer thread ({self.producer.__name__}) finished. All tasks have been queued. ---")
+
+    def _consumer_thread(self, thread_num: int):
+        """Internal method for consumer workers."""
+        logger.info(f"--- Consumer thread {thread_num}/{self.num_workers} started (target: {self.consumer.__name__}) ---")
+        while not (self._stop_event.is_set() and self.task_queue.empty()):
+            try:
+                task = self.task_queue.get(timeout=0.1)
+                if task is None:  # Sentinel value
+                    self.task_queue.task_done()
+                    break
+
+                result = self.consumer(task)
+
+                # If there's a writer, pass the result to the writer queue
+                if self.writer and result is not None:
+                    self.writer_queue.put(result)
+
+                self.task_queue.task_done()
+            except queue.Empty:
+                continue
+
+    def _writer_thread(self):
+        """Internal method for the writer thread. Only runs if a writer is configured."""
+        logger.info(f"--- Starting writer thread (target: {self.writer.__name__}) ---")
+        while not (self._stop_event.is_set() and self.writer_queue.empty()):
+            try:
+                item_to_write = self.writer_queue.get(timeout=0.1)
+                if item_to_write is None:  # Sentinel
+                    self.writer_queue.task_done()
+                    break
+
+                self.writer(item_to_write)
+                self.writer_queue.task_done()
+            except queue.Empty:
+                continue
+
+        logger.info(f"--- Writer thread ({self.writer.__name__}) finished. ---")
+
+    def _monitor_queues(self, interval=0.1):
+        """Monitors the queue sizes at regular intervals."""
+        while not self._stop_event.wait(interval):
+            task_qsize = self.task_queue.qsize()
+            self._task_queue_samples.append(task_qsize)
+            if task_qsize == 0:
+                self._task_queue_empty_time += interval
+
+            if self.writer_queue:
+                writer_qsize = self.writer_queue.qsize()
+                self._writer_queue_samples.append(writer_qsize)
+                if writer_qsize == 0:
+                    self._writer_queue_empty_time += interval
+
+    def run(self):
+        """Starts and runs the entire processing pipeline."""
+        logger.info(f"Starting pipeline with {self.num_workers} worker threads...")
+        worker_threads = []
+        writer_thread = None
+
+        # Start the producer and monitor threads
+        producer_thread = threading.Thread(target=self._producer_thread)
+        producer_thread.start()
+
+        monitor_thread = threading.Thread(target=self._monitor_queues)
+        monitor_thread.start()
+
+        # Start the writer thread if configured
+        if self.writer:
+            writer_thread = threading.Thread(target=self._writer_thread)
+            writer_thread.start()
+
+        # Start consumer threads
+        for i in range(self.num_workers):
+            thread = threading.Thread(
+                target=self._consumer_thread,
+                args=(i + 1,),
+                name=f"ConsumerThread-{i+1}",
+            )
+            thread.start()
+            worker_threads.append(thread)
+
+        # Wait for the producer to finish
+        producer_thread.join()
+
+        # Wait for the consumers to process all items
+        self.task_queue.join()
+
+        # Signal consumers to stop
+        for _ in range(self.num_workers):
+            self.task_queue.put(None)  # Sentinel to unblock waiting consumers
+
+        # Wait for writer to finish (if it exists)
+        if writer_thread:
+            self.writer_queue.join()
+            self.writer_queue.put(None)  # Sentinel to unblock writer
+            writer_thread.join()
+
+        # Stop monitor and join all threads
+        self._stop_event.set()
+        for thread in worker_threads:
+            thread.join()
+        monitor_thread.join()
+
+        logger.info("Pipeline processing complete!")
+
+    def get_queue_stats(self) -> dict:
+        """Returns a dictionary with queue statistics."""
+        stats = {}
+        if not self._task_queue_samples:
+            stats["task_queue"] = {"avg_depth": 0, "empty_time": 0}
+        else:
+            avg_depth = sum(self._task_queue_samples) / len(self._task_queue_samples)
+            stats["task_queue"] = {
+                "avg_depth": avg_depth,
+                "empty_time": self._task_queue_empty_time,
+            }
+
+        if self.writer_queue:
+            if not self._writer_queue_samples:
+                stats["writer_queue"] = {"avg_depth": 0, "empty_time": 0}
+            else:
+                avg_depth = sum(self._writer_queue_samples) / len(
+                    self._writer_queue_samples
+                )
+                stats["writer_queue"] = {
+                    "avg_depth": avg_depth,
+                    "empty_time": self._writer_queue_empty_time,
+                }
+
+        return stats

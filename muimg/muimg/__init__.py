@@ -5,15 +5,17 @@ This module provides functionality for working with DNG files and raw image data
 """
 
 from .dng import (
+    BAYER_PATTERN_MAP,
     DngFile,
     write_dng,
-    BAYER_PATTERN_MAP,
 )
 from .color_mac import process_dng
+from .processing import ProcessingPipeline
 
 __all__ = [
-    'DngFile',
-    'write_dng',
     'BAYER_PATTERN_MAP',
+    'DngFile',
     'process_dng',
+    'ProcessingPipeline',
+    'write_dng',
 ]
