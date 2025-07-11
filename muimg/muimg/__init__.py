@@ -9,7 +9,7 @@ from .dng import (
     DngFile,
     write_dng,
 )
-from .color_mac import process_dng
+from .color_mac import process_raw_core_image
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
 
@@ -19,7 +19,7 @@ __all__ = [
     'CsvReader',
     'CsvWriter',
     'DngFile',
-    'process_dng',
+    'process_raw_core_image',
     'ProcessingPipeline',
     'write_dng',
 ]

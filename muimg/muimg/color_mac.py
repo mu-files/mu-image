@@ -139,7 +139,7 @@ class CoreImageContext:
         self.close()
 
 
-def process_dng(
+def process_raw_core_image(
     dng_input: Union[str, os.PathLike, IO[bytes]],
     raw_filter_options: Optional[dict] = None,
     use_gpu: bool = False,
