@@ -5,9 +5,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 from typing import Optional, Dict
-from muraw.dng import DngFile
-from muraw.color import process_cfa_raw, process_linear_raw
-from muraw.color_mac import core_image_available, CoreImageContext
+from muimg.dng import DngFile
+from muimg.color import process_cfa_raw, process_linear_raw
+from muimg.color_mac import core_image_available, CoreImageContext
 from tifffile import TIFF
 
 # Corrected path to test files, relative to this test script
@@ -152,7 +152,7 @@ def _decode_and_save_cfa_page(
     )
 
     try:
-        # Use process_cfa_raw from muraw.color module
+        # Use process_cfa_raw from muimg.color module
         color_image_full_depth = process_cfa_raw(raw_cfa_data, tags)
     except Exception as e:
         print(f"          ERROR: Failed to process CFA data using process_cfa_raw: {e}")

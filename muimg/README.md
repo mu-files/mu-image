@@ -1,11 +1,11 @@
-# muraw
+# muimg
 
 This package is part of the mu-image project and provides utilities for working with raw image data, including DNG file generation.
 
 ## Installation
 
 ```bash
-pip install muraw
+pip install muimg
 ```
 
 ## Installation
@@ -18,7 +18,7 @@ pip install -e .
 ## Usage
 
 ```python
-from muraw import dng
+from muimg import dng
 
 # Write a DNG file
 dng.write_dng(

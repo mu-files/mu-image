@@ -359,7 +359,7 @@ def write_dng(
                     "extratags": dng_tags.get_tags(),
                     "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
                     "subifds": 1,  # Has main image as subifd
-                    "software": "muraw",
+                    "software": "muimg",
                 }
                 # set datasize to max uncompressed size to avoid writing strips
                 datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
@@ -374,7 +374,7 @@ def write_dng(
                 "subfiletype": 0,
                 "photometric": "cfa",
                 "subifds": 0,
-                "software": "muraw",
+                "software": "muimg",
             }
 
             if jxl_distance is not None:
@@ -656,4 +656,3 @@ class DngFile(TiffFile):
                     return None
 
         return None
-
