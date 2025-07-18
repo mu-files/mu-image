@@ -3,12 +3,13 @@
 This module handles DNG file creation and related functionality.
 """
 import cv2
+import io
 import logging
 import numpy as np
 
 from pathlib import Path
 from tifffile import PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
-from typing import Optional, List, Dict, Tuple, Any, Type, Union
+from typing import Optional, Union, List, Dict, Tuple, Any, Type, Union
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,8 @@ class CameraProfiles:
         """Retrieve a camera profile using case-insensitive key matching."""
         profile = self._normalized_profiles.get(camera_model_str.upper())
         if profile is None:
-            logger.warning(f"Camera profile for '{camera_model_str}' not found.")
+            logger.warning(f"Camera profile for '{camera_model_str}' not found. Falling back to DEFAULT.")
+            return self._normalized_profiles.get("DEFAULT")
         return profile
 
 
@@ -234,7 +236,7 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
 
 def write_dng(
     raw_data: np.ndarray,
-    destination_file: Path,
+    destination_file: Union[Path, io.BytesIO],
     bits_per_pixel: int,
     camera_make: str = "Unknown",
     camera_model: str = "Unknown",
@@ -248,7 +250,7 @@ def write_dng(
 
     Args:
         raw_data: Raw image data as numpy array (H, W)
-        destination_file: Path where to save the DNG file
+        destination_file: Path or io.BytesIO object where to save the DNG file.
         bits_per_pixel: Number of bits per pixel (e.g. 12, 14, 16)
         camera_make: Make of the camera
         camera_model: Model of the camera
@@ -261,7 +263,10 @@ def write_dng(
         exif_dict: Optional EXIF data in dict format used by piexif
     """
 
-    logger.info(f"Writing DNG to {destination_file}")
+    if isinstance(destination_file, Path):
+        logger.info(f"Writing DNG to {destination_file}")
+    else:
+        logger.info("Writing DNG to in-memory buffer")
 
     # TODO: implement param validation here - raw_data not none, W/H even, cfa pattern valid, bpp <= 16
 
