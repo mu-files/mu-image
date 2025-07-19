@@ -135,6 +135,17 @@ class CameraProfiles:
                 ),
                 "illuminant1": CALIBRATIONILLUMINANT_D55,
             },
+            "ASI678MC": {
+                "color_matrix1": np.array(
+                    [
+                        (1.0, -0.6518, 0.0555),
+                        (0.4936, -0.2341, 0.0898),
+                        (0.6951, -0.4777, 0.2660),
+                    ],
+                    dtype=np.float64,
+                ),
+                "illuminant1": CALIBRATIONILLUMINANT_D65,
+            },
             # Add other camera models here, e.g.:
             # "AnotherCameraModel": {
             #     "color_matrix": np.array([...]),
@@ -145,6 +156,7 @@ class CameraProfiles:
                 "illuminant1": CALIBRATIONILLUMINANT_UNKNOWN,
             },
         }
+
         # Internal storage with uppercase keys for case-insensitive lookup
         self._normalized_profiles = {k.upper(): v for k, v in initial_profiles.items()}
 
