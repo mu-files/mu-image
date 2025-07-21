@@ -91,9 +91,15 @@ class MetadataTags:
                     if isinstance(value, str):
                         str_value = value
                         self.add_string_tag(tag_id, str_value)
+                    elif tag_id == TIFF.TAGS["DateTimeOriginal"]:
+                        # DateTimeOriginal is a string (date/time when original image was taken).
+                        self.add_string_tag(tag_id, value)
                     elif tag_id == TIFF.TAGS["ExposureTime"]:
                         # ExposureTime is an unsigned rational (numerator, denominator).
                         self.add_tag((tag_id, "2I", 1, value))
+                    elif tag_id == TIFF.TAGS["Temperature"]:
+                        # Temperature is a signed rational (numerator, denominator).
+                        self.add_tag((tag_id, "2i", 1, value))
                     elif tag_id == TIFF.TAGS["MakerNote"]:
                         # MakerNote is a byte array.
                         self.add_tag((tag_id, "B", len(value), value))
@@ -272,7 +278,7 @@ def write_dng(
         jxl_effort: JPEG XL compression effort (1-9). Higher is more compression/slower.
                     Only used if jxl_distance is also specified. Default: None (codec default).
         color_data: Optional color data for preview
-        exif_dict: Optional EXIF data in dict format used by piexif
+        exif_dict: Optional EXIF data in dict format
     """
 
     if isinstance(destination_file, Path):
