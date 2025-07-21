@@ -19,6 +19,8 @@ try:
         NSColorSpace,
         kCIFormatRGBA16,
         kCIContextWorkingColorSpace,
+        CGColorSpaceCreateWithICCProfile,
+        kCIContextUseSoftwareRenderer,
     )
     core_image_available = True
 except ImportError:
@@ -77,11 +79,6 @@ class CoreImageContext:
                 "Core Image is not available on this system. "
                 "This class requires macOS with PyObjC installed."
             )
-
-        from Quartz import (
-            CGColorSpaceCreateWithICCProfile,
-            kCIContextUseSoftwareRenderer,
-        )
 
         working_space_ns = None
         output_space_cg = None
