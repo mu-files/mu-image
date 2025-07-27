@@ -261,8 +261,9 @@ def write_dng(
     cfa_pattern: str = "RGGB",
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
-    color_data: Optional[np.ndarray] = None,  # Optional color data for preview
-    exif_dict: Optional[dict] = None # Optional EXIF data in dict format used by piexif
+    color_data: Optional[np.ndarray] = None,
+    exif_dict: Optional[dict] = None,
+    external_camera_profile: Optional["MetadataTags"] = None  
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -279,6 +280,8 @@ def write_dng(
                     Only used if jxl_distance is also specified. Default: None (codec default).
         color_data: Optional color data for preview
         exif_dict: Optional EXIF data in dict format
+        external_camera_profile: Optional MetadataTags instance to override default 
+                                 color matrix and illuminant
     """
 
     if isinstance(destination_file, Path):
@@ -299,17 +302,6 @@ def write_dng(
             logger.info(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
         except Exception as e:
             logger.warning(f"Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
-
-    # format the DNG specific tags
-    # Get camera profile based on camera_model
-    # Fallback to "default" profile if camera_model not found
-    profile = _CAMERA_PROFILES_INSTANCE.get(camera_model)
-    color_matrix_floats = profile["color_matrix1"]
-    illuminant = profile["illuminant1"]
-
-    # TODO: come up with a way to calculate this
-    _as_shot_neutral_orig = ((72, 100), (100, 100), (100, 100))
-    as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
 
     camera_model_utf8_bytes_null = (camera_model + "\x00").encode("utf-8")
 
@@ -342,9 +334,33 @@ def write_dng(
     # the tag types are from tifffile.py DATA_DTYPES
     dng_tags = MetadataTags()
     dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
-    dng_tags.add_matrix_as_rational_tag("ColorMatrix1", color_matrix_floats)
-    dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, illuminant))
-    dng_tags.add_tag(("AsShotNeutral", "2I", 3, as_shot_neutral_values_flat))
+
+    # Use external profile if provided
+    if external_camera_profile is not None:
+        dng_tags.extend(external_camera_profile)
+    else:
+        profile = _CAMERA_PROFILES_INSTANCE.get(camera_model)
+        color_matrix_floats = profile["color_matrix1"]
+        illuminant = profile["illuminant1"]
+
+        dng_tags.add_matrix_as_rational_tag("ColorMatrix1", color_matrix_floats)
+        dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, illuminant))
+    
+    # Add AsShotNeutral only if not already provided in external_camera_profile
+    has_as_shot_neutral = False
+    if external_camera_profile is not None:
+        # Check if AsShotNeutral is already in the external tags
+        for tag in external_camera_profile.get_tags():
+            if tag[0] == TIFF.TAGS["AsShotNeutral"]:
+                has_as_shot_neutral = True
+                break
+    
+    if not has_as_shot_neutral:
+        # Use default AsShotNeutral values
+        _as_shot_neutral_orig = ((72, 100), (100, 100), (100, 100))
+        as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
+        dng_tags.add_tag(("AsShotNeutral", "2I", 3, as_shot_neutral_values_flat))
+    
     dng_tags.add_string_tag("Make", camera_make)
     dng_tags.add_string_tag("Model", camera_model)
     dng_tags.add_string_tag("UniqueCameraModel", camera_model)
@@ -357,7 +373,12 @@ def write_dng(
         )
     )
     dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
-    dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
+    if jxl_distance is None:
+        # need latest version for CFA compression but lots of old software can't handle it
+        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 4, 0, 0)))
+    else:
+        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
+
     if( exif_dict is not None ):
         dng_tags.add_exif_dict(exif_dict)
 

@@ -7,6 +7,7 @@ This module provides functionality for working with DNG files and raw image data
 from .dng import (
     BAYER_PATTERN_MAP,
     DngFile,
+    MetadataTags,
     write_dng,
 )
 from .color_mac import process_raw_core_image
@@ -19,6 +20,7 @@ __all__ = [
     'CsvReader',
     'CsvWriter',
     'DngFile',
+    'MetadataTags',
     'process_raw_core_image',
     'ProcessingPipeline',
     'write_dng',

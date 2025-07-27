@@ -16,7 +16,12 @@ dependencies = [
     "pyobjc>=8.0",
     "tifffile>=2025.6.1",
     "imagecodecs[all]>=2024.1.1",
+    "click>=8.0.0",
+    "setproctitle>=1.3.0",
 ]
+
+[project.scripts]
+muimg = "muimg.cli:main"
 
 [tool.setuptools]
 packages = ["muimg"]
