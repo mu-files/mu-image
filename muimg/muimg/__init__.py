@@ -8,6 +8,9 @@ from .dng import (
     BAYER_PATTERN_MAP,
     DngFile,
     MetadataTags,
+    cfa_from_dng,
+    rgb_from_cfa,
+    rgb_from_dng,
     write_dng,
 )
 from .color_mac import process_raw_core_image
@@ -21,7 +24,10 @@ __all__ = [
     'CsvWriter',
     'DngFile',
     'MetadataTags',
+    'cfa_from_dng',
     'process_raw_core_image',
     'ProcessingPipeline',
+    'rgb_from_cfa',
+    'rgb_from_dng',
     'write_dng',
 ]

@@ -23,16 +23,39 @@ BAYER_PATTERN_MAP = {
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
 
+    '''
+    TIFF.DATA_DTYPES (2nd argument to add_tag) used in tifffile.py below have following mapping:
+        'B': unsigned byte
+        's': ascii string
+        'H': unsigned short
+        'I': unsigned long
+        '2I': unsigned rational
+        'b': signed byte
+        'h': signed short
+        'i': signed long
+        '2i': signed rational
+        'f': float
+        'd': double
+    '''
+
     @staticmethod
     def _matrix_to_rational_tuple(matrix: np.ndarray, denominator: int = 10000) -> tuple:
         """Converts a NumPy float matrix to a flat tuple of (numerator, denominator) pairs."""
-        rational_pairs = []
-        for r in range(matrix.shape[0]):
-            for c in range(matrix.shape[1]):
-                val = matrix[r, c]
-                numerator = int(round(val * denominator))
-                rational_pairs.append((numerator, denominator))
-        return tuple(item for pair in rational_pairs for item in pair)
+        # Flatten the matrix and use the common rational conversion helper
+        flat_array = matrix.flatten()
+        rational_list = MetadataTags.float_array_to_rationals(flat_array, max_denominator=denominator)
+        return tuple(rational_list)
+
+    @staticmethod
+    def float_array_to_rationals(float_array, max_denominator: int = 10000):
+        """Convert a list/array of floats to TIFF rational format using Fraction for precision."""
+        from fractions import Fraction
+        
+        rationals = []
+        for val in float_array:
+            frac = Fraction(val).limit_denominator(max_denominator)
+            rationals.extend([frac.numerator, frac.denominator])
+        return rationals
 
     def __init__(self):
         self._tags = []
@@ -83,27 +106,16 @@ class MetadataTags:
         flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
         self.add_tag((tag_name_str, "2i", 9, flat_tuple_values))
 
-    def add_exif_dict(self, exif_dict: dict):
-        # TODO: need to add more comprehensive list but just select those we need for now
-        for ifd_name in ['0th', 'Exif']:
-            if ifd_name in exif_dict and isinstance(exif_dict[ifd_name], dict):
-                for tag_id, value in exif_dict[ifd_name].items():
-                    if isinstance(value, str):
-                        str_value = value
-                        self.add_string_tag(tag_id, str_value)
-                    elif tag_id == TIFF.TAGS["DateTimeOriginal"]:
-                        # DateTimeOriginal is a string (date/time when original image was taken).
-                        self.add_string_tag(tag_id, value)
-                    elif tag_id == TIFF.TAGS["ExposureTime"]:
-                        # ExposureTime is an unsigned rational (numerator, denominator).
-                        self.add_tag((tag_id, "2I", 1, value))
-                    elif tag_id == TIFF.TAGS["Temperature"]:
-                        # Temperature is a signed rational (numerator, denominator).
-                        self.add_tag((tag_id, "2i", 1, value))
-                    elif tag_id == TIFF.TAGS["MakerNote"]:
-                        # MakerNote is a byte array.
-                        self.add_tag((tag_id, "B", len(value), value))
-                    # TODO: Add other specific, non-string tag handlers here (e.g., shorts, longs).
+    def add_float_array_as_rational_tag(
+        self,
+        tag_name_str: str,
+        float_array,
+        max_denominator: int = 10000,
+    ):
+        """Converts a float array to rationals and adds it as a tag."""
+        rational_list = MetadataTags.float_array_to_rationals(float_array, max_denominator)
+        count = len(float_array)
+        self.add_tag((tag_name_str, "2I", count, tuple(rational_list)))
 
     def get_tags(self):
         self._tags.sort(key=lambda x: x[0])
@@ -113,69 +125,32 @@ class MetadataTags:
 # Default values for tags
 ORIENTATION_HORIZONTAL = 1
 
-# illuminants take values defined in the Exif standard by LightSource tag
-CALIBRATIONILLUMINANT_UNKNOWN = 0
-CALIBRATIONILLUMINANT_D55 = 20  # Standard D55 (warm daylight at sunrise or sunset)
-CALIBRATIONILLUMINANT_D65 = 21  # Standard D65 (daylight)
-CALIBRATIONILLUMINANT_D75 = 22  # Standard D75 (north sky daylight)
-CALIBRATIONILLUMINANT_D50 = (
-    23  # Standard D50 (daylight at the horizon during early morning or late afternoon)
-)
+# Complete illuminant mapping (from EXIF specification)
+ILLUMINANTS = {
+    0: 'Unknown',
+    1: 'Daylight',
+    2: 'Fluorescent', 
+    3: 'Tungsten (incandescent light)',
+    4: 'Flash',
+    9: 'Fine weather',
+    10: 'Cloudy weather',
+    11: 'Shade',
+    12: 'Daylight fluorescent (D 5700 – 7100K)',
+    13: 'Day white fluorescent (N 4600 – 5400K)',
+    14: 'Cool white fluorescent (W 3900 – 4500K)',
+    15: 'White fluorescent (WW 3200 – 3700K)',
+    17: 'Standard light A',
+    18: 'Standard light B',
+    19: 'Standard light C',
+    20: 'D55',
+    21: 'D65',
+    22: 'D75',
+    23: 'D50',
+    24: 'ISO studio tungsten',
+    255: 'Other light source',
+}
 
 PREVIEWCOLORSPACE_SRGB = 1
-
-
-# Camera Color Profiles
-class CameraProfiles:
-    def __init__(self):
-        # Initial definition with human-readable keys
-        initial_profiles = {
-            "ASI676MC": {
-                "color_matrix1": np.array(
-                    [
-                        [1.402600, -0.642900, -0.063300],
-                        [0.348200, 0.441700, 0.2185],
-                        [0.327800, -0.009700, 0.840500],
-                    ],
-                    dtype=np.float64,
-                ),
-                "illuminant1": CALIBRATIONILLUMINANT_D55,
-            },
-            "ASI678MC": {
-                "color_matrix1": np.array(
-                    [
-                        (1.0, -0.6518, 0.0555),
-                        (0.4936, -0.2341, 0.0898),
-                        (0.6951, -0.4777, 0.2660),
-                    ],
-                    dtype=np.float64,
-                ),
-                "illuminant1": CALIBRATIONILLUMINANT_D65,
-            },
-            # Add other camera models here, e.g.:
-            # "AnotherCameraModel": {
-            #     "color_matrix": np.array([...]),
-            #     "illuminant": CALIBRATIONILLUMINANT_DAYLIGHT # Or another specific illuminant
-            # },
-            "DEFAULT": {
-                "color_matrix1": np.identity(3, dtype=np.float64),
-                "illuminant1": CALIBRATIONILLUMINANT_UNKNOWN,
-            },
-        }
-
-        # Internal storage with uppercase keys for case-insensitive lookup
-        self._normalized_profiles = {k.upper(): v for k, v in initial_profiles.items()}
-
-    def get(self, camera_model_str: str) -> dict:
-        """Retrieve a camera profile using case-insensitive key matching."""
-        profile = self._normalized_profiles.get(camera_model_str.upper())
-        if profile is None:
-            logger.warning(f"Camera profile for '{camera_model_str}' not found. Falling back to DEFAULT.")
-            return self._normalized_profiles.get("DEFAULT")
-        return profile
-
-
-_CAMERA_PROFILES_INSTANCE = CameraProfiles()
 
 
 def _generate_dng_thumbnail(color_data: np.ndarray) -> Optional[np.ndarray]:
@@ -249,21 +224,129 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
     return original_data
 
 
-# TODO: pass in exiftags, list of preview/thumbs, calibration matrix and illuminant
+def cfa_from_dng(
+    dng_file: "DngFile",
+) -> tuple[np.ndarray, str]:
+    """
+    Loads a DNG file and extracts the raw CFA data and pattern.
 
+    Returns:
+        Tuple of (raw_cfa_array, cfa_pattern_string)
+        
+    Raises:
+        ValueError: If the DNG file format is invalid or missing required data.
+        RuntimeError: If DNG processing fails.
+    """
+    try:
+        # 1. Get info about raw pages to find the CFA data
+        raw_pages_info = dng_file.get_raw_pages_info()
+        if not raw_pages_info:
+            raise ValueError("No raw pages found in DNG")
+
+        # 2. Find the first page with CFA photometric interpretation
+        cfa_page_details = None
+        for page_id_loop, shape, tags_loop in raw_pages_info:
+            if tags_loop.get("PhotometricInterpretation") == "CFA":
+                cfa_page_details = (page_id_loop, tags_loop)
+                break
+
+        if cfa_page_details is None:
+            raise ValueError("No page with CFA interpretation found in DNG")
+
+        page_id, tags = cfa_page_details
+        
+        # 3. Get the CFA pattern from the tags
+        cfa_pattern_value = tags.get("CFAPattern")
+        if cfa_pattern_value is None:
+            raise ValueError(f"Missing CFAPattern tag for page {page_id}")
+
+        # 4. Get the CFA data array
+        raw_cfa = dng_file.get_raw_cfa_by_id(page_id)
+        if raw_cfa is None:
+            raise RuntimeError(
+                f"Failed to retrieve raw CFA data for page {page_id}"
+            )
+
+    except (ValueError, RuntimeError):
+        # Re-raise our specific errors as-is
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Error processing DNG file: {e}") from e
+
+    return raw_cfa, cfa_pattern_value
+
+
+def rgb_from_cfa(
+    raw_cfa: np.ndarray, 
+    cfa_pattern_str: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extracts averaged R, G, and B planes from CFA data using the given pattern.
+    
+    Args:
+        raw_cfa: Raw CFA data array
+        cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
+        
+    Returns:
+        Tuple of (r_plane, g_plane, b_plane)
+        
+    Raises:
+        ValueError: If the CFA pattern is invalid.
+    """
+    # Parse the CFA pattern string
+    cfa_pattern_flat = BAYER_PATTERN_MAP.get(cfa_pattern_str)
+    if cfa_pattern_flat is None:
+        raise ValueError(f"Unknown CFAPattern string '{cfa_pattern_str}'")
+
+    cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
+    
+    # Extract R, G, B planes based on their positions in the CFA pattern
+    # The BAYER_PATTERN_MAP uses integer values (0=R, 1=G, 2=B)
+    r_pos_list = np.argwhere(cfa_pattern == 0)
+    g_pos_list = np.argwhere(cfa_pattern == 1)
+    b_pos_list = np.argwhere(cfa_pattern == 2)
+
+    # There should be exactly one R, one B, and two G channels
+    if len(r_pos_list) != 1 or len(b_pos_list) != 1 or len(g_pos_list) != 2:
+        raise ValueError(f"Unexpected CFA pattern layout: {cfa_pattern}")
+
+    # Extract planes
+    r_plane = raw_cfa[r_pos_list[0][0]::2, r_pos_list[0][1]::2]
+    b_plane = raw_cfa[b_pos_list[0][0]::2, b_pos_list[0][1]::2]
+    
+    g1_plane = raw_cfa[g_pos_list[0][0]::2, g_pos_list[0][1]::2]
+    g2_plane = raw_cfa[g_pos_list[1][0]::2, g_pos_list[1][1]::2]
+
+    g_plane = ((
+        g1_plane.astype(np.uint32) + g2_plane.astype(np.uint32)) // 2).astype(g1_plane.dtype)
+
+    return r_plane, g_plane, b_plane
+
+
+def rgb_from_dng(
+    dng_file: "DngFile",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Loads a DNG file, finds the primary CFA raw image, and extracts averaged
+    R, G, and B planes.
+
+    Raises:
+        ValueError: If the DNG file format is invalid or missing required data.
+        RuntimeError: If DNG processing fails.
+    """
+    # Extract CFA data and pattern, then process to RGB planes
+    raw_cfa, cfa_pattern_value = cfa_from_dng(dng_file)
+    return rgb_from_cfa(raw_cfa, cfa_pattern_value)
 
 def write_dng(
     raw_data: np.ndarray,
     destination_file: Union[Path, io.BytesIO],
     bits_per_pixel: int,
-    camera_make: str = "Unknown",
-    camera_model: str = "Unknown",
     cfa_pattern: str = "RGGB",
+    camera_profile: Optional["MetadataTags"] = None,
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
-    color_data: Optional[np.ndarray] = None,
-    exif_dict: Optional[dict] = None,
-    external_camera_profile: Optional["MetadataTags"] = None  
+    color_data: Optional[np.ndarray] = None
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -279,9 +362,8 @@ def write_dng(
         jxl_effort: JPEG XL compression effort (1-9). Higher is more compression/slower.
                     Only used if jxl_distance is also specified. Default: None (codec default).
         color_data: Optional color data for preview
-        exif_dict: Optional EXIF data in dict format
-        external_camera_profile: Optional MetadataTags instance to override default 
-                                 color matrix and illuminant
+        camera_profile: Optional MetadataTags instance to override default 
+                        color matrix and illuminant
     """
 
     if isinstance(destination_file, Path):
@@ -303,8 +385,6 @@ def write_dng(
         except Exception as e:
             logger.warning(f"Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
 
-    camera_model_utf8_bytes_null = (camera_model + "\x00").encode("utf-8")
-
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
         bits_per_pixel = 16
@@ -315,72 +395,36 @@ def write_dng(
     else:
         processed_raw_data = raw_data
 
-    '''
-    DATA TYPES (2nd argument to add_tag) used in tifffile.py below have following mapping:
-        'B': unsigned byte
-        's': ascii string
-        'H': unsigned short
-        'I': unsigned long
-        '2I': unsigned rational
-        'b': signed byte
-        'h': signed short
-        'i': signed long
-        '2i': signed rational
-        'f': float
-        'd': double
-    '''
-
     # the tag names are from tifffile.py TiffTagRegistry
     # the tag types are from tifffile.py DATA_DTYPES
     dng_tags = MetadataTags()
-    dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
 
-    # Use external profile if provided
-    if external_camera_profile is not None:
-        dng_tags.extend(external_camera_profile)
-    else:
-        profile = _CAMERA_PROFILES_INSTANCE.get(camera_model)
-        color_matrix_floats = profile["color_matrix1"]
-        illuminant = profile["illuminant1"]
+    # Use camera_profile if provided, otherwise create empty metadata
+    if camera_profile is not None:
+        dng_tags.extend(camera_profile)
+    
+    # Check for required tags and add defaults if missing
+    existing_tags = {tag[0] for tag in dng_tags.get_tags()}
+    
+    # Add Orientation if not set (default to horizontal)
+    if TIFF.TAGS["Orientation"] not in existing_tags:
+        dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
+    
+    # Add ColorMatrix1 if not set (default to 3x3 identity)
+    if TIFF.TAGS["ColorMatrix1"] not in existing_tags:
+        identity_matrix = np.identity(3, dtype=np.float64)
+        dng_tags.add_matrix_as_rational_tag("ColorMatrix1", identity_matrix)
+    
+    # Add CalibrationIlluminant1 if not set (default to unknown)
+    if TIFF.TAGS["CalibrationIlluminant1"] not in existing_tags:
+        dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, 0))  # 0 = Unknown
 
-        dng_tags.add_matrix_as_rational_tag("ColorMatrix1", color_matrix_floats)
-        dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, illuminant))
-    
-    # Add AsShotNeutral only if not already provided in external_camera_profile
-    has_as_shot_neutral = False
-    if external_camera_profile is not None:
-        # Check if AsShotNeutral is already in the external tags
-        for tag in external_camera_profile.get_tags():
-            if tag[0] == TIFF.TAGS["AsShotNeutral"]:
-                has_as_shot_neutral = True
-                break
-    
-    if not has_as_shot_neutral:
-        # Use default AsShotNeutral values
-        _as_shot_neutral_orig = ((72, 100), (100, 100), (100, 100))
-        as_shot_neutral_values_flat = tuple(item for pair in _as_shot_neutral_orig for item in pair)
-        dng_tags.add_tag(("AsShotNeutral", "2I", 3, as_shot_neutral_values_flat))
-    
-    dng_tags.add_string_tag("Make", camera_make)
-    dng_tags.add_string_tag("Model", camera_model)
-    dng_tags.add_string_tag("UniqueCameraModel", camera_model)
-    dng_tags.add_tag(
-        (
-            "LocalizedCameraModel",
-            "B",
-            len(camera_model_utf8_bytes_null),
-            camera_model_utf8_bytes_null,
-        )
-    )
     dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
     if jxl_distance is None:
         # need latest version for CFA compression but lots of old software can't handle it
         dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 4, 0, 0)))
     else:
         dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
-
-    if( exif_dict is not None ):
-        dng_tags.add_exif_dict(exif_dict)
 
     dng_cfa_tags = MetadataTags()
     dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
@@ -394,7 +438,6 @@ def write_dng(
                 dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
 
                 # Write Thumbnail to SubIFD 0
-                # TODO: could overwrite software if that tag is present in exif_dict
                 thumb_ifd_args = {
                     "photometric": "rgb",  # Interprets data as RGB
                     "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
@@ -403,7 +446,6 @@ def write_dng(
                     "extratags": dng_tags.get_tags(),
                     "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
                     "subifds": 1,  # Has main image as subifd
-                    "software": "muimg",
                 }
                 # set datasize to max uncompressed size to avoid writing strips
                 datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
@@ -417,8 +459,7 @@ def write_dng(
             main_image_ifd_args = {
                 "subfiletype": 0,
                 "photometric": "cfa",
-                "subifds": 0,
-                "software": "muimg",
+                "subifds": 0
             }
 
             if jxl_distance is not None:
