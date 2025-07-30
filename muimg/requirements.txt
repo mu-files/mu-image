@@ -1,0 +1,8 @@
+opencv-python-headless>=4.9.0
+numpy>=2.0.0
+astropy>=5.0.0
+pyobjc>=8.0
+tifffile>=2025.6.1
+imagecodecs[all]>=2024.1.1
+click>=8.0.0
+setproctitle>=1.3.0
