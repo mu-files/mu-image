@@ -20,7 +20,7 @@ dependencies = [
     "numpy",
     "astropy",
     "pyobjc-framework-Quartz",
-    "pyobjc-framework-Foundation",
+    "pyobjc-framework-Cocoa",
     "tifffile",
     "imagecodecs[all]",
     "click",
