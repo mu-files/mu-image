@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muimg"
+version = "0.1.0"
+description = "DNG and raw image processing utilities"
+authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "opencv-python-headless",
+    "numpy",
+    "astropy",
+    "pyobjc",
+    "tifffile",
+    "imagecodecs[all]",
+    "click",
+    "setproctitle",
+]
+
+[project.scripts]
+muimg = "muimg.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mu-files/mu-image"
+Repository = "https://github.com/mu-files/mu-image"
+
+[tool.setuptools]
+packages = ["muimg"]
