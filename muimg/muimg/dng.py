@@ -152,26 +152,6 @@ ILLUMINANTS = {
 
 PREVIEWCOLORSPACE_SRGB = 1
 
-
-def _generate_dng_thumbnail(color_data: np.ndarray) -> Optional[np.ndarray]:
-    """Generate an 8-bit RGB thumbnail from color data."""
-
-    # Resize
-    h_full, w_full = color_data.shape[:2]
-    if h_full > w_full:
-        new_h = int(max(h_full / 4, 256))
-        new_w = int(w_full * (new_h / h_full))
-    else:
-        new_w = int(max(w_full / 4, 256))
-        new_h = int(h_full * (new_w / w_full))
-
-    thumbnail_resized = cv2.resize(color_data, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-    # No rotation, as main DNG data is not currently rotated in write_dng
-    logger.info(f"Thumbnail generated successfully: {thumbnail_resized.shape[1]}x{thumbnail_resized.shape[0]}")
-    return thumbnail_resized
-
-
 def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     """Swizzle RGGB CFA data into a 2x2 grid of R, G1, G2, B sub-images."""
 
@@ -189,7 +169,6 @@ def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     swizzled_data = np.block([[r_channel, g1_channel], [g2_channel, b_channel]])
 
     return swizzled_data
-
 
 def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
     """Deswizzle CFA data from a 2x2 grid of R, G1, G2, B sub-images back to RGGB."""
@@ -367,23 +346,17 @@ def write_dng(
     """
 
     if isinstance(destination_file, Path):
-        logger.info(f"Writing DNG to {destination_file}")
+        logger.debug(f"Writing DNG to {destination_file}")
     else:
-        logger.info("Writing DNG to in-memory buffer")
+        logger.debug("Writing DNG to in-memory buffer")
 
     # TODO: implement param validation here - raw_data not none, W/H even, cfa pattern valid, bpp <= 16
 
     if raw_data.ndim != 2:
         raise ValueError(f"Expected 2D raw_data (height, width), got shape {raw_data.shape}")
 
-    # Generate thumbnail if requested
-    thumbnail_image = None
-    if color_data is not None:
-        try:
-            thumbnail_image = _generate_dng_thumbnail(color_data)
-            logger.info(f"Generated thumbnail: {thumbnail_image.shape[1]}x{thumbnail_image.shape[0]}")
-        except Exception as e:
-            logger.warning(f"Could not generate DNG thumbnail: {e}. Proceeding without thumbnail.")
+    # use the supplied color_data as thumbnail
+    thumbnail_image = color_data
 
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
@@ -479,7 +452,7 @@ def write_dng(
                 if jxl_effort is None:
                     jxl_effort = 5
                 compressionargs["effort"] = jxl_effort
-                logger.info(
+                logger.debug(
                     f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}"
                 )
 
@@ -505,7 +478,7 @@ def write_dng(
             )
             tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=datasize)
 
-        logger.info(f"Successfully wrote DNG file to {destination_file}")
+        logger.debug(f"Successfully wrote DNG file to {destination_file}")
 
     except Exception as e:
         logger.error(f"Error saving DNG file with TiffWriter: {e}")
