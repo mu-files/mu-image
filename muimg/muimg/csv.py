@@ -266,7 +266,8 @@ class CsvReader:
                 break  # Stop parsing for metadata.
 
             # --- Standard Header Parsing Logic ---
-            values = row[1:]
+            # Strip empty cells (trailing commas from Excel create empty strings)
+            values = [v.strip() for v in row[1:] if v.strip()]
             def parse_as_dict(items):
                 d = {}
                 for item in items:

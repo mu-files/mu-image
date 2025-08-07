@@ -12,6 +12,7 @@ from .dng import (
     rgb_from_cfa,
     rgb_from_dng,
     write_dng,
+    write_dng_from_page,
 )
 from .color_mac import process_raw_core_image
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
@@ -30,4 +31,5 @@ __all__ = [
     'rgb_from_cfa',
     'rgb_from_dng',
     'write_dng',
+    'write_dng_from_page',
 ]

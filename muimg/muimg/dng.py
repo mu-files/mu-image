@@ -2,13 +2,12 @@
 
 This module handles DNG file creation and related functionality.
 """
-import cv2
 import io
 import logging
 import numpy as np
 
 from pathlib import Path
-from tifffile import PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
+from tifffile import COMPRESSION, PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
 from typing import Optional, Union, List, Dict, Tuple, Any, Type, Union
 
 logger = logging.getLogger(__name__)
@@ -68,7 +67,14 @@ class MetadataTags:
         elif isinstance(tag[0], int):
             tag_code = tag[0]
 
-        tag_formatted_contents = (tag_code, TIFF.DATA_DTYPES[tag[1]], tag[2], tag[3], False)
+        # Handle dtype parameter - can be string key or DATATYPE enum value
+        if isinstance(tag[1], str):
+            tag_dtype = TIFF.DATA_DTYPES[tag[1]]
+        else:
+            # Assume it's already a DATATYPE enum value
+            tag_dtype = tag[1]
+
+        tag_formatted_contents = (tag_code, tag_dtype, tag[2], tag[3], False)
         
         # Check for duplicates and overwrite if one is found, else append
         for i, existing_tag in enumerate(self._tags):
@@ -88,7 +94,11 @@ class MetadataTags:
         """Add all tags from another MetadataTags instance."""
         if not isinstance(other, MetadataTags):
             raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
-        self._tags.extend(other._tags)
+        # Use add_tag to ensure proper duplicate handling instead of direct list extension
+        for tag_tuple in other._tags:
+            # tag_tuple format: (tag_code, tag_dtype, count, value, writeonce)
+            # Convert to add_tag format: (tag_name_or_code, dtype, count, value)
+            self.add_tag((tag_tuple[0], tag_tuple[1], tag_tuple[2], tag_tuple[3]))
 
     def add_cfa_pattern_tag(self, cfa_pattern_key: str):
         """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
@@ -317,6 +327,96 @@ def rgb_from_dng(
     raw_cfa, cfa_pattern_value = cfa_from_dng(dng_file)
     return rgb_from_cfa(raw_cfa, cfa_pattern_value)
 
+
+def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_tags: "MetadataTags") -> None:
+    """Write thumbnail IFD exactly as in write_dng function."""
+    # Prepare thumbnail specific tags
+    dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
+
+    # Write Thumbnail to SubIFD 0
+    thumb_ifd_args = {
+        "photometric": "rgb",  # Interprets data as RGB
+        "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
+        "compression": "jpeg",  # JPEG compression for thumbnail
+        "compressionargs": {"level": 90},  # JPEG quality (0-100, higher is better)
+        "extratags": dng_tags.get_tags(),
+        "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
+        "subifds": 1,  # Has main image as subifd
+    }
+    # set datasize to max uncompressed size to avoid writing strips
+    datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
+    writer.write(
+        thumbnail_image,  # Use the thumbnail_image directly
+        **thumb_ifd_args,
+        rowsperstrip=datasize,
+    )
+
+
+def _create_dng_tags(camera_profile: Optional["MetadataTags"], has_jxl: bool) -> "MetadataTags":
+    """Create DNG metadata tags with defaults and version info.
+    
+    Args:
+        camera_profile: Optional camera profile metadata to include
+        has_jxl: Whether JXL compression is being used (affects backward version)
+        
+    Returns:
+        MetadataTags object with complete DNG metadata
+    """
+    dng_tags = MetadataTags()
+
+    # Use camera_profile if provided, otherwise create empty metadata
+    if camera_profile is not None:
+        dng_tags.extend(camera_profile)
+    
+    # Check for required tags and add defaults if missing
+    existing_tags = {tag[0] for tag in dng_tags.get_tags()}
+    
+    # Add Orientation if not set (default to horizontal)
+    if TIFF.TAGS["Orientation"] not in existing_tags:
+        dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
+    
+    # Add ColorMatrix1 if not set (default to 3x3 identity)
+    if TIFF.TAGS["ColorMatrix1"] not in existing_tags:
+        identity_matrix = np.identity(3, dtype=np.float64)
+        dng_tags.add_matrix_as_rational_tag("ColorMatrix1", identity_matrix)
+    
+    # Add CalibrationIlluminant1 if not set (default to unknown)
+    if TIFF.TAGS["CalibrationIlluminant1"] not in existing_tags:
+        dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, 0))  # 0 = Unknown
+
+    dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
+    if not has_jxl:
+        # need latest version for CFA compression but lots of old software can't handle it
+        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 4, 0, 0)))
+    else:
+        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
+        
+    return dng_tags
+
+
+def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_tags: "MetadataTags") -> None:
+    """Write thumbnail IFD exactly as in write_dng function."""
+    # Prepare thumbnail specific tags
+    dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
+
+    # Write Thumbnail to SubIFD 0
+    thumb_ifd_args = {
+        "photometric": "rgb",  # Interprets data as RGB
+        "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
+        "compression": "jpeg",  # JPEG compression for thumbnail
+        "compressionargs": {"level": 90},  # JPEG quality (0-100, higher is better)
+        "extratags": dng_tags.get_tags(),
+        "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
+        "subifds": 1,  # Has main image as subifd
+    }
+    # set datasize to max uncompressed size to avoid writing strips
+    datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
+    writer.write(
+        thumbnail_image,  # Use the thumbnail_image directly
+        **thumb_ifd_args,
+        rowsperstrip=datasize,
+    )
+
 def write_dng(
     raw_data: np.ndarray,
     destination_file: Union[Path, io.BytesIO],
@@ -355,9 +455,6 @@ def write_dng(
     if raw_data.ndim != 2:
         raise ValueError(f"Expected 2D raw_data (height, width), got shape {raw_data.shape}")
 
-    # use the supplied color_data as thumbnail
-    thumbnail_image = color_data
-
     # Ensure data is uint16 for tifffile when bits_per_pixel > 8
     if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
         bits_per_pixel = 16
@@ -370,70 +467,20 @@ def write_dng(
 
     # the tag names are from tifffile.py TiffTagRegistry
     # the tag types are from tifffile.py DATA_DTYPES
-    dng_tags = MetadataTags()
-
-    # Use camera_profile if provided, otherwise create empty metadata
-    if camera_profile is not None:
-        dng_tags.extend(camera_profile)
-    
-    # Check for required tags and add defaults if missing
-    existing_tags = {tag[0] for tag in dng_tags.get_tags()}
-    
-    # Add Orientation if not set (default to horizontal)
-    if TIFF.TAGS["Orientation"] not in existing_tags:
-        dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
-    
-    # Add ColorMatrix1 if not set (default to 3x3 identity)
-    if TIFF.TAGS["ColorMatrix1"] not in existing_tags:
-        identity_matrix = np.identity(3, dtype=np.float64)
-        dng_tags.add_matrix_as_rational_tag("ColorMatrix1", identity_matrix)
-    
-    # Add CalibrationIlluminant1 if not set (default to unknown)
-    if TIFF.TAGS["CalibrationIlluminant1"] not in existing_tags:
-        dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, 0))  # 0 = Unknown
-
-    dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
-    if jxl_distance is None:
-        # need latest version for CFA compression but lots of old software can't handle it
-        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 4, 0, 0)))
-    else:
-        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
-
-    dng_cfa_tags = MetadataTags()
-    dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
-    dng_cfa_tags.add_tag(("CFARepeatPatternDim", "H", 2, (2, 2)))
-    dng_cfa_tags.add_tag(("CFAPlaneColor", "B", 3, (0, 1, 2)))
+    dng_tags = _create_dng_tags(camera_profile, has_jxl=jxl_distance is not None)
 
     try:
+        logger.debug(f"Writing DNG from raw data buffer to {destination_file}")
+
         with TiffWriter(destination_file, bigtiff=False) as tif:
-            if thumbnail_image is not None:
-                # Prepare thumbnail specific tags
-                dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
-
-                # Write Thumbnail to SubIFD 0
-                thumb_ifd_args = {
-                    "photometric": "rgb",  # Interprets data as RGB
-                    "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
-                    "compression": "jpeg",  # JPEG compression for thumbnail
-                    "compressionargs": {"level": 90},  # JPEG quality (0-100, higher is better)
-                    "extratags": dng_tags.get_tags(),
-                    "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
-                    "subifds": 1,  # Has main image as subifd
-                }
-                # set datasize to max uncompressed size to avoid writing strips
-                datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
-                tif.write(
-                    thumbnail_image,  # Use the thumbnail_image directly
-                    **thumb_ifd_args,
-                    rowsperstrip=datasize,
-                )
-
-            # Prepare main image arguments
-            main_image_ifd_args = {
-                "subfiletype": 0,
-                "photometric": "cfa",
-                "subifds": 0
-            }
+            if color_data is not None:
+                _write_thumbnail_ifd(tif, color_data, dng_tags)
+    
+            # prepare main image
+            dng_cfa_tags = MetadataTags()
+            dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
+            dng_cfa_tags.add_tag(("CFARepeatPatternDim", "H", 2, (2, 2)))
+            dng_cfa_tags.add_tag(("CFAPlaneColor", "B", 3, (0, 1, 2)))
 
             if jxl_distance is not None:
                 if not (0.0 <= jxl_distance <= 15.0):
@@ -448,16 +495,13 @@ def write_dng(
                 # libjxl effort values are typically 1 (fastest) to 9 (most effort).
                 # Default effort in libjxl is 7 ('falcon') if not specified.
                 compression_type = "JPEGXL_DNG"  # Ensure DNG-specific JXL type
-                compressionargs = {"distance": jxl_distance}
-                if jxl_effort is None:
-                    jxl_effort = 5
-                compressionargs["effort"] = jxl_effort
+                compressionargs = {
+                    "distance": jxl_distance,
+                    "effort": jxl_effort if jxl_effort is not None else 5
+                }
                 logger.debug(
                     f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}"
                 )
-
-                main_image_ifd_args["compression"] = compression_type
-                main_image_ifd_args["compressionargs"] = compressionargs
 
                 # if compressing, need to swizzle the CFA data and indicate
                 # this via tags
@@ -466,22 +510,143 @@ def write_dng(
                 dng_cfa_tags.add_tag(("RowInterleaveFactor", "H", 1, 2))
                 dng_cfa_tags.add_tag(("JXLDistance", "f", 1, jxl_distance))
                 dng_cfa_tags.add_tag(("JXLEffort", "I", 1, jxl_effort))
+            else:
+                compression_type = COMPRESSION.NONE
+                compressionargs = {}
 
-            if thumbnail_image is None:
+            if color_data is None:
                 dng_cfa_tags.extend(dng_tags)
             
-            main_image_ifd_args["extratags"] = dng_cfa_tags.get_tags()
+            # Prepare main image arguments
+            main_image_ifd_args = {
+                "subfiletype": 0,
+                "photometric": "cfa",
+                "subifds": 0,
+                "compression": compression_type,
+                "compressionargs": compressionargs,
+                "extratags": dng_cfa_tags.get_tags()
+            }
 
             # Write Main Raw Image to IFD
-            datasize = (
+            raw_datasize = (
                 processed_raw_data.shape[0] * processed_raw_data.shape[1] * bits_per_pixel / 8
             )
-            tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=datasize)
+            tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=raw_datasize)
 
         logger.debug(f"Successfully wrote DNG file to {destination_file}")
 
     except Exception as e:
         logger.error(f"Error saving DNG file with TiffWriter: {e}")
+        raise
+
+def write_dng_from_page(
+    page: "TiffPage",
+    destination_file: Union[Path, io.BytesIO],
+    camera_profile: Optional["MetadataTags"] = None,
+    color_data: Optional[np.ndarray] = None
+) -> None:
+    """Write DNG file by copying compressed raw data from an existing TiffPage.
+    
+    This function efficiently copies compressed raw data without decompression/recompression,
+    preserving the original compression while updating metadata and optionally adding thumbnails.
+    Works with CFA, LINEAR_RAW, and other raw photometric types.
+    
+    Args:
+        page: TiffPage containing the raw data to copy
+        destination_file: Path or io.BytesIO object where to save the DNG file
+        camera_profile: Optional camera profile metadata to include
+        color_data: Optional thumbnail/preview image data
+    """
+    # the tag names are from tifffile.py TiffTagRegistry
+    # the tag types are from tifffile.py DATA_DTYPES
+    has_jxl = page.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
+    dng_tags = _create_dng_tags(camera_profile, has_jxl)
+
+    try:
+        logger.debug(f"Writing DNG from TiffPage to {destination_file}")
+        
+        with TiffWriter(destination_file, bigtiff=False) as tif:
+
+            if color_data is not None:
+                _write_thumbnail_ifd(tif, color_data, dng_tags)
+
+            dng_cfa_tags = MetadataTags()
+            
+            # Tags that TiffWriter handles automatically - don't copy as extratags
+            dont_copy_tags = {
+                'NewSubFileType',      # 254 - handled by subfiletype parameter
+                'ImageWidth',          # 256 - handled by shape parameter
+                'ImageLength',         # 257 - handled by shape parameter  
+                'BitsPerSample',       # 258 - handled by dtype parameter
+                'Compression',         # 259 - handled by compression parameter
+                'PhotometricInterpretation', # 262 - handled by photometric parameter
+                'ImageDescription',    # 270 - handled by description parameter
+                'StripOffsets',        # 273 - handled automatically by TiffWriter
+                'SamplesPerPixel',     # 277 - handled by dtype/shape parameters
+                'RowsPerStrip',        # 278 - handled by rowsperstrip parameter
+                'StripByteCounts',     # 279 - handled automatically by TiffWriter
+                'XResolution',         # 282 - handled by resolution parameter
+                'YResolution',         # 283 - handled by resolution parameter
+                'ResolutionUnit',      # 296 - handled by resolution parameter
+                'Software'             # 305 - handled by software parameter
+            }
+            
+            # Copy page-specific tags (like the test pattern)
+            if hasattr(page, 'tags'):
+                for tag in page.tags.values():
+                    # Skip tags that TiffWriter handles automatically
+                    if tag.name not in dont_copy_tags:
+                        # Use the same pattern as the original test: tag.code, tag.dtype, tag.count, tag.value
+                        dng_cfa_tags.add_tag((tag.name, tag.dtype, tag.count, tag.value))
+
+            if color_data is None:
+                dng_cfa_tags.extend(dng_tags)
+            
+            # Read compressed raw data and create an iterator
+            fh = page.parent.filehandle
+            compressed_segments = list(fh.read_segments(
+                page.dataoffsets,
+                page.databytecounts,
+                sort=True
+            ))
+
+            def compressed_data_iterator():
+                try:
+                    for segment_data, index in compressed_segments:
+                        yield segment_data
+                except GeneratorExit:
+                    # Handle graceful shutdown
+                    return
+
+            logger.debug(f"Read {len(compressed_segments)} compressed segments from CFA page")
+
+            # Prepare main image arguments
+            main_image_ifd_args = {
+                "subfiletype": 0,
+                "photometric": page.photometric,
+                "subifds": 0,
+                "compression": page.compression,
+                "extratags": dng_cfa_tags.get_tags()
+            }
+
+            # Calculate raw data size for rowsperstrip
+            raw_datasize = page.imagelength * page.imagewidth * (page.bitspersample // 8)
+            
+            # Write the compressed raw data
+            tif.write(
+                data=compressed_data_iterator(),
+                shape=(page.imagelength, page.imagewidth),
+                dtype=page.dtype,
+                **main_image_ifd_args,
+                rowsperstrip=raw_datasize
+            )
+            
+            logger.debug(f"Successfully copied compressed raw data ({sum(page.databytecounts)} bytes)")
+        
+        logger.debug(f"Successfully wrote DNG file to {destination_file}")
+        
+    except Exception as e:
+        logger.error(f"Error writing DNG from TiffPage: {e}")
         raise
 
 
@@ -636,6 +801,10 @@ class DngFile(TiffFile):
             if i == target_page_id:
                 return page
         return None
+    
+    def get_page_by_id(self, target_page_id: int) -> Optional[TiffPage]:
+        """Retrieve a specific TiffPage by its flattened, 0-based ID."""
+        return self._get_page_by_id(target_page_id)
 
     def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
         """Retrieves the raw data array for a specific 'CFA' page by its ID."""
