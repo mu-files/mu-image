@@ -17,7 +17,10 @@ try:
         CIFilter,
         CIContext,
         NSColorSpace,
+        kCIFormatRGBA8,
         kCIFormatRGBA16,
+        kCIFormatRGBAh,
+        kCIFormatRGBAf,
         kCIContextWorkingColorSpace,
         CGColorSpaceCreateWithICCProfile,
         kCIContextUseSoftwareRenderer,
@@ -141,10 +144,21 @@ def process_raw_core_image(
     raw_filter_options: Optional[dict] = None,
     use_gpu: bool = False,
     icc_profile_path: Optional[str] = None,
+    output_dtype: type = np.uint16,
 ) -> Optional[np.ndarray]:
     """
     Processes a DNG file by creating a temporary Core Image context for the operation.
     This ensures no state is carried over between calls.
+    
+    Args:
+        dng_input: Path to DNG file or file-like object containing DNG data
+        raw_filter_options: Dictionary of Core Image raw filter options
+        use_gpu: Whether to use GPU acceleration for processing
+        icc_profile_path: Optional path to ICC profile for color space conversion
+        output_dtype: Output numpy data type. Supported: np.uint8, np.uint16, np.float16, np.float32
+    
+    Returns:
+        RGB image array with shape (height, width, 3) and specified dtype, or None on failure
     """
     if not core_image_available:
         raise RuntimeError("Core Image is not available on this system.")
@@ -260,9 +274,23 @@ def process_raw_core_image(
                 height = int(extent.size.height)
 
                 # --- Render to Bitmap ---
-                pixel_format = kCIFormatRGBA16
-                pixel_dtype = np.uint16
-                row_bytes = width * 8
+                # Map numpy dtype to Core Image format
+                dtype_to_format = {
+                    np.float16: (kCIFormatRGBAh, 2),  # Half-float, 2 bytes per channel
+                    np.float32: (kCIFormatRGBAf, 4),  # Float, 4 bytes per channel
+                    np.uint8: (kCIFormatRGBA8, 1),    # 8-bit, 1 byte per channel
+                    np.uint16: (kCIFormatRGBA16, 2),  # 16-bit, 2 bytes per channel
+                }
+                
+                if output_dtype not in dtype_to_format:
+                    supported_types = list(dtype_to_format.keys())
+                    raise ValueError(
+                        f"Unsupported output dtype: {output_dtype}. "
+                        f"Supported types: {supported_types}"
+                    )
+                
+                pixel_format, bytes_per_channel = dtype_to_format[output_dtype]
+                row_bytes = width * 4 * bytes_per_channel  # 4 channels (RGBA)
                 bitmap_buffer = NSMutableData.dataWithLength_(height * row_bytes)
 
                 context.context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
@@ -274,7 +302,8 @@ def process_raw_core_image(
                     context.output_space_cg,
                 )
 
-                rgba_image = np.frombuffer(bitmap_buffer, dtype=pixel_dtype).reshape((height, width, 4)).copy()
+                rgba_image = np.frombuffer(
+                    bitmap_buffer, dtype=output_dtype).reshape((height, width, 4)).copy()
 
                 return rgba_image[:, :, :3]
 

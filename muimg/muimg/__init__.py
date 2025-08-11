@@ -13,6 +13,9 @@ from .dng import (
     rgb_from_dng,
     write_dng,
     write_dng_from_page,
+    decode_raw,
+    convert_raw,
+    convert_raw_to_stream,
 )
 from .color_mac import process_raw_core_image
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
@@ -26,6 +29,9 @@ __all__ = [
     'DngFile',
     'MetadataTags',
     'cfa_from_dng',
+    'convert_raw',
+    'convert_raw_to_stream',
+    'decode_raw',
     'process_raw_core_image',
     'ProcessingPipeline',
     'rgb_from_cfa',

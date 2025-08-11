@@ -8,7 +8,7 @@ import numpy as np
 
 from pathlib import Path
 from tifffile import COMPRESSION, PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
-from typing import Optional, Union, List, Dict, Tuple, Any, Type, Union
+from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
 
 logger = logging.getLogger(__name__)
 
@@ -706,6 +706,7 @@ class DngFile(TiffFile):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._xmp_metadata = None  # Lazy-loaded XMP metadata dictionary
 
     def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
         """Recursively iterates through all TIFF pages, including nested ones."""
@@ -859,7 +860,11 @@ class DngFile(TiffFile):
             logger.warning(f"Tag '{tag_name}' not found in TIFF tag registry.")
             return None
 
-        pages_to_search = [self.pages[ifd]] if ifd is not None and ifd < len(self.pages) else self.pages
+        # If specific IFD requested, search only that IFD; otherwise search all pages recursively
+        if ifd is not None and ifd < len(self.pages):
+            pages_to_search = [self.pages[ifd]]
+        else:
+            pages_to_search = list(self._iter_all_pages_recursive(self.pages))
 
         for page in pages_to_search:
             if tag_id in page.tags:
@@ -883,3 +888,264 @@ class DngFile(TiffFile):
                     return None
 
         return None
+
+    @property
+    def xmp_metadata(self) -> Dict[str, str]:
+        """Lazy-loaded dictionary of all XMP metadata attributes.
+        
+        Returns:
+            Dictionary with XMP attribute names as keys (e.g., 'crs:Temperature', 'tiff:Orientation')
+            and their string values. Empty dict if no XMP data found.
+        """
+        if self._xmp_metadata is None:
+            self._xmp_metadata = self._parse_all_xmp_attributes()
+        return self._xmp_metadata
+
+    def _parse_all_xmp_attributes(self) -> Dict[str, str]:
+        """Parse all XMP attributes from the XMP metadata into a dictionary.
+        
+        Returns:
+            Dictionary mapping attribute names to values (e.g., 'crs:Temperature': '3900')
+        """
+        xmp_data = self.get_tag('XMP', return_type=str)
+        if not xmp_data:
+            return {}
+        
+        import re
+        
+        # Dictionary to store all XMP attributes
+        attributes = {}
+        
+        # Pattern to match XML attributes in the format namespace:attribute="value"
+        # This captures attributes like crs:Temperature="3900", tiff:Orientation="1", etc.
+        attribute_pattern = r'([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*)="([^"]*?)"'
+        
+        # Find all attribute matches
+        matches = re.findall(attribute_pattern, xmp_data)
+        
+        for attr_name, attr_value in matches:
+            attributes[attr_name] = attr_value
+        
+        logger.debug(f"Parsed {len(attributes)} XMP attributes from DNG file")
+        return attributes
+
+    def xmp_has(self, prop: str) -> bool:
+        """Check if an XMP property exists.
+        
+        Args:
+            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
+                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
+        
+        Returns:
+            True if the property exists in XMP metadata
+        """
+        # Auto-prepend 'crs:' if no namespace specified
+        if ':' not in prop:
+            prop = f'crs:{prop}'
+        return prop in self.xmp_metadata
+
+    def xmp(self, prop: str, return_type: Optional[Type] = None) -> Optional[Any]:
+        """Get an XMP property value with optional type conversion.
+        
+        Args:
+            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
+                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
+            return_type: Optional type to convert the value to (e.g., float, int)
+        
+        Returns:
+            The property value, optionally converted to return_type. None if not found.
+        """
+        # Auto-prepend 'crs:' if no namespace specified
+        if ':' not in prop:
+            prop = f'crs:{prop}'
+        
+        value = self.xmp_metadata.get(prop)
+        if value is None:
+            return None
+        
+        if return_type is None:
+            return value
+        
+        try:
+            return return_type(value)
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type}: {e}")
+            return None
+
+
+def decode_raw(
+    input_dng: Union[str, Path, IO[bytes]],
+    use_xmp: bool = True,
+    output_dtype: type = np.uint16,
+    **processing_params
+) -> np.ndarray:
+    """
+    Decode a DNG file to a numpy array using Core Image processing.
+    
+    Args:
+        input_dng: Path to DNG file or file-like object containing DNG data
+        use_xmp: Whether to read XMP metadata for default values
+        output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
+        **processing_params: Processing parameters (temperature, tint, exposure, 
+                           contrast, noise_reduction, orientation, etc.)
+    
+    Returns:
+        RGB image array with shape (height, width, 3) and specified dtype
+    """
+    try:
+        # Import here to avoid circular imports
+        from . import color_mac
+        
+        # Build processing options using configuration mapping
+        options = {}
+        
+        # Define mapping: param_name -> (option_name, xmp_name, value_type)
+        # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
+        xmp_mappings = {
+            "temperature": ("neutralTemperature", "Temperature", float),
+            "tint": ("neutralTint", "Tint", float),
+            "exposure": ("exposure", "Exposure2012", float),
+            "orientation": ("imageOrientation", None, int),  # CLI-only
+            "contrast": ("contrastStrength", None, float),  # CLI-only
+            "noise_reduction": ("luminanceNoiseReductionAmount", None, float),  # CLI-only
+        }
+        
+        # Add noise reduction to both luminance and color (convention)
+        if "noise_reduction" in processing_params:
+            processing_params["color_noise_reduction"] = processing_params["noise_reduction"]
+            xmp_mappings["color_noise_reduction"] = ("colorNoiseReductionAmount", None, float)
+        
+        # Process each mapping: CLI params first, then XMP fallback
+        for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
+            param_value = processing_params.get(param_name)
+            # Use CLI parameter if provided (highest priority)
+            if param_value is not None:
+                    options[option_name] = param_value
+            # Otherwise use XMP default if available, requested, and xmp_name is specified
+            elif xmp_name is not None and use_xmp and dng_file.xmp_has(xmp_name):
+                options[option_name] = dng_file.xmp(xmp_name, value_type)
+        
+        logger.debug(f"Processing {input_dng} with options: {options}")
+        
+        # Process with Core Image
+        color_data = color_mac.process_raw_core_image(
+            dng_input=input_dng,
+            raw_filter_options=options,
+            use_gpu=False,
+            output_dtype=output_dtype,
+        )
+        
+        if color_data is None:
+            raise RuntimeError(f"Failed to process DNG file: {input_dng}")
+        
+        logger.debug(f"Successfully decoded DNG to array with shape {color_data.shape} and dtype {color_data.dtype}")
+        return color_data
+                
+    except Exception as e:
+        logger.error(f"Error decoding {input_dng}: {e}", exc_info=True)
+        raise
+
+
+def convert_raw(
+    input_dng: Union[str, Path, IO[bytes]],
+    output_path: Union[str, Path],
+    use_xmp: bool = True,
+    **processing_params
+) -> bool:
+    """
+    Convert a DNG file to an image file.
+    
+    Args:
+        input_dng: Path to DNG file or file-like object containing DNG data
+        output_path: Output file path (format determined by extension)
+        use_xmp: Whether to read XMP metadata for default values
+        **processing_params: Processing parameters (temperature, tint, exposure, 
+                           contrast, noise_reduction, orientation, etc.)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        import cv2
+        
+        # Decode DNG to 8-bit numpy array
+        color_data = decode_raw(
+            input_dng=input_dng,
+            use_xmp=use_xmp,
+            output_dtype=np.uint8,
+            **processing_params
+        )
+        
+        # Convert RGB to BGR for OpenCV
+        bgr_image = cv2.cvtColor(color_data, cv2.COLOR_RGB2BGR)
+        
+        # Save to file
+        output_path = Path(output_path)
+        
+        # Save to file
+        success = cv2.imwrite(str(output_path), bgr_image)
+        
+        if success:
+            logger.info(f"Successfully converted {input_dng} to {output_path}")
+            return True
+        else:
+            logger.error(f"Failed to save file: {output_path}")
+            return False
+                
+    except Exception as e:
+        logger.error(f"Error converting {input_dng}: {e}", exc_info=True)
+        raise
+
+
+def convert_raw_to_stream(
+    input_dng: Union[str, Path, IO[bytes]],
+    output_format: str = "jpg",
+    use_xmp: bool = True,
+    **processing_params
+) -> bytes:
+    """
+    Convert a DNG file to encoded image bytes.
+    
+    Args:
+        input_dng: Path to DNG file or file-like object containing DNG data
+        output_format: Output format ("jpg", "png", "tiff", etc.)
+        use_xmp: Whether to read XMP metadata for default values
+        **processing_params: Processing parameters (temperature, tint, exposure, 
+                           contrast, noise_reduction, orientation, etc.)
+        
+    Returns:
+        bytes: Encoded image data
+    """
+    try:
+        import cv2
+        
+        # Decode DNG to 8-bit numpy array
+        color_data = decode_raw(
+            input_dng=input_dng,
+            use_xmp=use_xmp,
+            output_dtype=np.uint8,
+            **processing_params
+        )
+        
+        # Convert RGB to BGR for OpenCV
+        bgr_image = cv2.cvtColor(color_data, cv2.COLOR_RGB2BGR)
+        
+        # Ensure format has leading dot
+        format_ext = f".{output_format.lstrip('.')}"
+        
+        # Encode image
+        success, encoded_buffer = cv2.imencode(format_ext, bgr_image)
+        
+        if success:
+            encoded_bytes = encoded_buffer.tobytes()
+            logger.info(f"Encoded {input_dng} to {len(encoded_bytes)} bytes as {output_format}")
+            return encoded_bytes
+        else:
+            logger.error(f"Failed to encode image as {output_format}")
+            raise RuntimeError(f"Failed to encode image as {output_format}")
+                
+    except Exception as e:
+        logger.error(f"Error converting {input_dng} to stream: {e}", exc_info=True)
+        raise
+
+

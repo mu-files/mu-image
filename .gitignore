@@ -94,7 +94,7 @@ ENV/
 
 # IDE / Editor specific files
 .idea/
-.vscode/
+# .vscode/  # Allow .vscode for launch configurations
 *.project
 *.pydevproject
 *.sublime-workspace
@@ -114,3 +114,6 @@ Desktop.ini
 
 # Optional local configurations
 local.cfg
+
+# Test output files
+muimg/tests/test_output/
