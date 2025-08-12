@@ -406,8 +406,8 @@ class CsvReader:
                     logger.warning(f"Could not parse value '{value_str}' for field '{field_name}' as {field_type}. Setting to None.")
                     typed_params[field_name] = None
 
-            # Only create an instance if at least one of its fields was present in the row.
-            if typed_params:
+            # Only create an instance if at least one of its fields has a non-None value.
+            if typed_params and any(value is not None for value in typed_params.values()):
                 processed_objects.append(data_type(**typed_params))
 
         return processed_objects
@@ -419,9 +419,14 @@ class CsvReader:
         # The file pointer was reset in the init, so we can iterate from the beginning.
         for row_dict in self._reader:
             processed_objects = self._process_row(row_dict)
+            
+            # Skip empty rows (e.g., rows with only commas) silently
+            if not processed_objects:
+                continue
+                
             if self._single_type_requested:
-                # If a single type was requested, return the first object, or None if the row was empty.
-                yield processed_objects[0] if processed_objects else None
+                # If a single type was requested, return the first object.
+                yield processed_objects[0]
             else:
                 # Otherwise, return the full list of objects.
                 yield processed_objects

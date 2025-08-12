@@ -131,6 +131,81 @@ class MetadataTags:
         self._tags.sort(key=lambda x: x[0])
         return self._tags
 
+    def add_xmp(self, xmp_data: Dict[str, Union[str, int, float]]) -> None:
+        """
+        Add XMP metadata to this MetadataTags instance.
+        
+        Args:
+            xmp_data: Dictionary of XMP properties to add. Keys can include namespace 
+                     prefixes (e.g., 'crs:Temperature', 'tiff:Orientation') or will 
+                     default to 'crs:' namespace if no prefix is provided.
+                     
+        Example:
+            camera_metadata.add_xmp({
+                'Temperature': 5500,
+                'Tint': 0,
+                'Exposure2012': -0.5,
+                'tiff:Orientation': 1
+            })
+        """
+        from datetime import datetime
+        
+        # Generate timestamp in ISO format with timezone
+        now = datetime.now()
+        iso_date = now.strftime('%Y-%m-%dT%H:%M:%S')
+        
+        # Try to format timezone as -07:00 instead of -0700
+        try:
+            iso_date_tz = now.astimezone().strftime('%Y-%m-%dT%H:%M:%S%z')
+            # Insert colon in timezone offset: -0700 -> -07:00
+            if len(iso_date_tz) >= 5 and iso_date_tz[-5] in '+-':
+                iso_date_tz = iso_date_tz[:-2] + ':' + iso_date_tz[-2:]
+        except:
+            iso_date_tz = None
+        
+        # Build XMP properties with namespace handling
+        xmp_props = []
+        
+        # Add standard metadata - minimal required set
+        standard_props = {
+            'tiff:Orientation': '1',
+            'dc:format': 'image/dng',
+            'xmp:CreatorTool': 'muimg',
+            'xmp:ModifyDate': iso_date,
+            'crs:Version': '17.4',
+            'crs:ProcessVersion': '15.4',
+        }
+        
+        # Add user-provided data
+        for key, value in xmp_data.items():
+            # Auto-prepend 'crs:' if no namespace specified
+            if ':' not in key:
+                key = f'crs:{key}'
+            standard_props[key] = str(value)
+        
+        # Format as XMP attributes
+        for prop, value in standard_props.items():
+            xmp_props.append(f'    {prop}="{value}"')
+        
+        # Create minimal XMP structure based on Lightroom format
+        xmp_content = f'''<?xpacket begin="\\357\\273\\277" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="muimg XMP Core">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+{chr(10).join(xmp_props)}>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>'''
+        
+        xmp_bytes = xmp_content.encode('utf-8')
+        self.add_tag(("XMP", "B", len(xmp_bytes), xmp_bytes))
+        logger.info(f"Added XMP metadata with {len(xmp_data)} user properties")
+
 
 # Default values for tags
 ORIENTATION_HORIZONTAL = 1
@@ -165,18 +240,22 @@ PREVIEWCOLORSPACE_SRGB = 1
 def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     """Swizzle RGGB CFA data into a 2x2 grid of R, G1, G2, B sub-images."""
 
-    # Extract the four channels assuming RGGB pattern
-    # R pixels: top-left of each 2x2 block (e.g., raw_data[0,0], raw_data[0,2], ... raw_data[2,0], ...)
-    r_channel = raw_data[0::2, 0::2]
-    # G1 pixels: top-right of each 2x2 block (e.g., raw_data[0,1], raw_data[0,3], ...)
-    g1_channel = raw_data[0::2, 1::2]
-    # G2 pixels: bottom-left of each 2x2 block (e.g., raw_data[1,0], raw_data[1,2], ...)
-    g2_channel = raw_data[1::2, 0::2]
-    # B pixels: bottom-right of each 2x2 block (e.g., raw_data[1,1], raw_data[1,3], ...)
-    b_channel = raw_data[1::2, 1::2]
-
-    # Assemble the swizzled data using np.block
-    swizzled_data = np.block([[r_channel, g1_channel], [g2_channel, b_channel]])
+    # Pre-allocate the swizzled array with same dtype as input
+    h, w = raw_data.shape
+    swizzled_data = np.empty((h, w), dtype=raw_data.dtype)
+    
+    # Calculate half dimensions for direct assignment
+    h_half, w_half = h // 2, w // 2
+    
+    # Extract channels and write directly into pre-allocated array
+    # R pixels: top-left quadrant
+    swizzled_data[0:h_half, 0:w_half] = raw_data[0::2, 0::2]
+    # G1 pixels: top-right quadrant  
+    swizzled_data[0:h_half, w_half:w] = raw_data[0::2, 1::2]
+    # G2 pixels: bottom-left quadrant
+    swizzled_data[h_half:h, 0:w_half] = raw_data[1::2, 0::2]
+    # B pixels: bottom-right quadrant
+    swizzled_data[h_half:h, w_half:w] = raw_data[1::2, 1::2]
 
     return swizzled_data
 
@@ -495,12 +574,13 @@ def write_dng(
                 # libjxl effort values are typically 1 (fastest) to 9 (most effort).
                 # Default effort in libjxl is 7 ('falcon') if not specified.
                 compression_type = "JPEGXL_DNG"  # Ensure DNG-specific JXL type
+                actual_effort = jxl_effort if jxl_effort is not None else 5
                 compressionargs = {
                     "distance": jxl_distance,
-                    "effort": jxl_effort if jxl_effort is not None else 5
+                    "effort": actual_effort
                 }
                 logger.debug(
-                    f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {jxl_effort}"
+                    f"Attempting to write DNG with JXL compression, distance: {jxl_distance}, effort: {actual_effort}"
                 )
 
                 # if compressing, need to swizzle the CFA data and indicate
@@ -509,7 +589,7 @@ def write_dng(
                 dng_cfa_tags.add_tag(("ColumnInterleaveFactor", "H", 1, 2))
                 dng_cfa_tags.add_tag(("RowInterleaveFactor", "H", 1, 2))
                 dng_cfa_tags.add_tag(("JXLDistance", "f", 1, jxl_distance))
-                dng_cfa_tags.add_tag(("JXLEffort", "I", 1, jxl_effort))
+                dng_cfa_tags.add_tag(("JXLEffort", "I", 1, actual_effort))
             else:
                 compression_type = COMPRESSION.NONE
                 compressionargs = {}
@@ -528,7 +608,7 @@ def write_dng(
             }
 
             # Write Main Raw Image to IFD
-            raw_datasize = (
+            raw_datasize = int(
                 processed_raw_data.shape[0] * processed_raw_data.shape[1] * bits_per_pixel / 8
             )
             tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=raw_datasize)
@@ -574,7 +654,7 @@ def write_dng_from_page(
             
             # Tags that TiffWriter handles automatically - don't copy as extratags
             dont_copy_tags = {
-                'NewSubFileType',      # 254 - handled by subfiletype parameter
+                'NewSubfileType',      # 254 - handled by subfiletype parameter
                 'ImageWidth',          # 256 - handled by shape parameter
                 'ImageLength',         # 257 - handled by shape parameter  
                 'BitsPerSample',       # 258 - handled by dtype parameter
@@ -974,7 +1054,7 @@ class DngFile(TiffFile):
 
 
 def decode_raw(
-    input_dng: Union[str, Path, IO[bytes]],
+    file: Union[str, Path, IO[bytes]],
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
     **processing_params
@@ -983,7 +1063,7 @@ def decode_raw(
     Decode a DNG file to a numpy array using Core Image processing.
     
     Args:
-        input_dng: Path to DNG file or file-like object containing DNG data
+        file: Path to DNG file or file-like object containing DNG data
         use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
         **processing_params: Processing parameters (temperature, tint, exposure, 
@@ -995,59 +1075,75 @@ def decode_raw(
     try:
         # Import here to avoid circular imports
         from . import color_mac
+        import io
+        
+        # Read file once and use for both DngFile and process_raw_core_image
+        if isinstance(file, io.IOBase):
+            dng_input = file
+        else:
+            # Read file once into BytesIO
+            with open(file, 'rb') as f:
+                file_data = f.read()
+            dng_input = io.BytesIO(file_data)
+
+        dng_input.seek(0)
+        dng_file = DngFile(dng_input)
         
         # Build processing options using configuration mapping
         options = {}
         
-        # Define mapping: param_name -> (option_name, xmp_name, value_type)
-        # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
-        xmp_mappings = {
-            "temperature": ("neutralTemperature", "Temperature", float),
-            "tint": ("neutralTint", "Tint", float),
-            "exposure": ("exposure", "Exposure2012", float),
-            "orientation": ("imageOrientation", None, int),  # CLI-only
-            "contrast": ("contrastStrength", None, float),  # CLI-only
-            "noise_reduction": ("luminanceNoiseReductionAmount", None, float),  # CLI-only
-        }
+        # Only process parameters if we have XMP to read or explicit parameters to apply
+        if use_xmp or processing_params:
+            # Define mapping: param_name -> (option_name, xmp_name, value_type)
+            # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
+            xmp_mappings = {
+                "temperature": ("neutralTemperature", "Temperature", float),
+                "tint": ("neutralTint", "Tint", float),
+                "exposure": ("exposure", "Exposure2012", float),
+                "orientation": ("imageOrientation", None, int),  # CLI-only
+                "contrast": ("contrastStrength", None, float),  # CLI-only
+                "noise_reduction": ("luminanceNoiseReductionAmount", None, float),  # CLI-only
+            }
+            
+            # Add noise reduction to both luminance and color (convention)
+            if "noise_reduction" in processing_params:
+                processing_params["color_noise_reduction"] = processing_params["noise_reduction"]
+                xmp_mappings["color_noise_reduction"] = ("colorNoiseReductionAmount", None, float)
+            
+            # Process each mapping: CLI params first, then XMP fallback
+            for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
+                param_value = processing_params.get(param_name)
+                # Use CLI parameter if provided (highest priority)
+                if param_value is not None:
+                        options[option_name] = param_value
+                # Otherwise use XMP default if available, requested, and xmp_name is specified
+                elif xmp_name is not None and use_xmp and dng_file.xmp_has(xmp_name):
+                    options[option_name] = dng_file.xmp(xmp_name, value_type)
         
-        # Add noise reduction to both luminance and color (convention)
-        if "noise_reduction" in processing_params:
-            processing_params["color_noise_reduction"] = processing_params["noise_reduction"]
-            xmp_mappings["color_noise_reduction"] = ("colorNoiseReductionAmount", None, float)
-        
-        # Process each mapping: CLI params first, then XMP fallback
-        for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
-            param_value = processing_params.get(param_name)
-            # Use CLI parameter if provided (highest priority)
-            if param_value is not None:
-                    options[option_name] = param_value
-            # Otherwise use XMP default if available, requested, and xmp_name is specified
-            elif xmp_name is not None and use_xmp and dng_file.xmp_has(xmp_name):
-                options[option_name] = dng_file.xmp(xmp_name, value_type)
-        
-        logger.debug(f"Processing {input_dng} with options: {options}")
+        logger.debug(f"Processing {file} with options: {options}")
         
         # Process with Core Image
+        dng_input.seek(0)
         color_data = color_mac.process_raw_core_image(
-            dng_input=input_dng,
+            dng_input=dng_input,
             raw_filter_options=options,
-            use_gpu=False,
+            use_gpu=True,
             output_dtype=output_dtype,
         )
         
         if color_data is None:
-            raise RuntimeError(f"Failed to process DNG file: {input_dng}")
+            raise RuntimeError(f"Failed to process DNG file: {file}")
         
         logger.debug(f"Successfully decoded DNG to array with shape {color_data.shape} and dtype {color_data.dtype}")
         return color_data
                 
     except Exception as e:
-        logger.error(f"Error decoding {input_dng}: {e}", exc_info=True)
+        logger.error(f"Error decoding {file}: {e}", exc_info=True)
         raise
 
 
 def convert_raw(
-    input_dng: Union[str, Path, IO[bytes]],
+    file: Union[str, Path, IO[bytes]],
     output_path: Union[str, Path],
     use_xmp: bool = True,
     **processing_params
@@ -1056,7 +1152,7 @@ def convert_raw(
     Convert a DNG file to an image file.
     
     Args:
-        input_dng: Path to DNG file or file-like object containing DNG data
+        file: Path to DNG file or file-like object containing DNG data
         output_path: Output file path (format determined by extension)
         use_xmp: Whether to read XMP metadata for default values
         **processing_params: Processing parameters (temperature, tint, exposure, 
@@ -1070,7 +1166,7 @@ def convert_raw(
         
         # Decode DNG to 8-bit numpy array
         color_data = decode_raw(
-            input_dng=input_dng,
+            file=file,
             use_xmp=use_xmp,
             output_dtype=np.uint8,
             **processing_params
@@ -1086,19 +1182,19 @@ def convert_raw(
         success = cv2.imwrite(str(output_path), bgr_image)
         
         if success:
-            logger.info(f"Successfully converted {input_dng} to {output_path}")
+            logger.info(f"Successfully converted {file} to {output_path}")
             return True
         else:
             logger.error(f"Failed to save file: {output_path}")
             return False
                 
     except Exception as e:
-        logger.error(f"Error converting {input_dng}: {e}", exc_info=True)
+        logger.error(f"Error converting {file}: {e}", exc_info=True)
         raise
 
 
 def convert_raw_to_stream(
-    input_dng: Union[str, Path, IO[bytes]],
+    file: Union[str, Path, IO[bytes]],
     output_format: str = "jpg",
     use_xmp: bool = True,
     **processing_params
@@ -1107,7 +1203,7 @@ def convert_raw_to_stream(
     Convert a DNG file to encoded image bytes.
     
     Args:
-        input_dng: Path to DNG file or file-like object containing DNG data
+        file: Path to DNG file or file-like object containing DNG data
         output_format: Output format ("jpg", "png", "tiff", etc.)
         use_xmp: Whether to read XMP metadata for default values
         **processing_params: Processing parameters (temperature, tint, exposure, 
@@ -1121,7 +1217,7 @@ def convert_raw_to_stream(
         
         # Decode DNG to 8-bit numpy array
         color_data = decode_raw(
-            input_dng=input_dng,
+            file=file,
             use_xmp=use_xmp,
             output_dtype=np.uint8,
             **processing_params
@@ -1138,14 +1234,14 @@ def convert_raw_to_stream(
         
         if success:
             encoded_bytes = encoded_buffer.tobytes()
-            logger.info(f"Encoded {input_dng} to {len(encoded_bytes)} bytes as {output_format}")
+            logger.info(f"Encoded {file} to {len(encoded_bytes)} bytes as {output_format}")
             return encoded_bytes
         else:
             logger.error(f"Failed to encode image as {output_format}")
             raise RuntimeError(f"Failed to encode image as {output_format}")
                 
     except Exception as e:
-        logger.error(f"Error converting {input_dng} to stream: {e}", exc_info=True)
+        logger.error(f"Error converting {file} to stream: {e}", exc_info=True)
         raise
 
 
