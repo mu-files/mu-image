@@ -11,7 +11,7 @@ if [ -d "$PACKAGE" ]; then
     if [ ! -d "$PACKAGE/venv" ]; then
         echo "Creating development venv for $PACKAGE..."
         cd "$PACKAGE"
-        python3 -m venv venv
+        /opt/homebrew/bin/python3.11 -m venv venv
         
         # Upgrade pip first
         venv/bin/pip install --upgrade pip
