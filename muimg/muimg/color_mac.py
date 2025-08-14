@@ -3,6 +3,7 @@ import numpy as np
 import os
 
 from typing import IO, Optional, Union
+from .color import ToneCurve
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,91 @@ RAW_FILTER_OPTION_MAP = {
     "neutralChromaticity": (("kCIInputNeutralChromaticityXKey", "kCIInputNeutralChromaticityYKey"), "point_xy_floats"),
     "neutralLocation": ("kCIInputNeutralLocationKey", "point_nsvalue"),
 }
+
+def _create_tone_curve_filter(tone_curve):
+    """
+    Create a CIToneCurve filter from a ToneCurve object.
+    
+    Args:
+        tone_curve: ToneCurve object with to_normalized() method
+
+    Returns:
+        CIFilter instance configured with tone curve points, or None if invalid
+    """
+    from Quartz import CIVector, CIFilter
+    
+    # Get normalized points from ToneCurve object
+    normalized_points = tone_curve.to_normalized()
+
+    num_points = len(normalized_points)
+    
+    # Validate point count and provide error messages
+    if num_points < 2:
+        logger.warning(f"Invalid tone curve: {num_points} points provided. "
+                      f"Minimum 2 points required. Skipping tone curve.")
+        return None
+    elif num_points > 5:
+        logger.warning(f"Invalid tone curve: {num_points} points provided. "
+                      f"Maximum 5 points supported. Skipping tone curve.")
+        return None
+    
+    # Generate 5 points based on number of input points, preserving originals
+    if num_points == 5:
+        # Use original points as-is
+        final_points = normalized_points
+    else:
+        # Use SciPy CubicSpline to generate smooth interpolation while preserving original points
+        from scipy.interpolate import CubicSpline
+        import numpy as np
+        
+        # Extract x and y coordinates
+        x_coords = [point[0] for point in normalized_points]
+        y_coords = [point[1] for point in normalized_points]
+    
+        # Create cubic spline
+        spline = CubicSpline(x_coords, y_coords)
+        
+        if num_points == 2:
+            # Keep first and last exactly, interpolate 3 points between them
+            first, last = normalized_points[0], normalized_points[1]
+            # Generate 3 intermediate x values
+            x_interp = np.linspace(first[0], last[0], 5)
+            # Use original points for first and last, spline for middle 3
+            final_points = [
+                first,  # Preserve original first point exactly
+                (x_interp[1], float(spline(x_interp[1]))),
+                (x_interp[2], float(spline(x_interp[2]))),
+                (x_interp[3], float(spline(x_interp[3]))),
+                last   # Preserve original last point exactly
+            ]
+        elif num_points == 3:
+            # Keep first, middle, last and add 2 interpolated points
+            first, middle, last = normalized_points[0], normalized_points[1], normalized_points[2]
+            # Interpolate between first-middle and middle-last
+            mid1_x = (first[0] + middle[0]) / 2
+            mid1_y = float(spline(mid1_x))
+            mid2_x = (middle[0] + last[0]) / 2
+            mid2_y = float(spline(mid2_x))
+            final_points = [first, (mid1_x, mid1_y), middle, (mid2_x, mid2_y), last]
+        elif num_points == 4:
+            # Keep first and last, add 1 point between the middle 2
+            first, mid1, mid2, last = normalized_points
+            # Interpolate between the two middle points
+            between_x = (mid1[0] + mid2[0]) / 2
+            between_y = float(spline(between_x))
+            final_points = [first, mid1, (between_x, between_y), mid2, last]
+    
+    # Create tone curve filter
+    tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
+    
+    # Set the 5 final points
+    for i in range(5):
+        x, y = final_points[i]
+        vector = CIVector.vectorWithX_Y_(float(x), float(y))
+        tone_curve_filter.setValue_forKey_(vector, f"inputPoint{i}")
+    
+    return tone_curve_filter
+
 
 class CoreImageContext:
     """
@@ -170,7 +256,13 @@ def process_raw_core_image(
             try:
                 # --- Prepare Filter Options ---
                 options_copy = dict(raw_filter_options) if raw_filter_options else {}
-                contrast_strength = options_copy.pop('contrastStrength', None)
+                tone_curve = options_copy.pop('toneCurve', None)
+                tone_curve_linear = options_copy.pop('toneCurveLinear', None)
+                
+                # Prepare linear space filter for inclusion in raw_options
+                linear_tone_filter = None
+                if tone_curve_linear is not None:
+                    linear_tone_filter = _create_tone_curve_filter(tone_curve_linear)
 
                 raw_options = {}
                 for key, value in options_copy.items():
@@ -178,56 +270,43 @@ def process_raw_core_image(
                         logger.warning(f"Unknown RAW filter option key: {key}. Skipping.")
                         continue
 
-                    map_entry = RAW_FILTER_OPTION_MAP[key]
-                    quartz_key_name_or_tuple, value_type = map_entry
-
-                    # --- Validate Input Types ---
-                    if value_type == "float" and not isinstance(value, (float, int)):
-                        raise TypeError(f"Invalid type for '{key}'. Expected float, got {type(value).__name__}.")
-                    if value_type == "bool" and not isinstance(value, bool):
-                        raise TypeError(f"Invalid type for '{key}'. Expected bool, got {type(value).__name__}.")
-                    if value_type == "bool_inverted" and not isinstance(value, bool):
-                        raise TypeError(f"Invalid type for '{key}'. Expected bool, got {type(value).__name__}.")
-                    if value_type == "int" and not isinstance(value, int):
-                        raise TypeError(f"Invalid type for '{key}'. Expected int, got {type(value).__name__}.")
-                    if value_type in ("point_xy_floats", "point_nsvalue"):
-                        if not isinstance(value, (list, tuple)) or len(value) != 2:
-                            raise TypeError(f"Invalid type or format for '{key}'. Expected a list/tuple of 2 numbers, got {value}.")
-                        if not all(isinstance(v, (float, int)) for v in value):
-                            raise TypeError(f"Invalid item types for '{key}'. Both items must be numbers, got {[type(v).__name__ for v in value]}.")
+                    quartz_key_name_or_tuple, value_type = RAW_FILTER_OPTION_MAP[key]
 
                     try:
+                        objc_value = None
+                        
                         if value_type == "float":
                             objc_value = NSNumber.numberWithFloat_(float(value))
-                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                            raw_options[quartz_key] = objc_value
                         elif value_type == "bool":
                             objc_value = NSNumber.numberWithBool_(bool(value))
-                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                            raw_options[quartz_key] = objc_value
                         elif value_type == "bool_inverted":
                             objc_value = NSNumber.numberWithBool_(not bool(value))
-                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                            raw_options[quartz_key] = objc_value
                         elif value_type == "int":
                             objc_value = NSNumber.numberWithInt_(int(value))
-                            quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
-                            raw_options[quartz_key] = objc_value
+                        elif value_type == "point_nsvalue":
+                            ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
+                            objc_value = NSValue.valueWithPoint_(ns_point)
                         elif value_type == "point_xy_floats":
+                            # Special case: two separate keys
                             key_x_name, key_y_name = quartz_key_name_or_tuple
                             quartz_key_x = getattr(Quartz, key_x_name)
                             quartz_key_y = getattr(Quartz, key_y_name)
                             raw_options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
                             raw_options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
-                        elif value_type == "point_nsvalue":
-                            ns_point = NSPoint(x=float(value[0]), y=float(value[1]))
-                            objc_value = NSValue.valueWithPoint_(ns_point)
+                        
+                        # Common case: single key-value pair
+                        if objc_value is not None:
                             quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
                             raw_options[quartz_key] = objc_value
                     except AttributeError:
                         logger.warning(f"Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
                     except Exception as e:
                         logger.warning(f"Error processing option {key} with value {value}: {e}. Skipping.")
+
+                # Add linear space filter to raw_options if provided
+                if linear_tone_filter is not None:
+                    from Quartz import kCIInputLinearSpaceFilter
+                    raw_options[kCIInputLinearSpaceFilter] = linear_tone_filter
 
                 # --- Create CIRAWFilter ---
                 if isinstance(dng_input, (str, os.PathLike)):
@@ -250,24 +329,11 @@ def process_raw_core_image(
                 output_ci_image = raw_filter.outputImage()
 
                 # --- Apply Tone Curve for Contrast ---
-                if contrast_strength is not None:
-                    from Quartz import CIVector
-                    s = min(max(float(contrast_strength), 0.0), 1.0)
-                    SHADOW_PULL_FACTOR = 0.3
-                    HIGHLIGHT_PUSH_FACTOR = 0.015
-                    p0 = CIVector.vectorWithX_Y_(0.0, 0.0)
-                    p1 = CIVector.vectorWithX_Y_(0.53, 0.53 - s * SHADOW_PULL_FACTOR)
-                    p2 = CIVector.vectorWithX_Y_(0.73, 0.73)
-                    p3 = CIVector.vectorWithX_Y_(0.90, 0.90 + s * HIGHLIGHT_PUSH_FACTOR)
-                    p4 = CIVector.vectorWithX_Y_(1.0, 1.0)
-                    tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
-                    tone_curve_filter.setValue_forKey_(output_ci_image, "inputImage")
-                    tone_curve_filter.setValue_forKey_(p0, "inputPoint0")
-                    tone_curve_filter.setValue_forKey_(p1, "inputPoint1")
-                    tone_curve_filter.setValue_forKey_(p2, "inputPoint2")
-                    tone_curve_filter.setValue_forKey_(p3, "inputPoint3")
-                    tone_curve_filter.setValue_forKey_(p4, "inputPoint4")
-                    output_ci_image = tone_curve_filter.outputImage()
+                if tone_curve is not None:
+                    post_tone_filter = _create_tone_curve_filter(tone_curve)
+                    if post_tone_filter is not None:
+                        post_tone_filter.setValue_forKey_(output_ci_image, "inputImage")
+                        output_ci_image = post_tone_filter.outputImage()
 
                 extent = output_ci_image.extent()
                 width = int(extent.size.width)
@@ -302,6 +368,7 @@ def process_raw_core_image(
                     context.output_space_cg,
                 )
 
+                # Convert final buffer to NumPy array once
                 rgba_image = np.frombuffer(
                     bitmap_buffer, dtype=output_dtype).reshape((height, width, 4)).copy()
 

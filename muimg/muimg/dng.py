@@ -177,16 +177,51 @@ class MetadataTags:
         }
         
         # Add user-provided data
+        sequence_props = {}
         for key, value in xmp_data.items():
             # Auto-prepend 'crs:' if no namespace specified
             if ':' not in key:
                 key = f'crs:{key}'
-            standard_props[key] = str(value)
+            
+            # Check if value has coordinate pairs (list of 2-tuples) - needs <rdf:Seq> structure
+            if hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
+                # ToneCurve object with points attribute
+                sequence_props[key] = getattr(value, 'points')
+            elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
+                # Direct list of 2-tuples
+                sequence_props[key] = value
+            else:
+                standard_props[key] = str(value)
         
         # Format as XMP attributes
         for prop, value in standard_props.items():
             xmp_props.append(f'    {prop}="{value}"')
         
+        # Build sequence structures for coordinate pairs
+        sequence_xml = ""
+        if sequence_props:
+            sequence_elements = []
+            for prop_name, points in sequence_props.items():
+                # Extract namespace and property name for XML element
+                if ':' in prop_name:
+                    namespace, prop = prop_name.split(':', 1)
+                    element_name = f'{namespace}:{prop}'
+                else:
+                    element_name = prop_name
+                
+                # Build rdf:li items from coordinate pairs
+                sequence_items = []
+                for x, y in points:
+                    sequence_items.append(f'      <rdf:li>{x}, {y}</rdf:li>')
+                
+                sequence_elements.append(f'''    <{element_name}>
+     <rdf:Seq>
+{chr(10).join(sequence_items)}
+     </rdf:Seq>
+    </{element_name}>''')
+            
+            sequence_xml = chr(10).join(sequence_elements)
+
         # Create minimal XMP structure based on Lightroom format
         xmp_content = f'''<?xpacket begin="\\357\\273\\277" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="muimg XMP Core">
@@ -196,7 +231,7 @@ class MetadataTags:
     xmlns:dc="http://purl.org/dc/elements/1.1/"
     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-{chr(10).join(xmp_props)}>
+{chr(10).join(xmp_props)}>{sequence_xml}
   </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
@@ -982,10 +1017,12 @@ class DngFile(TiffFile):
         return self._xmp_metadata
 
     def _parse_all_xmp_attributes(self) -> Dict[str, str]:
-        """Parse all XMP attributes from the XMP metadata into a dictionary.
+        """Parse all XMP attributes and sequences from the XMP metadata into a dictionary.
         
         Returns:
-            Dictionary mapping attribute names to values (e.g., 'crs:Temperature': '3900')
+            Dictionary mapping attribute names to values. Simple attributes map to strings
+            (e.g., 'crs:Temperature': '3900'), while sequences map to comma-separated values
+            (e.g., 'crs:ToneCurvePV2012': '0,0,56,30,124,125,188,212,255,255')
         """
         xmp_data = self.get_tag('XMP', return_type=str)
         if not xmp_data:
@@ -1005,6 +1042,38 @@ class DngFile(TiffFile):
         
         for attr_name, attr_value in matches:
             attributes[attr_name] = attr_value
+        
+
+        # Pattern to match rdf:Seq structures like ToneCurvePV2012
+        # Use flexible matching that handles any whitespace/newlines between tags
+        # Matches: <crs:PropertyName>...<rdf:Seq>...<rdf:li>...</rdf:li>...</rdf:Seq>...</crs:PropertyName>
+        seq_pattern = r'<([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Seq>(.*?)</rdf:Seq>.*?</\1>'
+        seq_matches = re.findall(seq_pattern, xmp_data, re.DOTALL)
+        
+        logger.debug(f"Found {len(seq_matches)} XMP sequences")
+        for seq_name, seq_content in seq_matches:
+            # Extract all rdf:li values from the sequence
+            li_pattern = r'<rdf:li>([^<]*?)</rdf:li>'
+            li_values = re.findall(li_pattern, seq_content)
+            
+            # Handle different sequence types based on content structure
+            processed_values = []
+            for li_value in li_values:
+                # Split by comma and clean up values
+                coords = [coord.strip() for coord in li_value.split(',')]
+                
+                if len(coords) == 1:
+                    # Single value (e.g., ColorVariance: "-50.000000")
+                    processed_values.append(coords[0])
+                elif len(coords) == 2:
+                    # Coordinate pair (e.g., ToneCurve: "0, 0")
+                    processed_values.append(f"({coords[0]},{coords[1]})")
+                else:
+                    # Multiple values (e.g., PointColors with 19 values)
+                    # Store as bracketed list for clarity
+                    processed_values.append(f"[{','.join(coords)}]")
+            
+            attributes[seq_name] = ','.join(processed_values)
         
         logger.debug(f"Parsed {len(attributes)} XMP attributes from DNG file")
         return attributes
@@ -1046,6 +1115,7 @@ class DngFile(TiffFile):
         if return_type is None:
             return value
         
+        # Try to convert using the type's constructor
         try:
             return return_type(value)
         except (ValueError, TypeError) as e:
@@ -1067,7 +1137,7 @@ def decode_raw(
         use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
         **processing_params: Processing parameters (temperature, tint, exposure, 
-                           contrast, noise_reduction, orientation, etc.)
+                           tone_curve, noise_reduction, orientation, etc.)
     
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype
@@ -1094,33 +1164,57 @@ def decode_raw(
         
         # Only process parameters if we have XMP to read or explicit parameters to apply
         if use_xmp or processing_params:
+            # Import ToneCurve here to avoid circular import issues
+            from .color import ToneCurve as TC
+            
             # Define mapping: param_name -> (option_name, xmp_name, value_type)
             # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
             xmp_mappings = {
                 "temperature": ("neutralTemperature", "Temperature", float),
                 "tint": ("neutralTint", "Tint", float),
                 "exposure": ("exposure", "Exposure2012", float),
-                "orientation": ("imageOrientation", None, int),  # CLI-only
-                "contrast": ("contrastStrength", None, float),  # CLI-only
-                "noise_reduction": ("luminanceNoiseReductionAmount", None, float),  # CLI-only
+                "tone_curve": ("toneCurve", "ToneCurvePV2012", TC),
+                "orientation": ("imageOrientation", None, int),
+                "noise_reduction": ("luminanceNoiseReductionAmount", None, float),
             }
-            
-            # Add noise reduction to both luminance and color (convention)
-            if "noise_reduction" in processing_params:
-                processing_params["color_noise_reduction"] = processing_params["noise_reduction"]
-                xmp_mappings["color_noise_reduction"] = ("colorNoiseReductionAmount", None, float)
             
             # Process each mapping: CLI params first, then XMP fallback
             for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
                 param_value = processing_params.get(param_name)
                 # Use CLI parameter if provided (highest priority)
                 if param_value is not None:
-                        options[option_name] = param_value
+                    options[option_name] = param_value
                 # Otherwise use XMP default if available, requested, and xmp_name is specified
                 elif xmp_name is not None and use_xmp and dng_file.xmp_has(xmp_name):
                     options[option_name] = dng_file.xmp(xmp_name, value_type)
+
+            # Add noise reduction to both luminance and color (convention)
+            if ("noise_reduction" in processing_params and 
+                processing_params["noise_reduction"] is not None):
+                options["colorNoiseReductionAmount"] = processing_params["noise_reduction"]
         
         logger.debug(f"Processing {file} with options: {options}")
+        
+        # Special case: apply lin2srgb transformation to tone curve points
+        # TODO: this is an approximate fix, figure out exact Photoshop pipeline so that we
+        #       can apply curve as is        
+        if "toneCurve" in options and options["toneCurve"] is not None:
+
+            def lin2srgb(lin):
+                if lin > 0.0031308:
+                    s = 1.055 * (pow(lin, (1.0 / 2.4))) - 0.055
+                else:
+                    s = 12.92 * lin
+                return s
+
+            tone_curve = options["toneCurve"]
+            # Get normalized points and apply lin2srgb transformation
+            normalized_points = tone_curve.to_normalized()
+            transformed_points = [(lin2srgb(x), lin2srgb(y)) for x, y in normalized_points]
+            # Convert back to 8-bit range and create new tone curve
+            new_tone_curve = TC()
+            new_tone_curve.points = [(int(x * 255), int(y * 255)) for x, y in transformed_points]
+            options["toneCurve"] = new_tone_curve
         
         # Process with Core Image
         dng_input.seek(0)
@@ -1156,7 +1250,7 @@ def convert_raw(
         output_path: Output file path (format determined by extension)
         use_xmp: Whether to read XMP metadata for default values
         **processing_params: Processing parameters (temperature, tint, exposure, 
-                           contrast, noise_reduction, orientation, etc.)
+                           tone_curve, noise_reduction, orientation, etc.)
         
     Returns:
         bool: True if successful, False otherwise
@@ -1207,7 +1301,7 @@ def convert_raw_to_stream(
         output_format: Output format ("jpg", "png", "tiff", etc.)
         use_xmp: Whether to read XMP metadata for default values
         **processing_params: Processing parameters (temperature, tint, exposure, 
-                           contrast, noise_reduction, orientation, etc.)
+                           tone_curve, noise_reduction, orientation, etc.)
         
     Returns:
         bytes: Encoded image data

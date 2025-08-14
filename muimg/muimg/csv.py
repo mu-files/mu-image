@@ -398,10 +398,15 @@ class CsvReader:
                     elif field_type is str:
                         typed_params[field_name] = value_str
                     else:
-                        # This case handles Optional[T] by attempting to cast to the inner type.
-                        # It's a simplification and might not cover all edge cases.
-                        inner_type = get_args(field_type)[0]
-                        typed_params[field_name] = inner_type(value_str)
+                        # Try direct constructor call (works for ToneCurve and other types)
+                        # If that fails, handle Optional[T] by attempting to cast to the inner type
+                        try:
+                            typed_params[field_name] = field_type(value_str)
+                        except (ValueError, TypeError):
+                            # This case handles Optional[T] by attempting to cast to the inner type.
+                            # It's a simplification and might not cover all edge cases.
+                            inner_type = get_args(field_type)[0]
+                            typed_params[field_name] = inner_type(value_str)
                 except (ValueError, TypeError):
                     logger.warning(f"Could not parse value '{value_str}' for field '{field_name}' as {field_type}. Setting to None.")
                     typed_params[field_name] = None

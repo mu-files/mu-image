@@ -13,7 +13,6 @@ def main():
     parser.add_argument("--temperature", type=float, help="White balance temperature")
     parser.add_argument("--tint", type=float, help="White balance tint")
     parser.add_argument("--exposure", type=float, help="Exposure adjustment in stops")
-    parser.add_argument("--contrast", type=float, help="Contrast strength")
     parser.add_argument("--noise-reduction", type=float, help="Noise reduction amount")
     parser.add_argument("--orientation", type=int, help="Image orientation")
     parser.add_argument("--no-xmp", action="store_true", help="Don't use XMP metadata")
@@ -27,12 +26,11 @@ def main():
     
     # Convert DNG
     success = convert_raw(
-        input_dng=args.input_dng,
+        file=args.input_dng,
         output_path=args.output_jpg,
         temperature=args.temperature,
         tint=args.tint,
         exposure=args.exposure,
-        contrast=args.contrast,
         noise_reduction=args.noise_reduction,
         orientation=args.orientation,
         use_xmp=not args.no_xmp,

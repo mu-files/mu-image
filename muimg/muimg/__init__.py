@@ -20,6 +20,7 @@ from .dng import (
 from .color_mac import process_raw_core_image
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
+from .color import ToneCurve
 
 __all__ = [
     'BAYER_PATTERN_MAP',
@@ -34,6 +35,7 @@ __all__ = [
     'decode_raw',
     'process_raw_core_image',
     'ProcessingPipeline',
+    'ToneCurve',
     'rgb_from_cfa',
     'rgb_from_dng',
     'write_dng',
