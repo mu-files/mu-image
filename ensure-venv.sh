@@ -16,14 +16,18 @@ if [ -d "$PACKAGE" ]; then
         # Upgrade pip first
         venv/bin/pip install --upgrade pip
         
-        # Install the package itself in editable mode
-        venv/bin/pip install -e .
+        # Install the package itself in editable mode with test extras
+        venv/bin/pip install -e .[test]
         
         cd ..
         echo "✓ Development venv created for $PACKAGE with editable dependencies"
     else
         echo "✓ Development venv already exists for $PACKAGE"
-        echo "  - Skipping existing venv (delete and re-run to recreate with editable dependencies)"
+        echo "  - Ensuring test extras are installed"
+        (
+          cd "$PACKAGE"
+          venv/bin/pip install -e .[test] >/dev/null 2>&1 || true
+        )
     fi
 else
     echo "⚠ Package directory $PACKAGE not found, skipping"
