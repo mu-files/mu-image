@@ -547,8 +547,6 @@ def write_dng(
         raw_data: Raw image data as numpy array (H, W)
         destination_file: Path or io.BytesIO object where to save the DNG file.
         bits_per_pixel: Number of bits per pixel (e.g. 12, 14, 16)
-        camera_make: Make of the camera
-        camera_model: Model of the camera
         cfa_pattern: CFA pattern string, e.g., 'RGGB'
         jxl_distance: JPEG XL Butteraugli distance. Lower is higher quality.
                      Default: None (no JXL compression).
@@ -652,6 +650,93 @@ def write_dng(
 
     except Exception as e:
         logger.error(f"Error saving DNG file with TiffWriter: {e}")
+        raise
+
+def write_dng_linearraw(
+    raw_data: np.ndarray,
+    destination_file: Union[Path, io.BytesIO],
+    bits_per_pixel: int,
+    camera_profile: Optional["MetadataTags"] = None,
+    jxl_distance: Optional[float] = None,
+    jxl_effort: Optional[int] = None,
+    color_data: Optional[np.ndarray] = None,
+) -> None:
+    """Write a demosaiced, linear 3-band image as a LinearRaw DNG IFD.
+
+    Differences vs write_dng:
+    - Input is a demosaiced linear image with shape (H, W, 3).
+    - PhotometricInterpretation is LinearRaw (34892).
+    - No CFA tags; minimal extratags, only JXL-related ones when used.
+    - Optional thumbnail SubIFD is supported via color_data.
+    """
+
+    if isinstance(destination_file, Path):
+        logger.debug(f"Writing LinearRaw DNG to {destination_file}")
+    else:
+        logger.debug("Writing LinearRaw DNG to in-memory buffer")
+
+    # Validate input raw_data
+    if raw_data is None or raw_data.ndim != 3 or raw_data.shape[-1] != 3:
+        raise ValueError(f"Expected 3-band image with shape (H, W, 3), got {None if raw_data is None else raw_data.shape}")
+
+    # Prepare dtype according to bits_per_pixel; allow float16/32 as-is
+    if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
+        bits_per_pixel = 16
+        processed_raw_data = raw_data.astype(np.uint16)
+    elif bits_per_pixel <= 8 and raw_data.dtype != np.uint8:
+        bits_per_pixel = 8
+        processed_raw_data = raw_data.astype(np.uint8)
+    else:
+        processed_raw_data = raw_data
+
+    try:
+        with TiffWriter(destination_file, bigtiff=False) as tif:
+            # Prepare base DNG tags once (same as write_dng)
+            dng_tags = _create_dng_tags(camera_profile=camera_profile, has_jxl=jxl_distance is not None)
+            # Optional thumbnail SubIFD
+            if color_data is not None:
+                _write_thumbnail_ifd(tif, color_data, dng_tags)
+
+            # Minimal extratags and compression settings (JXL optional)
+            linearraw_tags = MetadataTags()
+            compression_type = COMPRESSION.NONE
+            compressionargs = {}
+            if jxl_distance is not None:
+                if not (0.0 <= jxl_distance <= 15.0):
+                    logger.warning(
+                        f"JXL distance {jxl_distance} is outside the typical range [0.0, 15.0]."
+                    )
+                actual_effort = jxl_effort if jxl_effort is not None else 5
+                linearraw_tags.add_tag(("JXLDistance", "f", 1, jxl_distance))
+                linearraw_tags.add_tag(("JXLEffort", "I", 1, actual_effort))
+                compression_type = "JPEGXL_DNG"
+                compressionargs = {"distance": jxl_distance, "effort": actual_effort}
+
+            # Prepare main image IFD args
+            # Include general DNG tags similar to write_dng when no thumbnail
+            if color_data is None:
+                linearraw_tags.extend(dng_tags)
+            main_ifd_args = {
+                "subfiletype": 0,
+                "photometric": "linear_raw",
+                "planarconfig": 1,  # CONTIG
+                "compression": compression_type,
+                "compressionargs": compressionargs,
+                "extratags": linearraw_tags.get_tags(),
+            }
+
+            # Calculate rowsperstrip to avoid many strips (mirror write_dng)
+            samples_per_pixel = 3
+            raw_datasize = int(
+                processed_raw_data.shape[0] * processed_raw_data.shape[1] * samples_per_pixel * (bits_per_pixel / 8)
+            )
+
+            tif.write(processed_raw_data, **main_ifd_args, rowsperstrip=raw_datasize)
+
+        logger.debug(f"Successfully wrote LinearRaw DNG to {destination_file}")
+
+    except Exception as e:
+        logger.error(f"Error saving LinearRaw DNG file with TiffWriter: {e}")
         raise
 
 def write_dng_from_page(
@@ -1196,8 +1281,8 @@ def decode_raw(
         logger.debug(f"Processing {file} with options: {options}")
         
         # Special case: apply lin2srgb transformation to tone curve points
-        # TODO: this is an approximate fix, figure out exact Photoshop pipeline so that we
-        #       can apply curve as is        
+        # TODO: since CI is an opaque RAW pipeline it is not possible to sequence tone curve 
+        #       in the same way in Photoshop and CI so we apply the transformation here.
         if "toneCurve" in options and options["toneCurve"] is not None:
 
             def lin2srgb(lin):

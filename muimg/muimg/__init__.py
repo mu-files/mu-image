@@ -12,6 +12,7 @@ from .dng import (
     rgb_from_cfa,
     rgb_from_dng,
     write_dng,
+    write_dng_linearraw,
     write_dng_from_page,
     decode_raw,
     convert_raw,
@@ -39,5 +40,6 @@ __all__ = [
     'rgb_from_cfa',
     'rgb_from_dng',
     'write_dng',
+    'write_dng_linearraw',
     'write_dng_from_page',
 ]
