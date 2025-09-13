@@ -9,8 +9,8 @@ from .dng import (
     DngFile,
     MetadataTags,
     cfa_from_dng,
-    rgb_from_cfa,
-    rgb_from_dng,
+    rgb_planes_from_cfa,
+    rgb_planes_from_dng,
     write_dng,
     write_dng_linearraw,
     write_dng_from_page,
@@ -21,7 +21,7 @@ from .dng import (
 from .color_mac import process_raw_core_image
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
-from .color import ToneCurve
+from .color import ToneCurve, linear_raw_from_cfa
 
 __all__ = [
     'BAYER_PATTERN_MAP',
@@ -37,8 +37,9 @@ __all__ = [
     'process_raw_core_image',
     'ProcessingPipeline',
     'ToneCurve',
-    'rgb_from_cfa',
-    'rgb_from_dng',
+    'linear_raw_from_cfa',
+    'rgb_planes_from_cfa',
+    'rgb_planes_from_dng',
     'write_dng',
     'write_dng_linearraw',
     'write_dng_from_page',

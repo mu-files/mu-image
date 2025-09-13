@@ -182,7 +182,7 @@ def colortemp_to_uv(temperature: float, tint: float) -> tuple[float, float]:
     return float(u), float(v)
 
 
-def uv_to_xy(u: float, v: float) -> tuple[float, float]:
+def uvUCS_to_xy(u: float, v: float) -> tuple[float, float]:
     """Convert CIE 1960 UCS (u, v) to CIE 1931 (x, y).
 
     Uses the exact formulas extracted from the DNG SDK method port.
@@ -192,8 +192,7 @@ def uv_to_xy(u: float, v: float) -> tuple[float, float]:
     y = v / denom_xy
     return float(x), float(y)
 
-
-def xy_to_uv(x: float, y: float) -> tuple[float, float]:
+def xy_to_uvUCS(x: float, y: float) -> tuple[float, float]:
     """Convert CIE 1931 (x, y) to CIE 1960 UCS (u, v).
 
     Uses the exact formulas extracted from the DNG SDK method port.
@@ -203,58 +202,56 @@ def xy_to_uv(x: float, y: float) -> tuple[float, float]:
     v = 3.0 * y / denom
     return float(u), float(v)
 
-def process_cfa_raw(image_data: np.ndarray, tags: Dict) -> np.ndarray:
+def color_xfrm_image(image: np.ndarray, xfrm: np.ndarray) -> np.ndarray:
+    """Apply a color transformation matrix to an image.
     """
-    Processes raw CFA (Color Filter Array) image data.
-    (Implementation to be added)
+    if image is None or xfrm is None:
+        raise ValueError("image and xfrm must be non-None numpy arrays")
+    if image.ndim < 1 or image.shape[-1] != 3:
+        raise ValueError(f"image must have last dimension 3 (bands), got shape {image.shape}")
+    xfrm = np.asarray(xfrm)
+    if xfrm.shape != (3, 3):
+        raise ValueError(f"xfrm must be a 3x3 matrix, got shape {xfrm.shape}")
+
+    # Compute with float precision then cast back to original dtype
+    in_dtype = image.dtype
+    img_f = image.astype(np.float32, copy=False)
+    # Apply transform with matrix multiplication on the last axis
+    # result[..., c_out] = sum_c_in img[..., c_in] * xfrm[c_out, c_in]
+    result = img_f @ xfrm.T
+    return result.astype(in_dtype, copy=False)
+
+def XYZ_to_YuvUCS(image: np.ndarray) -> np.ndarray:
+    """Convert packed XYZ image/array to packed Y,u,v (CIE 1960 UCS).
+
+    Input is a numpy array with last dimension of size 3 ordered as (X, Y, Z).
+    Output has the same shape with last dimension (Y, u, v) where:
+      u = 4X / (X + 15Y + 3Z)
+      v = 6Y / (X + 15Y + 3Z)
+
+    The dtype of the input is preserved in the output.
     """
+    if image is None:
+        raise ValueError("image must be a numpy array with last dimension 3 (X,Y,Z)")
+    if image.ndim < 1 or image.shape[-1] != 3:
+        raise ValueError(f"Expected last dimension to be 3 for (X,Y,Z), got shape {image.shape}")
 
-    # Validate image_data
-    if image_data.ndim != 2:
-        raise ValueError(
-            f"image_data must be a 2D array, but got {image_data.ndim} dimensions."
-        )
-    if image_data.size == 0:
-        raise ValueError("image_data must not be empty.")
+    X = image[..., 0]
+    Y = image[..., 1]
+    Z = image[..., 2]
 
-    # Define Bayer patterns and their corresponding OpenCV conversion codes
-    # This dictionary was already present in the user's code.
-    # TODO: test the other debayering algorigthms in CV2
-    BAYER_PATTERNS_TO_CV2 = {
-        "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
-        "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
-        "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
-        "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
-    }
+    denom = X + 15.0 * Y + 3.0 * Z
+    # Avoid divide-by-zero; use small epsilon for denom==0
+    eps = 1e-4
+    safe = denom != 0
+    denom_safe = np.where(safe, denom, eps)
 
-    # Get and validate CFA pattern from tags
-    # We expect a key like 'CFAPattern' in the tags dictionary holding a string like "RGGB".
-    # This key name might need adjustment based on the actual content of 'tags'.
-    cfa_pattern_key = 'CFAPattern' 
-    cfa_pattern = tags.get(cfa_pattern_key) 
-    if cfa_pattern is None:
-        raise ValueError(
-            f"CFA pattern string not found in tags. Expected key '{cfa_pattern_key}' in the tags dictionary."
-        )
-    if not isinstance(cfa_pattern, str):
-        raise TypeError(
-            f"CFA pattern (from tags['{cfa_pattern_key}']) must be a string, "
-            f"but got {type(cfa_pattern).__name__}."
-        )
-    if cfa_pattern not in BAYER_PATTERNS_TO_CV2:
-        raise ValueError(
-            f"Invalid CFA pattern: '{cfa_pattern}'. "
-            f"Supported patterns are: {list(BAYER_PATTERNS_TO_CV2.keys())}."
-        )
+    u = (4.0 * X) / denom_safe
+    v = (6.0 * Y) / denom_safe
 
-    debayer_code = BAYER_PATTERNS_TO_CV2[cfa_pattern]
-
-    #debayer_image = cv2.cvtColor(image_data, debayer_code)
-    debayer_image = cv2.demosaicing(image_data, debayer_code)
-
-    color_adapted_image = process_linear_raw(debayer_image, tags)
-
-    return color_adapted_image
+    # Pack as (Y, u, v)
+    yuv = np.stack([Y, u, v], axis=-1)
+    return yuv.astype(image.dtype, copy=False)
 
 def to_linear(linear):
 	less = linear <= 0.04045
@@ -268,6 +265,43 @@ def from_linear(linear):
     srgb[less] = srgb[less] * 12.92
     srgb[~less] = 1.055 * np.power(srgb[~less], 1.0 / 2.4) - 0.055
     return srgb
+
+def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str) -> np.ndarray:
+
+    # Validate inputs
+    if image_data.ndim != 2:
+        raise ValueError(
+            f"image_data must be a 2D array, but got {image_data.ndim} dimensions."
+        )
+    if image_data.size == 0:
+        raise ValueError("image_data must not be empty.")
+    
+    if not isinstance(cfa_pattern, str):
+        raise TypeError(
+            f"cfa_pattern must be a string, but got {type(cfa_pattern).__name__}."
+        )
+
+    # Define Bayer patterns and their corresponding OpenCV conversion codes
+    # This dictionary was already present in the user's code.
+    BAYER_PATTERNS_TO_CV2 = {
+        "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
+        "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
+        "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
+        "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
+    }
+
+    # Validate provided CFA pattern string
+    if cfa_pattern not in BAYER_PATTERNS_TO_CV2:
+        raise ValueError(
+            f"Invalid CFA pattern: '{cfa_pattern}'. "
+            f"Supported patterns are: {list(BAYER_PATTERNS_TO_CV2.keys())}."
+        )
+
+    # Demosaic the image
+    rgb = cv2.demosaicing(image_data, BAYER_PATTERNS_TO_CV2[cfa_pattern])
+    # Swap R/B to match expected channel order
+    rgb = rgb[..., [2, 1, 0]]
+    return rgb
 
 class BradfordAdaptation:
     """

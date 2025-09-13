@@ -379,7 +379,7 @@ def cfa_from_dng(
     return raw_cfa, cfa_pattern_value
 
 
-def rgb_from_cfa(
+def rgb_planes_from_cfa(
     raw_cfa: np.ndarray, 
     cfa_pattern_str: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -426,7 +426,7 @@ def rgb_from_cfa(
     return r_plane, g_plane, b_plane
 
 
-def rgb_from_dng(
+def rgb_planes_from_dng(
     dng_file: "DngFile",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
