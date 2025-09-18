@@ -223,9 +223,9 @@ def decode_and_save_dng_images(
                 print(
                     f"      Attempting to get CFA data for page ID {page_id}... (Pattern from tags: {cfa_pattern_str})"
                 )
-                # get_raw_cfa_by_id now primarily returns the data, pattern is from tags
-                raw_cfa_data = dng_file.get_raw_cfa_by_id(page_id)
-                if raw_cfa_data is not None:
+                result = dng_file.get_raw_cfa_by_id(page_id)
+                if result is not None:
+                    raw_cfa_data, _ = result
 
                     _decode_and_save_cfa_page(raw_cfa_data, tags, output_jpeg_path)
                 else:

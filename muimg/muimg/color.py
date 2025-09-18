@@ -1,7 +1,10 @@
 import cv2
 import numpy as np
+import logging
 
 from typing import Dict
+
+logger = logging.getLogger(__name__)
 
 # Adobe DNG temperature/tint conversion (exact port of dng_temperature.cpp)
 # Source: /3dparty/dng_sdk_1_7_1/dng_sdk/source/dng_temperature.cpp
@@ -266,7 +269,7 @@ def from_linear(linear):
     srgb[~less] = 1.055 * np.power(srgb[~less], 1.0 / 2.4) - 0.055
     return srgb
 
-def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str) -> np.ndarray:
+def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str, orientation: int | None = None) -> np.ndarray:
 
     # Validate inputs
     if image_data.ndim != 2:
@@ -299,9 +302,21 @@ def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str) -> np.ndarray:
 
     # Demosaic the image
     rgb = cv2.demosaicing(image_data, BAYER_PATTERNS_TO_CV2[cfa_pattern])
+
+    # Apply orientation if provided: ONLY accept EXIF codes (1,3,6,8).
+    if isinstance(orientation, (int, np.integer)):
+        exif_code = int(orientation)
+        if exif_code == 6:       # 90° CW
+            rgb = cv2.rotate(rgb, cv2.ROTATE_90_CLOCKWISE)
+        elif exif_code == 3:     # 180°
+            rgb = cv2.rotate(rgb, cv2.ROTATE_180)
+        elif exif_code == 8:     # 270° CW (90° CCW)
+            rgb = cv2.rotate(rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif exif_code not in (1, 3, 6, 8):
+            logger.warning(f"Unsupported EXIF orientation code: {exif_code}; no rotation applied")
+
     # Swap R/B to match expected channel order
-    rgb = rgb[..., [2, 1, 0]]
-    return rgb
+    return rgb[..., [2, 1, 0]]
 
 class BradfordAdaptation:
     """

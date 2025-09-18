@@ -19,6 +19,9 @@ BAYER_PATTERN_MAP = {
     "GBRG": (1, 2, 0, 1),  # G B / R G
 }
 
+# Inverse mapping from 2x2 CFA codes to string key
+INVERSE_BAYER_PATTERN_MAP = {v: k for k, v in BAYER_PATTERN_MAP.items()}
+
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
 
@@ -239,7 +242,7 @@ class MetadataTags:
         
         xmp_bytes = xmp_content.encode('utf-8')
         self.add_tag(("XMP", "B", len(xmp_bytes), xmp_bytes))
-        logger.info(f"Added XMP metadata with {len(xmp_data)} user properties")
+        logger.debug(f"Added XMP metadata with {len(xmp_data)} user properties")
 
 
 # Default values for tags
@@ -347,28 +350,25 @@ def cfa_from_dng(
             raise ValueError("No raw pages found in DNG")
 
         # 2. Find the first page with CFA photometric interpretation
-        cfa_page_details = None
+        cfa_page_id = None
         for page_id_loop, shape, tags_loop in raw_pages_info:
             if tags_loop.get("PhotometricInterpretation") == "CFA":
-                cfa_page_details = (page_id_loop, tags_loop)
+                cfa_page_id = page_id_loop
                 break
 
-        if cfa_page_details is None:
+        if cfa_page_id is None:
             raise ValueError("No page with CFA interpretation found in DNG")
 
-        page_id, tags = cfa_page_details
-        
-        # 3. Get the CFA pattern from the tags
-        cfa_pattern_value = tags.get("CFAPattern")
-        if cfa_pattern_value is None:
-            raise ValueError(f"Missing CFAPattern tag for page {page_id}")
-
-        # 4. Get the CFA data array
-        raw_cfa = dng_file.get_raw_cfa_by_id(page_id)
-        if raw_cfa is None:
+        # 3. Get the CFA data array and pattern via API
+        result = dng_file.get_raw_cfa_by_id(cfa_page_id)
+        if result is None:
             raise RuntimeError(
-                f"Failed to retrieve raw CFA data for page {page_id}"
+                f"Failed to retrieve raw CFA data for page {cfa_page_id}"
             )
+        raw_cfa, cfa_pattern_value = result
+
+        if cfa_pattern_value is None:
+            raise ValueError(f"Missing CFAPattern tag for page {cfa_page_id}")
 
     except (ValueError, RuntimeError):
         # Re-raise our specific errors as-is
@@ -996,25 +996,31 @@ class DngFile(TiffFile):
 
         return info_list
 
-    def _get_page_by_id(self, target_page_id: int) -> Optional[TiffPage]:
-        """Helper to retrieve a specific TiffPage by its flattened, 0-based ID."""
+    def get_page_by_id(self, target_page_id: int) -> Optional[TiffPage]:
+        """Retrieve a specific TiffPage by its flattened, 0-based ID."""
         for i, page in enumerate(self._iter_all_pages_recursive(self.pages)):
             if i == target_page_id:
                 return page
         return None
-    
-    def get_page_by_id(self, target_page_id: int) -> Optional[TiffPage]:
-        """Retrieve a specific TiffPage by its flattened, 0-based ID."""
-        return self._get_page_by_id(target_page_id)
 
-    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
-        """Retrieves the raw data array for a specific 'CFA' page by its ID."""
+    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[tuple[np.ndarray, str]]:
+        """Retrieves the raw CFA array and CFAPattern string for a specific 'CFA' page.
+        
+        Returns a tuple (raw_cfa_array, cfa_pattern_value) or None if page not found/invalid.
+        """
+        p = self.get_page_by_id(target_page_id)
+        return self.get_raw_cfa_from_page(p)
 
-        p = self._get_page_by_id(target_page_id)
-
+    def get_raw_cfa_from_page(self, page: Optional[TiffPage]) -> Optional[tuple[np.ndarray, str]]:
+        """Retrieves the raw CFA array and CFAPattern string from a given TiffPage.
+        
+        Returns a tuple (raw_cfa_array, cfa_pattern_value) or None if page not valid/unsupported.
+        """
+        p = page
         if p is None or p.photometric is None or p.photometric.name != "CFA":
             return None
 
+        # Determine if data is interleaved and needs deswizzling
         col_interleave_tag = p.tags.get(TIFF.TAGS["ColumnInterleaveFactor"])
         row_interleave_tag = p.tags.get(TIFF.TAGS["RowInterleaveFactor"])
         if (
@@ -1023,9 +1029,20 @@ class DngFile(TiffFile):
             and row_interleave_tag is not None
             and row_interleave_tag.value == 2
         ):
-            return deswizzle_cfa_data(p.asarray())
+            raw_cfa = deswizzle_cfa_data(p.asarray())
+        else:
+            raw_cfa = p.asarray()
 
-        return p.asarray()
+        # Fetch CFAPattern and map its 4-code tuple to a string using the inverse map.
+        cfa_tag = p.tags.get(TIFF.TAGS.get("CFAPattern"))
+        cfa_str = None
+        if cfa_tag is not None:
+            v = cfa_tag.value
+            if isinstance(v, (bytes, bytearray)) and len(v) == 4:
+                codes = tuple(int(b) for b in v)
+                cfa_str = INVERSE_BAYER_PATTERN_MAP.get(codes)
+
+        return raw_cfa, cfa_str
 
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
         """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID."""
