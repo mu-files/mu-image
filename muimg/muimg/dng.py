@@ -1104,7 +1104,63 @@ class DngFile(TiffFile):
                     )
                     return None
 
+        # Fallback: search ExifIFD if available
+        exif_value = self._get_exif_tag(tag_name, return_type)
+        if exif_value is not None:
+            return exif_value
+
         return None
+
+    def _get_exif_tag(self, tag_name: str, return_type: Optional[Type] = None) -> Union[Any, None]:
+        """Search for a tag in the ExifIFD using tifffile's parsed structure.
+        
+        Args:
+            tag_name: The name of the tag to retrieve (e.g., "ExposureTime").
+            return_type: The desired type for the return value (e.g., float, int, str).
+            
+        Returns:
+            The tag's value from ExifIFD, converted to return_type if possible. 
+            Returns None if not found in ExifIFD.
+        """
+        # Look for ExifIFDPointer (tag 34665) on the first page (IFD0)
+        if not self.pages:
+            return None
+            
+        first_page = self.pages[0]
+        exif_ptr_tag_id = TIFF.TAGS.get("ExifTag")  # ExifIFDPointer
+        if exif_ptr_tag_id is None:
+            return None
+        exif_ptr_tag = first_page.tags.get(exif_ptr_tag_id)
+        
+        if exif_ptr_tag is None:
+            return None
+            
+        # tifffile parses ExifIFD into a dict accessible via tag.value
+        exif_ifd_dict = exif_ptr_tag.value
+        if not isinstance(exif_ifd_dict, dict):
+            return None
+            
+        # Search for our tag by name in the ExifIFD dict
+        if tag_name not in exif_ifd_dict:
+            return None
+            
+        value = exif_ifd_dict[tag_name]
+        
+        if return_type is None:
+            return value
+            
+        try:
+            if return_type is float and isinstance(value, tuple) and len(value) == 2:
+                # Handle rational to float conversion
+                num, den = value
+                return float(num / den) if den != 0 else 0.0
+            else:
+                return return_type(value)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                f"Could not convert ExifIFD tag '{tag_name}' value '{value}' to type {return_type}: {e}"
+            )
+            return None
 
     @property
     def xmp_metadata(self) -> Dict[str, str]:
@@ -1176,6 +1232,20 @@ class DngFile(TiffFile):
                     processed_values.append(f"[{','.join(coords)}]")
             
             attributes[seq_name] = ','.join(processed_values)
+        
+        # Pattern to match rdf:Bag structures like dc:subject
+        # Matches: <dc:subject>...<rdf:Bag>...<rdf:li>...</rdf:li>...</rdf:Bag>...</dc:subject>
+        bag_pattern = r'<([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Bag>(.*?)</rdf:Bag>.*?</\1>'
+        bag_matches = re.findall(bag_pattern, xmp_data, re.DOTALL)
+        
+        logger.debug(f"Found {len(bag_matches)} XMP bags")
+        for bag_name, bag_content in bag_matches:
+            # Extract all rdf:li values from the bag
+            li_pattern = r'<rdf:li>([^<]*?)</rdf:li>'
+            li_values = re.findall(li_pattern, bag_content)
+            
+            # Store as comma-separated values (same as sequences)
+            attributes[bag_name] = ','.join(li_values)
         
         logger.debug(f"Parsed {len(attributes)} XMP attributes from DNG file")
         return attributes

@@ -3,9 +3,50 @@ import queue
 import threading
 
 from datetime import datetime, timedelta
-from typing import Callable, Iterable, Any
+from typing import Callable, Iterable, Any, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class ProcessingThreadPool:
+    """A simple thread pool for running worker functions with different argument patterns."""
+    
+    def __init__(self, num_workers: int, thread_name_prefix: str = "Worker"):
+        self.num_workers = num_workers
+        self.thread_name_prefix = thread_name_prefix
+        self.threads: List[threading.Thread] = []
+    
+    def run_workers(self, worker_func: Callable, worker_args_list: List[Tuple]) -> None:
+        """
+        Run worker functions in parallel threads and wait for completion.
+        
+        Args:
+            worker_func: The function to run in each thread
+            worker_args_list: List of argument tuples, one per worker
+        """
+        logger.info(f"Starting {len(worker_args_list)} worker threads...")
+        
+        # Clear any previous threads
+        self.threads.clear()
+        
+        # Create and start threads
+        for worker_id, args in enumerate(worker_args_list):
+            thread = threading.Thread(
+                target=worker_func,
+                args=args,
+                name=f"{self.thread_name_prefix}-{worker_id}"
+            )
+            self.threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in self.threads:
+            try:
+                thread.join()
+            except Exception as e:
+                logger.error(f"Error joining thread {thread.name}: {e}")
+        
+        logger.info(f"{self.thread_name_prefix} processing complete!")
 
 
 class ProcessingPipeline:
