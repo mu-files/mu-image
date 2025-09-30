@@ -181,13 +181,17 @@ class MetadataTags:
         
         # Add user-provided data
         sequence_props = {}
+        bag_props = {}  # New: for dc:subject style bags
         for key, value in xmp_data.items():
             # Auto-prepend 'crs:' if no namespace specified
             if ':' not in key:
                 key = f'crs:{key}'
             
+            # Check for bag structure (dc:subject with list of strings)
+            if key == 'dc:subject' and isinstance(value, list):
+                bag_props[key] = value
             # Check if value has coordinate pairs (list of 2-tuples) - needs <rdf:Seq> structure
-            if hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
+            elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
                 # ToneCurve object with points attribute
                 sequence_props[key] = getattr(value, 'points')
             elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
@@ -225,6 +229,31 @@ class MetadataTags:
             
             sequence_xml = chr(10).join(sequence_elements)
 
+        # Build bag structures for dc:subject style keywords
+        bag_xml = ""
+        if bag_props:
+            bag_elements = []
+            for prop_name, items in bag_props.items():
+                # Extract namespace and property name for XML element
+                if ':' in prop_name:
+                    namespace, prop = prop_name.split(':', 1)
+                    element_name = f'{namespace}:{prop}'
+                else:
+                    element_name = prop_name
+                
+                # Build rdf:li items from list of strings
+                bag_items = []
+                for item in items:
+                    bag_items.append(f'      <rdf:li>{item}</rdf:li>')
+                
+                bag_elements.append(f'''    <{element_name}>
+     <rdf:Bag>
+{chr(10).join(bag_items)}
+     </rdf:Bag>
+    </{element_name}>''')
+            
+            bag_xml = chr(10).join(bag_elements)
+
         # Create minimal XMP structure based on Lightroom format
         xmp_content = f'''<?xpacket begin="\\357\\273\\277" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="muimg XMP Core">
@@ -234,7 +263,7 @@ class MetadataTags:
     xmlns:dc="http://purl.org/dc/elements/1.1/"
     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-{chr(10).join(xmp_props)}>{sequence_xml}
+{chr(10).join(xmp_props)}>{sequence_xml}{bag_xml}
   </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
@@ -904,8 +933,22 @@ class DngFile(TiffFile):
 
         return tag_value
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, file, *args, **kwargs):
+        import io
+        from pathlib import Path
+        
+        # Normalize file input to BytesIO for consistent in-memory operation
+        if isinstance(file, (str, Path)):
+            # Read file into memory
+            with open(file, 'rb') as f:
+                file_data = f.read()
+            file = io.BytesIO(file_data)
+        elif isinstance(file, io.IOBase):
+            # Ensure we're at the beginning for consistent behavior
+            file.seek(0)
+        # For any other type, let TiffFile handle it and potentially fail with a clear error
+        
+        super().__init__(file, *args, **kwargs)
         self._xmp_metadata = None  # Lazy-loaded XMP metadata dictionary
 
     def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
@@ -1205,7 +1248,8 @@ class DngFile(TiffFile):
         # Pattern to match rdf:Seq structures like ToneCurvePV2012
         # Use flexible matching that handles any whitespace/newlines between tags
         # Matches: <crs:PropertyName>...<rdf:Seq>...<rdf:li>...</rdf:li>...</rdf:Seq>...</crs:PropertyName>
-        seq_pattern = r'<([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Seq>(.*?)</rdf:Seq>.*?</\1>'
+        # - exclude rdf: namespace
+        seq_pattern = r'<((?!rdf:)[a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Seq>(.*?)</rdf:Seq>.*?</\1>'
         seq_matches = re.findall(seq_pattern, xmp_data, re.DOTALL)
         
         logger.debug(f"Found {len(seq_matches)} XMP sequences")
@@ -1296,7 +1340,7 @@ class DngFile(TiffFile):
 
 
 def decode_raw(
-    file: Union[str, Path, IO[bytes]],
+    file: Union[str, Path, IO[bytes], DngFile],
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
     **processing_params
@@ -1305,7 +1349,7 @@ def decode_raw(
     Decode a DNG file to a numpy array using Core Image processing.
     
     Args:
-        file: Path to DNG file or file-like object containing DNG data
+        file: Path to DNG file, file-like object containing DNG data, or DngFile instance
         use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
         **processing_params: Processing parameters (temperature, tint, exposure, 
@@ -1315,28 +1359,18 @@ def decode_raw(
         RGB image array with shape (height, width, 3) and specified dtype
     """
     try:
-        # Import here to avoid circular imports
+        # Import here to avoid importing heavy dependencies at module load time
         from . import color_mac
-        import io
         
-        # Read file once and use for both DngFile and process_raw_core_image
-        if isinstance(file, io.IOBase):
-            dng_input = file
-        else:
-            # Read file once into BytesIO
-            with open(file, 'rb') as f:
-                file_data = f.read()
-            dng_input = io.BytesIO(file_data)
-
-        dng_input.seek(0)
-        dng_file = DngFile(dng_input)
+        # Create or use DngFile - DngFile.__init__ handles file normalization and seeking
+        dng_file = file if isinstance(file, DngFile) else DngFile(file)
+        dng_input = dng_file.filehandle
         
         # Build processing options using configuration mapping
         options = {}
         
         # Only process parameters if we have XMP to read or explicit parameters to apply
         if use_xmp or processing_params:
-            # Import ToneCurve here to avoid circular import issues
             from .color import ToneCurve as TC
             
             # Define mapping: param_name -> (option_name, xmp_name, value_type)
@@ -1387,9 +1421,12 @@ def decode_raw(
             new_tone_curve = TC()
             new_tone_curve.points = [(int(x * 255), int(y * 255)) for x, y in transformed_points]
             options["toneCurve"] = new_tone_curve
-        
+
+        # Ensure file pointer is at beginning for Core Image processing
+        # (XMP reading above may have moved the pointer)
+        dng_input.seek(0) 
+
         # Process with Core Image
-        dng_input.seek(0)
         color_data = color_mac.process_raw_core_image(
             dng_input=dng_input,
             raw_filter_options=options,
