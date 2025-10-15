@@ -4,6 +4,7 @@ This module handles DNG file creation and related functionality.
 """
 import io
 import logging
+import imagecodecs
 import numpy as np
 
 from pathlib import Path
@@ -816,8 +817,10 @@ def write_dng_from_page(
                 'StripByteCounts',     # 279 - handled automatically by TiffWriter
                 'XResolution',         # 282 - handled by resolution parameter
                 'YResolution',         # 283 - handled by resolution parameter
+                'TileOffsets',         # 284 - handled internally by tifffile
                 'ResolutionUnit',      # 296 - handled by resolution parameter
-                'Software'             # 305 - handled by software parameter
+                'Software',            # 305 - handled by software parameter
+                'SubIFDs'              # 330 - handled internally by tifffile
             }
             
             # Copy page-specific tags (like the test pattern)
@@ -1088,14 +1091,31 @@ class DngFile(TiffFile):
         return raw_cfa, cfa_str
 
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
-        """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID."""
+        """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID.
+        
+        Uses imagecodecs directly for JPEG XL compression to avoid tifffile's
+        chroma subsampling limitation.
+        """
 
         p = self._get_page_by_id(target_page_id)
 
         if p is None or p.photometric is None or p.photometric.name != "LINEAR_RAW":
             return None
 
-        return p.asarray()
+        # Check if this is JPEG XL compression
+        if p.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            # Use imagecodecs directly to avoid tifffile's chroma subsampling limitation
+            fh = p.parent.filehandle
+            compressed_segments = list(fh.read_segments(
+                p.dataoffsets,
+                p.databytecounts,
+                sort=True
+            ))
+            compressed_data = b''.join(segment_data for segment_data, index in compressed_segments)
+            return imagecodecs.jpegxl_decode(compressed_data)
+        else:
+            # Use asarray() for other compressions
+            return p.asarray()
 
     def get_tag(
         self,
