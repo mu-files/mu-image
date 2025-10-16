@@ -1097,7 +1097,7 @@ class DngFile(TiffFile):
         chroma subsampling limitation.
         """
 
-        p = self._get_page_by_id(target_page_id)
+        p = self.get_page_by_id(target_page_id)
 
         if p is None or p.photometric is None or p.photometric.name != "LINEAR_RAW":
             return None

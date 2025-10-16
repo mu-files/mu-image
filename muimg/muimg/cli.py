@@ -1,42 +1,174 @@
-"""Command-line interface for muimg DNG processing."""
+"""Command-line interface for muimg."""
 
-import argparse
 import logging
+import sys
+from pathlib import Path
+
+import click
+
 from .dng import convert_raw
+from .google_photos import GooglePhotosClient
+
+logger = logging.getLogger(__name__)
+
+
+@click.group()
+@click.option("-v", "--verbose", count=True, help="Increase verbosity")
+def cli(verbose):
+    """muimg - Image processing utilities."""
+    level = logging.WARNING
+    if verbose == 1:
+        level = logging.INFO
+    elif verbose >= 2:
+        level = logging.DEBUG
+
+    logging.basicConfig(
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+
+@cli.command()
+@click.argument("input_dng", type=click.Path(exists=True))
+@click.argument("output_jpg", type=click.Path())
+@click.option("--temperature", type=float, help="White balance temperature")
+@click.option("--tint", type=float, help="White balance tint")
+@click.option("--exposure", type=float, help="Exposure adjustment in stops")
+@click.option("--noise-reduction", type=float, help="Noise reduction amount")
+@click.option("--orientation", type=int, help="Image orientation")
+@click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
+def convert(
+    input_dng, output_jpg, temperature, tint, exposure, noise_reduction, orientation, no_xmp
+):
+    """Convert DNG file to JPG using Core Image."""
+    success = convert_raw(
+        file=input_dng,
+        output_path=output_jpg,
+        temperature=temperature,
+        tint=tint,
+        exposure=exposure,
+        noise_reduction=noise_reduction,
+        orientation=orientation,
+        use_xmp=not no_xmp,
+    )
+
+    sys.exit(0 if success else 1)
+
+
+@cli.group(name="google-photos")
+def google_photos():
+    """Google Photos integration commands."""
+    pass
+
+
+@google_photos.command()
+@click.option(
+    "--credentials",
+    type=click.Path(exists=True),
+    help="Path to OAuth2 credentials JSON file",
+)
+@click.option(
+    "--token-path",
+    type=click.Path(),
+    help="Path to store/load refresh token",
+)
+@click.option("--force", is_flag=True, help="Force re-authentication")
+def auth(credentials, token_path, force):
+    """Authenticate with Google Photos API.
+
+    This will open a browser window for OAuth2 authentication.
+    The refresh token will be saved for future automated access.
+    """
+    creds_path = Path(credentials) if credentials else None
+    token_path = Path(token_path) if token_path else None
+
+    client = GooglePhotosClient(
+        credentials_path=creds_path, token_path=token_path
+    )
+
+    if client.authenticate(force_reauth=force):
+        click.echo(f"✓ Successfully authenticated")
+        click.echo(f"✓ Token saved to: {client.token_path}")
+        click.echo("\nYou can now use 'muimg google-photos upload' for automated uploads")
+        sys.exit(0)
+    else:
+        click.echo("✗ Authentication failed", err=True)
+        sys.exit(1)
+
+
+@google_photos.command()
+@click.argument("image_path", type=click.Path(exists=True))
+@click.option("--album", help="Album name (will be created if doesn't exist)")
+@click.option(
+    "--token-path",
+    type=click.Path(),
+    help="Path to stored refresh token",
+)
+def upload(image_path, album, token_path):
+    """Upload an image to Google Photos."""
+    image_path = Path(image_path)
+    token_path = Path(token_path) if token_path else None
+
+    client = GooglePhotosClient(token_path=token_path)
+
+    if not client.authenticate():
+        click.echo(
+            "✗ Authentication failed. Run 'muimg google-photos auth' first.",
+            err=True,
+        )
+        sys.exit(1)
+
+    try:
+        result = client.upload_image(image_path, album_title=album)
+        click.echo(f"✓ Uploaded: {image_path.name}")
+        if album:
+            click.echo(f"  Album: {album}")
+        click.echo(f"  URL: {result['productUrl']}")
+        sys.exit(0)
+    except Exception as e:
+        click.echo(f"✗ Upload failed: {e}", err=True)
+        logger.exception("Upload error")
+        sys.exit(1)
+
+
+@google_photos.command(name="list-albums")
+@click.option(
+    "--token-path",
+    type=click.Path(),
+    help="Path to stored refresh token",
+)
+def list_albums(token_path):
+    """List all albums in Google Photos."""
+    token_path = Path(token_path) if token_path else None
+
+    client = GooglePhotosClient(token_path=token_path)
+
+    if not client.authenticate():
+        click.echo(
+            "✗ Authentication failed. Run 'muimg google-photos auth' first.",
+            err=True,
+        )
+        sys.exit(1)
+
+    try:
+        albums = client.list_albums()
+        if not albums:
+            click.echo("No albums found")
+        else:
+            click.echo(f"Found {len(albums)} albums:\n")
+            for album in albums:
+                click.echo(f"  • {album['title']}")
+                click.echo(f"    URL: {album['productUrl']}")
+                click.echo()
+        sys.exit(0)
+    except Exception as e:
+        click.echo(f"✗ Failed to list albums: {e}", err=True)
+        logger.exception("List albums error")
+        sys.exit(1)
 
 
 def main():
-    """CLI entry point for DNG conversion."""
-    parser = argparse.ArgumentParser(description="Convert DNG files to JPG using Core Image")
-    parser.add_argument("input_dng", help="Input DNG file path")
-    parser.add_argument("output_jpg", help="Output JPG file path")
-    parser.add_argument("--temperature", type=float, help="White balance temperature")
-    parser.add_argument("--tint", type=float, help="White balance tint")
-    parser.add_argument("--exposure", type=float, help="Exposure adjustment in stops")
-    parser.add_argument("--noise-reduction", type=float, help="Noise reduction amount")
-    parser.add_argument("--orientation", type=int, help="Image orientation")
-    parser.add_argument("--no-xmp", action="store_true", help="Don't use XMP metadata")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
-    
-    args = parser.parse_args()
-    
-    # Set up logging
-    level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
-    
-    # Convert DNG
-    success = convert_raw(
-        file=args.input_dng,
-        output_path=args.output_jpg,
-        temperature=args.temperature,
-        tint=args.tint,
-        exposure=args.exposure,
-        noise_reduction=args.noise_reduction,
-        orientation=args.orientation,
-        use_xmp=not args.no_xmp,
-    )
-    
-    exit(0 if success else 1)
+    """Entry point for CLI."""
+    cli()
 
 
 if __name__ == "__main__":
