@@ -183,9 +183,24 @@ class GooglePhotosClient:
         logger.info(f"Uploading {image_path.name}...")
         upload_url = "https://photoslibrary.googleapis.com/v1/uploads"
 
+        # Determine MIME type from file extension
+        suffix = image_path.suffix.lower()
+        mime_types = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".tif": "image/tiff",
+            ".tiff": "image/tiff",
+            ".mp4": "video/mp4",
+            ".mov": "video/quicktime",
+        }
+        content_type = mime_types.get(suffix, "application/octet-stream")
+
         headers = {
             "Authorization": f"Bearer {self.creds.token}",
             "Content-type": "application/octet-stream",
+            "X-Goog-Upload-Content-Type": content_type,
             "X-Goog-Upload-File-Name": image_path.name,
             "X-Goog-Upload-Protocol": "raw",
         }

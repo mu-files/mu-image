@@ -60,6 +60,7 @@ class ProcessingPipeline:
         num_workers: int = 4,
         queue_size: int = None,
         writer_queue_size: int = None,
+        task_name: str = None,
     ):
         """
         Initializes the processing pipeline.
@@ -74,6 +75,8 @@ class ProcessingPipeline:
             num_workers: The number of concurrent consumer threads.
             queue_size: Max size of the task queue. Defaults to num_workers * 4.
             writer_queue_size: Max size of the writer queue. Defaults to queue_size.
+            task_name: Optional descriptive name for the task (e.g., "Keogram Creation").
+                       Used in log messages for better clarity.
         """
         if not callable(producer):
             raise TypeError("Producer must be a callable that returns an iterable.")
@@ -86,6 +89,7 @@ class ProcessingPipeline:
         self.consumer = consumer
         self.writer = writer
         self.num_workers = num_workers
+        self.task_name = task_name
 
         if queue_size is None:
             queue_size = num_workers * 4
@@ -167,7 +171,8 @@ class ProcessingPipeline:
 
     def run(self):
         """Starts and runs the entire processing pipeline."""
-        logger.info(f"Starting pipeline with {self.num_workers} worker threads...")
+        task_desc = f" ({self.task_name})" if self.task_name else ""
+        logger.info(f"Starting pipeline{task_desc} with {self.num_workers} worker threads...")
         worker_threads = []
         writer_thread = None
 
@@ -215,7 +220,8 @@ class ProcessingPipeline:
             thread.join()
         monitor_thread.join()
 
-        logger.info("Pipeline processing complete!")
+        task_desc = f" ({self.task_name})" if self.task_name else ""
+        logger.info(f"Pipeline{task_desc} processing complete!")
 
     def get_queue_stats(self) -> dict:
         """Returns a dictionary with queue statistics."""
