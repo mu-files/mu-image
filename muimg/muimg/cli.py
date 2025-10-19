@@ -29,25 +29,32 @@ def cli(verbose):
 
 @cli.command()
 @click.argument("input_dng", type=click.Path(exists=True))
-@click.argument("output_jpg", type=click.Path())
+@click.argument("output_file", type=click.Path())
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
 @click.option("--exposure", type=float, help="Exposure adjustment in stops")
 @click.option("--noise-reduction", type=float, help="Noise reduction amount")
 @click.option("--orientation", type=int, help="Image orientation")
+@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
 def convert(
-    input_dng, output_jpg, temperature, tint, exposure, noise_reduction, orientation, no_xmp
+    input_dng, output_file, temperature, tint, exposure, noise_reduction, orientation, bit_depth, no_xmp
 ):
-    """Convert DNG file to JPG using Core Image."""
+    """Convert DNG file to image file (format determined by extension)."""
+    import numpy as np
+    
+    # Map bit depth to numpy dtype
+    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
+    
     success = convert_raw(
         file=input_dng,
-        output_path=output_jpg,
+        output_path=output_file,
         temperature=temperature,
         tint=tint,
         exposure=exposure,
         noise_reduction=noise_reduction,
         orientation=orientation,
+        output_dtype=output_dtype,
         use_xmp=not no_xmp,
     )
 

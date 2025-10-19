@@ -24,7 +24,7 @@ class ProcessingThreadPool:
             worker_func: The function to run in each thread
             worker_args_list: List of argument tuples, one per worker
         """
-        logger.info(f"Starting {len(worker_args_list)} worker threads...")
+        logger.info(f"Starting {len(worker_args_list)} {self.thread_name_prefix} threads...")
         
         # Clear any previous threads
         self.threads.clear()
@@ -111,16 +111,18 @@ class ProcessingPipeline:
 
     def _producer_thread(self):
         """Internal method to run the producer and populate the task queue."""
-        logger.info(f"--- Starting producer thread (target: {self.producer.__name__}) ---")
+        task_prefix = f"{self.task_name}->" if self.task_name else ""
+        logger.info(f"--- Starting producer thread (target: {task_prefix}{self.producer.__name__}) ---")
         try:
             for item in self.producer():
                 self.task_queue.put(item)
         finally:
-            logger.info(f"--- Producer thread ({self.producer.__name__}) finished. All tasks have been queued. ---")
+            logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) finished. All tasks have been queued. ---")
 
     def _consumer_thread(self, thread_num: int):
         """Internal method for consumer workers."""
-        logger.info(f"--- Consumer thread {thread_num}/{self.num_workers} started (target: {self.consumer.__name__}) ---")
+        task_prefix = f"{self.task_name}->" if self.task_name else ""
+        logger.info(f"--- Consumer thread {thread_num}/{self.num_workers} started (target: {task_prefix}{self.consumer.__name__}) ---")
         while not (self._stop_event.is_set() and self.task_queue.empty()):
             try:
                 task = self.task_queue.get(timeout=0.1)
@@ -140,7 +142,8 @@ class ProcessingPipeline:
 
     def _writer_thread(self):
         """Internal method for the writer thread. Only runs if a writer is configured."""
-        logger.info(f"--- Starting writer thread (target: {self.writer.__name__}) ---")
+        task_prefix = f"{self.task_name}->" if self.task_name else ""
+        logger.info(f"--- Starting writer thread (target: {task_prefix}{self.writer.__name__}) ---")
         while not (self._stop_event.is_set() and self.writer_queue.empty()):
             try:
                 item_to_write = self.writer_queue.get(timeout=0.1)
@@ -153,7 +156,7 @@ class ProcessingPipeline:
             except queue.Empty:
                 continue
 
-        logger.info(f"--- Writer thread ({self.writer.__name__}) finished. ---")
+        logger.info(f"--- Writer thread ({task_prefix}{self.writer.__name__}) finished. ---")
 
     def _monitor_queues(self, interval=0.1):
         """Monitors the queue sizes at regular intervals."""

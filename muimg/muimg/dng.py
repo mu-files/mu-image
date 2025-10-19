@@ -1469,6 +1469,7 @@ def convert_raw(
     file: Union[str, Path, IO[bytes]],
     output_path: Union[str, Path],
     use_xmp: bool = True,
+    output_dtype: type = np.uint8,
     **processing_params
 ) -> bool:
     """
@@ -1478,6 +1479,7 @@ def convert_raw(
         file: Path to DNG file or file-like object containing DNG data
         output_path: Output file path (format determined by extension)
         use_xmp: Whether to read XMP metadata for default values
+        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
         **processing_params: Processing parameters (temperature, tint, exposure, 
                            tone_curve, noise_reduction, orientation, etc.)
         
@@ -1487,11 +1489,11 @@ def convert_raw(
     try:
         import cv2
         
-        # Decode DNG to 8-bit numpy array
+        # Decode DNG to numpy array
         color_data = decode_raw(
             file=file,
             use_xmp=use_xmp,
-            output_dtype=np.uint8,
+            output_dtype=output_dtype,
             **processing_params
         )
         
@@ -1520,6 +1522,7 @@ def convert_raw_to_stream(
     file: Union[str, Path, IO[bytes]],
     output_format: str = "jpg",
     use_xmp: bool = True,
+    output_dtype: type = np.uint8,
     **processing_params
 ) -> bytes:
     """
@@ -1529,6 +1532,7 @@ def convert_raw_to_stream(
         file: Path to DNG file or file-like object containing DNG data
         output_format: Output format ("jpg", "png", "tiff", etc.)
         use_xmp: Whether to read XMP metadata for default values
+        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
         **processing_params: Processing parameters (temperature, tint, exposure, 
                            tone_curve, noise_reduction, orientation, etc.)
         
@@ -1538,11 +1542,11 @@ def convert_raw_to_stream(
     try:
         import cv2
         
-        # Decode DNG to 8-bit numpy array
+        # Decode DNG to numpy array
         color_data = decode_raw(
             file=file,
             use_xmp=use_xmp,
-            output_dtype=np.uint8,
+            output_dtype=output_dtype,
             **processing_params
         )
         
