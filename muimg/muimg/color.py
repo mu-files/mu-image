@@ -269,8 +269,26 @@ def from_linear(linear):
     srgb[~less] = 1.055 * np.power(srgb[~less], 1.0 / 2.4) - 0.055
     return srgb
 
-def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str, orientation: int | None = None) -> np.ndarray:
-
+def linear_raw_from_cfa(
+    image_data: np.ndarray, 
+    cfa_pattern: str, 
+    orientation: int | None = None,
+    algorithm: str = "VNG"
+) -> np.ndarray:
+    """Demosaic CFA data to RGB.
+    
+    Args:
+        image_data: 2D raw CFA data array (uint16)
+        cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
+        orientation: Optional EXIF orientation code (1, 3, 6, or 8)
+        algorithm: Demosaic algorithm - "VNG" (default), "LINEAR", "DCB", "AHD", or "OPENCV_EA"
+        
+    Returns:
+        RGB array (uint16)
+    """
+    import io
+    from . import dng
+    
     # Validate inputs
     if image_data.ndim != 2:
         raise ValueError(
@@ -283,25 +301,77 @@ def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str, orientation: i
         raise TypeError(
             f"cfa_pattern must be a string, but got {type(cfa_pattern).__name__}."
         )
-
-    # Define Bayer patterns and their corresponding OpenCV conversion codes
-    # This dictionary was already present in the user's code.
-    BAYER_PATTERNS_TO_CV2 = {
-        "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
-        "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
-        "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
-        "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
-    }
-
-    # Validate provided CFA pattern string
-    if cfa_pattern not in BAYER_PATTERNS_TO_CV2:
+    
+    # Validate CFA pattern
+    valid_patterns = ["RGGB", "BGGR", "GRBG", "GBRG"]
+    if cfa_pattern not in valid_patterns:
         raise ValueError(
             f"Invalid CFA pattern: '{cfa_pattern}'. "
-            f"Supported patterns are: {list(BAYER_PATTERNS_TO_CV2.keys())}."
+            f"Supported patterns are: {valid_patterns}."
         )
-
-    # Demosaic the image
-    rgb = cv2.demosaicing(image_data, BAYER_PATTERNS_TO_CV2[cfa_pattern])
+    
+    # Validate algorithm
+    valid_algorithms = ["VNG", "LINEAR", "DCB", "AHD", "OPENCV_EA"]
+    if algorithm not in valid_algorithms:
+        raise ValueError(
+            f"Invalid algorithm: '{algorithm}'. "
+            f"Supported algorithms are: {valid_algorithms}."
+        )
+    
+    # Demosaic using selected algorithm
+    if algorithm == "OPENCV_EA":
+        # OpenCV demosaic
+        bayer_pattern_map = {
+            "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
+            "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
+            "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
+            "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
+        }
+        rgb = cv2.demosaicing(image_data, bayer_pattern_map[cfa_pattern])
+        # OpenCV outputs BGR, swap to RGB
+        rgb = rgb[..., [2, 1, 0]]
+    else:
+        # Rawpy/LibRaw demosaic
+        import rawpy
+        
+        algorithm_map = {
+            "VNG": rawpy.DemosaicAlgorithm.VNG,
+            "LINEAR": rawpy.DemosaicAlgorithm.LINEAR,
+            "DCB": rawpy.DemosaicAlgorithm.DCB,
+            "AHD": rawpy.DemosaicAlgorithm.AHD,
+        }
+        
+        # Create minimal DNG in memory for rawpy
+        dng_buffer = io.BytesIO()
+        dng.write_dng(
+            raw_data=image_data,
+            cfa_pattern=cfa_pattern,
+            destination_file=dng_buffer,
+            bits_per_pixel=16,
+            camera_profile=None,  # Minimal DNG, no profile needed
+            jxl_distance=None,  # No compression for rawpy compatibility
+            jxl_effort=None,
+        )
+        dng_buffer.seek(0)
+        
+        raw = rawpy.RawPy()
+        try:
+            raw.open_buffer(dng_buffer)
+            raw.unpack()
+            
+            rgb = raw.postprocess(
+                demosaic_algorithm=algorithm_map[algorithm],
+                output_color=rawpy.ColorSpace.raw,  # Camera RGB space
+                gamma=(1, 1),  # Linear
+                no_auto_bright=True,
+                use_camera_wb=False,
+                use_auto_wb=False,
+                user_wb=[1, 1, 1, 1],  # Unity multipliers
+                output_bps=16
+            )
+        finally:
+            raw.close()
+        # rawpy already outputs RGB (not BGR like OpenCV)
 
     # Apply orientation if provided: ONLY accept EXIF codes (1,3,6,8).
     if isinstance(orientation, (int, np.integer)):
@@ -315,8 +385,7 @@ def linear_raw_from_cfa(image_data: np.ndarray, cfa_pattern: str, orientation: i
         elif exif_code not in (1, 3, 6, 8):
             logger.warning(f"Unsupported EXIF orientation code: {exif_code}; no rotation applied")
 
-    # Swap R/B to match expected channel order
-    return rgb[..., [2, 1, 0]]
+    return rgb
 
 class BradfordAdaptation:
     """
