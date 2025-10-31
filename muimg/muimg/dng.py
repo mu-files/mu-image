@@ -612,8 +612,6 @@ def write_dng(
     dng_tags = _create_dng_tags(camera_profile, has_jxl=jxl_distance is not None)
 
     try:
-        logger.debug(f"Writing DNG from raw data buffer to {destination_file}")
-
         with TiffWriter(destination_file, bigtiff=False) as tif:
             if color_data is not None:
                 _write_thumbnail_ifd(tif, color_data, dng_tags)
@@ -676,7 +674,10 @@ def write_dng(
             )
             tif.write(processed_raw_data, **main_image_ifd_args, rowsperstrip=raw_datasize)
 
-        logger.debug(f"Successfully wrote DNG file to {destination_file}")
+        if isinstance(destination_file, Path):
+            logger.debug(f"Successfully wrote DNG file to {destination_file}")
+        else:
+            logger.debug("Successfully wrote DNG file to in-memory buffer")
 
     except Exception as e:
         logger.error(f"Error saving DNG file with TiffWriter: {e}")
@@ -763,7 +764,10 @@ def write_dng_linearraw(
 
             tif.write(processed_raw_data, **main_ifd_args, rowsperstrip=raw_datasize)
 
-        logger.debug(f"Successfully wrote LinearRaw DNG to {destination_file}")
+        if isinstance(destination_file, Path):
+            logger.debug(f"Successfully wrote LinearRaw DNG to {destination_file}")
+        else:
+            logger.debug("Successfully wrote LinearRaw DNG to in-memory buffer")
 
     except Exception as e:
         logger.error(f"Error saving LinearRaw DNG file with TiffWriter: {e}")
@@ -792,9 +796,12 @@ def write_dng_from_page(
     has_jxl = page.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
     dng_tags = _create_dng_tags(camera_profile, has_jxl)
 
-    try:
+    if isinstance(destination_file, Path):
         logger.debug(f"Writing DNG from TiffPage to {destination_file}")
-        
+    else:
+        logger.debug("Writing DNG from TiffPage to in-memory buffer")
+
+    try:
         with TiffWriter(destination_file, bigtiff=False) as tif:
 
             if color_data is not None:
@@ -875,7 +882,10 @@ def write_dng_from_page(
             
             logger.debug(f"Successfully copied compressed raw data ({sum(page.databytecounts)} bytes)")
         
-        logger.debug(f"Successfully wrote DNG file to {destination_file}")
+        if isinstance(destination_file, Path):
+            logger.debug(f"Successfully wrote DNG file to {destination_file}")
+        else:
+            logger.debug("Successfully wrote DNG file to in-memory buffer")
         
     except Exception as e:
         logger.error(f"Error writing DNG from TiffPage: {e}")
