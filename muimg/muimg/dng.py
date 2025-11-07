@@ -412,16 +412,16 @@ def cfa_from_dng(
 def rgb_planes_from_cfa(
     raw_cfa: np.ndarray, 
     cfa_pattern_str: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Extracts averaged R, G, and B planes from CFA data using the given pattern.
+    Extracts R, G1, G2, and B planes from CFA data using the given pattern.
     
     Args:
         raw_cfa: Raw CFA data array
         cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
         
     Returns:
-        Tuple of (r_plane, g_plane, b_plane)
+        Tuple of (r_plane, g1_plane, g2_plane, b_plane)
         
     Raises:
         ValueError: If the CFA pattern is invalid.
@@ -450,18 +450,15 @@ def rgb_planes_from_cfa(
     g1_plane = raw_cfa[g_pos_list[0][0]::2, g_pos_list[0][1]::2]
     g2_plane = raw_cfa[g_pos_list[1][0]::2, g_pos_list[1][1]::2]
 
-    g_plane = ((
-        g1_plane.astype(np.uint32) + g2_plane.astype(np.uint32)) // 2).astype(g1_plane.dtype)
-
-    return r_plane, g_plane, b_plane
+    return r_plane, g1_plane, g2_plane, b_plane
 
 
 def rgb_planes_from_dng(
     dng_file: "DngFile",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Loads a DNG file, finds the primary CFA raw image, and extracts averaged
-    R, G, and B planes.
+    Loads a DNG file, finds the primary CFA raw image, and extracts
+    R, G1, G2, and B planes.
 
     Raises:
         ValueError: If the DNG file format is invalid or missing required data.
@@ -469,7 +466,7 @@ def rgb_planes_from_dng(
     """
     # Extract CFA data and pattern, then process to RGB planes
     raw_cfa, cfa_pattern_value = cfa_from_dng(dng_file)
-    return rgb_from_cfa(raw_cfa, cfa_pattern_value)
+    return rgb_planes_from_cfa(raw_cfa, cfa_pattern_value)
 
 
 def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_tags: "MetadataTags") -> None:

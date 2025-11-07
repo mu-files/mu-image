@@ -269,25 +269,233 @@ def from_linear(linear):
     srgb[~less] = 1.055 * np.power(srgb[~less], 1.0 / 2.4) - 0.055
     return srgb
 
+def _interp_center(img: np.ndarray) -> np.ndarray:
+    """Interpolate each pixel from its 4 nearest neighbors (up, down, left, right).
+    
+    Args:
+        img: Input image (H, W)
+        
+    Returns:
+        Interpolated image where each pixel is the average of its 4 neighbors
+    """
+    h, w = img.shape
+    result = np.zeros_like(img, dtype=np.float32)
+    
+    # Interior pixels (not on edges)
+    result[1:-1, 1:-1] = (
+        img[0:-2, 1:-1].astype(np.float32) +  # up
+        img[2:, 1:-1].astype(np.float32) +    # down
+        img[1:-1, 0:-2].astype(np.float32) +  # left
+        img[1:-1, 2:].astype(np.float32)      # right
+    ) / 4.0
+    
+    # Handle edges and corners
+    # Top edge (no up neighbor)
+    result[0, 1:-1] = (
+        img[1, 1:-1].astype(np.float32) +     # down
+        img[0, 0:-2].astype(np.float32) +     # left
+        img[0, 2:].astype(np.float32)         # right
+    ) / 3.0
+    
+    # Bottom edge (no down neighbor)
+    result[-1, 1:-1] = (
+        img[-2, 1:-1].astype(np.float32) +    # up
+        img[-1, 0:-2].astype(np.float32) +    # left
+        img[-1, 2:].astype(np.float32)        # right
+    ) / 3.0
+    
+    # Left edge (no left neighbor)
+    result[1:-1, 0] = (
+        img[0:-2, 0].astype(np.float32) +     # up
+        img[2:, 0].astype(np.float32) +       # down
+        img[1:-1, 1].astype(np.float32)       # right
+    ) / 3.0
+    
+    # Right edge (no right neighbor)
+    result[1:-1, -1] = (
+        img[0:-2, -1].astype(np.float32) +    # up
+        img[2:, -1].astype(np.float32) +      # down
+        img[1:-1, -2].astype(np.float32)      # left
+    ) / 3.0
+    
+    # Corners (2 neighbors each)
+    result[0, 0] = (img[1, 0].astype(np.float32) + img[0, 1].astype(np.float32)) / 2.0  # top-left
+    result[0, -1] = (img[1, -1].astype(np.float32) + img[0, -2].astype(np.float32)) / 2.0  # top-right
+    result[-1, 0] = (img[-2, 0].astype(np.float32) + img[-1, 1].astype(np.float32)) / 2.0  # bottom-left
+    result[-1, -1] = (img[-2, -1].astype(np.float32) + img[-1, -2].astype(np.float32)) / 2.0  # bottom-right
+    
+    return result.astype(img.dtype)
+
+def _interp_center_green(g: np.ndarray) -> np.ndarray:
+    """Predict one green channel from the other by averaging 2x2 blocks.
+    
+    For Bayer pattern CFA, G1 and G2 are in a checkerboard pattern.
+    To predict G1 from G2 (or vice versa), average each 2x2 block.
+    
+    Args:
+        g: Input green channel (G2 to predict G1, or G1 to predict G2)
+        
+    Returns:
+        Predicted green channel values
+    """
+    h, w = g.shape
+    g_f = g.astype(np.float32)
+    
+    # Compute average of each 2x2 block using vectorized operations
+    h_even = (h // 2) * 2
+    w_even = (w // 2) * 2
+    
+    # Average the 4 pixels in each 2x2 block
+    avg_2x2 = (
+        g_f[0:h_even:2, 0:w_even:2] +
+        g_f[0:h_even:2, 1:w_even:2] +
+        g_f[1:h_even:2, 0:w_even:2] +
+        g_f[1:h_even:2, 1:w_even:2]
+    ) / 4.0
+    
+    # Broadcast the averaged values back to the same size as input
+    result = np.repeat(np.repeat(avg_2x2, 2, axis=0), 2, axis=1)
+    
+    # Handle odd dimensions if necessary
+    if h > h_even:
+        result = np.vstack([result, result[-1:, :]])
+    if w > w_even:
+        result = np.hstack([result, result[:, -1:]])
+    
+    return result.astype(g.dtype)
+
+def fix_hot_pixels(
+    cfa: np.ndarray,
+    cfa_pattern: str,
+    hot_candidates_r: np.ndarray | None = None,
+    hot_candidates_g1: np.ndarray | None = None,
+    hot_candidates_g2: np.ndarray | None = None,
+    hot_candidates_b: np.ndarray | None = None,
+    threshold: float = 2.,
+    min_brightness: int = 24000
+) -> np.ndarray:
+    """Fix hot pixels in CFA by replacing them with interpolated values.
+    
+    For each candidate hot pixel, checks if it's actually hot by comparing
+    its value to interpolated neighbors. If hot, replaces it with the
+    interpolated value.
+    
+    Args:
+        cfa: Raw CFA data (H, W) uint16
+        cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
+        hot_candidates_r: Binary mask of R channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g1: Binary mask of G1 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g2: Binary mask of G2 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_b: Binary mask of B channel hot pixel candidates (H/2, W/2)
+        threshold: Multiplier threshold (pixel must be > threshold * interpolated)
+        min_brightness: Minimum brightness to consider (default: 32768 = 128 in 8-bit)
+        
+    Returns:
+        Fixed CFA data (H, W) uint16
+    """
+    from . import dng as dng_module
+    
+    # If no candidate maps provided, return original
+    if all(c is None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
+        return cfa.copy()
+    
+    # Work on a copy
+    cfa_fixed = cfa.copy()
+    
+    # Extract CFA channels
+    r, g1, g2, b = dng_module.rgb_planes_from_cfa(cfa_fixed, cfa_pattern)
+    
+    # Compute channel medians for threshold scaling
+    r_median = np.median(r)
+    g1_median = np.median(g1)
+    g2_median = np.median(g2)
+    b_median = np.median(b)
+    green_median = (g1_median + g2_median) / 2.0
+    
+    # Compute scale factors for R and B relative to green median
+    # Use sqrt to reduce scaling aggressiveness
+    r_scale = r_median / green_median if green_median > 0 else 1.0
+    b_scale = b_median / green_median if green_median > 0 else 1.0
+    
+    # Helper to fix a single channel with scaled threshold
+    def fix_channel(channel, channel_interp, hot_candidates, scale_factor=1.0):
+        if hot_candidates is not None and np.count_nonzero(hot_candidates) > 0:
+            scaled_min_brightness = min_brightness * scale_factor
+            candidates_y, candidates_x = np.where(hot_candidates)
+            for y, x in zip(candidates_y, candidates_x):
+                if channel[y, x] > scaled_min_brightness and channel[y, x] > threshold * channel_interp[y, x]:
+                    channel[y, x] = channel_interp[y, x]
+    
+    # Fix each channel with appropriate interpolation and scaling
+    fix_channel(r, _interp_center(r), hot_candidates_r, r_scale)
+    fix_channel(g1, _interp_center_green(g2), hot_candidates_g1, 1.0)
+    fix_channel(g2, _interp_center_green(g1), hot_candidates_g2, 1.0)
+    fix_channel(b, _interp_center(b), hot_candidates_b, b_scale)
+    
+    # Map the fixed channels back to the CFA based on the pattern
+    pattern_map = dng_module.BAYER_PATTERN_MAP.get(cfa_pattern)
+    if pattern_map is None:
+        raise ValueError(f"Unknown CFA pattern: {cfa_pattern}")
+    
+    pattern_2d = np.array(pattern_map).reshape(2, 2)
+    
+    # Find positions of each channel in the 2x2 pattern
+    r_pos = np.argwhere(pattern_2d == 0)[0]  # 0 = R
+    g_pos = np.argwhere(pattern_2d == 1)     # 1 = G (two positions)
+    b_pos = np.argwhere(pattern_2d == 2)[0]  # 2 = B
+    
+    # Write back to CFA
+    cfa_fixed[r_pos[0]::2, r_pos[1]::2] = r
+    cfa_fixed[g_pos[0][0]::2, g_pos[0][1]::2] = g1
+    cfa_fixed[g_pos[1][0]::2, g_pos[1][1]::2] = g2
+    cfa_fixed[b_pos[0]::2, b_pos[1]::2] = b
+    
+    return cfa_fixed
+
 def linear_raw_from_cfa(
     image_data: np.ndarray, 
     cfa_pattern: str, 
     orientation: int | None = None,
-    algorithm: str = "VNG"
+    algorithm: str = "VNG",
+    hot_candidates_r: np.ndarray | None = None,
+    hot_candidates_g1: np.ndarray | None = None,
+    hot_candidates_g2: np.ndarray | None = None,
+    hot_candidates_b: np.ndarray | None = None,
+    hot_pixel_threshold: float = 2.5,
+    hot_pixel_min_brightness: int = 32768
 ) -> np.ndarray:
-    """Demosaic CFA data to RGB.
+    """Demosaic CFA data to RGB with optional hot pixel correction.
     
     Args:
         image_data: 2D raw CFA data array (uint16)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         orientation: Optional EXIF orientation code (1, 3, 6, or 8)
         algorithm: Demosaic algorithm - "VNG" (default), "LINEAR", "DCB", "AHD", or "OPENCV_EA"
+        hot_candidates_r: Optional binary mask of R channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g1: Optional binary mask of G1 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g2: Optional binary mask of G2 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_b: Optional binary mask of B channel hot pixel candidates (H/2, W/2)
+        hot_pixel_threshold: Multiplier threshold for hot pixel detection (default: 2.5)
+        hot_pixel_min_brightness: Minimum brightness to consider for hot pixels (default: 32768)
         
     Returns:
         RGB array (uint16)
     """
     import io
     from . import dng
+    
+    # Fix hot pixels before demosaicing if candidate maps provided
+    if any(c is not None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
+        image_data = fix_hot_pixels(
+            image_data,
+            cfa_pattern,
+            hot_candidates_r=hot_candidates_r,
+            hot_candidates_g1=hot_candidates_g1,
+            hot_candidates_g2=hot_candidates_g2,
+            hot_candidates_b=hot_candidates_b,
+            threshold=hot_pixel_threshold,
+            min_brightness=hot_pixel_min_brightness
+        )
     
     # Validate inputs
     if image_data.ndim != 2:
@@ -386,6 +594,57 @@ def linear_raw_from_cfa(
             logger.warning(f"Unsupported EXIF orientation code: {exif_code}; no rotation applied")
 
     return rgb
+
+def linear_raw_from_dng(
+    dng_file: "DngFile",
+    orientation: int | None = None,
+    algorithm: str = "VNG",
+    hot_candidates_r: np.ndarray | None = None,
+    hot_candidates_g1: np.ndarray | None = None,
+    hot_candidates_g2: np.ndarray | None = None,
+    hot_candidates_b: np.ndarray | None = None,
+    hot_pixel_threshold: float = 2.5,
+    hot_pixel_min_brightness: int = 32768
+) -> np.ndarray:
+    """Demosaic DNG file to RGB with optional hot pixel correction.
+    
+    Convenience wrapper that extracts CFA from DNG file and calls linear_raw_from_cfa.
+    
+    Args:
+        dng_file: DngFile object
+        orientation: Optional EXIF orientation code (1, 3, 6, or 8)
+        algorithm: Demosaic algorithm - "VNG" (default), "LINEAR", "DCB", "AHD", or "OPENCV_EA"
+        hot_candidates_r: Optional binary mask of R channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g1: Optional binary mask of G1 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g2: Optional binary mask of G2 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_b: Optional binary mask of B channel hot pixel candidates (H/2, W/2)
+        hot_pixel_threshold: Multiplier threshold for hot pixel detection (default: 2.5)
+        hot_pixel_min_brightness: Minimum brightness to consider for hot pixels (default: 32768)
+        
+    Returns:
+        RGB array (uint16)
+        
+    Raises:
+        ValueError: If the DNG file format is invalid or missing required data.
+    """
+    from . import dng as dng_module
+    
+    # Extract CFA data and pattern from DNG
+    cfa, cfa_pattern = dng_module.cfa_from_dng(dng_file)
+    
+    # Call linear_raw_from_cfa with all parameters
+    return linear_raw_from_cfa(
+        cfa,
+        cfa_pattern,
+        orientation=orientation,
+        algorithm=algorithm,
+        hot_candidates_r=hot_candidates_r,
+        hot_candidates_g1=hot_candidates_g1,
+        hot_candidates_g2=hot_candidates_g2,
+        hot_candidates_b=hot_candidates_b,
+        hot_pixel_threshold=hot_pixel_threshold,
+        hot_pixel_min_brightness=hot_pixel_min_brightness
+    )
 
 class BradfordAdaptation:
     """
