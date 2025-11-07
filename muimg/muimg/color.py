@@ -269,7 +269,7 @@ def from_linear(linear):
     srgb[~less] = 1.055 * np.power(srgb[~less], 1.0 / 2.4) - 0.055
     return srgb
 
-def _interp_center(img: np.ndarray) -> np.ndarray:
+def interp_center(img: np.ndarray) -> np.ndarray:
     """Interpolate each pixel from its 4 nearest neighbors (up, down, left, right).
     
     Args:
@@ -326,7 +326,7 @@ def _interp_center(img: np.ndarray) -> np.ndarray:
     
     return result.astype(img.dtype)
 
-def _interp_center_green(g: np.ndarray) -> np.ndarray:
+def interp_center_green(g: np.ndarray) -> np.ndarray:
     """Predict one green channel from the other by averaging 2x2 blocks.
     
     For Bayer pattern CFA, G1 and G2 are in a checkerboard pattern.
@@ -427,10 +427,10 @@ def fix_hot_pixels(
                     channel[y, x] = channel_interp[y, x]
     
     # Fix each channel with appropriate interpolation and scaling
-    fix_channel(r, _interp_center(r), hot_candidates_r, r_scale)
-    fix_channel(g1, _interp_center_green(g2), hot_candidates_g1, 1.0)
-    fix_channel(g2, _interp_center_green(g1), hot_candidates_g2, 1.0)
-    fix_channel(b, _interp_center(b), hot_candidates_b, b_scale)
+    fix_channel(r, interp_center(r), hot_candidates_r, r_scale)
+    fix_channel(g1, interp_center_green(g2), hot_candidates_g1, 1.0)
+    fix_channel(g2, interp_center_green(g1), hot_candidates_g2, 1.0)
+    fix_channel(b, interp_center(b), hot_candidates_b, b_scale)
     
     # Map the fixed channels back to the CFA based on the pattern
     pattern_map = dng_module.BAYER_PATTERN_MAP.get(cfa_pattern)
