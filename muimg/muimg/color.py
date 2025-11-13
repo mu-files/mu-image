@@ -364,6 +364,69 @@ def interp_center_green(g: np.ndarray) -> np.ndarray:
     
     return result.astype(g.dtype)
 
+def fix_hot_pixels_channels(
+    channels: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    hot_candidates_r: np.ndarray | None = None,
+    hot_candidates_g1: np.ndarray | None = None,
+    hot_candidates_g2: np.ndarray | None = None,
+    hot_candidates_b: np.ndarray | None = None,
+    threshold: float = 2.,
+    min_brightness: int = 24000
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Fix hot pixels in individual color channels by replacing them with interpolated values.
+    
+    For each candidate hot pixel, checks if it's actually hot by comparing
+    its value to interpolated neighbors. If hot, replaces it with the
+    interpolated value.
+    
+    Args:
+        channels: Tuple of (r, g1, g2, b) channel arrays (H/2, W/2) uint16
+        hot_candidates_r: Binary mask of R channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g1: Binary mask of G1 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_g2: Binary mask of G2 channel hot pixel candidates (H/2, W/2)
+        hot_candidates_b: Binary mask of B channel hot pixel candidates (H/2, W/2)
+        threshold: Multiplier threshold (pixel must be > threshold * interpolated)
+        min_brightness: Minimum brightness to consider (default: 24000)
+        
+    Returns:
+        Tuple of fixed (r, g1, g2, b) channels (H/2, W/2) uint16
+    """
+    # If no candidate maps provided, return original
+    if all(c is None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
+        return tuple(ch.copy() for ch in channels)
+    
+    # Copy channels
+    r, g1, g2, b = tuple(ch.copy() for ch in channels)
+    
+    # Compute channel medians for threshold scaling
+    r_median = np.median(r)
+    g1_median = np.median(g1)
+    g2_median = np.median(g2)
+    b_median = np.median(b)
+    green_median = (g1_median + g2_median) / 2.0
+    
+    # Compute scale factors for R and B relative to green median
+    r_scale = r_median / green_median if green_median > 0 else 1.0
+    b_scale = b_median / green_median if green_median > 0 else 1.0
+    
+    # Helper to fix a single channel with scaled threshold
+    def fix_channel(channel, channel_interp, hot_candidates, scale_factor=1.0):
+        if hot_candidates is not None and np.count_nonzero(hot_candidates) > 0:
+            scaled_min_brightness = min_brightness * scale_factor
+            candidates_y, candidates_x = np.where(hot_candidates)
+            for y, x in zip(candidates_y, candidates_x):
+                if channel[y, x] > scaled_min_brightness and channel[y, x] > threshold * channel_interp[y, x]:
+                    channel[y, x] = channel_interp[y, x]
+    
+    # Fix each channel with appropriate interpolation and scaling
+    fix_channel(r, interp_center(r), hot_candidates_r, r_scale)
+    fix_channel(g1, interp_center_green(g2), hot_candidates_g1, 1.0)
+    fix_channel(g2, interp_center_green(g1), hot_candidates_g2, 1.0)
+    fix_channel(b, interp_center(b), hot_candidates_b, b_scale)
+    
+    return (r, g1, g2, b)
+
+
 def fix_hot_pixels(
     cfa: np.ndarray,
     cfa_pattern: str,
@@ -388,69 +451,33 @@ def fix_hot_pixels(
         hot_candidates_g2: Binary mask of G2 channel hot pixel candidates (H/2, W/2)
         hot_candidates_b: Binary mask of B channel hot pixel candidates (H/2, W/2)
         threshold: Multiplier threshold (pixel must be > threshold * interpolated)
-        min_brightness: Minimum brightness to consider (default: 32768 = 128 in 8-bit)
+        min_brightness: Minimum brightness to consider (default: 24000)
         
     Returns:
         Fixed CFA data (H, W) uint16
     """
-    from . import dng as dng_module
+    from . import dng
     
     # If no candidate maps provided, return original
     if all(c is None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
         return cfa.copy()
     
-    # Work on a copy
-    cfa_fixed = cfa.copy()
+    # Extract channels
+    channels = dng.rgb_planes_from_cfa(cfa, cfa_pattern)
     
-    # Extract CFA channels
-    r, g1, g2, b = dng_module.rgb_planes_from_cfa(cfa_fixed, cfa_pattern)
+    # Fix hot pixels in channels
+    fixed_channels = fix_hot_pixels_channels(
+        channels,
+        hot_candidates_r=hot_candidates_r,
+        hot_candidates_g1=hot_candidates_g1,
+        hot_candidates_g2=hot_candidates_g2,
+        hot_candidates_b=hot_candidates_b,
+        threshold=threshold,
+        min_brightness=min_brightness
+    )
     
-    # Compute channel medians for threshold scaling
-    r_median = np.median(r)
-    g1_median = np.median(g1)
-    g2_median = np.median(g2)
-    b_median = np.median(b)
-    green_median = (g1_median + g2_median) / 2.0
-    
-    # Compute scale factors for R and B relative to green median
-    # Use sqrt to reduce scaling aggressiveness
-    r_scale = r_median / green_median if green_median > 0 else 1.0
-    b_scale = b_median / green_median if green_median > 0 else 1.0
-    
-    # Helper to fix a single channel with scaled threshold
-    def fix_channel(channel, channel_interp, hot_candidates, scale_factor=1.0):
-        if hot_candidates is not None and np.count_nonzero(hot_candidates) > 0:
-            scaled_min_brightness = min_brightness * scale_factor
-            candidates_y, candidates_x = np.where(hot_candidates)
-            for y, x in zip(candidates_y, candidates_x):
-                if channel[y, x] > scaled_min_brightness and channel[y, x] > threshold * channel_interp[y, x]:
-                    channel[y, x] = channel_interp[y, x]
-    
-    # Fix each channel with appropriate interpolation and scaling
-    fix_channel(r, interp_center(r), hot_candidates_r, r_scale)
-    fix_channel(g1, interp_center_green(g2), hot_candidates_g1, 1.0)
-    fix_channel(g2, interp_center_green(g1), hot_candidates_g2, 1.0)
-    fix_channel(b, interp_center(b), hot_candidates_b, b_scale)
-    
-    # Map the fixed channels back to the CFA based on the pattern
-    pattern_map = dng_module.BAYER_PATTERN_MAP.get(cfa_pattern)
-    if pattern_map is None:
-        raise ValueError(f"Unknown CFA pattern: {cfa_pattern}")
-    
-    pattern_2d = np.array(pattern_map).reshape(2, 2)
-    
-    # Find positions of each channel in the 2x2 pattern
-    r_pos = np.argwhere(pattern_2d == 0)[0]  # 0 = R
-    g_pos = np.argwhere(pattern_2d == 1)     # 1 = G (two positions)
-    b_pos = np.argwhere(pattern_2d == 2)[0]  # 2 = B
-    
-    # Write back to CFA
-    cfa_fixed[r_pos[0]::2, r_pos[1]::2] = r
-    cfa_fixed[g_pos[0][0]::2, g_pos[0][1]::2] = g1
-    cfa_fixed[g_pos[1][0]::2, g_pos[1][1]::2] = g2
-    cfa_fixed[b_pos[0]::2, b_pos[1]::2] = b
-    
-    return cfa_fixed
+    # Recompose CFA
+    return dng.cfa_from_rgb_planes(fixed_channels, cfa_pattern, cfa.shape)
 
 def linear_raw_from_cfa(
     image_data: np.ndarray, 

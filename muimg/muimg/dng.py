@@ -453,6 +453,48 @@ def rgb_planes_from_cfa(
     return r_plane, g1_plane, g2_plane, b_plane
 
 
+def cfa_from_rgb_planes(
+    channels: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    cfa_pattern_str: str,
+    cfa_shape: tuple[int, int]
+) -> np.ndarray:
+    """Recompose CFA data from individual R, G1, G2, B planes.
+    
+    Args:
+        channels: Tuple of (r, g1, g2, b) channel arrays (H/2, W/2) uint16
+        cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
+        cfa_shape: Shape of output CFA (H, W)
+        
+    Returns:
+        Reconstructed CFA data (H, W) uint16
+        
+    Raises:
+        ValueError: If the CFA pattern is invalid.
+    """
+    r, g1, g2, b = channels
+    
+    # Parse the CFA pattern string
+    cfa_pattern_flat = BAYER_PATTERN_MAP.get(cfa_pattern_str)
+    if cfa_pattern_flat is None:
+        raise ValueError(f"Unknown CFAPattern string '{cfa_pattern_str}'")
+    
+    cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
+    
+    # Find positions of each channel in the 2x2 pattern
+    r_pos = np.argwhere(cfa_pattern == 0)[0]  # 0 = R
+    g_pos = np.argwhere(cfa_pattern == 1)     # 1 = G (two positions)
+    b_pos = np.argwhere(cfa_pattern == 2)[0]  # 2 = B
+    
+    # Write channels to CFA
+    cfa = np.zeros(cfa_shape, dtype=np.uint16)
+    cfa[r_pos[0]::2, r_pos[1]::2] = r
+    cfa[g_pos[0][0]::2, g_pos[0][1]::2] = g1
+    cfa[g_pos[1][0]::2, g_pos[1][1]::2] = g2
+    cfa[b_pos[0]::2, b_pos[1]::2] = b
+    
+    return cfa
+
+
 def rgb_planes_from_dng(
     dng_file: "DngFile",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
