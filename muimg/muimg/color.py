@@ -3,6 +3,7 @@ import numpy as np
 import logging
 
 from typing import Dict
+from . import _vng, _rcd
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +365,83 @@ def interp_center_green(g: np.ndarray) -> np.ndarray:
     
     return result.astype(g.dtype)
 
+def interp_G1G2_plane(g1: np.ndarray, g2: np.ndarray, cfa_pattern: str = "RGGB") -> np.ndarray:
+    """Assemble G1 and G2 planes into a full-resolution green image with interpolated R/B positions.
+    
+    Creates a 2x resolution image where:
+    - G1 pixels are placed at their CFA positions
+    - G2 pixels are placed at their CFA positions  
+    - R/B positions are filled by averaging neighboring G pixels
+    
+    Args:
+        g1: G1 plane (H/2, W/2) uint16
+        g2: G2 plane (H/2, W/2) uint16
+        cfa_pattern: Bayer pattern (default: "RGGB")
+        
+    Returns:
+        Full resolution green image (H, W) uint16 with all positions filled
+    """
+    h_half, w_half = g1.shape
+    h_full = h_half * 2
+    w_full = w_half * 2
+    
+    # Create full resolution output
+    green_full = np.zeros((h_full, w_full), dtype=np.float32)
+    
+    # Place G1 and G2 at their proper positions based on CFA pattern
+    # RGGB: R at (0,0), G1 at (0,1), G2 at (1,0), B at (1,1)
+    # BGGR: B at (0,0), G1 at (0,1), G2 at (1,0), R at (1,1)
+    # GRBG: G1 at (0,0), R at (0,1), B at (1,0), G2 at (1,1)
+    # GBRG: G2 at (0,0), B at (0,1), R at (1,0), G1 at (1,1)
+    
+    if cfa_pattern == "RGGB":
+        green_full[0::2, 1::2] = g1  # G1 at (0,1)
+        green_full[1::2, 0::2] = g2  # G2 at (1,0)
+        # R at (0,0), B at (1,1) need interpolation
+        r_rows, r_cols = 0, 0
+        b_rows, b_cols = 1, 1
+    elif cfa_pattern == "BGGR":
+        green_full[0::2, 1::2] = g1  # G1 at (0,1)
+        green_full[1::2, 0::2] = g2  # G2 at (1,0)
+        # B at (0,0), R at (1,1) need interpolation
+        r_rows, r_cols = 1, 1
+        b_rows, b_cols = 0, 0
+    elif cfa_pattern == "GRBG":
+        green_full[0::2, 0::2] = g1  # G1 at (0,0)
+        green_full[1::2, 1::2] = g2  # G2 at (1,1)
+        # R at (0,1), B at (1,0) need interpolation
+        r_rows, r_cols = 0, 1
+        b_rows, b_cols = 1, 0
+    elif cfa_pattern == "GBRG":
+        green_full[0::2, 0::2] = g2  # G2 at (0,0)
+        green_full[1::2, 1::2] = g1  # G1 at (1,1)
+        # B at (0,1), R at (1,0) need interpolation
+        r_rows, r_cols = 1, 0
+        b_rows, b_cols = 0, 1
+    else:
+        raise ValueError(f"Unsupported CFA pattern: {cfa_pattern}")
+    
+    # Interpolate R and B positions: average of 4 neighboring G pixels (up, down, left, right)
+    # Vectorized computation: average shifted versions of the green array
+    # Create padded version to handle borders cleanly
+    green_padded = np.pad(green_full, pad_width=1, mode='edge')
+    
+    # Compute average of 4 cardinal neighbors for all positions
+    avg_neighbors = (
+        green_padded[0:-2, 1:-1] +  # up
+        green_padded[2:, 1:-1] +    # down
+        green_padded[1:-1, 0:-2] +  # left
+        green_padded[1:-1, 2:]      # right
+    ) / 4.0
+    
+    # Place interpolated values at R positions
+    green_full[r_rows::2, r_cols::2] = avg_neighbors[r_rows::2, r_cols::2]
+    
+    # Place interpolated values at B positions
+    green_full[b_rows::2, b_cols::2] = avg_neighbors[b_rows::2, b_cols::2]
+    
+    return np.clip(green_full, 0, 65535).astype(np.uint16)
+
 def fix_hot_pixels_channels(
     channels: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     hot_candidates_r: np.ndarray | None = None,
@@ -483,7 +561,7 @@ def linear_raw_from_cfa(
     image_data: np.ndarray, 
     cfa_pattern: str, 
     orientation: int | None = None,
-    algorithm: str = "VNG",
+    algorithm: str = "RCD",
     hot_candidates_r: np.ndarray | None = None,
     hot_candidates_g1: np.ndarray | None = None,
     hot_candidates_g2: np.ndarray | None = None,
@@ -497,7 +575,7 @@ def linear_raw_from_cfa(
         image_data: 2D raw CFA data array (uint16)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         orientation: Optional EXIF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "VNG" (default), "LINEAR", "DCB", "AHD", or "OPENCV_EA"
+        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR", "DCB", "AHD", or "OPENCV_EA"
         hot_candidates_r: Optional binary mask of R channel hot pixel candidates (H/2, W/2)
         hot_candidates_g1: Optional binary mask of G1 channel hot pixel candidates (H/2, W/2)
         hot_candidates_g2: Optional binary mask of G2 channel hot pixel candidates (H/2, W/2)
@@ -546,7 +624,7 @@ def linear_raw_from_cfa(
         )
     
     # Validate algorithm
-    valid_algorithms = ["VNG", "LINEAR", "DCB", "AHD", "OPENCV_EA"]
+    valid_algorithms = ["VNG", "RCD", "LINEAR", "DCB", "AHD", "OPENCV_EA"]
     if algorithm not in valid_algorithms:
         raise ValueError(
             f"Invalid algorithm: '{algorithm}'. "
@@ -554,6 +632,9 @@ def linear_raw_from_cfa(
         )
     
     # Demosaic using selected algorithm
+    import time
+    start_time = time.perf_counter()
+    
     if algorithm == "OPENCV_EA":
         # OpenCV demosaic
         bayer_pattern_map = {
@@ -565,9 +646,23 @@ def linear_raw_from_cfa(
         rgb = cv2.demosaicing(image_data, bayer_pattern_map[cfa_pattern])
         # OpenCV outputs BGR, swap to RGB
         rgb = rgb[..., [2, 1, 0]]
+    elif algorithm == "VNG":
+        # Native VNG implementation (thread-safe, ARM-optimized)
+        rgb = _vng.vng_demosaic(image_data, cfa_pattern)
+    elif algorithm == "RCD":
+        # Native RCD implementation (Ratio Corrected Demosaicing)
+        rgb = _rcd.rcd_demosaic(image_data, cfa_pattern)
     else:
-        # Rawpy/LibRaw demosaic
-        import rawpy
+        # Fallback to rawpy for other algorithms (LINEAR, DCB, AHD)
+        # Note: rawpy is no longer a required dependency
+        try:
+            import rawpy
+        except ImportError:
+            raise ImportError(
+                f"Algorithm '{algorithm}' requires rawpy. "
+                "Install with: pip install rawpy\n"
+                "Or use 'RCD', 'VNG' or 'OPENCV_EA' which are built-in."
+            )
         
         algorithm_map = {
             "VNG": rawpy.DemosaicAlgorithm.VNG,
@@ -607,6 +702,9 @@ def linear_raw_from_cfa(
         finally:
             raw.close()
         # rawpy already outputs RGB (not BGR like OpenCV)
+    
+    elapsed_time = time.perf_counter() - start_time
+    logger.info(f"Demosaic ({algorithm}): {elapsed_time*1000:.1f}ms for {image_data.shape[1]}x{image_data.shape[0]}")
 
     # Apply orientation if provided: ONLY accept EXIF codes (1,3,6,8).
     if isinstance(orientation, (int, np.integer)):
@@ -625,7 +723,7 @@ def linear_raw_from_cfa(
 def linear_raw_from_dng(
     dng_file: "DngFile",
     orientation: int | None = None,
-    algorithm: str = "VNG",
+    algorithm: str = "RCD",
     hot_candidates_r: np.ndarray | None = None,
     hot_candidates_g1: np.ndarray | None = None,
     hot_candidates_g2: np.ndarray | None = None,

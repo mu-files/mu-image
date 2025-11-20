@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20251113.1157"
+version = "0.1.20251120.1536"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
