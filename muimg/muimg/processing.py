@@ -66,7 +66,8 @@ class ProcessingPipeline:
         Initializes the processing pipeline.
 
         Args:
-            producer: A callable that returns an iterable of items.
+            producer: Either a callable that returns an iterable of items, or another
+                     ProcessingPipeline whose writer output will feed this pipeline.
             consumer: A callable that takes an item and processes it. If a writer
                       is provided, this function should return the result to be
                       written.
@@ -78,12 +79,18 @@ class ProcessingPipeline:
             task_name: Optional descriptive name for the task (e.g., "Keogram Creation").
                        Used in log messages for better clarity.
         """
-        if not callable(producer):
-            raise TypeError("Producer must be a callable that returns an iterable.")
+        # Check if producer is a pipeline or callable
+        is_pipeline_producer = isinstance(producer, ProcessingPipeline)
+        if not is_pipeline_producer and producer is not None and not callable(producer):
+            raise TypeError("Producer must be a callable that returns an iterable, or a ProcessingPipeline.")
         if not callable(consumer):
             raise TypeError("Consumer must be a callable.")
         if writer and not callable(writer):
             raise TypeError("Writer must be a callable if provided.")
+        
+        # Validate that upstream pipeline has a writer
+        if is_pipeline_producer and not producer.writer:
+            raise ValueError("Upstream ProcessingPipeline must have a writer to feed this pipeline.")
 
         self.producer = producer
         self.consumer = consumer
@@ -99,6 +106,7 @@ class ProcessingPipeline:
         self._stop_event = threading.Event()
         self._task_queue_samples = []
         self._task_queue_empty_time = 0
+        self._processing_time = 0
 
         # Writer-specific setup
         self.writer_queue = None
@@ -130,13 +138,18 @@ class ProcessingPipeline:
                     self.task_queue.task_done()
                     break
 
-                result = self.consumer(task)
+                try:
+                    result = self.consumer(task)
 
-                # If there's a writer, pass the result to the writer queue
-                if self.writer and result is not None:
-                    self.writer_queue.put(result)
-
-                self.task_queue.task_done()
+                    # If there's a writer, pass the result to the writer queue
+                    if self.writer and result is not None:
+                        self.writer_queue.put(result)
+                except Exception as e:
+                    logger.error(f"Exception in consumer thread {thread_num} processing task: {e}", exc_info=True)
+                    # Continue processing other tasks even if one fails
+                finally:
+                    # Always mark task as done to prevent queue.join() from hanging
+                    self.task_queue.task_done()
             except queue.Empty:
                 continue
 
@@ -173,15 +186,50 @@ class ProcessingPipeline:
                     self._writer_queue_empty_time += interval
 
     def run(self):
-        """Starts and runs the entire processing pipeline."""
+        """Starts and runs the entire processing pipeline.
+        
+        If producer is a ProcessingPipeline, both pipelines run in parallel with
+        the upstream pipeline's writer feeding this pipeline's task queue.
+        """
+        import time
+        start_time = time.time()
+        
         task_desc = f" ({self.task_name})" if self.task_name else ""
         logger.info(f"Starting pipeline{task_desc} with {self.num_workers} worker threads...")
         worker_threads = []
         writer_thread = None
+        producer_thread = None
+        upstream_pipeline = None
 
-        # Start the producer and monitor threads
-        producer_thread = threading.Thread(target=self._producer_thread)
-        producer_thread.start()
+        # Check if producer is a pipeline
+        if isinstance(self.producer, ProcessingPipeline):
+            # Producer is an upstream pipeline - wrap its writer to feed our queue
+            upstream_pipeline = self.producer
+            original_writer = upstream_pipeline.writer
+            
+            def feeding_writer(result):
+                if result is None:
+                    return
+                # Call original writer which may yield multiple items (generator)
+                output = original_writer(result)
+                if output is not None:
+                    # If writer is a generator, iterate and put each item
+                    try:
+                        for item in output:
+                            self.task_queue.put(item)
+                    except TypeError:
+                        # Not iterable, put the single item
+                        self.task_queue.put(output)
+            
+            upstream_pipeline.writer = feeding_writer
+            
+            # Start upstream pipeline in separate thread
+            producer_thread = threading.Thread(target=upstream_pipeline.run)
+            producer_thread.start()
+        elif self.producer is not None:
+            # Producer is a regular callable - start producer thread
+            producer_thread = threading.Thread(target=self._producer_thread)
+            producer_thread.start()
 
         monitor_thread = threading.Thread(target=self._monitor_queues)
         monitor_thread.start()
@@ -201,8 +249,9 @@ class ProcessingPipeline:
             thread.start()
             worker_threads.append(thread)
 
-        # Wait for the producer to finish
-        producer_thread.join()
+        # Wait for the producer to finish (if it exists)
+        if producer_thread is not None:
+            producer_thread.join()
 
         # Wait for the consumers to process all items
         self.task_queue.join()
@@ -222,6 +271,8 @@ class ProcessingPipeline:
         for thread in worker_threads:
             thread.join()
         monitor_thread.join()
+        
+        self._processing_time = time.time() - start_time
 
         task_desc = f" ({self.task_name})" if self.task_name else ""
         logger.info(f"Pipeline{task_desc} processing complete!")
@@ -249,5 +300,7 @@ class ProcessingPipeline:
                     "avg_depth": avg_depth,
                     "empty_time": self._writer_queue_empty_time,
                 }
+        
+        stats["processing_time"] = self._processing_time
 
         return stats
