@@ -444,14 +444,16 @@ def interp_G1G2_plane(g1: np.ndarray, g2: np.ndarray, cfa_pattern: str = "RGGB")
 
 def fix_hot_pixels_channels(
     channels: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    hot_candidates_r: np.ndarray | None = None,
-    hot_candidates_g1: np.ndarray | None = None,
-    hot_candidates_g2: np.ndarray | None = None,
-    hot_candidates_b: np.ndarray | None = None,
+    hot_candidates: tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None
+    ] = (None, None, None, None),
     threshold: float = 2.,
     min_brightness: int = 24000
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Fix hot pixels in individual color channels by replacing them with interpolated values.
+    """Fix hot pixels in individual color channels by replacing them.
     
     For each candidate hot pixel, checks if it's actually hot by comparing
     its value to interpolated neighbors. If hot, replaces it with the
@@ -459,18 +461,27 @@ def fix_hot_pixels_channels(
     
     Args:
         channels: Tuple of (r, g1, g2, b) channel arrays (H/2, W/2) uint16
-        hot_candidates_r: Binary mask of R channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g1: Binary mask of G1 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g2: Binary mask of G2 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_b: Binary mask of B channel hot pixel candidates (H/2, W/2)
-        threshold: Multiplier threshold (pixel must be > threshold * interpolated)
+        hot_candidates: Tuple of (r, g1, g2, b) binary masks of hot pixel
+            candidates (H/2, W/2)
+        threshold: Multiplier threshold (pixel must be > threshold *
+            interpolated)
         min_brightness: Minimum brightness to consider (default: 24000)
         
     Returns:
         Tuple of fixed (r, g1, g2, b) channels (H/2, W/2) uint16
     """
+    # Unpack hot candidates
+    hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b = (
+        hot_candidates
+    )
+    
     # If no candidate maps provided, return original
-    if all(c is None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
+    if all(c is None for c in [
+        hot_candidates_r,
+        hot_candidates_g1,
+        hot_candidates_g2,
+        hot_candidates_b
+    ]):
         return tuple(ch.copy() for ch in channels)
     
     # Copy channels
@@ -484,16 +495,27 @@ def fix_hot_pixels_channels(
     green_median = (g1_median + g2_median) / 2.0
     
     # Compute scale factors for R and B relative to green median
-    r_scale = r_median / green_median if green_median > 0 else 1.0
-    b_scale = b_median / green_median if green_median > 0 else 1.0
+    r_scale = (
+        r_median / green_median if green_median > 0 else 1.0
+    )
+    b_scale = (
+        b_median / green_median if green_median > 0 else 1.0
+    )
     
     # Helper to fix a single channel with scaled threshold
-    def fix_channel(channel, channel_interp, hot_candidates, scale_factor=1.0):
-        if hot_candidates is not None and np.count_nonzero(hot_candidates) > 0:
+    def fix_channel(
+        channel,
+        channel_interp,
+        hot_candidates,
+        scale_factor=1.0
+    ):
+        if (hot_candidates is not None and
+                np.count_nonzero(hot_candidates) > 0):
             scaled_min_brightness = min_brightness * scale_factor
             candidates_y, candidates_x = np.where(hot_candidates)
             for y, x in zip(candidates_y, candidates_x):
-                if channel[y, x] > scaled_min_brightness and channel[y, x] > threshold * channel_interp[y, x]:
+                if (channel[y, x] > scaled_min_brightness and
+                        channel[y, x] > threshold * channel_interp[y, x]):
                     channel[y, x] = channel_interp[y, x]
     
     # Fix each channel with appropriate interpolation and scaling
@@ -508,10 +530,12 @@ def fix_hot_pixels_channels(
 def fix_hot_pixels(
     cfa: np.ndarray,
     cfa_pattern: str,
-    hot_candidates_r: np.ndarray | None = None,
-    hot_candidates_g1: np.ndarray | None = None,
-    hot_candidates_g2: np.ndarray | None = None,
-    hot_candidates_b: np.ndarray | None = None,
+    hot_candidates: tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None
+    ] = (None, None, None, None),
     threshold: float = 2.,
     min_brightness: int = 24000
 ) -> np.ndarray:
@@ -524,11 +548,10 @@ def fix_hot_pixels(
     Args:
         cfa: Raw CFA data (H, W) uint16
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
-        hot_candidates_r: Binary mask of R channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g1: Binary mask of G1 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g2: Binary mask of G2 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_b: Binary mask of B channel hot pixel candidates (H/2, W/2)
-        threshold: Multiplier threshold (pixel must be > threshold * interpolated)
+        hot_candidates: Tuple of (r, g1, g2, b) binary masks of hot pixel
+            candidates (H/2, W/2)
+        threshold: Multiplier threshold (pixel must be > threshold *
+            interpolated)
         min_brightness: Minimum brightness to consider (default: 24000)
         
     Returns:
@@ -537,7 +560,7 @@ def fix_hot_pixels(
     from . import dng
     
     # If no candidate maps provided, return original
-    if all(c is None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
+    if all(c is None for c in hot_candidates):
         return cfa.copy()
     
     # Extract channels
@@ -546,10 +569,7 @@ def fix_hot_pixels(
     # Fix hot pixels in channels
     fixed_channels = fix_hot_pixels_channels(
         channels,
-        hot_candidates_r=hot_candidates_r,
-        hot_candidates_g1=hot_candidates_g1,
-        hot_candidates_g2=hot_candidates_g2,
-        hot_candidates_b=hot_candidates_b,
+        hot_candidates=hot_candidates,
         threshold=threshold,
         min_brightness=min_brightness
     )
@@ -562,10 +582,12 @@ def linear_raw_from_cfa(
     cfa_pattern: str, 
     orientation: int | None = None,
     algorithm: str = "RCD",
-    hot_candidates_r: np.ndarray | None = None,
-    hot_candidates_g1: np.ndarray | None = None,
-    hot_candidates_g2: np.ndarray | None = None,
-    hot_candidates_b: np.ndarray | None = None,
+    hot_candidates: tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None
+    ] = (None, None, None, None),
     hot_pixel_threshold: float = 2.5,
     hot_pixel_min_brightness: int = 32768
 ) -> np.ndarray:
@@ -575,13 +597,14 @@ def linear_raw_from_cfa(
         image_data: 2D raw CFA data array (uint16)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         orientation: Optional EXIF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR", "DCB", "AHD", or "OPENCV_EA"
-        hot_candidates_r: Optional binary mask of R channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g1: Optional binary mask of G1 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g2: Optional binary mask of G2 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_b: Optional binary mask of B channel hot pixel candidates (H/2, W/2)
-        hot_pixel_threshold: Multiplier threshold for hot pixel detection (default: 2.5)
-        hot_pixel_min_brightness: Minimum brightness to consider for hot pixels (default: 32768)
+        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR",
+            "DCB", "AHD", or "OPENCV_EA"
+        hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
+            hot pixel candidates (H/2, W/2)
+        hot_pixel_threshold: Multiplier threshold for hot pixel detection
+            (default: 2.5)
+        hot_pixel_min_brightness: Minimum brightness to consider for hot
+            pixels (default: 32768)
         
     Returns:
         RGB array (uint16)
@@ -590,14 +613,11 @@ def linear_raw_from_cfa(
     from . import dng
     
     # Fix hot pixels before demosaicing if candidate maps provided
-    if any(c is not None for c in [hot_candidates_r, hot_candidates_g1, hot_candidates_g2, hot_candidates_b]):
+    if any(c is not None for c in hot_candidates):
         image_data = fix_hot_pixels(
             image_data,
             cfa_pattern,
-            hot_candidates_r=hot_candidates_r,
-            hot_candidates_g1=hot_candidates_g1,
-            hot_candidates_g2=hot_candidates_g2,
-            hot_candidates_b=hot_candidates_b,
+            hot_candidates=hot_candidates,
             threshold=hot_pixel_threshold,
             min_brightness=hot_pixel_min_brightness
         )
@@ -724,33 +744,38 @@ def linear_raw_from_dng(
     dng_file: "DngFile",
     orientation: int | None = None,
     algorithm: str = "RCD",
-    hot_candidates_r: np.ndarray | None = None,
-    hot_candidates_g1: np.ndarray | None = None,
-    hot_candidates_g2: np.ndarray | None = None,
-    hot_candidates_b: np.ndarray | None = None,
+    hot_candidates: tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None
+    ] = (None, None, None, None),
     hot_pixel_threshold: float = 2.5,
     hot_pixel_min_brightness: int = 32768
 ) -> np.ndarray:
     """Demosaic DNG file to RGB with optional hot pixel correction.
     
-    Convenience wrapper that extracts CFA from DNG file and calls linear_raw_from_cfa.
+    Convenience wrapper that extracts CFA from DNG file and calls
+    linear_raw_from_cfa.
     
     Args:
         dng_file: DngFile object
         orientation: Optional EXIF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "VNG" (default), "LINEAR", "DCB", "AHD", or "OPENCV_EA"
-        hot_candidates_r: Optional binary mask of R channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g1: Optional binary mask of G1 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_g2: Optional binary mask of G2 channel hot pixel candidates (H/2, W/2)
-        hot_candidates_b: Optional binary mask of B channel hot pixel candidates (H/2, W/2)
-        hot_pixel_threshold: Multiplier threshold for hot pixel detection (default: 2.5)
-        hot_pixel_min_brightness: Minimum brightness to consider for hot pixels (default: 32768)
+        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR",
+            "DCB", "AHD", or "OPENCV_EA"
+        hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
+            hot pixel candidates (H/2, W/2)
+        hot_pixel_threshold: Multiplier threshold for hot pixel detection
+            (default: 2.5)
+        hot_pixel_min_brightness: Minimum brightness to consider for hot
+            pixels (default: 32768)
         
     Returns:
         RGB array (uint16)
         
     Raises:
-        ValueError: If the DNG file format is invalid or missing required data.
+        ValueError: If the DNG file format is invalid or missing required
+            data.
     """
     from . import dng as dng_module
     
@@ -763,10 +788,7 @@ def linear_raw_from_dng(
         cfa_pattern,
         orientation=orientation,
         algorithm=algorithm,
-        hot_candidates_r=hot_candidates_r,
-        hot_candidates_g1=hot_candidates_g1,
-        hot_candidates_g2=hot_candidates_g2,
-        hot_candidates_b=hot_candidates_b,
+        hot_candidates=hot_candidates,
         hot_pixel_threshold=hot_pixel_threshold,
         hot_pixel_min_brightness=hot_pixel_min_brightness
     )
