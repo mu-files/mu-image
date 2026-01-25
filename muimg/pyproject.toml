@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20251125.1646"
+version = "0.1.20260124.1912"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "PolyForm-Noncommercial-1.0.0"}
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
