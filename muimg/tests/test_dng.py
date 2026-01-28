@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from typing import Optional, Dict
-from muimg.dng import DngFile
+from muimg.dngio import DngFile
 from muimg.color import process_cfa_raw, process_linear_raw
 from muimg.color_mac import core_image_available, CoreImageContext
 from tifffile import TIFF

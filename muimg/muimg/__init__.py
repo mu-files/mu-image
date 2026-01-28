@@ -4,7 +4,7 @@ DNG and raw image processing utilities.
 This module provides functionality for working with DNG files and raw image data.
 """
 
-from .dng import (
+from .dngio import (
     BAYER_PATTERN_MAP,
     DngFile,
     MetadataTags,
@@ -22,6 +22,8 @@ from .dng import (
 from .color_mac import process_raw_core_image
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
+from .imgio import decode_image
+from .videoio import SequenceEncodePipeline
 from .color import (
     ToneCurve,
     interp_center,
@@ -42,6 +44,7 @@ __all__ = [
     'cfa_from_rgb_planes',
     'convert_raw',
     'convert_raw_to_stream',
+    'decode_image',
     'decode_raw',
     'fix_hot_pixels',
     'interp_center',
@@ -50,6 +53,7 @@ __all__ = [
     'linear_raw_from_dng',
     'process_raw_core_image',
     'ProcessingPipeline',
+    'SequenceEncodePipeline',
     'rgb_planes_from_cfa',
     'rgb_planes_from_dng',
     'ToneCurve',

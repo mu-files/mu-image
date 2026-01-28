@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .dng import convert_raw
+from .dngio import convert_raw
 from .google_photos import GooglePhotosClient
 
 logger = logging.getLogger(__name__)

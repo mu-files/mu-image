@@ -557,14 +557,14 @@ def fix_hot_pixels(
     Returns:
         Fixed CFA data (H, W) uint16
     """
-    from . import dng
+    from . import dngio
     
     # If no candidate maps provided, return original
     if all(c is None for c in hot_candidates):
         return cfa.copy()
     
     # Extract channels
-    channels = dng.rgb_planes_from_cfa(cfa, cfa_pattern)
+    channels = dngio.rgb_planes_from_cfa(cfa, cfa_pattern)
     
     # Fix hot pixels in channels
     fixed_channels = fix_hot_pixels_channels(
@@ -575,7 +575,7 @@ def fix_hot_pixels(
     )
     
     # Recompose CFA
-    return dng.cfa_from_rgb_planes(fixed_channels, cfa_pattern, cfa.shape)
+    return dngio.cfa_from_rgb_planes(fixed_channels, cfa_pattern, cfa.shape)
 
 def linear_raw_from_cfa(
     image_data: np.ndarray, 
@@ -610,7 +610,7 @@ def linear_raw_from_cfa(
         RGB array (uint16)
     """
     import io
-    from . import dng
+    from . import dngio
     
     # Fix hot pixels before demosaicing if candidate maps provided
     if any(c is not None for c in hot_candidates):
@@ -693,7 +693,7 @@ def linear_raw_from_cfa(
         
         # Create minimal DNG in memory for rawpy
         dng_buffer = io.BytesIO()
-        dng.write_dng(
+        dngio.write_dng(
             raw_data=image_data,
             cfa_pattern=cfa_pattern,
             destination_file=dng_buffer,
@@ -777,10 +777,10 @@ def linear_raw_from_dng(
         ValueError: If the DNG file format is invalid or missing required
             data.
     """
-    from . import dng as dng_module
+    from . import dngio
     
     # Extract CFA data and pattern from DNG
-    cfa, cfa_pattern = dng_module.cfa_from_dng(dng_file)
+    cfa, cfa_pattern = dngio.cfa_from_dng(dng_file)
     
     # Call linear_raw_from_cfa with all parameters
     return linear_raw_from_cfa(

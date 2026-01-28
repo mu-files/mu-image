@@ -3,7 +3,7 @@ import queue
 import threading
 
 from datetime import datetime, timedelta
-from typing import Callable, Iterable, Any, List, Tuple
+from typing import Callable, Iterable, Any, List, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class ProcessingPipeline:
 
     def __init__(
         self,
-        producer: Callable[[], Iterable[Any]],
+        producer: Union[Callable[[], Iterable[Any]], "ProcessingPipeline", None],
         consumer: Callable[[Any], Any],
         writer: Callable[[Any], None] = None,
         num_workers: int = 4,
@@ -66,13 +66,20 @@ class ProcessingPipeline:
         Initializes the processing pipeline.
 
         Args:
-            producer: Either a callable that returns an iterable of items, or another
-                     ProcessingPipeline whose writer output will feed this pipeline.
-            consumer: A callable that takes an item and processes it. If a writer
-                      is provided, this function should return the result to be
-                      written.
-            writer: An optional callable that takes a processed item from the
-                    consumer and writes it (e.g., to disk).
+            producer: Either:
+                     - A no-argument callable called as producer() that returns an
+                       iterable of input items (Iterable[Any]), or
+                     - Another ProcessingPipeline instance, in which case this
+                       pipeline will consume items produced by the upstream
+                       pipeline.
+            consumer: A one-argument callable called as consumer(item) that processes
+                      a single input item.
+                      - If writer is provided, consumer(item) should return the
+                        object that will be passed to writer.
+                      - If writer is not provided, the return value is ignored.
+            writer: An optional one-argument callable called as writer(result) that
+                    consumes the value returned by consumer and performs side
+                    effects (e.g., writing to disk). It should return None.
             num_workers: The number of concurrent consumer threads.
             queue_size: Max size of the task queue. Defaults to num_workers * 4.
             writer_queue_size: Max size of the writer queue. Defaults to queue_size.
@@ -189,7 +196,8 @@ class ProcessingPipeline:
         """Starts and runs the entire processing pipeline.
         
         If producer is a ProcessingPipeline, both pipelines run in parallel with
-        the upstream pipeline's writer feeding this pipeline's task queue.
+        the upstream pipeline enqueuing its consumer results into this pipeline's
+        task queue (while still running its own writer side effects).
         """
         import time
         start_time = time.time()
@@ -210,16 +218,11 @@ class ProcessingPipeline:
             def feeding_writer(result):
                 if result is None:
                     return
-                # Call original writer which may yield multiple items (generator)
-                output = original_writer(result)
-                if output is not None:
-                    # If writer is a generator, iterate and put each item
-                    try:
-                        for item in output:
-                            self.task_queue.put(item)
-                    except TypeError:
-                        # Not iterable, put the single item
-                        self.task_queue.put(output)
+                # Preserve upstream writer side effects (e.g., writing to disk)
+                if original_writer is not None:
+                    original_writer(result)
+                # Feed the downstream pipeline with the same produced result
+                self.task_queue.put(result)
             
             upstream_pipeline.writer = feeding_writer
             
