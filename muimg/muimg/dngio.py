@@ -1125,6 +1125,7 @@ class DngFile(TiffFile):
         }
 
         MATRIX_TAG_NAMES = {"ColorMatrix1", "ColorMatrix2", "ColorMatrix3"}
+        RATIONAL_ARRAY_TAG_NAMES = {"AnalogBalance", "AsShotWhiteXY", "AsShotNeutral", "DefaultCropOrigin", "DefaultCropSize"}
 
         # TODO: complete list of photometric interpretation values
         if tag_name == "CFAPattern":
@@ -1144,6 +1145,13 @@ class DngFile(TiffFile):
                     f"Error converting DNG tag '{tag_name}' to matrix. Original error: {e}. "
                     f"Value type: {type(tag_value)}, Value: {str(tag_value)[:100]}"
                 ) from e
+        elif tag_name in RATIONAL_ARRAY_TAG_NAMES:
+            # Convert rational pairs to float array
+            if isinstance(tag_value, tuple) and len(tag_value) % 2 == 0:
+                tag_value = np.array([
+                    tag_value[i] / tag_value[i+1] if tag_value[i+1] != 0 else 0.0
+                    for i in range(0, len(tag_value), 2)
+                ])
 
         return tag_value
 
@@ -1198,7 +1206,18 @@ class DngFile(TiffFile):
             "CalibrationIlluminant3",
             "AnalogBalance",
             "AsShotNeutral",
+            "AsShotWhiteXY",
             "BaselineExposure",
+            # Tags we need to detect to flag as unsupported
+            "ProfileGainTableMap",
+            "ProfileToneCurve",
+            "ForwardMatrix1",
+            "ForwardMatrix2",
+            "CameraCalibration1",
+            "CameraCalibration2",
+            "OpcodeList1",
+            "OpcodeList2",
+            "OpcodeList3",
         ]
 
         cfa_subifd_tags = [
@@ -1215,6 +1234,9 @@ class DngFile(TiffFile):
             "RowInterleaveFactor",
             "JXLDistance",
             "JXLEffort",
+            "ActiveArea",
+            "DefaultCropOrigin",
+            "DefaultCropSize",
         ]
 
         info_list: List[Tuple[int, tuple, Dict[str, Any]]] = []
@@ -1304,8 +1326,15 @@ class DngFile(TiffFile):
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
         """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID.
         
-        Uses imagecodecs directly for JPEG XL compression to avoid tifffile's
-        chroma subsampling limitation.
+        For single-tile JPEG XL images, uses imagecodecs directly to avoid
+        tifffile's chroma subsampling limitation. Per tifffile documentation:
+        "chroma subsampling without JPEG compression" is not implemented,
+        meaning JPEG XL with 4:2:0 or 4:2:2 chroma subsampling may not be
+        correctly upsampled by tifffile.asarray().
+        
+        For multi-tile JPEG XL, we use tifffile.asarray() which correctly
+        assembles tiles - each tile is a separate JPEG XL bitstream that
+        must be decoded and positioned individually.
         """
 
         p = self.get_page_by_id(target_page_id)
@@ -1315,15 +1344,51 @@ class DngFile(TiffFile):
 
         # Check if this is JPEG XL compression
         if p.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            # Use imagecodecs directly to avoid tifffile's chroma subsampling limitation
+            # Use imagecodecs directly to handle chroma subsampling correctly
             fh = p.parent.filehandle
-            compressed_segments = list(fh.read_segments(
-                p.dataoffsets,
-                p.databytecounts,
-                sort=True
-            ))
-            compressed_data = b''.join(segment_data for segment_data, index in compressed_segments)
-            return imagecodecs.jpegxl_decode(compressed_data)
+            
+            if len(p.dataoffsets) == 1:
+                # Single tile/strip
+                compressed_segments = list(fh.read_segments(
+                    p.dataoffsets,
+                    p.databytecounts,
+                    sort=True
+                ))
+                compressed_data = b''.join(segment_data for segment_data, index in compressed_segments)
+                return imagecodecs.jpegxl_decode(compressed_data)
+            else:
+                # Multiple tiles - decode each and assemble
+                tile_width = p.tilewidth
+                tile_height = p.tilelength
+                img_width = p.imagewidth
+                img_height = p.imagelength
+                samples = p.samplesperpixel or 3
+                
+                # Determine output dtype from first tile
+                fh.seek(p.dataoffsets[0])
+                first_tile_data = fh.read(p.databytecounts[0])
+                first_tile = imagecodecs.jpegxl_decode(first_tile_data)
+                dtype = first_tile.dtype
+                
+                # Create output array
+                output = np.zeros((img_height, img_width, samples), dtype=dtype)
+                
+                # Decode and place each tile
+                tiles_x = (img_width + tile_width - 1) // tile_width
+                for i, (offset, bytecount) in enumerate(zip(p.dataoffsets, p.databytecounts)):
+                    fh.seek(offset)
+                    tile_data = fh.read(bytecount)
+                    tile = imagecodecs.jpegxl_decode(tile_data)
+                    
+                    ty = (i // tiles_x) * tile_height
+                    tx = (i % tiles_x) * tile_width
+                    
+                    # Handle edge tiles that may be smaller
+                    th = min(tile_height, img_height - ty)
+                    tw = min(tile_width, img_width - tx)
+                    output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
+                
+                return output
         else:
             # Use asarray() for other compressions
             return p.asarray()

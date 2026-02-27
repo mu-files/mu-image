@@ -26,11 +26,13 @@ from .imgio import decode_image
 from .videoio import SequenceEncodePipeline
 from .color import (
     ToneCurve,
+    UnsupportedDNGTagError,
     interp_center,
     interp_center_green,
     fix_hot_pixels,
     linear_raw_from_cfa,
     linear_raw_from_dng,
+    process_raw,
 )
 
 __all__ = [
@@ -40,6 +42,7 @@ __all__ = [
     'CsvWriter',
     'DngFile',
     'MetadataTags',
+    'UnsupportedDNGTagError',
     'cfa_from_dng',
     'cfa_from_rgb_planes',
     'convert_raw',
@@ -51,6 +54,7 @@ __all__ = [
     'interp_center_green',
     'linear_raw_from_cfa',
     'linear_raw_from_dng',
+    'process_raw',
     'process_raw_core_image',
     'ProcessingPipeline',
     'SequenceEncodePipeline',

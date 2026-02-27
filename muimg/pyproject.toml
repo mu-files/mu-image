@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260128.1415"
+version = "0.1.20260226.2154"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
@@ -30,6 +30,7 @@ dependencies = [
     "google-auth-oauthlib>=1.0.0",
     "requests>=2.25.0",
     "rawpy",
+    "av",
 ]
 
 [project.optional-dependencies]
