@@ -117,3 +117,4 @@ local.cfg
 
 # Test output files
 muimg/tests/test_output/
+muimg/tests/output_comparison/
