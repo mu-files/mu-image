@@ -10,8 +10,9 @@ from muimg.color import process_cfa_raw, process_linear_raw
 from muimg.color_mac import core_image_available, CoreImageContext
 from tifffile import TIFF
 
-# Corrected path to test files, relative to this test script
-TEST_FILES_DIR = Path(__file__).parent / "rawfiles"
+# Import paths from conftest (auto-clones fixtures if needed)
+from conftest import TEST_FILES_DIR
+
 TEST_OUTPUT_DIR = Path(__file__).parent / "test_output"
 
 
