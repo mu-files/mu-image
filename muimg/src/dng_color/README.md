@@ -25,15 +25,12 @@ No external SDK dependencies — all algorithms are reimplemented in `dng_color_
 
 ### RAW Processing (Stage 1)
 - `linearize(data, table, max_val)`: Apply linearization table
-- `normalize_raw(data, black_level, white_level)`: Normalize using black/white levels
+- `normalize_raw(data, black_level, black_repeat_rows, black_repeat_cols, samples_per_pixel, white_level, black_delta_h=None, black_delta_v=None)`: Normalize using black/white levels per DNG spec Chapter 5. Implements full BlackLevelRepeatDim pattern and optional DeltaH/DeltaV.
 - `apply_gain_map(data, gain_map)`: Flat-field correction
 
 ### Lens Corrections (Stage 2)
 - `warp_rectilinear(rgb, radial_params, ...)`: Lens distortion correction
 - `fix_vignette(rgb, params, center_x, center_y)`: Radial vignette correction
-
-### High-Level Pipeline
-- `process_rgb(rgb, color_matrix, white_xy, ...)`: Full color pipeline
 
 ## Build
 

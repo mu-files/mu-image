@@ -812,28 +812,67 @@ static void apply_linearization_table(
     }
 }
 
-// Normalize RAW data using black and white levels
-// black_level: per-channel or single black level (subtracted)
-// white_level: per-channel or single white level (saturation)
-// Output is normalized to [0, 1]
+// Normalize RAW data using black and white levels per DNG spec Chapter 5.
+// Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel[...])
+//
+// Parameters:
+//   data: raw pixel data, shape (height, width, samples_per_pixel) or (height, width) if samples=1
+//   black_level: 3D array [repeat_rows][repeat_cols][samples_per_pixel] stored row-major
+//   black_repeat_rows, black_repeat_cols: dimensions of the repeating black level pattern
+//   black_delta_h: per-column delta array, length=width (or NULL if not used)
+//   black_delta_v: per-row delta array, length=height (or NULL if not used)
+//   white_level: per-sample white level array, length=samples_per_pixel
+//   samples_per_pixel: number of samples (1 for CFA, 3 for LinearRaw)
+//
+// SDK ref: dng_linearize_plane.cpp, dng_linearization_info
 static void normalize_black_white(
-    float* data, npy_intp height, npy_intp width, int channels,
-    const float* black_level, int black_channels,
-    const float* white_level, int white_channels
+    float* data, npy_intp height, npy_intp width, int samples_per_pixel,
+    const float* black_level, int black_repeat_rows, int black_repeat_cols,
+    const float* black_delta_h, npy_intp delta_h_count,
+    const float* black_delta_v, npy_intp delta_v_count,
+    const float* white_level, int white_count
 ) {
-    for (npy_intp y = 0; y < height; y++) {
-        for (npy_intp x = 0; x < width; x++) {
-            for (int c = 0; c < channels; c++) {
-                npy_intp idx = (y * width + x) * channels + c;
-                float black = black_level[c % black_channels];
-                float white = white_level[c % white_channels];
-                float range = white - black;
-                if (range > 0) {
-                    data[idx] = (data[idx] - black) / range;
+    for (npy_intp row = 0; row < height; row++) {
+        // Get row delta (0 if not provided)
+        float delta_v = 0.0f;
+        if (black_delta_v != NULL && delta_v_count > 0) {
+            delta_v = black_delta_v[row % delta_v_count];
+        }
+        
+        // Black level row index in repeating pattern
+        int black_row = (int)(row % black_repeat_rows);
+        
+        for (npy_intp col = 0; col < width; col++) {
+            // Get column delta (0 if not provided)
+            float delta_h = 0.0f;
+            if (black_delta_h != NULL && delta_h_count > 0) {
+                delta_h = black_delta_h[col % delta_h_count];
+            }
+            
+            // Black level column index in repeating pattern
+            int black_col = (int)(col % black_repeat_cols);
+            
+            for (int sample = 0; sample < samples_per_pixel; sample++) {
+                npy_intp pixel_idx = (row * width + col) * samples_per_pixel + sample;
+                
+                // BlackLevel index: [row][col][sample] in row-major order
+                int black_idx = (black_row * black_repeat_cols + black_col) * samples_per_pixel + sample;
+                float black = black_level[black_idx];
+                
+                // WhiteLevel per sample
+                float white = white_level[sample % white_count];
+                
+                // Total black level including deltas
+                float total_black = black + delta_h + delta_v;
+                
+                // Normalize to [0, 1]
+                float range = white - total_black;
+                if (range > 0.0f) {
+                    data[pixel_idx] = (data[pixel_idx] - total_black) / range;
                 } else {
-                    data[idx] = 0.0f;
+                    data[pixel_idx] = 0.0f;
                 }
-                data[idx] = std::max(0.0f, std::min(1.0f, data[idx]));
+                data[pixel_idx] = std::max(0.0f, std::min(1.0f, data[pixel_idx]));
             }
         }
     }
@@ -1089,148 +1128,6 @@ static PyObject* dng_color_get_acr3_curve(PyObject* self, PyObject* args) {
         data[i] = evaluate_acr3_curve(x);
     }
     
-    return result;
-}
-
-static PyObject* dng_color_process_rgb(PyObject* self, PyObject* args, PyObject* kwargs) {
-    PyArrayObject* rgb_array = NULL;
-    PyArrayObject* color_matrix_array = NULL;
-    double white_x, white_y;
-    double exposure = 0.0;
-    int apply_tone_curve = 1;
-    int apply_srgb_gamma = 1;
-    const char* output_space = "srgb";
-    
-    static const char* kwlist[] = {
-        "rgb", "color_matrix", "white_xy",
-        "exposure", "apply_tone_curve", "apply_srgb_gamma", "output_space", NULL
-    };
-    
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!(dd)|dpps", 
-            const_cast<char**>(kwlist),
-            &PyArray_Type, &rgb_array,
-            &PyArray_Type, &color_matrix_array,
-            &white_x, &white_y,
-            &exposure, &apply_tone_curve, &apply_srgb_gamma, &output_space)) {
-        return NULL;
-    }
-    
-    // Validate RGB array
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
-        return NULL;
-    }
-    
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
-        return NULL;
-    }
-    
-    // Validate color matrix
-    if (PyArray_NDIM(color_matrix_array) != 2 || 
-        PyArray_DIM(color_matrix_array, 0) != 3 || 
-        PyArray_DIM(color_matrix_array, 1) != 3) {
-        PyErr_SetString(PyExc_ValueError, "color_matrix must be shape (3, 3)");
-        return NULL;
-    }
-    
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
-    // Ensure contiguous input
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    if (!rgb_cont) return NULL;
-    
-    // Create output array
-    npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
-    if (!result) {
-        Py_DECREF(rgb_cont);
-        return NULL;
-    }
-    
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    
-    // Get color matrix data
-    PyArrayObject* cm_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)color_matrix_array, NPY_FLOAT64, 2, 2);
-    if (!cm_cont) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(result);
-        return NULL;
-    }
-    double* cm = (double*)PyArray_DATA(cm_cont);
-    
-    // XYZ to output space matrix
-    double xyz_to_out[9];
-    if (strcmp(output_space, "prophoto") == 0) {
-        // ProPhoto RGB (D50)
-        xyz_to_out[0] =  1.3459433; xyz_to_out[1] = -0.2556075; xyz_to_out[2] = -0.0511118;
-        xyz_to_out[3] = -0.5445989; xyz_to_out[4] =  1.5081673; xyz_to_out[5] =  0.0205351;
-        xyz_to_out[6] =  0.0000000; xyz_to_out[7] =  0.0000000; xyz_to_out[8] =  1.2118128;
-    } else {
-        // sRGB (D65)
-        xyz_to_out[0] =  3.2404542; xyz_to_out[1] = -1.5371385; xyz_to_out[2] = -0.4985314;
-        xyz_to_out[3] = -0.9692660; xyz_to_out[4] =  1.8760108; xyz_to_out[5] =  0.0415560;
-        xyz_to_out[6] =  0.0559066; xyz_to_out[7] = -0.1903420; xyz_to_out[8] =  1.0572252;
-    }
-    
-    // Combined matrix: camera RGB -> XYZ -> output RGB
-    double combined[9];
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            combined[i * 3 + j] = 0.0;
-            for (int k = 0; k < 3; k++) {
-                combined[i * 3 + j] += xyz_to_out[i * 3 + k] * cm[k * 3 + j];
-            }
-        }
-    }
-    
-    double exp_mult = pow(2.0, exposure);
-    
-    // Process pixels
-    npy_intp total_pixels = height * width;
-    for (npy_intp p = 0; p < total_pixels; p++) {
-        npy_intp idx = p * 3;
-        
-        double r = src_data[idx + 0] * exp_mult;
-        double g = src_data[idx + 1] * exp_mult;
-        double b = src_data[idx + 2] * exp_mult;
-        
-        // Apply color matrix
-        double out_r = combined[0] * r + combined[1] * g + combined[2] * b;
-        double out_g = combined[3] * r + combined[4] * g + combined[5] * b;
-        double out_b = combined[6] * r + combined[7] * g + combined[8] * b;
-        
-        // Clip negatives
-        out_r = std::max(0.0, out_r);
-        out_g = std::max(0.0, out_g);
-        out_b = std::max(0.0, out_b);
-        
-        // Apply tone curve
-        if (apply_tone_curve) {
-            out_r = evaluate_acr3_curve((float)out_r);
-            out_g = evaluate_acr3_curve((float)out_g);
-            out_b = evaluate_acr3_curve((float)out_b);
-        }
-        
-        // Apply sRGB gamma
-        if (apply_srgb_gamma && strcmp(output_space, "srgb") == 0) {
-            out_r = srgb_gamma((float)out_r);
-            out_g = srgb_gamma((float)out_g);
-            out_b = srgb_gamma((float)out_b);
-        }
-        
-        // Clip to [0, 1]
-        dst_data[idx + 0] = (float)std::min(1.0, out_r);
-        dst_data[idx + 1] = (float)std::min(1.0, out_g);
-        dst_data[idx + 2] = (float)std::min(1.0, out_b);
-    }
-    
-    Py_DECREF(rgb_cont);
-    Py_DECREF(cm_cont);
     return result;
 }
 
@@ -1760,19 +1657,48 @@ static PyObject* dng_color_linearize(PyObject* self, PyObject* args) {
     return result;
 }
 
-// Normalize RAW data using black/white levels
-static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args) {
+// Normalize RAW data using black/white levels per DNG spec Chapter 5.
+// SDK ref: dng_linearize_plane.cpp, dng_linearization_info
+//
+// Args:
+//   data: RAW pixel data, float32, shape (H, W) or (H, W, samples_per_pixel)
+//   black_level: BlackLevel pattern, float32, shape (repeat_rows, repeat_cols, samples_per_pixel)
+//                or flattened 1D array in row-col-sample order
+//   black_repeat_rows: number of rows in repeating pattern (from BlackLevelRepeatDim[0])
+//   black_repeat_cols: number of cols in repeating pattern (from BlackLevelRepeatDim[1])
+//   samples_per_pixel: 1 for CFA, 3 for LinearRaw
+//   white_level: WhiteLevel per sample, float32, shape (samples_per_pixel,)
+//   black_delta_h: optional per-column delta, float32, shape (width,) or None
+//   black_delta_v: optional per-row delta, float32, shape (height,) or None
+static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObject* kwargs) {
     PyArrayObject* data_array = NULL;
     PyArrayObject* black_array = NULL;
+    int black_repeat_rows = 1;
+    int black_repeat_cols = 1;
+    int samples_per_pixel = 1;
     PyArrayObject* white_array = NULL;
+    PyObject* delta_h_obj = Py_None;
+    PyObject* delta_v_obj = Py_None;
     
-    if (!PyArg_ParseTuple(args, "O!O!O!",
+    static const char* kwlist[] = {
+        "data", "black_level", "black_repeat_rows", "black_repeat_cols",
+        "samples_per_pixel", "white_level", "black_delta_h", "black_delta_v", NULL
+    };
+    
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!iiiO!|OO",
+            const_cast<char**>(kwlist),
             &PyArray_Type, &data_array,
             &PyArray_Type, &black_array,
-            &PyArray_Type, &white_array)) {
+            &black_repeat_rows,
+            &black_repeat_cols,
+            &samples_per_pixel,
+            &PyArray_Type, &white_array,
+            &delta_h_obj,
+            &delta_v_obj)) {
         return NULL;
     }
     
+    // Validate data array
     if (PyArray_TYPE(data_array) != NPY_FLOAT32) {
         PyErr_SetString(PyExc_TypeError, "data must be float32");
         return NULL;
@@ -1786,12 +1712,18 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args) {
     
     npy_intp height = PyArray_DIM(data_array, 0);
     npy_intp width = PyArray_DIM(data_array, 1);
-    int channels = (ndim == 3) ? (int)PyArray_DIM(data_array, 2) : 1;
+    int data_samples = (ndim == 3) ? (int)PyArray_DIM(data_array, 2) : 1;
     
+    if (data_samples != samples_per_pixel) {
+        PyErr_SetString(PyExc_ValueError, "data channels must match samples_per_pixel");
+        return NULL;
+    }
+    
+    // Make contiguous copies
     PyArrayObject* data_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
         (PyObject*)data_array, NPY_FLOAT32, 2, 3);
     PyArrayObject* black_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)black_array, NPY_FLOAT32, 1, 1);
+        (PyObject*)black_array, NPY_FLOAT32, 1, 3);
     PyArrayObject* white_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
         (PyObject*)white_array, NPY_FLOAT32, 1, 1);
     
@@ -1802,27 +1734,78 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    // Copy data for output
-    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
-    if (!result) {
+    // Validate black_level size matches repeat pattern
+    npy_intp expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel;
+    if (PyArray_SIZE(black_cont) != expected_black_size) {
+        PyErr_Format(PyExc_ValueError, 
+            "black_level size (%zd) must equal repeat_rows * repeat_cols * samples_per_pixel (%zd)",
+            (Py_ssize_t)PyArray_SIZE(black_cont), (Py_ssize_t)expected_black_size);
         Py_DECREF(data_cont);
         Py_DECREF(black_cont);
         Py_DECREF(white_cont);
         return NULL;
     }
     
+    // Handle optional delta arrays
+    PyArrayObject* delta_h_cont = NULL;
+    PyArrayObject* delta_v_cont = NULL;
+    npy_intp delta_h_count = 0;
+    npy_intp delta_v_count = 0;
+    
+    if (delta_h_obj != Py_None && delta_h_obj != NULL) {
+        delta_h_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+            delta_h_obj, NPY_FLOAT32, 1, 1);
+        if (!delta_h_cont) {
+            Py_DECREF(data_cont);
+            Py_DECREF(black_cont);
+            Py_DECREF(white_cont);
+            return NULL;
+        }
+        delta_h_count = PyArray_SIZE(delta_h_cont);
+    }
+    
+    if (delta_v_obj != Py_None && delta_v_obj != NULL) {
+        delta_v_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+            delta_v_obj, NPY_FLOAT32, 1, 1);
+        if (!delta_v_cont) {
+            Py_DECREF(data_cont);
+            Py_DECREF(black_cont);
+            Py_DECREF(white_cont);
+            Py_XDECREF(delta_h_cont);
+            return NULL;
+        }
+        delta_v_count = PyArray_SIZE(delta_v_cont);
+    }
+    
+    // Copy data for output
+    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
+    if (!result) {
+        Py_DECREF(data_cont);
+        Py_DECREF(black_cont);
+        Py_DECREF(white_cont);
+        Py_XDECREF(delta_h_cont);
+        Py_XDECREF(delta_v_cont);
+        return NULL;
+    }
+    
     float* result_data = (float*)PyArray_DATA((PyArrayObject*)result);
     const float* black = (const float*)PyArray_DATA(black_cont);
     const float* white = (const float*)PyArray_DATA(white_cont);
-    int black_channels = (int)PyArray_SIZE(black_cont);
-    int white_channels = (int)PyArray_SIZE(white_cont);
+    const float* delta_h = delta_h_cont ? (const float*)PyArray_DATA(delta_h_cont) : NULL;
+    const float* delta_v = delta_v_cont ? (const float*)PyArray_DATA(delta_v_cont) : NULL;
+    int white_count = (int)PyArray_SIZE(white_cont);
     
-    normalize_black_white(result_data, height, width, channels,
-                         black, black_channels, white, white_channels);
+    normalize_black_white(result_data, height, width, samples_per_pixel,
+                         black, black_repeat_rows, black_repeat_cols,
+                         delta_h, delta_h_count,
+                         delta_v, delta_v_count,
+                         white, white_count);
     
     Py_DECREF(data_cont);
     Py_DECREF(black_cont);
     Py_DECREF(white_cont);
+    Py_XDECREF(delta_h_cont);
+    Py_XDECREF(delta_v_cont);
     return result;
 }
 
@@ -2030,19 +2013,6 @@ static PyMethodDef DngColorMethods[] = {
      "Returns:\n"
      "    tuple: (temperature, tint)"},
     
-    {"process_rgb", (PyCFunction)dng_color_process_rgb, METH_VARARGS | METH_KEYWORDS,
-     "Apply DNG SDK color processing to RGB image data.\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3), linear\n"
-     "    color_matrix (ndarray): 3x3 camera to XYZ matrix\n"
-     "    white_xy (tuple): White point (x, y) chromaticity\n"
-     "    exposure (float): Exposure compensation in stops (default: 0.0)\n"
-     "    apply_tone_curve (bool): Apply ACR3 tone curve (default: True)\n"
-     "    apply_srgb_gamma (bool): Apply sRGB gamma (default: True)\n"
-     "    output_space (str): Output color space 'srgb' or 'prophoto' (default: 'srgb')\n\n"
-     "Returns:\n"
-     "    ndarray: Processed RGB image, float32"},
-    
     {"get_acr3_curve", dng_color_get_acr3_curve, METH_VARARGS,
      "Get the ACR3 default tone curve as a lookup table.\n\n"
      "Args:\n"
@@ -2128,13 +2098,18 @@ static PyMethodDef DngColorMethods[] = {
      "Returns:\n"
      "    ndarray: Linearized data"},
     
-    {"normalize_raw", dng_color_normalize_raw, METH_VARARGS,
-     "Normalize RAW data using black and white levels (Stage 1).\n\n"
-     "Subtracts black level and scales to [0,1] based on white level.\n\n"
+    {"normalize_raw", (PyCFunction)dng_color_normalize_raw, METH_VARARGS | METH_KEYWORDS,
+     "Normalize RAW data using black and white levels per DNG spec Chapter 5.\n\n"
+     "Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel)\n\n"
      "Args:\n"
-     "    data (ndarray): RAW sensor data, float32, (H,W) or (H,W,C)\n"
-     "    black_level (ndarray): Per-channel black levels, float32\n"
-     "    white_level (ndarray): Per-channel white levels, float32\n\n"
+     "    data (ndarray): RAW pixel data, float32, (H,W) or (H,W,samples_per_pixel)\n"
+     "    black_level (ndarray): BlackLevel pattern, float32, flattened in row-col-sample order\n"
+     "    black_repeat_rows (int): Number of rows in repeating pattern (from BlackLevelRepeatDim[0])\n"
+     "    black_repeat_cols (int): Number of cols in repeating pattern (from BlackLevelRepeatDim[1])\n"
+     "    samples_per_pixel (int): 1 for CFA, 3 for LinearRaw\n"
+     "    white_level (ndarray): WhiteLevel per sample, float32\n"
+     "    black_delta_h (ndarray, optional): Per-column delta, float32, shape (width,)\n"
+     "    black_delta_v (ndarray, optional): Per-row delta, float32, shape (height,)\n\n"
      "Returns:\n"
      "    ndarray: Normalized data in [0,1] range"},
     

@@ -209,6 +209,7 @@ def xy_to_uvUCS(x: float, y: float) -> tuple[float, float]:
     v = 3.0 * y / denom
     return float(u), float(v)
 
+# TODO: move this to muallsky_train which is the only client
 def color_xfrm_image(image: np.ndarray, xfrm: np.ndarray) -> np.ndarray:
     """Apply a color transformation matrix to an image.
     """
@@ -259,20 +260,6 @@ def XYZ_to_YuvUCS(image: np.ndarray) -> np.ndarray:
     # Pack as (Y, u, v)
     yuv = np.stack([Y, u, v], axis=-1)
     return yuv.astype(image.dtype, copy=False)
-
-def to_linear(linear):
-	less = linear <= 0.04045
-	linear[less] = linear[less] * (1. / 12.92)
-	linear[~less] = np.power((linear[~less] + 0.055) * (1./ 1.055), 2.4)
-	return linear
-
-def from_linear(linear):
-    srgb = linear.copy()
-    less = srgb <= 0.0031308
-    srgb[less] = srgb[less] * 12.92
-    srgb[~less] = 1.055 * np.power(srgb[~less], 1.0 / 2.4) - 0.055
-    return srgb
-
 
 # =============================================================================
 # DNG Illuminant Handling (CalibrationIlluminant1/2/3)
@@ -325,7 +312,7 @@ def illuminant_to_xy(illuminant: int) -> tuple[float, float] | None:
     
     # Convert temperature to xy using our C++ implementation
     # (same as SDK's dng_temperature class)
-    return temp_tint_to_xy(temp, 0.0)
+    return _dng_color.temp_to_xy(temp, 0.0)
 
 
 def illuminant_to_temperature(illuminant: int) -> float | None:
@@ -466,34 +453,6 @@ UNSUPPORTED_RENDERING_TAGS = {
     "RGBTables",
 }
 
-# Tags that are informational/metadata only - don't affect pixel rendering
-IGNORED_TAGS = {
-    "DNGVersion", "DNGBackwardVersion", "UniqueCameraModel", "LocalizedCameraModel",
-    "CameraSerialNumber", "LensInfo", "Make", "Model", "Software", "DateTime",
-    "Artist", "Copyright", "ImageDescription", "XMP", "IPTC_NAA", "ExifIFD",
-    "GPSInfo", "MakerNote", "DNGPrivateData", "OriginalRawFileName",
-    "RawDataUniqueID", "RawImageDigest", "NewRawImageDigest", "OriginalRawFileDigest",
-    "PreviewApplicationName", "PreviewApplicationVersion", "PreviewSettingsName",
-    "PreviewSettingsDigest", "PreviewColorSpace", "PreviewDateTime",
-    "ProfileName", "ProfileCopyright", "ProfileEmbedPolicy",
-    "CameraCalibrationSignature", "ProfileCalibrationSignature",
-    "AsShotProfileName", "NoiseReductionApplied", "NoiseProfile",
-    "BaselineNoise", "BaselineSharpness", "BayerGreenSplit",
-    "ChromaBlurRadius", "AntiAliasStrength", "ShadowScale",
-    "BestQualityScale", "DefaultScale", "DefaultCropOrigin", "DefaultCropSize",
-    "DefaultUserCrop", "ActiveArea", "MaskedAreas",
-    "ColorimetricReference", "ExtraCameraProfiles",
-    "OriginalDefaultFinalSize", "OriginalBestQualityFinalSize", "OriginalDefaultCropSize",
-    "ProfileHueSatMapEncoding", "ProfileLookTableEncoding", "DefaultBlackRender",
-    "RawToPreviewGain", "CacheBlob", "CacheVersion",
-    "DepthFormat", "DepthNear", "DepthFar", "DepthUnits", "DepthMeasureType",
-    "EnhanceParams", "SemanticName", "SemanticInstanceID", "MaskSubArea",
-    "ImageSequenceInfo", "ProfileToneMethod", "ImageStats", "ProfileDynamicRange",
-    "ProfileGroupName", "JXLDistance", "JXLEffort", "JXLDecodeSpeed",
-    "SubTileBlockSize", "RowInterleaveFactor", "ColumnInterleaveFactor",
-}
-
-
 class UnsupportedDNGTagError(Exception):
     """Raised when a DNG file contains tags that process_raw() cannot handle."""
     pass
@@ -527,293 +486,6 @@ def validate_dng_tags(tags: dict, strict: bool = True) -> list[str]:
         )
     
     return found_unsupported
-
-
-# =============================================================================
-# DNG SDK Color Processing (via C extension)
-# =============================================================================
-
-def get_acr3_tone_curve(num_points: int = 256) -> np.ndarray:
-    """Get the Adobe Camera Raw 3 (ACR3) default tone curve.
-    
-    Args:
-        num_points: Number of points in the lookup table (default: 256)
-        
-    Returns:
-        1D float32 array of tone curve values, input range [0,1] -> output range [0,1]
-    """
-    return _dng_color.get_acr3_curve(num_points)
-
-
-def temp_tint_to_xy(temperature: float, tint: float = 0.0) -> tuple[float, float]:
-    """Convert color temperature and tint to CIE 1931 xy chromaticity."""
-    return _dng_color.temp_to_xy(temperature, tint)
-
-
-def xy_to_temp_tint(x: float, y: float) -> tuple[float, float]:
-    """Convert CIE 1931 xy chromaticity to color temperature and tint."""
-    return _dng_color.xy_to_temp(x, y)
-
-
-def apply_acr3_tone_curve(image: np.ndarray) -> np.ndarray:
-    """Apply the ACR3 default tone curve to a linear RGB image.
-    
-    This implements hue-preserving RGB tone mapping as per SDK's RefBaselineRGBTone.
-    The curve is applied to max and min channels, and the middle channel is
-    interpolated to preserve the original hue relationship.
-    
-    SDK ref: dng_reference.cpp lines 1868-1990
-    """
-    curve = get_acr3_tone_curve(4096)
-    return _dng_color.apply_rgb_tone(image.astype(np.float32), curve)
-
-
-def process_linear_rgb(
-    rgb: np.ndarray,
-    color_matrix: np.ndarray,
-    white_xy: tuple[float, float],
-    exposure: float = 0.0,
-    apply_tone_curve: bool = True,
-    apply_srgb_gamma: bool = True,
-    output_space: str = "srgb"
-) -> np.ndarray:
-    """Apply DNG SDK color processing pipeline to linear RGB image."""
-    return _dng_color.process_rgb(
-        rgb.astype(np.float32),
-        color_matrix.astype(np.float64),
-        white_xy,
-        exposure=exposure,
-        apply_tone_curve=apply_tone_curve,
-        apply_srgb_gamma=apply_srgb_gamma,
-        output_space=output_space
-    )
-
-
-def apply_hue_sat_map(
-    rgb: np.ndarray,
-    hue_sat_map: np.ndarray,
-    hue_divisions: int,
-    sat_divisions: int,
-    val_divisions: int
-) -> np.ndarray:
-    """Apply DNG ProfileHueSatMap 3D LUT to RGB image.
-    
-    Args:
-        rgb: Linear RGB image, float32, shape (H, W, 3), range [0, 1]
-        hue_sat_map: 3D LUT data, shape (hue_divisions, sat_divisions, val_divisions, 3)
-                     Each entry is (hue_shift, sat_scale, val_scale)
-        hue_divisions: Number of hue divisions in the map
-        sat_divisions: Number of saturation divisions
-        val_divisions: Number of value divisions
-        
-    Returns:
-        Color-adjusted RGB image, float32
-    """
-    return _dng_color.apply_hue_sat_map(
-        rgb.astype(np.float32),
-        hue_sat_map.astype(np.float32),
-        hue_divisions, sat_divisions, val_divisions
-    )
-
-
-def interpolate_color_matrices(
-    matrix1: np.ndarray,
-    matrix2: np.ndarray,
-    temp1: float,
-    temp2: float,
-    target_temp: float
-) -> np.ndarray:
-    """Interpolate between two color matrices based on color temperature.
-    
-    Uses DNG SDK inverse-temperature weighting for dual-illuminant profiles.
-    
-    Args:
-        matrix1: First color matrix (3x3), at temp1
-        matrix2: Second color matrix (3x3), at temp2
-        temp1: Color temperature (K) for matrix1
-        temp2: Color temperature (K) for matrix2
-        target_temp: Target color temperature (K)
-        
-    Returns:
-        Interpolated 3x3 color matrix
-    """
-    return _dng_color.interpolate_matrices(
-        matrix1.astype(np.float64),
-        matrix2.astype(np.float64),
-        temp1, temp2, target_temp
-    )
-
-
-def compute_bradford_matrix(
-    src_xy: tuple[float, float],
-    dst_xy: tuple[float, float]
-) -> np.ndarray:
-    """Compute Bradford chromatic adaptation matrix between two white points.
-    
-    Args:
-        src_xy: Source white point (x, y) chromaticity
-        dst_xy: Destination white point (x, y) chromaticity
-        
-    Returns:
-        3x3 chromatic adaptation matrix
-    """
-    return _dng_color.bradford_adapt(src_xy[0], src_xy[1], dst_xy[0], dst_xy[1])
-
-
-def apply_custom_tone_curve(image: np.ndarray, curve_points: np.ndarray) -> np.ndarray:
-    """Apply a custom tone curve defined by control points.
-    
-    Args:
-        image: Input image, float32, range [0, 1] (any shape)
-        curve_points: Nx2 array of (input, output) control points
-        
-    Returns:
-        Tone-mapped image, float32
-    """
-    curve_pts = np.asarray(curve_points, dtype=np.float32)
-    if curve_pts.ndim != 2 or curve_pts.shape[1] != 2:
-        raise ValueError("curve_points must be Nx2 array")
-    
-    # For RGB images, use C extension
-    if image.ndim == 3 and image.shape[2] == 3:
-        return _dng_color.apply_tone_curve(
-            image.astype(np.float32),
-            curve_pts
-        )
-    
-    # For non-RGB: use numpy interpolation
-    x_pts = curve_pts[:, 0]
-    y_pts = curve_pts[:, 1]
-    img_clipped = np.clip(image, x_pts[0], x_pts[-1])
-    return np.interp(img_clipped.ravel(), x_pts, y_pts).reshape(image.shape).astype(np.float32)
-
-
-# =============================================================================
-# DNG Stage 1: Pre-Demosaic Operations (on RAW CFA data)
-# =============================================================================
-
-def linearize_raw(
-    raw_data: np.ndarray,
-    linearization_table: np.ndarray,
-    max_value: float
-) -> np.ndarray:
-    """Apply linearization table to RAW sensor data.
-    
-    Converts non-linear sensor ADC values to linear light values.
-    
-    Args:
-        raw_data: RAW sensor data, float32
-        linearization_table: Linearization LUT, float32
-        max_value: Maximum input value (e.g., 16383 for 14-bit)
-        
-    Returns:
-        Linearized data, float32
-    """
-    return _dng_color.linearize(
-        raw_data.astype(np.float32),
-        linearization_table.astype(np.float32),
-        float(max_value)
-    )
-
-
-def normalize_raw(
-    raw_data: np.ndarray,
-    black_level: np.ndarray,
-    white_level: np.ndarray
-) -> np.ndarray:
-    """Normalize RAW data using black and white levels.
-    
-    Subtracts black level and scales to [0, 1] based on white level.
-    
-    Args:
-        raw_data: RAW sensor data, float32, shape (H, W) or (H, W, C)
-        black_level: Per-channel black levels, float32
-        white_level: Per-channel white levels, float32
-        
-    Returns:
-        Normalized data in [0, 1] range, float32
-    """
-    return _dng_color.normalize_raw(
-        raw_data.astype(np.float32),
-        np.atleast_1d(black_level).astype(np.float32),
-        np.atleast_1d(white_level).astype(np.float32)
-    )
-
-
-def apply_gain_map(raw_cfa: np.ndarray, gain_map: np.ndarray) -> np.ndarray:
-    """Apply gain map (flat-field correction) to RAW CFA data.
-    
-    Args:
-        raw_cfa: RAW CFA data, float32, shape (H, W)
-        gain_map: 2D gain map, float32
-        
-    Returns:
-        Gain-corrected CFA data, float32
-    """
-    return _dng_color.apply_gain_map(
-        raw_cfa.astype(np.float32),
-        gain_map.astype(np.float32)
-    )
-
-
-# =============================================================================
-# DNG Stage 2: Post-Demosaic Operations (on RGB data)
-# =============================================================================
-
-def warp_rectilinear(
-    rgb: np.ndarray,
-    radial_params: np.ndarray,
-    center_x: float = 0.5,
-    center_y: float = 0.5,
-    tangential_params: np.ndarray | None = None
-) -> np.ndarray:
-    """Apply lens distortion correction using WarpRectilinear opcode.
-    
-    Uses polynomial radial model: r_src = r_dst * f(r_dst)
-    where f(r) = k0 + k1*r + k2*r^2 + k3*r^3
-    
-    Args:
-        rgb: Input RGB image, float32, shape (H, W, 3)
-        radial_params: Radial polynomial coefficients [k0, k1, k2, k3]
-        center_x: Optical center x in [0, 1] (default: 0.5)
-        center_y: Optical center y in [0, 1] (default: 0.5)
-        tangential_params: Optional tangential coefficients [kt0, kt1]
-        
-    Returns:
-        Distortion-corrected RGB image, float32
-    """
-    return _dng_color.warp_rectilinear(
-        rgb.astype(np.float32),
-        radial_params.astype(np.float64),
-        center_x, center_y,
-        tangential_params=tangential_params.astype(np.float64) if tangential_params is not None else None
-    )
-
-
-def fix_vignette(
-    rgb: np.ndarray,
-    params: np.ndarray,
-    center_x: float = 0.5,
-    center_y: float = 0.5
-) -> np.ndarray:
-    """Apply radial vignette correction.
-    
-    Applies gain = 1 + k0*r^2 + k1*r^4 + k2*r^6 + ...
-    
-    Args:
-        rgb: Input RGB image, float32, shape (H, W, 3)
-        params: Vignette polynomial coefficients [k0, k1, k2, ...]
-        center_x: Optical center x in [0, 1] (default: 0.5)
-        center_y: Optical center y in [0, 1] (default: 0.5)
-        
-    Returns:
-        Vignette-corrected RGB image, float32
-    """
-    return _dng_color.fix_vignette(
-        rgb.astype(np.float32),
-        params.astype(np.float64),
-        center_x, center_y
-    )
 
 
 def interp_center(img: np.ndarray) -> np.ndarray:
@@ -1450,13 +1122,32 @@ class ToneCurve:
 
 
 # =============================================================================
-# High-level DNG Processing
-# Port of Adobe DNG SDK 1.7.1 color pipeline
-# Key SDK source files:
+# DNG SDK Port (Python + C++ Extension)
+# =============================================================================
+# Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
+# C++ implementation in src/dng_color/dng_color_standalone.cpp
+#
+# Key SDK source files referenced:
 #   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()
 #   - dng_render.cpp: dng_render_task::Start() for fCameraToRGB computation
 #   - dng_color_spec.cpp: MapWhiteMatrix() for Bradford chromatic adaptation
+#   - dng_reference.cpp: RefBaselineRGBTone() for hue-preserving tone mapping
+#   - dng_ifd.cpp: Black/white level defaults and parsing
+#   - dng_linearization_info.cpp: normalize_black_white implementation
 # =============================================================================
+
+def apply_acr3_tone_curve(image: np.ndarray) -> np.ndarray:
+    """Apply the ACR3 default tone curve to a linear RGB image.
+    
+    This implements hue-preserving RGB tone mapping as per SDK's RefBaselineRGBTone.
+    The curve is applied to max and min channels, and the middle channel is
+    interpolated to preserve the original hue relationship.
+    
+    SDK ref: dng_reference.cpp lines 1868-1990
+    """
+    curve = _dng_color.get_acr3_curve(4096)
+    return _dng_color.apply_rgb_tone(image.astype(np.float32), curve)
+
 
 # Standard illuminant xy chromaticities (from DNG SDK)
 D50_xy = (0.34567, 0.35850)  # PCS reference white
@@ -1571,7 +1262,7 @@ def _compute_camera_to_pcs(color_matrix: np.ndarray, white_xy: tuple) -> np.ndar
     """
     # Bradford adaptation from PCS (D50) to the white point
     # Port of dng_color_spec.cpp: MapWhiteMatrix() (lines 22-57)
-    adaptation = compute_bradford_matrix(D50_xy, white_xy)
+    adaptation = _dng_color.bradford_adapt(D50_xy[0], D50_xy[1], white_xy[0], white_xy[1])
     
     # PCS to Camera = ColorMatrix * adaptation
     pcs_to_camera = color_matrix @ adaptation
@@ -1678,17 +1369,74 @@ def process_raw(
         
         photometric = tags.get("PhotometricInterpretation")
         
-        black_level = tags.get("BlackLevel", 0)
-        white_level = tags.get("WhiteLevel", 65535)
+        # =================================================================
+        # Black/White level handling per SDK dng_ifd.cpp
+        # =================================================================
+        # SDK ref: dng_ifd.cpp:242-252 (constructor)
+        #   for (j = 0; j < kMaxBlackPattern; j++)
+        #       for (k = 0; k < kMaxBlackPattern; k++)
+        #           for (n = 0; n < kMaxColorPlanes; n++)
+        #               fBlackLevel [j] [k] [n] = 0.0;
+        #   for (j = 0; j < kMaxColorPlanes; j++)
+        #       fWhiteLevel [j] = -1.0;  // sentinel
+        #
+        # SDK ref: dng_ifd.cpp:3247-3259 (PostParse)
+        #   uint32 defaultWhite = (fSampleFormat[0] == sfFloatingPoint) ?
+        #                         1 : (uint32)((((uint64)1) << fBitsPerSample[0]) - 1);
+        #   for (j = 0; j < kMaxColorPlanes; j++)
+        #       if (fWhiteLevel[j] < 0.0)
+        #           fWhiteLevel[j] = (real64) defaultWhite;
+        # =================================================================
         
-        if isinstance(black_level, (list, tuple, np.ndarray)):
-            black_level = float(black_level[0])
+        samples_per_pixel = tags.get("SamplesPerPixel", 1)
+        black_repeat_dim = tags.get("BlackLevelRepeatDim", (1, 1))
+        black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, '__len__') else 1
+        black_repeat_cols = int(black_repeat_dim[1]) if hasattr(black_repeat_dim, '__len__') and len(black_repeat_dim) > 1 else 1
+        expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
+        
+        # BlackLevel: SDK initializes to 0.0 for all [row][col][plane]
+        black_level_raw = tags.get("BlackLevel")
+        if black_level_raw is None:
+            # No tag: all zeros (SDK constructor behavior)
+            black_level = np.zeros(expected_black_size, dtype=np.float32)
         else:
-            black_level = float(black_level)
-        if isinstance(white_level, (list, tuple, np.ndarray)):
-            white_level = float(white_level[0])
+            black_level = np.atleast_1d(black_level_raw).astype(np.float32).ravel()
+            if len(black_level) != expected_black_size:
+                # SDK would fail (CheckTagCount), use zeros as fallback
+                black_level = np.zeros(expected_black_size, dtype=np.float32)
+        
+        # WhiteLevel: SDK initializes to -1.0 (sentinel), then PostParse sets default
+        # Default: (1 << BitsPerSample) - 1, or 1 for floating point
+        bits_per_sample = tags.get("BitsPerSample", 16)
+        if isinstance(bits_per_sample, (list, tuple)):
+            bits_per_sample = int(bits_per_sample[0])
         else:
-            white_level = float(white_level)
+            bits_per_sample = int(bits_per_sample)
+        default_white = float((1 << bits_per_sample) - 1)
+        
+        white_level_raw = tags.get("WhiteLevel")
+        if white_level_raw is None:
+            # No tag: use default for all planes (SDK PostParse behavior)
+            white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
+        else:
+            white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
+            # SDK sets default for any plane where value < 0
+            white_level = np.where(white_level < 0, default_white, white_level)
+            if len(white_level) < samples_per_pixel:
+                # Extend with default if not enough values
+                white_level = np.concatenate([
+                    white_level,
+                    np.full(samples_per_pixel - len(white_level), default_white, dtype=np.float32)
+                ])
+        
+        black_delta_h = tags.get("BlackLevelDeltaH")
+        black_delta_v = tags.get("BlackLevelDeltaV")
+        
+        # Convert delta arrays if present
+        if black_delta_h is not None:
+            black_delta_h = np.atleast_1d(black_delta_h).astype(np.float32)
+        if black_delta_v is not None:
+            black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
         
         orientation = tags.get("Orientation", 1)
         
@@ -1709,9 +1457,17 @@ def process_raw(
                 logger.error("Failed to extract LINEAR_RAW data from DNG")
                 return None
             
-            rgb_camera = rgb_data.astype(np.float32)
-            rgb_camera = (rgb_camera - black_level) / (white_level - black_level)
-            rgb_camera = np.clip(rgb_camera, 0.0, 1.0)
+            # Normalize using C++ implementation per DNG spec Chapter 5
+            rgb_camera = _dng_color.normalize_raw(
+                data=rgb_data.astype(np.float32),
+                black_level=black_level,
+                black_repeat_rows=black_repeat_rows,
+                black_repeat_cols=black_repeat_cols,
+                samples_per_pixel=samples_per_pixel,
+                white_level=white_level,
+                black_delta_h=black_delta_h,
+                black_delta_v=black_delta_v,
+            )
         else:
             cfa_result = dng.get_raw_cfa_by_id(page_id)
             if cfa_result is None:
@@ -1722,10 +1478,29 @@ def process_raw(
             if cfa_pattern is None:
                 cfa_pattern = "RGGB"
             
-            cfa_float = cfa_data.astype(np.float32)
-            cfa_normalized = (cfa_float - black_level) / (white_level - black_level)
-            cfa_normalized = np.clip(cfa_normalized, 0.0, 1.0)
-            cfa_uint16 = (cfa_normalized * 65535).astype(np.uint16)
+            # Normalize using C++ implementation per DNG spec Chapter 5
+            # Note: SDK demosaics on float32 throughout, but our demosaic library
+            # requires uint16 input, so we scale to 16-bit for demosaicing.
+            # Skip normalization if default identity case (scalar black=0, white=65535)
+            is_identity = (
+                len(black_level) == 1 and black_level[0] == 0 and
+                len(white_level) == 1 and white_level[0] == 65535 and
+                black_delta_h is None and black_delta_v is None
+            )
+            if is_identity:
+                cfa_uint16 = cfa_data.astype(np.uint16) if cfa_data.dtype != np.uint16 else cfa_data
+            else:
+                cfa_normalized = _dng_color.normalize_raw(
+                    data=cfa_data.astype(np.float32),
+                    black_level=black_level,
+                    black_repeat_rows=black_repeat_rows,
+                    black_repeat_cols=black_repeat_cols,
+                    samples_per_pixel=1,  # CFA is always 1 sample per pixel
+                    white_level=white_level,
+                    black_delta_h=black_delta_h,
+                    black_delta_v=black_delta_v,
+                )
+                cfa_uint16 = (cfa_normalized * 65535).astype(np.uint16)
             
             # Demosaic without rotation - rotation applied after crop below
             rgb_linear = linear_raw_from_cfa(
@@ -1778,15 +1553,6 @@ def process_raw(
         temp1 = illuminant_to_temperature(illum1) if illum1 is not None else None
         temp2 = illuminant_to_temperature(illum2) if illum2 is not None else None
         
-        # Get AnalogBalance (per-channel scaling)
-        # SDK ref: dng_color_spec.cpp line 179
-        # dngio converts rational pairs to float array
-        analog_balance = tags.get("AnalogBalance")
-        if analog_balance is not None:
-            analog_balance = np.asarray(analog_balance, dtype=np.float64)
-            if analog_balance.size < 3:
-                analog_balance = None
-        
         # Get AsShotNeutral -> convert to white point XY
         # SDK ref: dng_render.cpp lines 889-908
         # dngio converts rational pairs to float array
@@ -1810,10 +1576,14 @@ def process_raw(
         # SDK ref: dng_color_spec.cpp lines 179, 215
         # fColorMatrix1 = fAnalogBalance * fCameraCalibration1 * fColorMatrix1
         # fColorMatrix2 = fAnalogBalance * fCameraCalibration2 * fColorMatrix2
+        analog_balance = tags.get("AnalogBalance")
         if analog_balance is not None:
-            color_matrix1 = apply_analog_balance(color_matrix1, analog_balance)
-            if color_matrix2 is not None:
-                color_matrix2 = apply_analog_balance(color_matrix2, analog_balance)
+            analog_balance = np.asarray(analog_balance, dtype=np.float64)
+            if analog_balance.size >= 3:
+                ab_diag = np.diag(analog_balance)
+                color_matrix1 = ab_diag @ color_matrix1
+                if color_matrix2 is not None:
+                    color_matrix2 = ab_diag @ color_matrix2
 
         # Determine final color matrix with dual-illuminant interpolation
         # SDK ref: dng_color_spec.cpp FindXYZtoCamera_SingleOrDual()
@@ -1824,7 +1594,7 @@ def process_raw(
                 white_xy_est = white_xy_override
             else:
                 white_xy_est = _neutral_to_xy(camera_neutral, color_matrix1)
-            scene_temp = xy_to_temp_tint(white_xy_est[0], white_xy_est[1])[0]
+            scene_temp = _dng_color.xy_to_temp(white_xy_est[0], white_xy_est[1])[0]
             
             # Interpolate color matrices
             color_matrix = interpolate_color_matrix(
@@ -1852,7 +1622,7 @@ def process_raw(
         
         # SDK ref: dng_render.cpp lines 1042-1043
         # fRGBtoFinal = sRGB.MatrixFromPCS() * ProPhoto.MatrixToPCS()
-        prophoto_to_srgb = XYZ_D65_TO_SRGB @ compute_bradford_matrix(D50_xy, D65_xy) @ PROPHOTO_RGB_TO_XYZ_D50
+        prophoto_to_srgb = XYZ_D65_TO_SRGB @ _dng_color.bradford_adapt(D50_xy[0], D50_xy[1], D65_xy[0], D65_xy[1]) @ PROPHOTO_RGB_TO_XYZ_D50
         
         # =====================================================================
         # Step 1: DoBaselineABCtoRGB
