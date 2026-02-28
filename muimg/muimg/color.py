@@ -1474,41 +1474,40 @@ def process_raw(
                 logger.error("Failed to extract CFA data from DNG")
                 return None
             
-            cfa_data, cfa_pattern = cfa_result
+            cfa_data, cfa_pattern, cfa_pattern_codes = cfa_result
             if cfa_pattern is None:
                 cfa_pattern = "RGGB"
+            if cfa_pattern_codes is None:
+                cfa_pattern_codes = (0, 1, 1, 2)  # Default RGGB
             
-            # Normalize using C++ implementation per DNG spec Chapter 5
-            # Note: SDK demosaics on float32 throughout, but our demosaic library
-            # requires uint16 input, so we scale to 16-bit for demosaicing.
-            # Skip normalization if default identity case (scalar black=0, white=65535)
-            is_identity = (
-                len(black_level) == 1 and black_level[0] == 0 and
-                len(white_level) == 1 and white_level[0] == 65535 and
-                black_delta_h is None and black_delta_v is None
+            # Normalize CFA data using C++ implementation per DNG spec Chapter 5
+            # SDK demosaics on float32 throughout
+            cfa_normalized = _dng_color.normalize_raw(
+                data=cfa_data.astype(np.float32),
+                black_level=black_level,
+                black_repeat_rows=black_repeat_rows,
+                black_repeat_cols=black_repeat_cols,
+                samples_per_pixel=1,  # CFA is always 1 sample per pixel
+                white_level=white_level,
+                black_delta_h=black_delta_h,
+                black_delta_v=black_delta_v,
             )
-            if is_identity:
-                cfa_uint16 = cfa_data.astype(np.uint16) if cfa_data.dtype != np.uint16 else cfa_data
-            else:
-                cfa_normalized = _dng_color.normalize_raw(
-                    data=cfa_data.astype(np.float32),
-                    black_level=black_level,
-                    black_repeat_rows=black_repeat_rows,
-                    black_repeat_cols=black_repeat_cols,
-                    samples_per_pixel=1,  # CFA is always 1 sample per pixel
-                    white_level=white_level,
-                    black_delta_h=black_delta_h,
-                    black_delta_v=black_delta_v,
-                )
-                cfa_uint16 = (cfa_normalized * 65535).astype(np.uint16)
             
             # Demosaic without rotation - rotation applied after crop below
-            rgb_linear = linear_raw_from_cfa(
-                cfa_uint16, cfa_pattern,
-                orientation=None,
-                algorithm=algorithm
-            )
-            rgb_camera = rgb_linear.astype(np.float32) / 65535.0
+            if algorithm == "DNGSDK_BILINEAR":
+                # DNG SDK bilinear demosaic - uses raw CFAPattern codes directly
+                # SDK ref: dng_mosaic_info::fCFAPattern[row][col]
+                cfa_pattern_array = np.array(cfa_pattern_codes, dtype=np.int32)
+                rgb_camera = _dng_color.bilinear_demosaic(cfa_normalized, cfa_pattern_array)
+            else:
+                # Other algorithms require uint16 input
+                cfa_uint16 = (cfa_normalized * 65535).astype(np.uint16)
+                rgb_linear = linear_raw_from_cfa(
+                    cfa_uint16, cfa_pattern,
+                    orientation=None,
+                    algorithm=algorithm
+                )
+                rgb_camera = rgb_linear.astype(np.float32) / 65535.0
         
         # Apply DefaultCrop BEFORE rotation
         # SDK ref: dng_negative.cpp:2535-2575 DefaultCropArea() uses H/V directly

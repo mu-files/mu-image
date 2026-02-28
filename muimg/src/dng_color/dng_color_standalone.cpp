@@ -1995,6 +1995,261 @@ static PyObject* dng_color_fix_vignette(PyObject* self, PyObject* args) {
     return result;
 }
 
+//=============================================================================
+// Bilinear Demosaic (from dng_mosaic_info.cpp dng_bilinear_interpolator)
+//
+// This is a port of the DNG SDK's bilinear demosaicing algorithm.
+// For a 2x2 Bayer CFA pattern, each output pixel needs R, G, B values.
+// At positions where that color exists in the CFA, copy directly.
+// At other positions, interpolate from neighbors using bilinear weights.
+//
+// SDK reference: dng_mosaic_info.cpp lines 31-1090, dng_reference.cpp
+// RefBilinearRow16/RefBilinearRow32 lines 1293-1385
+//=============================================================================
+
+// CFA pattern is passed as a 2x2 array of color plane indices
+// SDK ref: dng_mosaic_info::fCFAPattern[row][col] contains plane index
+// Color plane indices: 0=Red, 1=Green, 2=Blue (per fCFAPlaneColor)
+
+// Get CFA color at position (row, col) for 2x2 pattern
+static inline int get_cfa_color(const int* cfa_colors, int row, int col) {
+    int pr = row & 1;
+    int pc = col & 1;
+    return cfa_colors[pr * 2 + pc];
+}
+
+// Bilinear demosaic for 2x2 Bayer pattern
+// SDK ref: dng_mosaic_info.cpp dng_bilinear_pattern::Calculate() and
+//          dng_bilinear_interpolator::Interpolate()
+//
+// For each output color plane, the kernel weights for a 2x2 Bayer pattern are:
+//
+// Red plane (planeColor=0):
+//   At R position: copy (weight 1.0)
+//   At G position in R row: average of E and W red neighbors
+//   At G position in B row: average of N and S red neighbors  
+//   At B position: average of 4 diagonal red neighbors (NW, NE, SW, SE)
+//
+// Blue plane (planeColor=2): same logic but for blue
+//
+// Green plane (planeColor=1):
+//   At G position: copy (weight 1.0)
+//   At R or B position: average of 4 adjacent green neighbors (N, S, E, W)
+//
+// SDK operates on float32 throughout (dng_pixel_buffer with ttFloat)
+//
+static void bilinear_demosaic_kernel(
+    const float* src, float* dst,
+    npy_intp height, npy_intp width,
+    const int* cfa_colors
+) {
+    // Process each output pixel
+    for (npy_intp row = 0; row < height; row++) {
+        for (npy_intp col = 0; col < width; col++) {
+            npy_intp dst_idx = (row * width + col) * 3;
+            int this_color = get_cfa_color(cfa_colors, row, col);
+            
+            // For each output color plane (R=0, G=1, B=2)
+            for (int plane = 0; plane < 3; plane++) {
+                float sum = 0.0f;
+                int count = 0;
+                
+                if (this_color == plane) {
+                    // This position has the color we want - copy directly
+                    // SDK ref: lines 606-614 "Special case no interpolation case"
+                    dst[dst_idx + plane] = src[row * width + col];
+                }
+                else if (plane == 1) {
+                    // Green interpolation at R or B position
+                    // SDK ref: lines 634-646 "All sides" - average N,S,E,W
+                    // Check N
+                    if (row > 0) {
+                        sum += src[(row - 1) * width + col];
+                        count++;
+                    }
+                    // Check S
+                    if (row < height - 1) {
+                        sum += src[(row + 1) * width + col];
+                        count++;
+                    }
+                    // Check W
+                    if (col > 0) {
+                        sum += src[row * width + (col - 1)];
+                        count++;
+                    }
+                    // Check E
+                    if (col < width - 1) {
+                        sum += src[row * width + (col + 1)];
+                        count++;
+                    }
+                    dst[dst_idx + plane] = sum / (float)count;
+                }
+                else {
+                    // Red or Blue interpolation
+                    // Determine if we're interpolating R at B position or B at R position
+                    // or R/B at G position
+                    
+                    // Find which color is at this position
+                    if (this_color == 1) {
+                        // Green position - need to interpolate R or B
+                        // SDK ref: lines 648-670 "N & S" or "E & W"
+                        // Determine if horizontal or vertical neighbors have this color
+                        
+                        // Check if horizontal neighbors (E,W) have the target color
+                        int west_color = (col > 0) ? get_cfa_color(cfa_colors, row, col - 1) : -1;
+                        int east_color = (col < width - 1) ? get_cfa_color(cfa_colors, row, col + 1) : -1;
+                        
+                        if (west_color == plane || east_color == plane) {
+                            // Horizontal interpolation
+                            if (col > 0 && get_cfa_color(cfa_colors, row, col - 1) == plane) {
+                                sum += src[row * width + (col - 1)];
+                                count++;
+                            }
+                            if (col < width - 1 && get_cfa_color(cfa_colors, row, col + 1) == plane) {
+                                sum += src[row * width + (col + 1)];
+                                count++;
+                            }
+                        } else {
+                            // Vertical interpolation
+                            if (row > 0 && get_cfa_color(cfa_colors, row - 1, col) == plane) {
+                                sum += src[(row - 1) * width + col];
+                                count++;
+                            }
+                            if (row < height - 1 && get_cfa_color(cfa_colors, row + 1, col) == plane) {
+                                sum += src[(row + 1) * width + col];
+                                count++;
+                            }
+                        }
+                        if (count > 0) {
+                            dst[dst_idx + plane] = sum / (float)count;
+                        } else {
+                            dst[dst_idx + plane] = 0.0f;
+                        }
+                    }
+                    else {
+                        // R position needing B, or B position needing R
+                        // SDK ref: lines 724-736 "Four corners" - diagonal average
+                        if (row > 0 && col > 0) {
+                            sum += src[(row - 1) * width + (col - 1)];
+                            count++;
+                        }
+                        if (row > 0 && col < width - 1) {
+                            sum += src[(row - 1) * width + (col + 1)];
+                            count++;
+                        }
+                        if (row < height - 1 && col > 0) {
+                            sum += src[(row + 1) * width + (col - 1)];
+                            count++;
+                        }
+                        if (row < height - 1 && col < width - 1) {
+                            sum += src[(row + 1) * width + (col + 1)];
+                            count++;
+                        }
+                        if (count > 0) {
+                            dst[dst_idx + plane] = sum / (float)count;
+                        } else {
+                            dst[dst_idx + plane] = 0.0f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Python wrapper for bilinear demosaic
+// SDK ref: dng_mosaic_info::InterpolateGeneric
+//
+// Args:
+//   cfa: Normalized CFA data, float32, shape (H, W), values in [0,1]
+//   cfa_pattern: 2x2 array of color plane indices [row0col0, row0col1, row1col0, row1col1]
+//                SDK ref: dng_mosaic_info::fCFAPattern[row][col]
+//                Values: 0=Red, 1=Green, 2=Blue (per fCFAPlaneColor)
+//
+static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyObject* kwargs) {
+    PyArrayObject* cfa_array = NULL;
+    PyArrayObject* cfa_pattern_array = NULL;
+    
+    static char* kwlist[] = {(char*)"cfa", (char*)"cfa_pattern", NULL};
+    
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!", kwlist,
+            &PyArray_Type, &cfa_array,
+            &PyArray_Type, &cfa_pattern_array)) {
+        return NULL;
+    }
+    
+    // Validate CFA pattern array - must be 4 elements (2x2 flattened)
+    if (PyArray_SIZE(cfa_pattern_array) != 4) {
+        PyErr_SetString(PyExc_ValueError, 
+            "cfa_pattern must be 4 elements (2x2 pattern flattened row-major)");
+        return NULL;
+    }
+    
+    // Validate CFA array
+    if (PyArray_NDIM(cfa_array) != 2) {
+        PyErr_SetString(PyExc_ValueError, "cfa must be 2D array (H, W)");
+        return NULL;
+    }
+    if (PyArray_TYPE(cfa_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "cfa must be float32");
+        return NULL;
+    }
+    
+    npy_intp height = PyArray_DIM(cfa_array, 0);
+    npy_intp width = PyArray_DIM(cfa_array, 1);
+    
+    if (height < 2 || width < 2) {
+        PyErr_SetString(PyExc_ValueError, "Image must be at least 2x2");
+        return NULL;
+    }
+    
+    // Ensure contiguous input
+    PyArrayObject* cfa_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)cfa_array, NPY_FLOAT32, 2, 2);
+    if (!cfa_cont) return NULL;
+    
+    // Get CFA pattern as int array
+    PyArrayObject* pattern_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)cfa_pattern_array, NPY_INT32, 1, 2);
+    if (!pattern_cont) {
+        Py_DECREF(cfa_cont);
+        return NULL;
+    }
+    
+    const int32_t* pattern_data = (const int32_t*)PyArray_DATA(pattern_cont);
+    int cfa_colors[4] = {pattern_data[0], pattern_data[1], pattern_data[2], pattern_data[3]};
+    
+    // Validate color indices (must be 0, 1, or 2)
+    for (int i = 0; i < 4; i++) {
+        if (cfa_colors[i] < 0 || cfa_colors[i] > 2) {
+            Py_DECREF(cfa_cont);
+            Py_DECREF(pattern_cont);
+            PyErr_SetString(PyExc_ValueError, 
+                "cfa_pattern values must be 0 (Red), 1 (Green), or 2 (Blue)");
+            return NULL;
+        }
+    }
+    
+    // Create output array (float32, same as SDK)
+    npy_intp dims[3] = {height, width, 3};
+    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    if (!result) {
+        Py_DECREF(cfa_cont);
+        Py_DECREF(pattern_cont);
+        return NULL;
+    }
+    
+    const float* src_data = (const float*)PyArray_DATA(cfa_cont);
+    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    
+    // Run bilinear demosaic
+    bilinear_demosaic_kernel(src_data, dst_data, height, width, cfa_colors);
+    
+    Py_DECREF(cfa_cont);
+    Py_DECREF(pattern_cont);
+    return result;
+}
+
 // Module method definitions
 static PyMethodDef DngColorMethods[] = {
     {"temp_to_xy", dng_color_temp_to_xy, METH_VARARGS,
@@ -2145,6 +2400,20 @@ static PyMethodDef DngColorMethods[] = {
      "    center_y (float): Optical center y in [0,1]\n\n"
      "Returns:\n"
      "    ndarray: Vignette-corrected RGB image"},
+    
+    {"bilinear_demosaic", (PyCFunction)dng_color_bilinear_demosaic, METH_VARARGS | METH_KEYWORDS,
+     "Demosaic CFA data using DNG SDK bilinear interpolation.\n\n"
+     "This is a port of the DNG SDK's bilinear demosaicing algorithm from\n"
+     "dng_mosaic_info.cpp (InterpolateGeneric with dng_bilinear_interpolator).\n"
+     "SDK operates on float32 throughout.\n\n"
+     "Args:\n"
+     "    cfa (ndarray): Normalized CFA data, float32, shape (H, W), values in [0,1]\n"
+     "    cfa_pattern (ndarray): 2x2 CFA pattern as color plane indices, int32,\n"
+     "        flattened row-major [row0col0, row0col1, row1col0, row1col1].\n"
+     "        SDK ref: dng_mosaic_info::fCFAPattern[row][col]\n"
+     "        Values: 0=Red, 1=Green, 2=Blue (per fCFAPlaneColor)\n\n"
+     "Returns:\n"
+     "    ndarray: Demosaiced RGB image, float32, shape (H, W, 3)"},
     
     {NULL, NULL, 0, NULL}
 };

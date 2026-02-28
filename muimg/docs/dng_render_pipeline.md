@@ -158,8 +158,12 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `CFARepeatPatternDim` | CFA pattern size (usually 2×2) | Demosaicing |
 | `CFAPattern` | Bayer pattern (RGGB, BGGR, etc.) | Demosaicing |
 | `CFAPlaneColor` | Color assignment for each CFA plane | Demosaicing |
-| `BlackLevel` | Sensor black level per channel | Stage 1 |
-| `WhiteLevel` | Sensor saturation level | Stage 1 |
+| `BitsPerSample` | Bit depth (8, 12, 14, 16) | WhiteLevel default |
+| `BlackLevel` | Sensor black level pattern | Stage 1 |
+| `BlackLevelRepeatDim` | Black level pattern size (rows, cols) | Stage 1 |
+| `BlackLevelDeltaH` | Per-column black level offset | Stage 1 |
+| `BlackLevelDeltaV` | Per-row black level offset | Stage 1 |
+| `WhiteLevel` | Sensor saturation level (default: 2^BitsPerSample - 1) | Stage 1 |
 | `ColumnInterleaveFactor` | Column interleaving | De-interleaving |
 | `RowInterleaveFactor` | Row interleaving | De-interleaving |
 | `JXLDistance` | JPEG XL quality parameter | Decompression |

@@ -1286,18 +1286,21 @@ class DngFile(TiffFile):
                 return page
         return None
 
-    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[tuple[np.ndarray, str]]:
-        """Retrieves the raw CFA array and CFAPattern string for a specific 'CFA' page.
+    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[tuple[np.ndarray, str, tuple]]:
+        """Retrieves the raw CFA array and CFAPattern for a specific 'CFA' page.
         
-        Returns a tuple (raw_cfa_array, cfa_pattern_value) or None if page not found/invalid.
+        Returns a tuple (raw_cfa_array, cfa_pattern_str, cfa_pattern_codes) or None if page not found/invalid.
+        cfa_pattern_codes is the raw CFAPattern tag values (0=Red, 1=Green, 2=Blue) as a 4-tuple.
         """
         p = self.get_page_by_id(target_page_id)
         return self.get_raw_cfa_from_page(p)
 
-    def get_raw_cfa_from_page(self, page: Optional[TiffPage]) -> Optional[tuple[np.ndarray, str]]:
-        """Retrieves the raw CFA array and CFAPattern string from a given TiffPage.
+    def get_raw_cfa_from_page(self, page: Optional[TiffPage]) -> Optional[tuple[np.ndarray, str, tuple]]:
+        """Retrieves the raw CFA array and CFAPattern from a given TiffPage.
         
-        Returns a tuple (raw_cfa_array, cfa_pattern_value) or None if page not valid/unsupported.
+        Returns a tuple (raw_cfa_array, cfa_pattern_str, cfa_pattern_codes) or None if page not valid/unsupported.
+        cfa_pattern_codes is the raw CFAPattern tag values (0=Red, 1=Green, 2=Blue) as a 4-tuple,
+        matching SDK dng_mosaic_info::fCFAPattern[row][col] layout.
         """
         p = page
         if p is None or p.photometric is None or p.photometric.name != "CFA":
@@ -1316,16 +1319,18 @@ class DngFile(TiffFile):
         else:
             raw_cfa = p.asarray()
 
-        # Fetch CFAPattern and map its 4-code tuple to a string using the inverse map.
+        # Fetch CFAPattern - raw codes and string representation
+        # SDK ref: dng_mosaic_info::fCFAPattern[row][col] stores these raw values
         cfa_tag = p.tags.get(TIFF.TAGS.get("CFAPattern"))
         cfa_str = None
+        cfa_codes = None
         if cfa_tag is not None:
             v = cfa_tag.value
             if isinstance(v, (bytes, bytearray)) and len(v) == 4:
-                codes = tuple(int(b) for b in v)
-                cfa_str = INVERSE_BAYER_PATTERN_MAP.get(codes)
+                cfa_codes = tuple(int(b) for b in v)
+                cfa_str = INVERSE_BAYER_PATTERN_MAP.get(cfa_codes)
 
-        return raw_cfa, cfa_str
+        return raw_cfa, cfa_str, cfa_codes
 
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
         """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID.
