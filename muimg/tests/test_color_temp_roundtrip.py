@@ -3,8 +3,8 @@ import pytest
 
 from muimg.color import (
     colortemp_to_uv,
-    uv_to_xy,
-    xy_to_uv,
+    uvUCS_to_xy,
+    xy_to_uvUCS,
     uv_to_colortemp,
 )
 
@@ -28,8 +28,8 @@ def test_color_temp_tint_roundtrip(temp: int, tint: int):
     """
     # Forward chain
     u, v = colortemp_to_uv(temp, tint)
-    x, y = uv_to_xy(u, v)
-    u2, v2 = xy_to_uv(x, y)
+    x, y = uvUCS_to_xy(u, v)
+    u2, v2 = xy_to_uvUCS(x, y)
     T2, tint2 = uv_to_colortemp(u2, v2)
 
     # Tolerances (conservative to avoid false failures from floating point/segmentation boundaries)
