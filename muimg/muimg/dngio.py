@@ -978,7 +978,8 @@ def write_dng_from_page(
     page: "TiffPage",
     destination_file: Union[Path, io.BytesIO],
     camera_profile: Optional["MetadataTags"] = None,
-    color_data: Optional[np.ndarray] = None
+    color_data: Optional[np.ndarray] = None,
+    skip_tags: Optional[set[str]] = None
 ) -> None:
     """Write DNG file by copying compressed raw data from an existing TiffPage.
     
@@ -991,6 +992,7 @@ def write_dng_from_page(
         destination_file: Path or io.BytesIO object where to save the DNG file
         camera_profile: Optional camera profile metadata to include
         color_data: Optional thumbnail/preview image data
+        skip_tags: Optional set of tag names to skip when copying (e.g., for debugging)
     """
     # the tag names are from tifffile.py TiffTagRegistry
     # the tag types are from tifffile.py DATA_DTYPES
@@ -1031,11 +1033,16 @@ def write_dng_from_page(
                 'SubIFDs'              # 330 - handled internally by tifffile
             }
             
+            # Combine default skip tags with user-provided skip tags
+            all_skip_tags = dont_copy_tags.copy()
+            if skip_tags:
+                all_skip_tags.update(skip_tags)
+            
             # Copy page-specific tags (like the test pattern)
             if hasattr(page, 'tags'):
                 for tag in page.tags.values():
-                    # Skip tags that TiffWriter handles automatically
-                    if tag.name not in dont_copy_tags:
+                    # Skip tags that TiffWriter handles automatically or user wants to skip
+                    if tag.name not in all_skip_tags:
                         # Use the same pattern as the original test: tag.code, tag.dtype, tag.count, tag.value
                         dng_cfa_tags.add_tag((tag.name, tag.dtype, tag.count, tag.value))
 
@@ -1118,8 +1125,14 @@ class DngFile(TiffFile):
         return np.array(float_values).reshape((3, 3))
 
     @staticmethod
-    def _translate_dng_tag_value(tag_name: str, tag_value) -> Any:
-    
+    def _translate_dng_tag_value(tag_name: str, tag_value, tag_dtype: int = None) -> Any:
+        """Translate raw TIFF tag values to usable Python types.
+        
+        Args:
+            tag_name: Name of the tag
+            tag_value: Raw tag value from tifffile
+            tag_dtype: TIFF data type code (5=RATIONAL, 10=SRATIONAL)
+        """
         _bayer_pattern_bytes_to_str_map = {
             bytes(v): k for k, v in BAYER_PATTERN_MAP.items()
         }
@@ -1129,9 +1142,8 @@ class DngFile(TiffFile):
             "ForwardMatrix1", "ForwardMatrix2", "ForwardMatrix3",
             "CameraCalibration1", "CameraCalibration2", "CameraCalibration3",
         }
-        RATIONAL_ARRAY_TAG_NAMES = {"AnalogBalance", "AsShotWhiteXY", "AsShotNeutral", "DefaultCropOrigin", "DefaultCropSize"}
 
-        # TODO: complete list of photometric interpretation values
+        # Handle special cases first
         if tag_name == "CFAPattern":
             cfa_bytes = tag_value
             if isinstance(cfa_bytes, bytes):
@@ -1149,8 +1161,8 @@ class DngFile(TiffFile):
                     f"Error converting DNG tag '{tag_name}' to matrix. Original error: {e}. "
                     f"Value type: {type(tag_value)}, Value: {str(tag_value)[:100]}"
                 ) from e
-        elif tag_name in RATIONAL_ARRAY_TAG_NAMES:
-            # Convert rational pairs to float array
+        # Auto-convert RATIONAL (5) and SRATIONAL (10) types to float arrays
+        elif tag_dtype in (5, 10):
             if isinstance(tag_value, tuple) and len(tag_value) % 2 == 0:
                 tag_value = np.array([
                     tag_value[i] / tag_value[i+1] if tag_value[i+1] != 0 else 0.0
@@ -1202,6 +1214,7 @@ class DngFile(TiffFile):
             "DNGVersion",
             "DNGBackwardVersion",
             "Orientation",
+            # Color matrices
             "ColorMatrix1",
             "ColorMatrix2",
             "ColorMatrix3",
@@ -1211,23 +1224,48 @@ class DngFile(TiffFile):
             "AnalogBalance",
             "AsShotNeutral",
             "AsShotWhiteXY",
+            # Forward matrices
+            "ForwardMatrix1",
+            "ForwardMatrix2",
+            "ForwardMatrix3",
+            # Camera calibration
+            "CameraCalibration1",
+            "CameraCalibration2",
+            "CameraCalibration3",
+            "CameraCalibrationSignature",
+            "ProfileCalibrationSignature",
+            # Exposure and rendering
             "BaselineExposure",
-            # Tags we need to detect to flag as unsupported
-            "ProfileGainTableMap",
-            "ProfileToneCurve",
+            "BaselineExposureOffset",
+            "ShadowScale",
+            "LinearResponseLimit",
+            # Profile HueSatMap
             "ProfileHueSatMapDims",
             "ProfileHueSatMapData1",
             "ProfileHueSatMapData2",
             "ProfileHueSatMapData3",
+            "ProfileHueSatMapEncoding",
+            # Profile LookTable
             "ProfileLookTableDims",
             "ProfileLookTableData",
-            "ForwardMatrix1",
-            "ForwardMatrix2",
-            "CameraCalibration1",
-            "CameraCalibration2",
+            "ProfileLookTableEncoding",
+            # Profile tone and gain
+            "ProfileToneCurve",
+            "ProfileGainTableMap",
+            "ProfileGainTableMap2",
+            "DefaultBlackRender",
+            # Opcode lists
             "OpcodeList1",
             "OpcodeList2",
             "OpcodeList3",
+            # Reduction matrices
+            "ReductionMatrix1",
+            "ReductionMatrix2",
+            "ReductionMatrix3",
+            # Linearization
+            "LinearizationTable",
+            # RGB Tables
+            "RGBTables",
         ]
 
         cfa_subifd_tags = [
@@ -1264,7 +1302,7 @@ class DngFile(TiffFile):
                 if tag_id in first_page.tags:
                     page_tag = first_page.tags[tag_id]
                     global_tags_data[tag_name] = self._translate_dng_tag_value(
-                        tag_name, page_tag.value)
+                        tag_name, page_tag.value, page_tag.dtype)
 
         # 2. Iterate through all pages
         for current_page_id, page in enumerate(self._iter_all_pages_recursive(self.pages)):
@@ -1282,7 +1320,7 @@ class DngFile(TiffFile):
                         if tag_id in page.tags:
                             page_tag = page.tags[tag_id]
                             current_page_tags[tag_name] = self._translate_dng_tag_value(
-                                tag_name, page_tag.value
+                                tag_name, page_tag.value, page_tag.dtype
                             )
 
                 info_list.append((current_page_id, page.shape, current_page_tags))

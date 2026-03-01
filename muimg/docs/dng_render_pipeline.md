@@ -265,11 +265,11 @@ Current implementation in `muimg.color.process_raw()`:
 |-------|--------------|--------------|-------|
 | 1. Black/White Level | `DoBaseline1DTable` | ✓ Implemented | |
 | 2. Demosaic | — | ✓ Implemented | CFA + LinearRaw paths |
-| 3. Camera → ProPhoto | `DoBaselineABCtoRGB` | ✓ Partial | Missing `CameraCalibration1/2`, `ColorMatrix3` |
-| 4. HueSatMap | `DoBaselineHueSatMap` | ✗ Not implemented | |
+| 3. Camera → ProPhoto | `DoBaselineABCtoRGB` | ✓ Implemented | Dual-illuminant, ForwardMatrix, CameraCalibration |
+| 4. HueSatMap | `DoBaselineHueSatMap` | ✓ Implemented | ProfileHueSatMap with dual-illuminant interpolation |
 | 5. ProfileGainTableMap | `DoBaselineProfileGainTableMap` | ✗ Not implemented | |
-| 6. Exposure Ramp | `DoBaseline1DFunction` | ✓ Hardcoded | `exposure=0`, `shadows=5`; ignores `BaselineExposure` tag |
-| 7. LookTable | `DoBaselineHueSatMap` | ✗ Not implemented | |
+| 6. Exposure Ramp | `DoBaseline1DFunction` | ✓ Implemented | Uses `BaselineExposure`, `ShadowScale` |
+| 7. LookTable | `DoBaselineHueSatMap` | ✓ Implemented | ProfileLookTable |
 | 8. Tone Curve | `DoBaselineRGBTone` | ✓ Implemented | ACR3 default only; no `ProfileToneCurve` |
 | 9. RGBTables | `ProcessRGBTables` | ✗ Not implemented | |
 | 10. Color Space | `DoBaselineRGBtoRGB` | ✓ Implemented | ProPhoto → sRGB only |
@@ -281,10 +281,13 @@ Current implementation in `muimg.color.process_raw()`:
 |-----|--------------|
 | `ColorMatrix1` | ✓ Implemented |
 | `ColorMatrix2` | ✓ Implemented (dual-illuminant interpolation) |
-| `ColorMatrix3` | ✗ Not implemented |
+| `ColorMatrix3` | ✗ Not implemented (triple illuminant) |
 | `CalibrationIlluminant1/2` | ✓ Implemented |
 | `CalibrationIlluminant3` | ✗ Not implemented |
 | `AnalogBalance` | ✓ Implemented |
-| `CameraCalibration1/2` | ✗ Not implemented |
+| `CameraCalibration1/2` | ✓ Implemented |
+| `ForwardMatrix1/2` | ✓ Implemented (with NormalizeForwardMatrix) |
 | `AsShotNeutral` | ✓ Implemented |
 | `AsShotWhiteXY` | ✓ Implemented |
+| `BaselineExposure` | ✓ Implemented |
+| `ShadowScale` | ✓ Implemented |

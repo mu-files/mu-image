@@ -392,61 +392,135 @@ def apply_analog_balance(color_matrix: np.ndarray, analog_balance: np.ndarray) -
     return ab_diag @ color_matrix
 
 
+def interpolate_hue_sat_map(
+    map_data1: np.ndarray,
+    map_data2: np.ndarray | None,
+    temp1: float,
+    temp2: float | None,
+    scene_temp: float
+) -> np.ndarray:
+    """Interpolate between two HueSatMap data arrays based on scene temperature.
+    
+    SDK ref: dng_camera_profile.cpp HueSatMapForWhite() lines 1456-1520
+    Uses same inverse temperature weighting as color matrices.
+    
+    Args:
+        map_data1: HueSatMapData for illuminant 1 (flat array of hue_shift, sat_scale, val_scale triplets)
+        map_data2: HueSatMapData for illuminant 2, or None for single illuminant
+        temp1: Temperature of illuminant 1 in Kelvin
+        temp2: Temperature of illuminant 2 in Kelvin, or None
+        scene_temp: Scene white point temperature in Kelvin
+        
+    Returns:
+        Interpolated HueSatMap data array
+    """
+    if map_data2 is None or temp2 is None:
+        return map_data1
+    
+    # Ensure temp1 < temp2
+    if temp1 > temp2:
+        temp1, temp2 = temp2, temp1
+        map_data1, map_data2 = map_data2, map_data1
+    
+    # Calculate interpolation weight using inverse temperature (mired space)
+    if scene_temp <= temp1:
+        g = 1.0
+    elif scene_temp >= temp2:
+        g = 0.0
+    else:
+        inv_t = 1.0 / scene_temp
+        inv_t1 = 1.0 / temp1
+        inv_t2 = 1.0 / temp2
+        g = (inv_t - inv_t2) / (inv_t1 - inv_t2)
+    
+    # Interpolate map data
+    if g >= 1.0:
+        return map_data1
+    elif g <= 0.0:
+        return map_data2
+    else:
+        return g * map_data1 + (1.0 - g) * map_data2
+
+
 # =============================================================================
 # DNG Tag Validation for process_raw()
 # =============================================================================
 
 # DNG tags that affect rendering but are NOT implemented in process_raw()
-# Based on Adobe DNG SDK 1.7.1 dng_tag_codes.h
+# Based on Adobe DNG SDK 1.7.1 - COMPREHENSIVE LIST
 # These tags would cause our output to differ from the SDK reference
 # Tag names match tifffile's tag name mapping
 UNSUPPORTED_RENDERING_TAGS = {
-    # Triple illuminant support (we support dual but not triple)
+    # =========================================================================
+    # Triple illuminant support (DNG 1.6+) - we only support dual illuminant
+    # =========================================================================
     "ColorMatrix3",
     "CalibrationIlluminant3",
-    
-    # Camera calibration matrices - CameraCalibration3 requires triple illuminant
     "CameraCalibration3",
-    
-    # Forward matrices - ForwardMatrix3 requires triple illuminant
     "ForwardMatrix3",
+    "ProfileHueSatMapData3",
+    "IlluminantData3",
     
-    # Reduction matrices
+    # =========================================================================
+    # Reduction matrices (for >3 color channels)
+    # =========================================================================
     "ReductionMatrix1",
     "ReductionMatrix2",
     "ReductionMatrix3",
     
-    # Profile-based color adjustments
-    "ProfileHueSatMapDims",
-    "ProfileHueSatMapData1",
-    "ProfileHueSatMapData2",
-    "ProfileHueSatMapData3",
-    "ProfileToneCurve",
-    "ProfileLookTableDims",
-    "ProfileLookTableData",
-    "ProfileGainTableMap",
+    # =========================================================================
+    # Profile tone curves and gain maps
+    # =========================================================================
+    "ProfileToneCurve",           # Custom profile tone curves
+    "ProfileGainTableMap",        # DNG 1.6+ gain table maps
     "ProfileGainTableMap2",
+    "DefaultBlackRender",         # Affects black subtraction before look table
     
-    # Opcode lists (lens corrections, gain maps, etc.)
-    "OpcodeList1",
-    "OpcodeList2",
-    "OpcodeList3",
+    # =========================================================================
+    # Opcode lists (lens corrections, gain maps, warp, etc.)
+    # =========================================================================
+    "OpcodeList1",                # Pre-demosaic opcodes
+    "OpcodeList2",                # Post-demosaic, pre-color opcodes  
+    "OpcodeList3",                # Post-color opcodes (e.g. WarpRectilinear)
     
-    # Linearization (we assume linear response)
-    "LinearizationTable",
+    # =========================================================================
+    # Linearization
+    # =========================================================================
+    "LinearizationTable",         # Sensor linearization LUT
+    "LinearResponseLimit",        # Clips linear values above this
     
-    # Per-row/column black level variations
-    "BlackLevelDeltaH",
-    "BlackLevelDeltaV",
+    # =========================================================================
+    # (BaselineExposure and BaselineExposureOffset are now implemented)
+    # =========================================================================
     
-    # Linear response limit
-    "LinearResponseLimit",
-    
-    # Baseline exposure offset
-    "BaselineExposureOffset",
-    
+    # =========================================================================
     # RGB Tables (DNG 1.6+)
+    # =========================================================================
     "RGBTables",
+    
+    # =========================================================================
+    # Semantic masks and depth maps (DNG 1.6+)
+    # =========================================================================
+    "SemanticName",
+    "SemanticInstanceID",
+    "MaskSubArea",
+    "DepthFormat",
+    "DepthNear",
+    "DepthFar",
+    "DepthUnits",
+    "DepthMeasureType",
+    
+    # =========================================================================
+    # HDR / overrange support
+    # =========================================================================
+    "ProfileDynamicRange",        # HDR profile indicator
+    
+    # =========================================================================
+    # Image enhancement flags that may affect rendering interpretation
+    # =========================================================================
+    "NewRawImageDigest",          # May indicate modified raw data
+    "RawImageDigest",
+    "EnhanceParams",              # Enhanced image parameters
 }
 
 class UnsupportedDNGTagError(Exception):
@@ -1150,6 +1224,38 @@ D50_xy = (0.34567, 0.35850)  # PCS reference white
 D55_xy = (0.33242, 0.34743)
 D65_xy = (0.31271, 0.32902)  # sRGB reference white
 
+def _normalize_forward_matrix(m: np.ndarray) -> np.ndarray:
+    """Normalize ForwardMatrix so camera [1,1,1] maps to D50 white.
+    
+    SDK ref: dng_camera_profile.cpp NormalizeForwardMatrix() lines 335-353
+    
+    Args:
+        m: 3x3 ForwardMatrix
+        
+    Returns:
+        Normalized 3x3 ForwardMatrix
+    """
+    if m is None:
+        return None
+    m = np.asarray(m, dtype=np.float64)
+    if m.size == 0:
+        return m
+    
+    # D50 white point in XYZ (Y=1 normalized)
+    # SDK ref: dng_color_space.cpp PCStoXYZ()
+    D50_XYZ = np.array([0.9642, 1.0, 0.8249], dtype=np.float64)
+    
+    # camera_one = [1, 1, 1]
+    camera_one = np.ones(m.shape[1], dtype=np.float64)
+    
+    # xyz = m * camera_one (what XYZ we get when all camera channels are 1)
+    xyz = m @ camera_one
+    
+    # Normalize: m = diag(D50_XYZ) * diag(1/xyz) * m
+    # This ensures camera [1,1,1] -> D50 white
+    xyz_inv = np.where(xyz != 0, 1.0 / xyz, 0.0)
+    return np.diag(D50_XYZ) @ np.diag(xyz_inv) @ m
+
 # ProPhoto RGB matrices (from dng_color_space.cpp)
 # ProPhoto uses D50 white point
 PROPHOTO_RGB_TO_XYZ_D50 = np.array([
@@ -1543,9 +1649,10 @@ def process_raw(
             color_matrix2 = np.asarray(color_matrix2, dtype=np.float64)
         
         # Get ForwardMatrix1/2 (camera to PCS, 3x3)
-        # SDK ref: dng_color_spec.cpp lines 126-128, 586-596
-        forward_matrix1 = tags.get("ForwardMatrix1")
-        forward_matrix2 = tags.get("ForwardMatrix2")
+        # SDK ref: dng_color_spec.cpp lines 126-128, 177, 213, 586-596
+        # NormalizeForwardMatrix is called BEFORE AnalogBalance/CameraCalibration
+        forward_matrix1 = _normalize_forward_matrix(tags.get("ForwardMatrix1"))
+        forward_matrix2 = _normalize_forward_matrix(tags.get("ForwardMatrix2"))
         
         # Get CameraCalibration1/2 matrices (3x3, default to identity)
         # SDK ref: dng_color_spec.cpp lines 134-166
@@ -1647,6 +1754,40 @@ def process_raw(
         prophoto_to_srgb = XYZ_D65_TO_SRGB @ _dng_color.bradford_adapt(D50_xy[0], D50_xy[1], D65_xy[0], D65_xy[1]) @ PROPHOTO_RGB_TO_XYZ_D50
         
         # =====================================================================
+        # Setup: ProfileHueSatMap and ProfileLookTable
+        # SDK ref: dng_render.cpp lines 917-955 (HueSatMap), 926-931 (LookTable)
+        # =====================================================================
+        hue_sat_map = None
+        hue_sat_dims = tags.get("ProfileHueSatMapDims")
+        hue_sat_data1 = tags.get("ProfileHueSatMapData1")
+        
+        if hue_sat_dims is not None and hue_sat_data1 is not None:
+            hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
+            hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
+            hue_sat_data2 = tags.get("ProfileHueSatMapData2")
+            
+            # Interpolate between dual illuminant HueSatMaps if available
+            if hue_sat_data2 is not None and temp1 is not None and temp2 is not None and temp1 != temp2:
+                hue_sat_data2 = np.asarray(hue_sat_data2, dtype=np.float32)
+                # Use same scene_temp calculated for matrix interpolation
+                white_xy_est = white_xy_override if white_xy_override else _neutral_to_xy(camera_neutral, color_matrix1)
+                interp_scene_temp = _dng_color.xy_to_temp(white_xy_est[0], white_xy_est[1])[0]
+                hue_sat_map = interpolate_hue_sat_map(hue_sat_data1, hue_sat_data2, temp1, temp2, interp_scene_temp)
+            else:
+                hue_sat_map = hue_sat_data1
+            
+            logger.debug(f"ProfileHueSatMap: {hue_divs}x{sat_divs}x{val_divs}")
+        
+        look_table = None
+        look_table_dims = tags.get("ProfileLookTableDims")
+        look_table_data = tags.get("ProfileLookTableData")
+        
+        if look_table_dims is not None and look_table_data is not None:
+            look_hue_divs, look_sat_divs, look_val_divs = int(look_table_dims[0]), int(look_table_dims[1]), int(look_table_dims[2])
+            look_table = np.asarray(look_table_data, dtype=np.float32)
+            logger.debug(f"ProfileLookTable: {look_hue_divs}x{look_sat_divs}x{look_val_divs}")
+        
+        # =====================================================================
         # Step 1: DoBaselineABCtoRGB
         # SDK ref: dng_reference.cpp lines 1389-1441
         # Clip to camera_white, apply camera_to_prophoto matrix, pin to [0,1]
@@ -1657,16 +1798,74 @@ def process_raw(
         timings['matrix_camera_to_prophoto'] = time.perf_counter() - t0
         
         # =====================================================================
+        # Step 1.5: DoBaselineHueSatMap (ProfileHueSatMap)
+        # SDK ref: dng_render.cpp lines 1822-1837
+        # Applied AFTER camera->ProPhoto, BEFORE exposure ramp
+        # =====================================================================
+        if hue_sat_map is not None:
+            t0 = time.perf_counter()
+            rgb_prophoto = _dng_color.apply_hue_sat_map(
+                rgb_prophoto.astype(np.float32),
+                hue_sat_map,
+                hue_divs, sat_divs, val_divs
+            )
+            timings['hue_sat_map'] = time.perf_counter() - t0
+        
+        # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
         # SDK ref: dng_render.cpp lines 975-999, 1907-1928
-        # Default: exposure=0, shadows=5 -> white=1.0, black=0.005
+        # Maps [black, white] to [0, 1]
         # =====================================================================
         t0 = time.perf_counter()
-        exposure_white = 1.0
-        exposure_black = 0.005  # shadows=5 * 0.001
+        
+        # SDK ref: dng_render.cpp lines 977-984
+        # TotalBaselineExposure = BaselineExposure + BaselineExposureOffset
+        # exposure = params.Exposure() + TotalBaselineExposure
+        # white = 1.0 / pow(2.0, max(0.0, exposure))
+        baseline_exposure = tags.get("BaselineExposure")
+        if baseline_exposure is not None:
+            baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
+        else:
+            baseline_exposure = 0.0
+        
+        baseline_exposure_offset = tags.get("BaselineExposureOffset")
+        if baseline_exposure_offset is not None:
+            baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
+        else:
+            baseline_exposure_offset = 0.0
+        
+        total_baseline_exposure = baseline_exposure + baseline_exposure_offset
+        exposure = total_baseline_exposure  # No user exposure param for now
+        exposure_white = 1.0 / (2.0 ** max(0.0, exposure))
+        
+        # SDK ref: dng_render.cpp lines 986-991
+        # black = shadows * ShadowScale * Stage3Gain * 0.001
+        shadow_scale = tags.get("ShadowScale")
+        if shadow_scale is not None:
+            shadow_scale = float(np.atleast_1d(shadow_scale)[0])
+        else:
+            shadow_scale = 1.0
+        shadows = 5.0  # SDK default
+        exposure_black = shadows * shadow_scale * 0.001
+        exposure_black = min(exposure_black, 0.99 * exposure_white)
+        
         exposure_slope = 1.0 / (exposure_white - exposure_black)
         rgb_exposed = np.clip((rgb_prophoto - exposure_black) * exposure_slope, 0.0, 1.0)
         timings['exposure_ramp'] = time.perf_counter() - t0
+        
+        # =====================================================================
+        # Step 2.5: DoBaselineHueSatMap (ProfileLookTable)
+        # SDK ref: dng_render.cpp lines 1930-1947
+        # Applied AFTER exposure ramp, BEFORE tone curve
+        # =====================================================================
+        if look_table is not None:
+            t0 = time.perf_counter()
+            rgb_exposed = _dng_color.apply_hue_sat_map(
+                rgb_exposed.astype(np.float32),
+                look_table,
+                look_hue_divs, look_sat_divs, look_val_divs
+            )
+            timings['look_table'] = time.perf_counter() - t0
         
         # =====================================================================
         # Step 3: DoBaselineRGBTone (ALWAYS applied)

@@ -89,16 +89,16 @@ def reference_images(output_dir):
         output_base = output_dir / f"{dng_path.stem}_dngvalidate"
         output_tiff = output_dir / f"{dng_path.stem}_dngvalidate.tif"
         
-        if not output_tiff.exists():
-            try:
-                subprocess.run(
-                    [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-            except (subprocess.TimeoutExpired, Exception):
-                pass
+        # Always regenerate reference
+        try:
+            subprocess.run(
+                [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+        except (subprocess.TimeoutExpired, Exception):
+            pass
         
         if output_tiff.exists():
             refs[dng_path.name] = load_tiff(output_tiff)
