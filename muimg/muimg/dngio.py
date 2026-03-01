@@ -1124,7 +1124,11 @@ class DngFile(TiffFile):
             bytes(v): k for k, v in BAYER_PATTERN_MAP.items()
         }
 
-        MATRIX_TAG_NAMES = {"ColorMatrix1", "ColorMatrix2", "ColorMatrix3"}
+        MATRIX_TAG_NAMES = {
+            "ColorMatrix1", "ColorMatrix2", "ColorMatrix3",
+            "ForwardMatrix1", "ForwardMatrix2", "ForwardMatrix3",
+            "CameraCalibration1", "CameraCalibration2", "CameraCalibration3",
+        }
         RATIONAL_ARRAY_TAG_NAMES = {"AnalogBalance", "AsShotWhiteXY", "AsShotNeutral", "DefaultCropOrigin", "DefaultCropSize"}
 
         # TODO: complete list of photometric interpretation values
@@ -1211,6 +1215,12 @@ class DngFile(TiffFile):
             # Tags we need to detect to flag as unsupported
             "ProfileGainTableMap",
             "ProfileToneCurve",
+            "ProfileHueSatMapDims",
+            "ProfileHueSatMapData1",
+            "ProfileHueSatMapData2",
+            "ProfileHueSatMapData3",
+            "ProfileLookTableDims",
+            "ProfileLookTableData",
             "ForwardMatrix1",
             "ForwardMatrix2",
             "CameraCalibration1",

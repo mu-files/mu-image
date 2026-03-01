@@ -405,14 +405,10 @@ UNSUPPORTED_RENDERING_TAGS = {
     "ColorMatrix3",
     "CalibrationIlluminant3",
     
-    # Camera calibration matrices (not implemented)
-    "CameraCalibration1",
-    "CameraCalibration2",
+    # Camera calibration matrices - CameraCalibration3 requires triple illuminant
     "CameraCalibration3",
     
-    # Forward matrices (alternative to ColorMatrix, not implemented)
-    "ForwardMatrix1",
-    "ForwardMatrix2",
+    # Forward matrices - ForwardMatrix3 requires triple illuminant
     "ForwardMatrix3",
     
     # Reduction matrices
@@ -1533,7 +1529,7 @@ def process_raw(
         # SDK ref: dng_render.cpp lines 869-1070
         # =====================================================================
         
-        # Get ColorMatrix1 (XYZ to Camera)
+        # Get ColorMatrix1 (XYZ to Camera, 3x3)
         color_matrix1 = tags.get("ColorMatrix1")
         if color_matrix1 is None:
             logger.warning("No ColorMatrix1 found, using identity")
@@ -1546,6 +1542,20 @@ def process_raw(
         if color_matrix2 is not None:
             color_matrix2 = np.asarray(color_matrix2, dtype=np.float64)
         
+        # Get ForwardMatrix1/2 (camera to PCS, 3x3)
+        # SDK ref: dng_color_spec.cpp lines 126-128, 586-596
+        forward_matrix1 = tags.get("ForwardMatrix1")
+        forward_matrix2 = tags.get("ForwardMatrix2")
+        
+        # Get CameraCalibration1/2 matrices (3x3, default to identity)
+        # SDK ref: dng_color_spec.cpp lines 134-166
+        camera_calib1 = tags.get("CameraCalibration1")
+        camera_calib2 = tags.get("CameraCalibration2")
+        if camera_calib1 is None:
+            camera_calib1 = np.eye(3, dtype=np.float64)
+        if camera_calib2 is None:
+            camera_calib2 = np.eye(3, dtype=np.float64)
+        
         # Get calibration illuminant temperatures
         illum1 = tags.get("CalibrationIlluminant1")
         illum2 = tags.get("CalibrationIlluminant2")
@@ -1554,66 +1564,79 @@ def process_raw(
         
         # Get AsShotNeutral -> convert to white point XY
         # SDK ref: dng_render.cpp lines 889-908
-        # dngio converts rational pairs to float array
         as_shot = tags.get("AsShotNeutral")
         as_shot_xy = tags.get("AsShotWhiteXY")
         camera_neutral = None
         white_xy_override = None
         
         if as_shot is not None and hasattr(as_shot, '__len__') and len(as_shot) >= 3:
-            # Already converted to float array by dngio
             camera_neutral = np.array(as_shot[:3], dtype=np.float64)
         elif as_shot_xy is not None and len(as_shot_xy) >= 2:
-            # Use AsShotWhiteXY directly (SDK ref: line 899)
-            # dngio converts rational pairs to float array
             white_xy_override = (float(as_shot_xy[0]), float(as_shot_xy[1]))
         else:
-            # SDK ref: line 906 - default to D55 (5500K daylight)
-            white_xy_override = D55_xy
+            white_xy_override = D55_xy  # SDK default
         
-        # Apply analog balance to BOTH color matrices BEFORE interpolation
-        # SDK ref: dng_color_spec.cpp lines 179, 215
-        # fColorMatrix1 = fAnalogBalance * fCameraCalibration1 * fColorMatrix1
-        # fColorMatrix2 = fAnalogBalance * fCameraCalibration2 * fColorMatrix2
+        # Get AnalogBalance
+        ab_diag = np.eye(3, dtype=np.float64)
         analog_balance = tags.get("AnalogBalance")
         if analog_balance is not None:
             analog_balance = np.asarray(analog_balance, dtype=np.float64)
             if analog_balance.size >= 3:
-                ab_diag = np.diag(analog_balance)
-                color_matrix1 = ab_diag @ color_matrix1
-                if color_matrix2 is not None:
-                    color_matrix2 = ab_diag @ color_matrix2
+                ab_diag = np.diag(analog_balance[:3])
+        
+        # Apply AnalogBalance and CameraCalibration to ColorMatrix BEFORE interpolation
+        # SDK ref: dng_color_spec.cpp lines 179, 215
+        color_matrix1 = ab_diag @ camera_calib1 @ color_matrix1
+        if color_matrix2 is not None:
+            color_matrix2 = ab_diag @ camera_calib2 @ color_matrix2
 
-        # Determine final color matrix with dual-illuminant interpolation
-        # SDK ref: dng_color_spec.cpp FindXYZtoCamera_SingleOrDual()
+        # Determine interpolation weight and interpolate matrices
+        # SDK ref: dng_color_spec.cpp FindXYZtoCamera_SingleOrDual() lines 301-460
         if color_matrix2 is not None and temp1 is not None and temp2 is not None and temp1 != temp2:
-            # Dual-illuminant: need to interpolate based on scene temperature
-            # Get white point xy for temperature estimation
-            if white_xy_override is not None:
-                white_xy_est = white_xy_override
-            else:
-                white_xy_est = _neutral_to_xy(camera_neutral, color_matrix1)
+            # Dual-illuminant: interpolate based on scene temperature
+            white_xy_est = white_xy_override if white_xy_override else _neutral_to_xy(camera_neutral, color_matrix1)
             scene_temp = _dng_color.xy_to_temp(white_xy_est[0], white_xy_est[1])[0]
             
-            # Interpolate color matrices
-            color_matrix = interpolate_color_matrix(
-                color_matrix1, color_matrix2, temp1, temp2, scene_temp
-            )
+            # Calculate interpolation weight g
+            t1, t2 = (temp1, temp2) if temp1 < temp2 else (temp2, temp1)
+            if scene_temp <= t1:
+                g = 1.0
+            elif scene_temp >= t2:
+                g = 0.0
+            else:
+                inv_t = 1.0 / scene_temp
+                g = (inv_t - 1.0/t2) / (1.0/t1 - 1.0/t2)
+            
+            # Interpolate matrices (g1 weights matrix1, g2 weights matrix2)
+            g1, g2 = (1.0 - g, g) if temp1 > temp2 else (g, 1.0 - g)
+            color_matrix = g1 * color_matrix1 + g2 * color_matrix2
+            camera_calib = g1 * camera_calib1 + g2 * camera_calib2
+            if forward_matrix1 is not None and forward_matrix2 is not None:
+                forward_matrix = g1 * forward_matrix1 + g2 * forward_matrix2
+            else:
+                forward_matrix = forward_matrix1 if forward_matrix1 is not None else forward_matrix2
         else:
             # Single illuminant
             color_matrix = color_matrix1
+            camera_calib = camera_calib1
+            forward_matrix = forward_matrix1 if forward_matrix1 is not None else forward_matrix2
         
         # SDK ref: dng_color_spec.cpp NeutralToXY() lines 659-706
-        if white_xy_override is not None:
-            white_xy = white_xy_override
-        else:
-            white_xy = _neutral_to_xy(camera_neutral, color_matrix)
+        white_xy = white_xy_override if white_xy_override else _neutral_to_xy(camera_neutral, color_matrix)
         
         # SDK ref: dng_color_spec.cpp SetWhiteXY() lines 546-568
         camera_white = _compute_camera_white(color_matrix, white_xy)
         
         # SDK ref: dng_color_spec.cpp SetWhiteXY() lines 570-609
-        camera_to_pcs = _compute_camera_to_pcs(color_matrix, white_xy)
+        # ForwardMatrix takes precedence if present
+        if forward_matrix is not None:
+            # fCameraToPCS = forwardMatrix * Invert(refCameraWhite.AsDiagonal()) * individualToReference
+            individual_to_ref = np.linalg.inv(ab_diag @ camera_calib)
+            ref_camera_white = individual_to_ref @ camera_white
+            ref_camera_white = np.clip(ref_camera_white, 0.001, None)
+            camera_to_pcs = forward_matrix @ np.linalg.inv(np.diag(ref_camera_white)) @ individual_to_ref
+        else:
+            camera_to_pcs = _compute_camera_to_pcs(color_matrix, white_xy)
         
         # SDK ref: dng_render.cpp lines 912-913
         # fCameraToRGB = ProPhoto.MatrixFromPCS() * CameraToPCS()
