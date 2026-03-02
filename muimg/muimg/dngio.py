@@ -813,7 +813,7 @@ def write_dng(
     dng_tags = _create_dng_tags(camera_profile, has_jxl=jxl_distance is not None)
 
     try:
-        with TiffWriter(destination_file, bigtiff=False) as tif:
+        with TiffWriter(destination_file, bigtiff=False, byteorder='>') as tif:
             if color_data is not None:
                 _write_thumbnail_ifd(tif, color_data, dng_tags)
     
@@ -922,7 +922,7 @@ def write_dng_linearraw(
         processed_raw_data = raw_data
 
     try:
-        with TiffWriter(destination_file, bigtiff=False) as tif:
+        with TiffWriter(destination_file, bigtiff=False, byteorder='>') as tif:
             # Prepare base DNG tags once (same as write_dng)
             dng_tags = _create_dng_tags(camera_profile=camera_profile, has_jxl=jxl_distance is not None)
             # Optional thumbnail SubIFD
@@ -1005,7 +1005,7 @@ def write_dng_from_page(
         logger.debug("Writing DNG from TiffPage to in-memory buffer")
 
     try:
-        with TiffWriter(destination_file, bigtiff=False) as tif:
+        with TiffWriter(destination_file, bigtiff=False, byteorder=page.parent.byteorder) as tif:
 
             if color_data is not None:
                 _write_thumbnail_ifd(tif, color_data, dng_tags)
@@ -1076,17 +1076,34 @@ def write_dng_from_page(
                 "extratags": dng_cfa_tags.get_tags()
             }
 
-            # Calculate raw data size for rowsperstrip
-            raw_datasize = page.imagelength * page.imagewidth * (page.bitspersample // 8)
+            # Determine shape based on samples per pixel (1 for CFA, 3 for LINEAR_RAW)
+            samples_per_pixel = page.samplesperpixel if hasattr(page, 'samplesperpixel') else 1
+            if samples_per_pixel > 1:
+                write_shape = (page.imagelength, page.imagewidth, samples_per_pixel)
+            else:
+                write_shape = (page.imagelength, page.imagewidth)
             
-            # Write the compressed raw data
-            tif.write(
-                data=compressed_data_iterator(),
-                shape=(page.imagelength, page.imagewidth),
-                dtype=page.dtype,
-                **main_image_ifd_args,
-                rowsperstrip=raw_datasize
-            )
+            # Handle tiled vs stripped images
+            if page.is_tiled:
+                # Tiled image - use tile parameter
+                tile_shape = (page.tilelength, page.tilewidth)
+                tif.write(
+                    data=compressed_data_iterator(),
+                    shape=write_shape,
+                    dtype=page.dtype,
+                    tile=tile_shape,
+                    **main_image_ifd_args,
+                )
+            else:
+                # Stripped image - use rowsperstrip
+                raw_datasize = page.imagelength * page.imagewidth * samples_per_pixel * (page.bitspersample // 8)
+                tif.write(
+                    data=compressed_data_iterator(),
+                    shape=write_shape,
+                    dtype=page.dtype,
+                    rowsperstrip=raw_datasize,
+                    **main_image_ifd_args,
+                )
             
             logger.debug(f"Successfully copied compressed raw data ({sum(page.databytecounts)} bytes)")
         

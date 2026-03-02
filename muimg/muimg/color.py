@@ -374,24 +374,6 @@ def interpolate_color_matrix(
         return g * color_matrix1 + (1.0 - g) * color_matrix2
 
 
-def apply_analog_balance(color_matrix: np.ndarray, analog_balance: np.ndarray) -> np.ndarray:
-    """Apply AnalogBalance to color matrix.
-    
-    SDK ref: dng_color_spec.cpp constructor, line 179
-    AnalogBalance is a diagonal matrix that scales each channel.
-    
-    Args:
-        color_matrix: The color matrix (3x3 or 3xN)
-        analog_balance: Per-channel scale factors (length 3)
-        
-    Returns:
-        Scaled color matrix
-    """
-    # Create diagonal matrix from analog balance values
-    ab_diag = np.diag(analog_balance)
-    return ab_diag @ color_matrix
-
-
 def interpolate_hue_sat_map(
     map_data1: np.ndarray,
     map_data2: np.ndarray | None,
@@ -471,10 +453,7 @@ UNSUPPORTED_RENDERING_TAGS = {
     # =========================================================================
     # Profile tone curves and gain maps
     # =========================================================================
-    "ProfileToneCurve",           # Custom profile tone curves
-    "ProfileGainTableMap",        # DNG 1.6+ gain table maps
-    "ProfileGainTableMap2",
-    "DefaultBlackRender",         # Affects black subtraction before look table
+    "ProfileGainTableMap2",       # Version 2 with additional features
     
     # =========================================================================
     # Opcode lists (lens corrections, gain maps, warp, etc.)
@@ -486,7 +465,6 @@ UNSUPPORTED_RENDERING_TAGS = {
     # =========================================================================
     # Linearization
     # =========================================================================
-    "LinearizationTable",         # Sensor linearization LUT
     "LinearResponseLimit",        # Clips linear values above this
     
     # =========================================================================
@@ -526,6 +504,99 @@ UNSUPPORTED_RENDERING_TAGS = {
 class UnsupportedDNGTagError(Exception):
     """Raised when a DNG file contains tags that process_raw() cannot handle."""
     pass
+
+
+def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteorder: str = '<') -> dict:
+    """Parse ProfileGainTableMap binary blob.
+    
+    SDK ref: dng_gain_map.cpp GetStream() lines 815-1100
+    
+    Args:
+        data: Raw bytes from ProfileGainTableMap tag
+        is_version2: True for ProfileGainTableMap2 format
+        byteorder: '<' for little-endian, '>' for big-endian (from TIFF header)
+        
+    Returns:
+        dict with parsed PGTM parameters and gains array
+    """
+    import struct
+    offset = 0
+    bo = byteorder  # '<' or '>'
+    
+    # Read header using file's byte order
+    points_v, points_h = struct.unpack_from(f'{bo}II', data, offset)
+    offset += 8
+    
+    spacing_v, spacing_h = struct.unpack_from(f'{bo}dd', data, offset)
+    offset += 16
+    
+    origin_v, origin_h = struct.unpack_from(f'{bo}dd', data, offset)
+    offset += 16
+    
+    num_table_points = struct.unpack_from(f'{bo}I', data, offset)[0]
+    offset += 4
+    
+    weights = list(struct.unpack_from(f'{bo}fffff', data, offset))
+    offset += 20
+    
+    # Version 2 has additional fields
+    data_type = 3  # float32 default
+    gamma = 1.0
+    gain_min = 1.0
+    gain_max = 1.0
+    
+    if is_version2:
+        data_type = struct.unpack_from(f'{bo}I', data, offset)[0]
+        offset += 4
+        gamma, gain_min, gain_max = struct.unpack_from(f'{bo}fff', data, offset)
+        offset += 12
+    
+    # Handle single-point cases
+    if points_v == 1:
+        spacing_v = 1.0
+        origin_v = 0.0
+    if points_h == 1:
+        spacing_h = 1.0
+        origin_h = 0.0
+    
+    # Read gain data - shape (points_v, points_h, num_table_points)
+    gains = np.zeros((points_v, points_h, num_table_points), dtype=np.float32)
+    
+    for row in range(points_v):
+        for col in range(points_h):
+            for p in range(num_table_points):
+                if data_type == 3:  # float32
+                    val = struct.unpack_from(f'{bo}f', data, offset)[0]
+                    offset += 4
+                elif data_type == 2:  # float16
+                    val16 = struct.unpack_from(f'{bo}H', data, offset)[0]
+                    offset += 2
+                    # Convert to float32 via numpy
+                    dt = '<f2' if bo == '<' else '>f2'
+                    val = float(np.array([val16], dtype=np.uint16).view(dt)[0])
+                elif data_type == 1:  # uint16
+                    val16 = struct.unpack_from(f'{bo}H', data, offset)[0]
+                    offset += 2
+                    val = gain_min + (val16 / 65535.0) * (gain_max - gain_min)
+                else:  # uint8
+                    val8 = struct.unpack_from('B', data, offset)[0]
+                    offset += 1
+                    val = gain_min + (val8 / 255.0) * (gain_max - gain_min)
+                
+                gains[row, col, p] = val
+    
+    return {
+        'points_v': points_v,
+        'points_h': points_h,
+        'spacing_v': spacing_v,
+        'spacing_h': spacing_h,
+        'origin_v': origin_v,
+        'origin_h': origin_h,
+        'num_table_points': num_table_points,
+        'weights': np.array(weights, dtype=np.float32),
+        'gamma': gamma,
+        'gains': gains,
+    }
 
 
 def validate_dng_tags(tags: dict, strict: bool = True) -> list[str]:
@@ -1553,6 +1624,14 @@ def process_raw(
         crop_origin = tags.get("DefaultCropOrigin")
         crop_size = tags.get("DefaultCropSize")
         
+        # Get LinearizationTable if present
+        # SDK ref: dng_linearization_info.cpp lines 1233-1250
+        # Applied BEFORE black/white level normalization (inside C++ normalize_raw)
+        linearization_table = tags.get("LinearizationTable")
+        if linearization_table is not None:
+            linearization_table = np.asarray(linearization_table, dtype=np.uint16)
+            logger.debug(f"LinearizationTable: {len(linearization_table)} entries")
+        
         if photometric == "LINEAR_RAW":
             rgb_data = dng.get_raw_linear_by_id(page_id)
             if rgb_data is None:
@@ -1560,6 +1639,7 @@ def process_raw(
                 return None
             
             # Normalize using C++ implementation per DNG spec Chapter 5
+            # LinearizationTable is applied inside normalize_raw before black/white
             rgb_camera = _dng_color.normalize_raw(
                 data=rgb_data.astype(np.float32),
                 black_level=black_level,
@@ -1569,6 +1649,7 @@ def process_raw(
                 white_level=white_level,
                 black_delta_h=black_delta_h,
                 black_delta_v=black_delta_v,
+                linearization_table=linearization_table,
             )
         else:
             cfa_result = dng.get_raw_cfa_by_id(page_id)
@@ -1583,6 +1664,7 @@ def process_raw(
                 cfa_pattern_codes = (0, 1, 1, 2)  # Default RGGB
             
             # Normalize CFA data using C++ implementation per DNG spec Chapter 5
+            # LinearizationTable is applied inside normalize_raw before black/white
             # SDK demosaics on float32 throughout
             cfa_normalized = _dng_color.normalize_raw(
                 data=cfa_data.astype(np.float32),
@@ -1593,6 +1675,7 @@ def process_raw(
                 white_level=white_level,
                 black_delta_h=black_delta_h,
                 black_delta_v=black_delta_v,
+                linearization_table=linearization_table,
             )
             
             # Demosaic without rotation - rotation applied after crop below
@@ -1621,13 +1704,8 @@ def process_raw(
             crop_h = int(crop_size[1])
             rgb_camera = rgb_camera[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
         
-        # Apply orientation rotation
-        if orientation == 6:
-            rgb_camera = cv2.rotate(rgb_camera, cv2.ROTATE_90_CLOCKWISE)
-        elif orientation == 3:
-            rgb_camera = cv2.rotate(rgb_camera, cv2.ROTATE_180)
-        elif orientation == 8:
-            rgb_camera = cv2.rotate(rgb_camera, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        # NOTE: Orientation rotation moved to END of pipeline (after all color processing)
+        # to match SDK behavior - SDK processes in native sensor orientation
         timings['demosaic'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -1812,6 +1890,43 @@ def process_raw(
             timings['hue_sat_map'] = time.perf_counter() - t0
         
         # =====================================================================
+        # Step 1.6: DoBaselineProfileGainTableMap
+        # SDK ref: dng_render.cpp lines 1843-1903
+        # Applied AFTER HueSatMap, BEFORE exposure ramp
+        # =====================================================================
+        # Get baseline exposure first (needed for PGTM weight scaling)
+        baseline_exposure = tags.get("BaselineExposure")
+        if baseline_exposure is not None:
+            baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
+        else:
+            baseline_exposure = 0.0
+        
+        pgtm_data = tags.get("ProfileGainTableMap")
+        if pgtm_data is not None:
+            t0 = time.perf_counter()
+            try:
+                # PGTM blob is ALWAYS big-endian regardless of file byte order
+                # SDK ref: dng_gain_map.cpp uses dng_stream which reads big-endian
+                pgtm = parse_profile_gain_table_map(bytes(pgtm_data), is_version2=False, byteorder='>')
+                logger.debug(f"ProfileGainTableMap: {pgtm['points_v']}x{pgtm['points_h']}x{pgtm['num_table_points']} "
+                           f"weights={list(pgtm['weights'])} gamma={pgtm['gamma']}")
+                
+                rgb_prophoto = _dng_color.apply_profile_gain_table_map(
+                    rgb_prophoto.astype(np.float32),
+                    pgtm['gains'],
+                    pgtm['weights'],
+                    pgtm['points_v'], pgtm['points_h'],
+                    pgtm['spacing_v'], pgtm['spacing_h'],
+                    pgtm['origin_v'], pgtm['origin_h'],
+                    pgtm['num_table_points'],
+                    pgtm['gamma'],
+                    baseline_exposure
+                )
+            except Exception as e:
+                logger.warning(f"Failed to apply ProfileGainTableMap: {e}")
+            timings['profile_gain_table_map'] = time.perf_counter() - t0
+        
+        # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
         # SDK ref: dng_render.cpp lines 975-999, 1907-1928
         # Maps [black, white] to [0, 1]
@@ -1822,11 +1937,7 @@ def process_raw(
         # TotalBaselineExposure = BaselineExposure + BaselineExposureOffset
         # exposure = params.Exposure() + TotalBaselineExposure
         # white = 1.0 / pow(2.0, max(0.0, exposure))
-        baseline_exposure = tags.get("BaselineExposure")
-        if baseline_exposure is not None:
-            baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
-        else:
-            baseline_exposure = 0.0
+        # baseline_exposure already extracted above for ProfileGainTableMap
         
         baseline_exposure_offset = tags.get("BaselineExposureOffset")
         if baseline_exposure_offset is not None:
@@ -1845,12 +1956,25 @@ def process_raw(
             shadow_scale = float(np.atleast_1d(shadow_scale)[0])
         else:
             shadow_scale = 1.0
-        shadows = 5.0  # SDK default
+        # SDK ref: dng_render.cpp lines 2164-2171
+        # DefaultBlackRender: 0 = Auto (shadows=5.0), 1 = None (shadows=0.0)
+        default_black_render = tags.get("DefaultBlackRender", 0)
+        if default_black_render == 1:  # defaultBlackRender_None
+            shadows = 0.0
+        else:
+            shadows = 5.0  # SDK default (defaultBlackRender_Auto)
         exposure_black = shadows * shadow_scale * 0.001
         exposure_black = min(exposure_black, 0.99 * exposure_white)
         
-        exposure_slope = 1.0 / (exposure_white - exposure_black)
-        rgb_exposed = np.clip((rgb_prophoto - exposure_black) * exposure_slope, 0.0, 1.0)
+        # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
+        # 3 regions: below black-radius=0, above black+radius=linear, between=quadratic
+        # SDK line 996: minBlack = black
+        rgb_exposed = _dng_color.apply_exposure_ramp(
+            rgb_prophoto.astype(np.float32),
+            exposure_white,
+            exposure_black,
+            exposure_black  # minBlack = black per SDK line 996
+        )
         timings['exposure_ramp'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -1869,11 +1993,39 @@ def process_raw(
         
         # =====================================================================
         # Step 3: DoBaselineRGBTone (ALWAYS applied)
-        # SDK ref: dng_render.cpp lines 1949-1970
-        # Uses ACR3 default tone curve
+        # SDK ref: dng_render.cpp lines 1949-1970, 2145-2162
+        # Uses ProfileToneCurve if present, otherwise ACR3 default
         # =====================================================================
         t0 = time.perf_counter()
-        rgb_toned = apply_acr3_tone_curve(rgb_exposed)
+        
+        # Check for ProfileToneCurve (custom tone curve from camera profile)
+        # SDK ref: dng_render.cpp lines 2153-2162
+        profile_tone_curve = tags.get("ProfileToneCurve")
+        if profile_tone_curve is not None and len(profile_tone_curve) >= 4:
+            # ProfileToneCurve is array of 2N values: [x0, y0, x1, y1, ...]
+            # SDK uses cubic spline interpolation (dng_spline_solver)
+            from scipy.interpolate import CubicSpline
+            
+            curve_data = np.asarray(profile_tone_curve, dtype=np.float64)
+            n_points = len(curve_data) // 2
+            x_points = curve_data[0::2]  # input values
+            y_points = curve_data[1::2]  # output values
+            
+            # Ensure monotonically increasing x values for spline
+            if np.all(np.diff(x_points) > 0):
+                # Create spline and sample to 4096-point LUT
+                spline = CubicSpline(x_points, y_points, bc_type='clamped')
+                lut_x = np.linspace(0.0, 1.0, 4096)
+                custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
+                rgb_toned = _dng_color.apply_rgb_tone(rgb_exposed.astype(np.float32), custom_curve)
+                logger.debug(f"Using ProfileToneCurve with {n_points} control points")
+            else:
+                # Fallback to ACR3 if curve is invalid
+                logger.warning("ProfileToneCurve has non-monotonic x values, using ACR3")
+                rgb_toned = apply_acr3_tone_curve(rgb_exposed)
+        else:
+            # Use ACR3 default tone curve
+            rgb_toned = apply_acr3_tone_curve(rgb_exposed)
         timings['tone_curve'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -1908,6 +2060,17 @@ def process_raw(
             logger.warning(f"Unsupported output_dtype {output_dtype}, using float32")
             result = rgb_final.astype(np.float32)
         timings['dtype_convert'] = time.perf_counter() - t0
+        
+        # Apply orientation rotation at END of pipeline (matching SDK behavior)
+        # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
+        t0 = time.perf_counter()
+        if orientation == 6:
+            result = cv2.rotate(result, cv2.ROTATE_90_CLOCKWISE)
+        elif orientation == 3:
+            result = cv2.rotate(result, cv2.ROTATE_180)
+        elif orientation == 8:
+            result = cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        timings['orientation'] = time.perf_counter() - t0
         
         # Print timing breakdown
         total = sum(timings.values())

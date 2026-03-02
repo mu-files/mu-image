@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <vector>
 
 //=============================================================================
 // Color Temperature Conversion (from dng_temperature.cpp)
@@ -830,7 +831,8 @@ static void normalize_black_white(
     const float* black_level, int black_repeat_rows, int black_repeat_cols,
     const float* black_delta_h, npy_intp delta_h_count,
     const float* black_delta_v, npy_intp delta_v_count,
-    const float* white_level, int white_count
+    const float* white_level, int white_count,
+    const uint16_t* linearization_table = nullptr, int linearization_table_size = 0
 ) {
     for (npy_intp row = 0; row < height; row++) {
         // Get row delta (0 if not provided)
@@ -855,6 +857,16 @@ static void normalize_black_white(
             for (int sample = 0; sample < samples_per_pixel; sample++) {
                 npy_intp pixel_idx = (row * width + col) * samples_per_pixel + sample;
                 
+                // Apply LinearizationTable if present (before black/white normalization)
+                // SDK ref: dng_linearize_plane::Process - LUT lookup on raw ADC values
+                float pixel_val = data[pixel_idx];
+                if (linearization_table != nullptr && linearization_table_size > 0) {
+                    int lut_idx = (int)pixel_val;
+                    // Clamp to table bounds (upper bound common when table < max pixel value)
+                    if (lut_idx >= linearization_table_size) lut_idx = linearization_table_size - 1;
+                    pixel_val = (float)linearization_table[lut_idx];
+                }
+                
                 // BlackLevel index: [row][col][sample] in row-major order
                 int black_idx = (black_row * black_repeat_cols + black_col) * samples_per_pixel + sample;
                 float black = black_level[black_idx];
@@ -868,7 +880,7 @@ static void normalize_black_white(
                 // Normalize to [0, 1]
                 float range = white - total_black;
                 if (range > 0.0f) {
-                    data[pixel_idx] = (data[pixel_idx] - total_black) / range;
+                    data[pixel_idx] = (pixel_val - total_black) / range;
                 } else {
                     data[pixel_idx] = 0.0f;
                 }
@@ -1410,6 +1422,96 @@ static PyObject* dng_color_matrix_transform(PyObject* self, PyObject* args, PyOb
     return result;
 }
 
+// ============================================================================
+// Exposure Ramp (dng_function_exposure_ramp from dng_render.cpp lines 50-103)
+// Direct port of SDK code
+// ============================================================================
+
+// SDK ref: dng_render.cpp dng_function_exposure_ramp::Evaluate() lines 81-103
+static inline float exposure_ramp_evaluate(float x, float black, float slope, 
+                                           float radius, float qScale, 
+                                           bool supportOverrange) {
+    // Region 1: x <= black - radius → 0
+    if (x <= black - radius)
+        return 0.0f;
+    
+    // Region 2: x >= black + radius → linear ramp
+    if (x >= black + radius) {
+        float y = (x - black) * slope;
+        if (!supportOverrange)
+            y = std::min(y, 1.0f);
+        return y;
+    }
+    
+    // Region 3: quadratic blend
+    float y = x - (black - radius);
+    return qScale * y * y;
+}
+
+// Apply exposure ramp to RGB image
+// SDK ref: dng_render.cpp lines 50-103, 1907-1928
+static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
+    PyArrayObject* rgb_array = NULL;
+    double white, black, minBlack;
+    int supportOverrange = 0;
+    
+    if (!PyArg_ParseTuple(args, "O!ddd|p",
+            &PyArray_Type, &rgb_array,
+            &white, &black, &minBlack,
+            &supportOverrange)) {
+        return NULL;
+    }
+    
+    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
+        return NULL;
+    }
+    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
+        return NULL;
+    }
+    
+    npy_intp height = PyArray_DIM(rgb_array, 0);
+    npy_intp width = PyArray_DIM(rgb_array, 1);
+    
+    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    if (!rgb_cont) return NULL;
+    
+    npy_intp dims[3] = {height, width, 3};
+    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    if (!result) {
+        Py_DECREF(rgb_cont);
+        return NULL;
+    }
+    
+    const float* src_data = (const float*)PyArray_DATA(rgb_cont);
+    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    
+    // SDK ref: dng_render.cpp lines 55-75 (constructor)
+    float slope = 1.0f / (float)(white - black);
+    
+    // Compute radius for quadratic blend region
+    const float kMaxCurveX = 0.5f;      // Fraction of minBlack
+    const float kMaxCurveY = 1.0f / 16.0f;  // Fraction of white
+    
+    float radius = std::min(kMaxCurveX * (float)minBlack, kMaxCurveY / slope);
+    
+    float qScale = 0.0f;
+    if (radius > 0.0f)
+        qScale = slope / (4.0f * radius);
+    
+    // Process all pixels
+    npy_intp total = height * width * 3;
+    for (npy_intp i = 0; i < total; i++) {
+        dst_data[i] = exposure_ramp_evaluate(src_data[i], (float)black, slope, 
+                                              radius, qScale, supportOverrange != 0);
+    }
+    
+    Py_DECREF(rgb_cont);
+    return result;
+}
+
 // Apply hue-preserving RGB tone curve (RefBaselineRGBTone from dng_reference.cpp)
 // This preserves color relationships by interpolating the middle channel
 static PyObject* dng_color_apply_rgb_tone(PyObject* self, PyObject* args) {
@@ -1679,13 +1781,15 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     PyArrayObject* white_array = NULL;
     PyObject* delta_h_obj = Py_None;
     PyObject* delta_v_obj = Py_None;
+    PyObject* linearization_table_obj = Py_None;
     
     static const char* kwlist[] = {
         "data", "black_level", "black_repeat_rows", "black_repeat_cols",
-        "samples_per_pixel", "white_level", "black_delta_h", "black_delta_v", NULL
+        "samples_per_pixel", "white_level", "black_delta_h", "black_delta_v",
+        "linearization_table", NULL
     };
     
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!iiiO!|OO",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!iiiO!|OOO",
             const_cast<char**>(kwlist),
             &PyArray_Type, &data_array,
             &PyArray_Type, &black_array,
@@ -1694,7 +1798,8 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
             &samples_per_pixel,
             &PyArray_Type, &white_array,
             &delta_h_obj,
-            &delta_v_obj)) {
+            &delta_v_obj,
+            &linearization_table_obj)) {
         return NULL;
     }
     
@@ -1777,6 +1882,23 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         delta_v_count = PyArray_SIZE(delta_v_cont);
     }
     
+    // Handle optional linearization table (uint16 LUT)
+    PyArrayObject* lin_table_cont = NULL;
+    int lin_table_size = 0;
+    if (linearization_table_obj != Py_None && linearization_table_obj != NULL) {
+        lin_table_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+            linearization_table_obj, NPY_UINT16, 1, 1);
+        if (!lin_table_cont) {
+            Py_DECREF(data_cont);
+            Py_DECREF(black_cont);
+            Py_DECREF(white_cont);
+            Py_XDECREF(delta_h_cont);
+            Py_XDECREF(delta_v_cont);
+            return NULL;
+        }
+        lin_table_size = (int)PyArray_SIZE(lin_table_cont);
+    }
+    
     // Copy data for output
     PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
     if (!result) {
@@ -1785,6 +1907,7 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         Py_DECREF(white_cont);
         Py_XDECREF(delta_h_cont);
         Py_XDECREF(delta_v_cont);
+        Py_XDECREF(lin_table_cont);
         return NULL;
     }
     
@@ -1795,17 +1918,21 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     const float* delta_v = delta_v_cont ? (const float*)PyArray_DATA(delta_v_cont) : NULL;
     int white_count = (int)PyArray_SIZE(white_cont);
     
+    const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont) : nullptr;
+    
     normalize_black_white(result_data, height, width, samples_per_pixel,
                          black, black_repeat_rows, black_repeat_cols,
                          delta_h, delta_h_count,
                          delta_v, delta_v_count,
-                         white, white_count);
+                         white, white_count,
+                         lin_table, lin_table_size);
     
     Py_DECREF(data_cont);
     Py_DECREF(black_cont);
     Py_DECREF(white_cont);
     Py_XDECREF(delta_h_cont);
     Py_XDECREF(delta_v_cont);
+    Py_XDECREF(lin_table_cont);
     return result;
 }
 
@@ -1864,6 +1991,346 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
     
     Py_DECREF(data_cont);
     Py_DECREF(gain_cont);
+    return result;
+}
+
+// ============================================================================
+// ProfileGainTableMap application
+// Direct port from DNG SDK dng_reference.cpp RefBaselineProfileGainTableMap()
+// ============================================================================
+
+static inline float Lerp_real32(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static inline float Pin_real32(float lo, float x, float hi) {
+    return x < lo ? lo : (x > hi ? hi : x);
+}
+
+static inline float Min_real32(float a, float b) {
+    return a < b ? a : b;
+}
+
+static inline float Max_real32(float a, float b) {
+    return a > b ? a : b;
+}
+
+static inline int Min_int32(int a, int b) {
+    return a < b ? a : b;
+}
+
+// Direct port of RefBaselineProfileGainTableMap from dng_reference.cpp lines 3260-3460
+static void RefBaselineProfileGainTableMap(
+    const float* rSrcPtr,
+    const float* gSrcPtr,
+    const float* bSrcPtr,
+    float* rDstPtr,
+    float* gDstPtr,
+    float* bDstPtr,
+    const int cols,
+    const int top,
+    const int left,
+    const int imageAreaL,
+    const int imageAreaT,
+    const int imageAreaW,
+    const int imageAreaH,
+    const float exposureWeightGain,
+    // Gain table map parameters
+    const int points_v,
+    const int points_h,
+    const float mapSpacingV,
+    const float mapSpacingH,
+    const float mapOriginV,
+    const float mapOriginH,
+    const int numTablePoints,
+    const float* mapInputWeights,
+    const float gamma,
+    const float* gains,  // gains[row][col][tablePoint] flattened
+    const bool supportOverrange
+) {
+    const float miw0 = mapInputWeights[0];
+    const float miw1 = mapInputWeights[1];
+    const float miw2 = mapInputWeights[2];
+    const float miw3 = mapInputWeights[3];
+    const float miw4 = mapInputWeights[4];
+    
+    const float mapOriginH32 = mapOriginH;
+    const float mapOriginV32 = mapOriginV;
+    const float mapSpacingH32 = mapSpacingH;
+    const float mapSpacingV32 = mapSpacingV;
+    
+    const float xLimitLo = 0.0f;
+    const float yLimitLo = 0.0f;
+    const float xLimitHi = (float)(points_h - 1);
+    const float yLimitHi = (float)(points_v - 1);
+    
+    const int xPixelLimit = points_h - 1;
+    const int yPixelLimit = points_v - 1;
+    
+    const int tableSize = numTablePoints;
+    const int tableLimit = tableSize - 1;
+    
+    // For gain table indexing: gains[row * rowStep + col * colStep + tableIdx]
+    const int colStep = numTablePoints;
+    const int rowStep = points_h * numTablePoints;
+    
+    // Initialize sample position. Note the half-pixel offset.
+    float y = (float)top + 0.5f;
+    float x = (float)left + 0.5f;
+    
+    // Process each pixel in this row.
+    for (int col = 0; col < cols; col++) {
+        
+        // Transform to image-relative coordinates.
+        float u_image = (x - (float)imageAreaL) / (float)imageAreaW;
+        float v_image = (y - (float)imageAreaT) / (float)imageAreaH;
+        
+        // Transform to map-relative coordinates.
+        float x_map = (u_image - mapOriginH32) / mapSpacingH32;
+        float y_map = (v_image - mapOriginV32) / mapSpacingV32;
+        
+        // Clamp to valid sample positions.
+        x_map = Pin_real32(xLimitLo, x_map, xLimitHi);
+        y_map = Pin_real32(yLimitLo, y_map, yLimitHi);
+        
+        // Compute integer 2D indices.
+        int x0 = (int)x_map;
+        int x1 = Min_int32(x0 + 1, xPixelLimit);
+        
+        int y0 = (int)y_map;
+        int y1 = Min_int32(y0 + 1, yPixelLimit);
+        
+        // Compute fractional weights.
+        float xf = x_map - (float)x0;
+        float yf = y_map - (float)y0;
+        
+        // Read linear RGB values in RIMM space.
+        float r = rSrcPtr[col];
+        float g = gSrcPtr[col];
+        float b = bSrcPtr[col];
+        
+        // Apply MapInputWeights (5-element dot product).
+        float minValue = Min_real32(r, Min_real32(g, b));
+        float maxValue = Max_real32(r, Max_real32(g, b));
+        
+        float weight = ((miw0 * r) +
+                       (miw1 * g) +
+                       (miw2 * b) +
+                       (miw3 * minValue) +
+                       (miw4 * maxValue));
+        
+        // Scale weight by baseline exposure.
+        weight = weight * exposureWeightGain;
+        
+        // Clamp weight to [0,1].
+        weight = Pin_real32(0.0f, weight, 1.0f);
+        
+        // Apply gamma parameter.
+        if (gamma != 1.0f)
+            weight = powf(weight, gamma);
+        
+        // Scale weight by table size and compute table indices.
+        float weightScaled = weight * (float)tableSize;
+        
+        int w0 = Min_int32((int)weightScaled, tableLimit);
+        int w1 = Min_int32(w0 + 1, tableLimit);
+        
+        float wf = weightScaled - (float)w0;
+        
+        // Look up 8 gains.
+        float gain000 = gains[y0 * rowStep + x0 * colStep + w0];
+        float gain001 = gains[y0 * rowStep + x0 * colStep + w1];
+        float gain010 = gains[y0 * rowStep + x1 * colStep + w0];
+        float gain011 = gains[y0 * rowStep + x1 * colStep + w1];
+        float gain100 = gains[y1 * rowStep + x0 * colStep + w0];
+        float gain101 = gains[y1 * rowStep + x0 * colStep + w1];
+        float gain110 = gains[y1 * rowStep + x1 * colStep + w0];
+        float gain111 = gains[y1 * rowStep + x1 * colStep + w1];
+        
+        // Interpolate in table (w) direction.
+        float gain00_ = Lerp_real32(gain000, gain001, wf);
+        float gain01_ = Lerp_real32(gain010, gain011, wf);
+        float gain10_ = Lerp_real32(gain100, gain101, wf);
+        float gain11_ = Lerp_real32(gain110, gain111, wf);
+        
+        // Interpolate in column (x) direction.
+        float gain0__ = Lerp_real32(gain00_, gain01_, xf);
+        float gain1__ = Lerp_real32(gain10_, gain11_, xf);
+        
+        // Interpolate in row (y) direction.
+        float gain = Lerp_real32(gain0__, gain1__, yf);
+        
+        // Apply gain.
+        r *= gain;
+        g *= gain;
+        b *= gain;
+        
+        // Optionally clamp to [0,1].
+        if (!supportOverrange) {
+            r = Pin_real32(0.0f, r, 1.0f);
+            g = Pin_real32(0.0f, g, 1.0f);
+            b = Pin_real32(0.0f, b, 1.0f);
+        }
+        
+        // Store the result.
+        rDstPtr[col] = r;
+        gDstPtr[col] = g;
+        bDstPtr[col] = b;
+        
+        // Increment sample position for next column.
+        x += 1.0f;
+    }
+}
+
+// Wrapper that processes entire image using the SDK row-by-row approach
+static void apply_profile_gain_table_map(
+    float* rgb,  // Input/output RGB image, shape (H, W, 3), interleaved
+    int height, int width,
+    int points_v, int points_h,
+    float spacing_v, float spacing_h,
+    float origin_v, float origin_h,
+    int num_table_points,
+    const float* weights,
+    float gamma,
+    const float* gains,
+    float exposure_weight_gain
+) {
+    // Allocate temporary planar buffers for one row
+    std::vector<float> rRow(width), gRow(width), bRow(width);
+    
+    // Image area is the full image (0, 0, width, height)
+    const int imageAreaL = 0;
+    const int imageAreaT = 0;
+    const int imageAreaW = width;
+    const int imageAreaH = height;
+    
+    for (int row = 0; row < height; row++) {
+        // Deinterleave this row
+        for (int col = 0; col < width; col++) {
+            int idx = (row * width + col) * 3;
+            rRow[col] = rgb[idx + 0];
+            gRow[col] = rgb[idx + 1];
+            bRow[col] = rgb[idx + 2];
+        }
+        
+        // Process using exact SDK function
+        RefBaselineProfileGainTableMap(
+            rRow.data(), gRow.data(), bRow.data(),  // src
+            rRow.data(), gRow.data(), bRow.data(),  // dst (in-place)
+            width,      // cols
+            row,        // top
+            0,          // left
+            imageAreaL, imageAreaT, imageAreaW, imageAreaH,
+            exposure_weight_gain,
+            points_v, points_h,
+            spacing_v, spacing_h,
+            origin_v, origin_h,
+            num_table_points,
+            weights,
+            gamma,
+            gains,
+            false  // supportOverrange = false for standard rendering
+        );
+        
+        // Interleave back
+        for (int col = 0; col < width; col++) {
+            int idx = (row * width + col) * 3;
+            rgb[idx + 0] = rRow[col];
+            rgb[idx + 1] = gRow[col];
+            rgb[idx + 2] = bRow[col];
+        }
+    }
+}
+
+// Python wrapper for ProfileGainTableMap
+static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject* args) {
+    PyArrayObject* rgb_array = NULL;
+    PyArrayObject* gains_array = NULL;
+    PyArrayObject* weights_array = NULL;
+    int points_v, points_h, num_table_points;
+    double spacing_v, spacing_h, origin_v, origin_h;
+    double gamma;
+    double baseline_exposure;
+    
+    if (!PyArg_ParseTuple(args, "O!O!O!iiddddidd",
+            &PyArray_Type, &rgb_array,
+            &PyArray_Type, &gains_array,
+            &PyArray_Type, &weights_array,
+            &points_v, &points_h,
+            &spacing_v, &spacing_h,
+            &origin_v, &origin_h,
+            &num_table_points,
+            &gamma,
+            &baseline_exposure)) {
+        return NULL;
+    }
+    
+    // Validate input
+    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
+        return NULL;
+    }
+    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
+        return NULL;
+    }
+    if (PyArray_NDIM(gains_array) != 3) {
+        PyErr_SetString(PyExc_ValueError, "gains must be 3D (points_v, points_h, num_table_points)");
+        return NULL;
+    }
+    if (PyArray_SIZE(weights_array) != 5) {
+        PyErr_SetString(PyExc_ValueError, "weights must have 5 elements");
+        return NULL;
+    }
+    
+    npy_intp height = PyArray_DIM(rgb_array, 0);
+    npy_intp width = PyArray_DIM(rgb_array, 1);
+    
+    // Get contiguous arrays
+    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    PyArrayObject* gains_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)gains_array, NPY_FLOAT32, 3, 3);
+    PyArrayObject* weights_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)weights_array, NPY_FLOAT32, 1, 1);
+    
+    if (!rgb_cont || !gains_cont || !weights_cont) {
+        Py_XDECREF(rgb_cont);
+        Py_XDECREF(gains_cont);
+        Py_XDECREF(weights_cont);
+        return NULL;
+    }
+    
+    // Copy RGB for output
+    PyObject* result = PyArray_NewCopy(rgb_cont, NPY_CORDER);
+    if (!result) {
+        Py_DECREF(rgb_cont);
+        Py_DECREF(gains_cont);
+        Py_DECREF(weights_cont);
+        return NULL;
+    }
+    
+    float* result_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    const float* gains = (const float*)PyArray_DATA(gains_cont);
+    const float* weights = (const float*)PyArray_DATA(weights_cont);
+    
+    float exposure_weight_gain = powf(2.0f, (float)baseline_exposure);
+    
+    apply_profile_gain_table_map(
+        result_data, (int)height, (int)width,
+        points_v, points_h,
+        (float)spacing_v, (float)spacing_h,
+        (float)origin_v, (float)origin_h,
+        num_table_points,
+        weights,
+        (float)gamma,
+        gains,
+        exposure_weight_gain
+    );
+    
+    Py_DECREF(rgb_cont);
+    Py_DECREF(gains_cont);
+    Py_DECREF(weights_cont);
     return result;
 }
 
@@ -2317,6 +2784,19 @@ static PyMethodDef DngColorMethods[] = {
      "Returns:\n"
      "    ndarray: Hue-preserving tone-mapped RGB image"},
     
+    {"apply_exposure_ramp", dng_color_apply_exposure_ramp, METH_VARARGS,
+     "Apply exposure ramp function (dng_function_exposure_ramp).\n\n"
+     "SDK ref: dng_render.cpp lines 50-103\n"
+     "3 regions: below black-radius=0, above black+radius=linear, between=quadratic\n\n"
+     "Args:\n"
+     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
+     "    white (float): White point (1.0 / pow(2, max(0, exposure)))\n"
+     "    black (float): Black point (shadows * shadowScale * 0.001)\n"
+     "    minBlack (float): Minimum black for radius calculation\n"
+     "    supportOverrange (bool, optional): Allow values > 1.0\n\n"
+     "Returns:\n"
+     "    ndarray: Exposure-adjusted RGB image"},
+    
     {"srgb_gamma", dng_color_srgb_gamma, METH_VARARGS,
      "Apply sRGB gamma encoding (linear to sRGB).\n\n"
      "Args:\n"
@@ -2376,6 +2856,26 @@ static PyMethodDef DngColorMethods[] = {
      "    gain_map (ndarray): 2D gain map, float32\n\n"
      "Returns:\n"
      "    ndarray: Gain-corrected CFA data"},
+    
+    {"apply_profile_gain_table_map", dng_color_apply_profile_gain_table_map, METH_VARARGS,
+     "Apply ProfileGainTableMap to RGB image (Stage 3).\n\n"
+     "SDK ref: dng_reference.cpp RefBaselineProfileGainTableMap()\n"
+     "Applied after HueSatMap, before exposure ramp.\n\n"
+     "Args:\n"
+     "    rgb (ndarray): RGB image, float32, (H,W,3)\n"
+     "    gains (ndarray): Gain table, float32, (points_v, points_h, num_table_points)\n"
+     "    weights (ndarray): MapInputWeights, float32, (5,)\n"
+     "    points_v (int): Map height\n"
+     "    points_h (int): Map width\n"
+     "    spacing_v (float): Vertical spacing\n"
+     "    spacing_h (float): Horizontal spacing\n"
+     "    origin_v (float): Vertical origin\n"
+     "    origin_h (float): Horizontal origin\n"
+     "    num_table_points (int): Table depth\n"
+     "    gamma (float): Gamma parameter\n"
+     "    baseline_exposure (float): BaselineExposure value\n\n"
+     "Returns:\n"
+     "    ndarray: RGB with gain applied"},
     
     {"warp_rectilinear", (PyCFunction)dng_color_warp_rectilinear, METH_VARARGS | METH_KEYWORDS,
      "Apply lens distortion correction using WarpRectilinear opcode (Stage 2).\n\n"

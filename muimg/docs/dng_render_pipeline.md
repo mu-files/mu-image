@@ -21,7 +21,8 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 1: LINEARIZATION & BLACK SUBTRACTION               │
-│  Tags: BlackLevel, WhiteLevel, ActiveArea                                   │
+│  Tags: LinearizationTable, BlackLevel, WhiteLevel, ActiveArea               │
+│  • Apply LinearizationTable LUT (if present) - maps ADC values to linear    │
 │  • Subtract BlackLevel from each pixel                                      │
 │  • Scale to [0, 1] range using WhiteLevel                                   │
 │  • Apply zero-offset ramp function: (x - blackLevel) / (1 - blackLevel)     │
@@ -79,11 +80,12 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 6: EXPOSURE ADJUSTMENT                             │
-│  Tags: BaselineExposure                                                     │
+│  Tags: BaselineExposure, BaselineExposureOffset, DefaultBlackRender         │
 │                                                                             │
-│  exposure = UserExposure + BaselineExposure - log2(Stage3Gain)              │
+│  exposure = UserExposure + BaselineExposure + BaselineExposureOffset        │
 │  white = 1.0 / pow(2, max(0, exposure))                                     │
-│  black = Shadows × ShadowScale × Stage3Gain × 0.001                         │
+│  black = Shadows × ShadowScale × 0.001                                      │
+│    (Shadows = 5.0 if DefaultBlackRender=Auto, 0.0 if DefaultBlackRender=None)│
 │                                                                             │
 │  • Applies exposure ramp function                                           │
 │  • Soft clipping near black point with quadratic toe                        │
@@ -164,6 +166,7 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `BlackLevelDeltaH` | Per-column black level offset | Stage 1 |
 | `BlackLevelDeltaV` | Per-row black level offset | Stage 1 |
 | `WhiteLevel` | Sensor saturation level (default: 2^BitsPerSample - 1) | Stage 1 |
+| `LinearizationTable` | Sensor linearization LUT (applied before black/white) | Stage 1 |
 | `ColumnInterleaveFactor` | Column interleaving | De-interleaving |
 | `RowInterleaveFactor` | Row interleaving | De-interleaving |
 | `JXLDistance` | JPEG XL quality parameter | Decompression |
@@ -191,6 +194,8 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `AsShotNeutral` | White balance as camera neutral | Stage 3 |
 | `AsShotWhiteXY` | White balance as xy chromaticity | Stage 3 |
 | `BaselineExposure` | Exposure compensation (EV) | Stage 6 |
+| `BaselineExposureOffset` | Profile exposure offset (EV) | Stage 6 |
+| `DefaultBlackRender` | Shadow mapping mode (0=Auto, 1=None) | Stage 6 |
 
 ### Profile-Embedded Tags
 
@@ -263,14 +268,14 @@ Current implementation in `muimg.color.process_raw()`:
 
 | Stage | SDK Function | muimg Status | Notes |
 |-------|--------------|--------------|-------|
-| 1. Black/White Level | `DoBaseline1DTable` | ✓ Implemented | |
+| 1. Linearization/Black/White | `DoBaseline1DTable` | ✓ Implemented | LinearizationTable + black/white normalization |
 | 2. Demosaic | — | ✓ Implemented | CFA + LinearRaw paths |
 | 3. Camera → ProPhoto | `DoBaselineABCtoRGB` | ✓ Implemented | Dual-illuminant, ForwardMatrix, CameraCalibration |
 | 4. HueSatMap | `DoBaselineHueSatMap` | ✓ Implemented | ProfileHueSatMap with dual-illuminant interpolation |
 | 5. ProfileGainTableMap | `DoBaselineProfileGainTableMap` | ✗ Not implemented | |
 | 6. Exposure Ramp | `DoBaseline1DFunction` | ✓ Implemented | Uses `BaselineExposure`, `ShadowScale` |
 | 7. LookTable | `DoBaselineHueSatMap` | ✓ Implemented | ProfileLookTable |
-| 8. Tone Curve | `DoBaselineRGBTone` | ✓ Implemented | ACR3 default only; no `ProfileToneCurve` |
+| 8. Tone Curve | `DoBaselineRGBTone` | ✓ Implemented | ACR3 default + ProfileToneCurve support |
 | 9. RGBTables | `ProcessRGBTables` | ✗ Not implemented | |
 | 10. Color Space | `DoBaselineRGBtoRGB` | ✓ Implemented | ProPhoto → sRGB only |
 | 11. Gamma | `DoBaseline1DTable` | ✓ Implemented | sRGB gamma |

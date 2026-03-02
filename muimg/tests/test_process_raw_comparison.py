@@ -78,38 +78,31 @@ def output_dir():
     return OUTPUT_DIR
 
 
-@pytest.fixture(scope="module")
-def reference_images(output_dir):
-    """Generate C++ SDK reference TIFFs for all DNG files."""
-    refs = {}
+def generate_reference(dng_path: Path, output_dir: Path) -> np.ndarray | None:
+    """Generate C++ SDK reference TIFF for a single DNG file."""
     if not DNG_VALIDATE_PATH.exists():
-        return refs
+        return None
     
-    for dng_path in get_dng_files():
-        output_base = output_dir / f"{dng_path.stem}_dngvalidate"
-        output_tiff = output_dir / f"{dng_path.stem}_dngvalidate.tif"
-        
-        # Always regenerate reference
-        try:
-            subprocess.run(
-                [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-        except (subprocess.TimeoutExpired, Exception):
-            pass
-        
-        if output_tiff.exists():
-            refs[dng_path.name] = load_tiff(output_tiff)
+    output_base = output_dir / f"{dng_path.stem}_dngvalidate"
+    output_tiff = output_dir / f"{dng_path.stem}_dngvalidate.tif"
     
-    return refs
+    try:
+        subprocess.run(
+            [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+    except (subprocess.TimeoutExpired, Exception):
+        return None
+    
+    return load_tiff(output_tiff)
 
 
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
-def test_muimg_vs_dngvalidate(dng_path, output_dir, reference_images):
+def test_muimg_vs_dngvalidate(dng_path, output_dir):
     """Test MUIMG process_raw() against C++ DNG SDK reference."""
-    ref = reference_images.get(dng_path.name)
+    ref = generate_reference(dng_path, output_dir)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     
@@ -136,9 +129,9 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir, reference_images):
 
 @pytest.mark.skipif(not core_image_available, reason="Core Image not available")
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
-def test_coreimage_vs_dngvalidate(dng_path, output_dir, reference_images):
+def test_coreimage_vs_dngvalidate(dng_path, output_dir):
     """Test Core Image against C++ DNG SDK reference."""
-    ref = reference_images.get(dng_path.name)
+    ref = generate_reference(dng_path, output_dir)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     
