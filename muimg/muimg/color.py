@@ -2287,20 +2287,24 @@ def process_raw(
                 spline = CubicSpline(x_points, y_points, bc_type='natural')
                 lut_x = np.linspace(0.0, 1.0, 4096)
                 custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
-                rgb_toned = _dng_color.apply_rgb_tone(rgb_exposed.astype(np.float32), custom_curve)
+                # SDK ref: dng_render.cpp lines 1009-1012
+                # dng_1d_concatenate(exposureTone, ToneCurve) - exposureTone FIRST
+                rgb_exposure_toned = _dng_color.apply_exposure_tone(rgb_exposed.astype(np.float32), exposure)
+                rgb_toned = _dng_color.apply_rgb_tone(rgb_exposure_toned.astype(np.float32), custom_curve)
                 logger.debug(f"Using ProfileToneCurve with {n_points} control points")
             else:
                 # Fallback to ACR3 if curve is invalid
                 logger.warning("ProfileToneCurve has non-monotonic x values, using ACR3")
-                rgb_toned = apply_acr3_tone_curve(rgb_exposed)
+                # SDK ref: dng_render.cpp lines 1009-1012
+                # dng_1d_concatenate(exposureTone, ToneCurve) - exposureTone FIRST
+                rgb_exposure_toned = _dng_color.apply_exposure_tone(rgb_exposed.astype(np.float32), exposure)
+                rgb_toned = apply_acr3_tone_curve(rgb_exposure_toned)
         else:
             # Use ACR3 default tone curve
-            rgb_toned = apply_acr3_tone_curve(rgb_exposed)
-        
-        # SDK ref: dng_render.cpp lines 1005-1014, 107-157
-        # dng_function_exposure_tone: Applied for NEGATIVE exposure only
-        # Darkens the image using piecewise function (linear + quadratic)
-        rgb_toned = _dng_color.apply_exposure_tone(rgb_toned.astype(np.float32), exposure)
+            # SDK ref: dng_render.cpp lines 1009-1012
+            # dng_1d_concatenate(exposureTone, ToneCurve) - exposureTone FIRST
+            rgb_exposure_toned = _dng_color.apply_exposure_tone(rgb_exposed.astype(np.float32), exposure)
+            rgb_toned = apply_acr3_tone_curve(rgb_exposure_toned)
         
         timings['tone_curve'] = time.perf_counter() - t0
         

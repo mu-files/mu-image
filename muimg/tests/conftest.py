@@ -6,6 +6,7 @@ Auto-clones test data from sibling mu-image-testdata repo if not present.
 import subprocess
 from pathlib import Path
 
+
 # Test data lives in sibling repo: mu-image-testdata
 # Expected structure:
 #   python/mu-image/          (this repo)
@@ -48,6 +49,7 @@ _testdata_available = _ensure_testdata()
 
 
 def pytest_configure(config):
-    """Pytest hook - warn if test data unavailable."""
+    """Configure pytest: warn if test data missing."""
     if not _testdata_available:
         print("\n[conftest] WARNING: Test data unavailable. Some tests will be skipped.\n")
+

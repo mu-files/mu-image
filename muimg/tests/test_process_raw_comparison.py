@@ -16,8 +16,6 @@ from muimg import color
 from muimg.color_mac import core_image_available, process_raw_core_image
 from conftest import TEST_FILES_DIR
 
-# Suppress verbose logging from muimg.color
-logging.getLogger('muimg.color').setLevel(logging.WARNING)
 
 # Output directory for comparison files
 OUTPUT_DIR = Path(__file__).parent / "output_comparison"
@@ -29,10 +27,10 @@ DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targ
 # Per-file thresholds for MUIMG (1.1x above measured values)
 MUIMG_THRESHOLDS = {
     # Original test files
-    "Sony.bayer.lossy.dng": 0.12,  # measured 0.11%
-    "Sony.bayer.lossy.stripped.dng": 0.12,  # measured 0.11%
+    "Sony.bayer.lossy.dng": 0.07,  # measured 0.06%
+    "Sony.bayer.lossy.stripped.dng": 0.07,  # measured 0.06%
     "asi676mc.cfa.dng": 0.02,  # measured 0.01%
-    "asi676mc.linearraw.dng": 0.13,  # measured 0.12%
+    "asi676mc.linearraw.dng": 0.14,  # measured 0.12%
     "asi676mc.lossless.preview1.dng": 0.01,  # measured 0.00%
     "asi676mc.nopreview.lossy.dng": 0.01,  # measured 0.00%
     "asi676mc.preview0.lossy.dng": 0.01,  # measured 0.00%
@@ -41,7 +39,7 @@ MUIMG_THRESHOLDS = {
     # DNG SDK test files - JXL
     "dngsdk.01_jxl_linear_raw_integer.dng": 0.02,  # measured 0.01%
     "dngsdk.02_jxl_linear_raw_float.dng": 0.08,  # measured 0.07%
-    "dngsdk.03_jxl_bayer_raw_integer.dng": 0.85,  # measured 0.77%
+    "dngsdk.03_jxl_bayer_raw_integer.dng": 0.39,  # measured 0.35%
     # DNG SDK test files - PGTM2
     "dngsdk.04_PGTM2_per_profile.dng": 0.01,  # measured 0.00%
     "dngsdk.05_PGTM2_unsigned8.dng": 0.01,  # measured 0.00%
@@ -57,6 +55,12 @@ MUIMG_THRESHOLDS = {
     "dngsdk.13_ImageStats_Several.dng": 0.02,  # measured 0.01%
     # DNG SDK test files - HDR/SDR
     "dngsdk.14_hdr_sdr_profiles.dng": 0.01,  # measured 0.00%
+    # Canon
+    "CanonR5.cfa.dng": 0.03,  # measured 0.02%
+    "CanonR5-II.cfa.dng": 0.03,  # measured 0.02%
+    # Sony
+    "SonyRX100-VII.cfa.dng": 0.02,  # measured 0.01%
+    "SonyRX100-VII.cfa.uncompressed.dng": 0.75,  # measured 0.68%
 }
 MUIMG_DEFAULT_THRESHOLD = 0.2  # Fallback for unknown files
 CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
