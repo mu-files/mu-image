@@ -1016,8 +1016,7 @@ def write_dng_from_page(
             dont_copy_tags = {
                 'NewSubfileType',      # 254 - handled by subfiletype parameter
                 'ImageWidth',          # 256 - handled by shape parameter
-                'ImageLength',         # 257 - handled by shape parameter  
-                'BitsPerSample',       # 258 - handled by dtype parameter
+                'ImageLength',         # 257 - handled by shape parameter
                 'Compression',         # 259 - handled by compression parameter
                 'PhotometricInterpretation', # 262 - handled by photometric parameter
                 'ImageDescription',    # 270 - handled by description parameter
@@ -1091,6 +1090,7 @@ def write_dng_from_page(
                     data=compressed_data_iterator(),
                     shape=write_shape,
                     dtype=page.dtype,
+                    bitspersample=page.bitspersample,
                     tile=tile_shape,
                     **main_image_ifd_args,
                 )
@@ -1101,6 +1101,7 @@ def write_dng_from_page(
                     data=compressed_data_iterator(),
                     shape=write_shape,
                     dtype=page.dtype,
+                    bitspersample=page.bitspersample,
                     rowsperstrip=raw_datasize,
                     **main_image_ifd_args,
                 )

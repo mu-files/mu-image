@@ -456,7 +456,7 @@ UNSUPPORTED_RENDERING_TAGS = {
     # =========================================================================
     "OpcodeList1",                # Pre-demosaic opcodes
     # OpcodeList2 now supported (MapPolynomial opcode)
-    "OpcodeList3",                # Post-color opcodes (e.g. WarpRectilinear)
+    # OpcodeList3 now supported (WarpRectilinear opcode)
     
     # =========================================================================
     # Linearization
@@ -692,17 +692,19 @@ def parse_map_polynomial(data: bytes) -> dict:
 def parse_warp_rectilinear(data: bytes) -> dict:
     """Parse WarpRectilinear opcode data (opcode 1).
     
-    SDK ref: dng_lens_correct.cpp dng_opcode_WarpRectilinear
+    SDK ref: dng_lens_correct.cpp dng_opcode_WarpRectilinear lines 1822-1889
+    Format: 4 radial (kr0, kr2, kr4, kr6) + 2 tangential per plane
     """
     import struct
     offset = 0
     num_planes = struct.unpack_from('>I', data, offset)[0]; offset += 4
     
-    # Per-plane warp params: 6 radial + 2 tangential coefficients per plane
+    # Per-plane warp params: 4 radial + 2 tangential = 6 coefficients (48 bytes)
     planes_data = []
     for _ in range(num_planes):
-        radial = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(6)]
-        offset += 48
+        # SDK reads: kr0 (offset), kr2 (r^2), kr4 (r^4), kr6 (r^6), kt0, kt1
+        radial = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(4)]
+        offset += 32
         tangential = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(2)]
         offset += 16
         planes_data.append({'radial': radial, 'tangential': tangential})
@@ -740,7 +742,7 @@ def parse_fix_vignette_radial(data: bytes) -> dict:
     }
 
 
-def apply_opcodes(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
+def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = True) -> np.ndarray:
     """Apply parsed opcodes to image data.
     
     Supported opcodes:
@@ -751,6 +753,8 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
     Args:
         data: Image data (H, W, C), float32, range [0, 1]
         opcodes: List of parsed opcodes from parse_opcode_list
+        use_bicubic: If True, use SDK bicubic interpolation for WarpRectilinear;
+                     if False, use bilinear (default: True)
         
     Returns:
         Processed image data
@@ -769,15 +773,18 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
         opcode_type = opcode.get('type')
         
         if opcode_type == 'WarpRectilinear':
-            # Use plane 0 params for all (simplified)
-            plane0 = opcode['planes'][0]
-            radial = np.array(plane0['radial'][:4], dtype=np.float64)  # k0-k3
-            tangential = np.array(plane0['tangential'], dtype=np.float64) if plane0['tangential'] else None
+            # SDK applies different warp per color plane for lateral CA correction
+            planes = opcode['planes']
+            num_planes = min(len(planes), 3)  # RGB
+            # Build per-plane radial coefficients array (num_planes x 4)
+            radial_per_plane = np.array([p['radial'][:4] for p in planes[:num_planes]], dtype=np.float64)
+            tangential_per_plane = np.array([p['tangential'] for p in planes[:num_planes]], dtype=np.float64)
             result = _dng_color.warp_rectilinear(
-                result, radial,
+                result, radial_per_plane,
                 center_x=opcode['center_x'],
                 center_y=opcode['center_y'],
-                tangential_params=tangential
+                tangential_params=tangential_per_plane,
+                use_bicubic=use_bicubic
             )
             
         elif opcode_type == 'FixVignetteRadial':
@@ -1829,7 +1836,12 @@ def process_raw(
         # =====================================================================
         t0 = time.perf_counter()
         
-        # Get crop parameters (in original sensor coordinates)
+        # Get ActiveArea - defines valid pixel region (top, left, bottom, right)
+        # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea
+        # DefaultCrop coordinates are relative to ActiveArea, not raw sensor
+        active_area = tags.get("ActiveArea")
+        
+        # Get crop parameters (relative to ActiveArea, not raw sensor)
         crop_origin = tags.get("DefaultCropOrigin")
         crop_size = tags.get("DefaultCropSize")
         
@@ -1846,6 +1858,14 @@ def process_raw(
             if rgb_data is None:
                 logger.error("Failed to extract LINEAR_RAW data from DNG")
                 return None
+            
+            # Apply ActiveArea crop BEFORE normalization
+            # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea first
+            # ActiveArea = (top, left, bottom, right) in raw sensor coordinates
+            if active_area is not None:
+                aa_top, aa_left, aa_bottom, aa_right = active_area
+                rgb_data = rgb_data[aa_top:aa_bottom, aa_left:aa_right]
+                logger.debug(f"ActiveArea crop: ({aa_top}, {aa_left}) to ({aa_bottom}, {aa_right})")
             
             # Normalize using C++ implementation per DNG spec Chapter 5
             # LinearizationTable is applied inside normalize_raw before black/white
@@ -1871,6 +1891,14 @@ def process_raw(
                 cfa_pattern = "RGGB"
             if cfa_pattern_codes is None:
                 cfa_pattern_codes = (0, 1, 1, 2)  # Default RGGB
+            
+            # Apply ActiveArea crop BEFORE normalization
+            # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea first
+            # ActiveArea = (top, left, bottom, right) in raw sensor coordinates
+            if active_area is not None:
+                aa_top, aa_left, aa_bottom, aa_right = active_area
+                cfa_data = cfa_data[aa_top:aa_bottom, aa_left:aa_right]
+                logger.debug(f"ActiveArea crop: ({aa_top}, {aa_left}) to ({aa_bottom}, {aa_right})")
             
             # Normalize CFA data using C++ implementation per DNG spec Chapter 5
             # LinearizationTable is applied inside normalize_raw before black/white
@@ -1913,8 +1941,6 @@ def process_raw(
             crop_h = int(crop_size[1])
             rgb_camera = rgb_camera[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
         
-        # NOTE: Orientation rotation moved to END of pipeline (after all color processing)
-        # to match SDK behavior - SDK processes in native sensor orientation
         timings['demosaic'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -1928,7 +1954,7 @@ def process_raw(
             try:
                 opcodes = parse_opcode_list(bytes(opcode_list2))
                 logger.debug(f"OpcodeList2: {len(opcodes)} opcodes")
-                rgb_camera = apply_opcodes(rgb_camera, opcodes)
+                rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList2: {e}")
             timings['opcode_list2'] = time.perf_counter() - t0
@@ -2119,12 +2145,19 @@ def process_raw(
         # SDK ref: dng_render.cpp lines 1843-1903
         # Applied AFTER HueSatMap, BEFORE exposure ramp
         # =====================================================================
-        # Get baseline exposure first (needed for PGTM weight scaling)
+        # SDK ref: dng_render.cpp line 1882: exposureWeightGain = pow(2.0, fBaselineExposure)
+        # fBaselineExposure = TotalBaselineExposure (Stage3Gain = 1.0 for normal images)
         baseline_exposure = tags.get("BaselineExposure")
         if baseline_exposure is not None:
             baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
         else:
             baseline_exposure = 0.0
+        baseline_exposure_offset = tags.get("BaselineExposureOffset")
+        if baseline_exposure_offset is not None:
+            baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
+        else:
+            baseline_exposure_offset = 0.0
+        pgtm_baseline_exposure = baseline_exposure + baseline_exposure_offset
         
         # Check for PGTM2 first (takes precedence), then fall back to PGTM1
         pgtm_data = tags.get("ProfileGainTableMap2")
@@ -2151,7 +2184,7 @@ def process_raw(
                     pgtm['origin_v'], pgtm['origin_h'],
                     pgtm['num_table_points'],
                     pgtm['gamma'],
-                    baseline_exposure
+                    pgtm_baseline_exposure  # SDK uses fBaselineExposure = TotalBaselineExposure
                 )
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap{'2' if is_version2 else ''}: {e}")
@@ -2168,8 +2201,11 @@ def process_raw(
         # TotalBaselineExposure = BaselineExposure + BaselineExposureOffset
         # exposure = params.Exposure() + TotalBaselineExposure
         # white = 1.0 / pow(2.0, max(0.0, exposure))
-        # baseline_exposure already extracted above for ProfileGainTableMap
-        
+        baseline_exposure = tags.get("BaselineExposure")
+        if baseline_exposure is not None:
+            baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
+        else:
+            baseline_exposure = 0.0
         baseline_exposure_offset = tags.get("BaselineExposureOffset")
         if baseline_exposure_offset is not None:
             baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
@@ -2177,11 +2213,12 @@ def process_raw(
             baseline_exposure_offset = 0.0
         
         total_baseline_exposure = baseline_exposure + baseline_exposure_offset
-        exposure = total_baseline_exposure  # No user exposure param for now
+        exposure = total_baseline_exposure  # No user exposure param
         exposure_white = 1.0 / (2.0 ** max(0.0, exposure))
         
         # SDK ref: dng_render.cpp lines 986-991
         # black = shadows * ShadowScale * Stage3Gain * 0.001
+        # Stage3Gain = 1.0 for normal images (only set for multi-channel CFA merging)
         shadow_scale = tags.get("ShadowScale")
         if shadow_scale is not None:
             shadow_scale = float(np.atleast_1d(shadow_scale)[0])
@@ -2259,6 +2296,12 @@ def process_raw(
         else:
             # Use ACR3 default tone curve
             rgb_toned = apply_acr3_tone_curve(rgb_exposed)
+        
+        # SDK ref: dng_render.cpp lines 1005-1014, 107-157
+        # dng_function_exposure_tone: Applied for NEGATIVE exposure only
+        # Darkens the image using piecewise function (linear + quadratic)
+        rgb_toned = _dng_color.apply_exposure_tone(rgb_toned.astype(np.float32), exposure)
+        
         timings['tone_curve'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -2278,6 +2321,28 @@ def process_raw(
         t0 = time.perf_counter()
         rgb_final = _dng_color.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
         timings['srgb_gamma'] = time.perf_counter() - t0
+        
+        # =====================================================================
+        # OpcodeList3: Post-render opcodes (e.g. WarpRectilinear)
+        # SDK ref: dng_negative.cpp Stage3Image() applies OpcodeList3
+        # Applied AFTER color transforms and gamma, BEFORE final output
+        # =====================================================================
+        opcode_list3 = tags.get("OpcodeList3")
+        logger.debug(f"OpcodeList3 in tags: {opcode_list3 is not None}")
+        if opcode_list3 is not None:
+            t0 = time.perf_counter()
+            try:
+                opcodes = parse_opcode_list(bytes(opcode_list3))
+                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
+                for op in opcodes:
+                    if op.get('type') == 'WarpRectilinear':
+                        logger.debug(f"  WarpRectilinear: center=({op['center_x']:.4f}, {op['center_y']:.4f})")
+                        for i, p in enumerate(op['planes']):
+                            logger.debug(f"    Plane {i}: radial={p['radial']}, tan={p['tangential']}")
+                rgb_final = apply_opcodes(rgb_final, opcodes, use_bicubic=False)
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList3: {e}")
+            timings['opcode_list3'] = time.perf_counter() - t0
         
         # Convert to output dtype
         t0 = time.perf_counter()

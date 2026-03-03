@@ -894,79 +894,214 @@ static void normalize_black_white(
 // Stage 2: Post-Demosaic Operations (on RGB data)
 //=============================================================================
 
-// WarpRectilinear lens distortion correction
-// Uses radial polynomial model: r_src = r_dst * f(r_dst)
-// where f(r) = k0 + k1*r + k2*r^2 + k3*r^3
+// SDK ref: dng_resample.h lines 192-194
+const uint32_t kResampleSubsampleBits2D = 5;
+const uint32_t kResampleSubsampleCount2D = 1 << kResampleSubsampleBits2D;  // 32
+
+// SDK ref: dng_resample.cpp dng_resample_bicubic::Evaluate lines 33-48
+static inline double dng_resample_bicubic_Evaluate(double x) {
+    const double A = -0.75;
+    x = std::abs(x);
+    
+    if (x >= 2.0)
+        return 0.0;
+    else if (x >= 1.0)
+        return (((A * x - 5.0 * A) * x + 8.0 * A) * x - 4.0 * A);
+    else
+        return (((A + 2.0) * x - (A + 3.0)) * x * x + 1.0);
+}
+
+// SDK ref: dng_resample.cpp dng_resample_weights_2d::Initialize lines 308-441
+// Precomputed 2D bicubic weights: 32x32 fractional positions, 4x4 weights each
+// Total: 32 * 32 * 16 = 16384 weights
+static float* g_bicubic_weights_2d = nullptr;
+static const uint32_t kBicubicWidth = 4;  // 2 * radius where radius = 2
+static const uint32_t kBicubicWidthSqr = 16;
+
+static void init_bicubic_weights_2d() {
+    if (g_bicubic_weights_2d != nullptr) return;
+    
+    g_bicubic_weights_2d = new float[kResampleSubsampleCount2D * kResampleSubsampleCount2D * kBicubicWidthSqr];
+    
+    // SDK ref: dng_resample.cpp lines 369-441
+    for (uint32_t y = 0; y < kResampleSubsampleCount2D; y++) {
+        double yFract = y * (1.0 / (double)kResampleSubsampleCount2D);
+        
+        for (uint32_t x = 0; x < kResampleSubsampleCount2D; x++) {
+            double xFract = x * (1.0 / (double)kResampleSubsampleCount2D);
+            
+            float* w32 = g_bicubic_weights_2d + 
+                         (y * kResampleSubsampleCount2D + x) * kBicubicWidthSqr;
+            
+            // SDK ref: lines 386-428
+            double t32 = 0.0;
+            uint32_t index = 0;
+            
+            for (uint32_t i = 0; i < kBicubicWidth; i++) {
+                int32_t yInt = ((int32_t)i) - 2 + 1;  // fRadius = 2, so -1, 0, 1, 2
+                double yPos = yInt - yFract;
+                
+                for (uint32_t j = 0; j < kBicubicWidth; j++) {
+                    int32_t xInt = ((int32_t)j) - 2 + 1;  // -1, 0, 1, 2
+                    double xPos = xInt - xFract;
+                    
+                    // SDK ref: lines 415-418 - Separable kernel
+                    w32[index] = (float)(dng_resample_bicubic_Evaluate(xPos) *
+                                         dng_resample_bicubic_Evaluate(yPos));
+                    t32 += w32[index];
+                    index++;
+                }
+            }
+            
+            // SDK ref: lines 430-438 - Normalize weights to sum to 1.0
+            float s32 = (float)(1.0 / t32);
+            for (uint32_t i = 0; i < kBicubicWidthSqr; i++) {
+                w32[i] *= s32;
+            }
+        }
+    }
+}
+
+// WarpRectilinear lens distortion correction with per-plane coefficients
+// SDK ref: dng_lens_correction.cpp dng_filter_warp::GetSrcPixelPosition, EvaluateRatio
+// Uses radial polynomial model: ratio = kr0 + kr2*r^2 + kr4*r^4 + kr6*r^6 (EVEN powers)
+// Each color plane has its own coefficients for lateral CA correction
 // center_x, center_y: optical center in normalized [0,1] coordinates
 static void warp_rectilinear(
     const float* src, float* dst,
     npy_intp height, npy_intp width, int channels,
-    const double* radial_params, int num_radial,  // k0, k1, k2, k3
-    const double* tangential_params,  // kt0, kt1 (can be NULL)
-    double center_x, double center_y
+    const double* radial_params, int num_planes, int num_coeffs,  // [num_planes][num_coeffs]
+    const double* tangential_params,  // [num_planes][2] or NULL
+    double center_x, double center_y,
+    bool use_bicubic = true  // SDK ref: dng_lens_correction.cpp line 1251 uses dng_resample_bicubic
 ) {
-    // Compute max distance from center to corner
+    // SDK ref: dng_lens_correction.cpp line 1253 - Initialize weights
+    if (use_bicubic) {
+        init_bicubic_weights_2d();
+    }
+    
+    // SDK ref: dng_lens_correction.cpp lines 1200-1236
     double cx = center_x * width;
     double cy = center_y * height;
+    
+    // SDK: fNormRadius = MaxDistancePointToRect(squareCenter, squareBounds)
     double corner_dists[4] = {
         std::sqrt(cx*cx + cy*cy),
         std::sqrt((width-cx)*(width-cx) + cy*cy),
         std::sqrt(cx*cx + (height-cy)*(height-cy)),
         std::sqrt((width-cx)*(width-cx) + (height-cy)*(height-cy))
     };
-    double max_dist = *std::max_element(corner_dists, corner_dists + 4);
-    if (max_dist < 1.0) max_dist = 1.0;
+    double fNormRadius = *std::max_element(corner_dists, corner_dists + 4);
+    if (fNormRadius < 1.0) fNormRadius = 1.0;
+    double fInvNormRadius = 1.0 / fNormRadius;
     
     for (npy_intp y = 0; y < height; y++) {
         for (npy_intp x = 0; x < width; x++) {
-            // Normalized distance from center
-            double dx = ((double)x - cx) / max_dist;
-            double dy = ((double)y - cy) / max_dist;
-            double r2 = dx*dx + dy*dy;
-            double r = std::sqrt(r2);
+            // SDK ref: GetSrcPixelPosition lines 1601-1604
+            double diff_h = (double)x - cx;
+            double diff_v = (double)y - cy;
+            double diffNorm_h = diff_h * fInvNormRadius;
+            double diffNorm_v = diff_v * fInvNormRadius;
             
-            // Evaluate radial polynomial f(r) = k0 + k1*r + k2*r^2 + k3*r^3
-            double f = 1.0;
-            if (num_radial > 0 && radial_params) {
-                f = radial_params[0];
-                double rp = r;
-                for (int i = 1; i < num_radial && i < 4; i++) {
-                    f += radial_params[i] * rp;
-                    rp *= r;
-                }
-            }
-            
-            // Apply radial warp
-            double dx_rad = dx * f;
-            double dy_rad = dy * f;
-            
-            // Apply tangential warp if provided
-            double dx_tan = 0, dy_tan = 0;
-            if (tangential_params) {
-                double kt0 = tangential_params[0];
-                double kt1 = tangential_params[1];
-                dx_tan = 2*kt0*dx*dy + kt1*(r2 + 2*dx*dx);
-                dy_tan = 2*kt1*dx*dy + kt0*(r2 + 2*dy*dy);
-            }
-            
-            // Source coordinates
-            double src_x = cx + (dx_rad + dx_tan) * max_dist;
-            double src_y = cy + (dy_rad + dy_tan) * max_dist;
-            
-            // Bilinear interpolation
-            int x0 = (int)std::floor(src_x);
-            int y0 = (int)std::floor(src_y);
-            double fx = src_x - x0;
-            double fy = src_y - y0;
+            // SDK: rr = Min(diffNormSqr.v + diffNormSqr.h, 1.0)
+            double rr = diffNorm_h * diffNorm_h + diffNorm_v * diffNorm_v;
+            if (rr > 1.0) rr = 1.0;
             
             npy_intp dst_idx = (y * width + x) * channels;
             
-            if (x0 >= 0 && x0 < width-1 && y0 >= 0 && y0 < height-1) {
-                for (int c = 0; c < channels; c++) {
+            // SDK applies different warp per color plane for lateral CA correction
+            for (int c = 0; c < channels && c < num_planes; c++) {
+                const double* plane_radial = radial_params + c * num_coeffs;
+                const double* plane_tan = tangential_params ? tangential_params + c * 2 : NULL;
+                
+                // SDK ref: WarpRectilinear v1 stores coeffs for EVEN powers (r^0, r^2, r^4, r^6)
+                // dng_lens_correction.cpp lines 1908-1911: fData[0], fData[2], fData[4], fData[6]
+                // Since rr = r^2, polynomial is: kr0 + kr2*rr + kr4*rr^2 + kr6*rr^3
+                double ratio = plane_radial[0];
+                double r_pow = rr;
+                for (int i = 1; i < num_coeffs && i < 4; i++) {
+                    ratio += plane_radial[i] * r_pow;
+                    r_pow *= rr;
+                }
+                
+                // SDK ref: GetSrcPixelPosition lines 1625-1626
+                double dSrc_h = diff_h * ratio;
+                double dSrc_v = diff_v * ratio;
+                
+                // Apply tangential warp if provided
+                if (plane_tan && (plane_tan[0] != 0.0 || plane_tan[1] != 0.0)) {
+                    double kt0 = plane_tan[0];
+                    double kt1 = plane_tan[1];
+                    double tan_h = 2*kt0*diffNorm_h*diffNorm_v + kt1*(rr + 2*diffNorm_h*diffNorm_h);
+                    double tan_v = 2*kt1*diffNorm_h*diffNorm_v + kt0*(rr + 2*diffNorm_v*diffNorm_v);
+                    dSrc_h += fNormRadius * tan_h;
+                    dSrc_v += fNormRadius * tan_v;
+                }
+                
+                // SDK ref: line 1663
+                double src_x = cx + dSrc_h;
+                double src_y = cy + dSrc_v;
+                
+                // SDK ref: lines 1511-1514 - clamp to image bounds
+                src_x = std::max(0.0, std::min(src_x, (double)(width - 1)));
+                src_y = std::max(0.0, std::min(src_y, (double)(height - 1)));
+                
+                if (use_bicubic) {
+                    // SDK ref: dng_lens_correction.cpp lines 1516-1577
+                    // Decompose into integer and fractional parts
+                    int32_t sInt_v = (int32_t)std::floor(src_y);
+                    int32_t sInt_h = (int32_t)std::floor(src_x);
+                    
+                    // SDK ref: line 1521-1522 - fractional part scaled to subsample count
+                    int32_t sFct_v = (int32_t)((src_y - (double)sInt_v) * kResampleSubsampleCount2D);
+                    int32_t sFct_h = (int32_t)((src_x - (double)sInt_h) * kResampleSubsampleCount2D);
+                    
+                    // SDK ref: line 1526 - add resample offset (1 - fRadius = 1 - 2 = -1)
+                    sInt_v += -1;
+                    sInt_h += -1;
+                    
+                    // SDK ref: lines 1530-1552 - clip
+                    int32_t hMin = 0;
+                    int32_t hMax = (int32_t)(width - kBicubicWidth);
+                    int32_t vMin = 0;
+                    int32_t vMax = (int32_t)(height - kBicubicWidth);
+                    
+                    if (sInt_h < hMin) { sInt_h = hMin; sFct_h = 0; }
+                    else if (sInt_h > hMax) { sInt_h = hMax; sFct_h = 0; }
+                    if (sInt_v < vMin) { sInt_v = vMin; sFct_v = 0; }
+                    else if (sInt_v > vMax) { sInt_v = vMax; sFct_v = 0; }
+                    
+                    // SDK ref: line 1556 - get precomputed weights
+                    const float* w = g_bicubic_weights_2d + 
+                                     (sFct_v * kResampleSubsampleCount2D + sFct_h) * kBicubicWidthSqr;
+                    
+                    // SDK ref: lines 1562-1577 - perform 2D resample
+                    float total = 0.0f;
+                    int32_t wIdx = 0;
+                    for (int32_t i = 0; i < (int32_t)kBicubicWidth; i++) {
+                        for (int32_t j = 0; j < (int32_t)kBicubicWidth; j++) {
+                            int32_t sy = sInt_v + i;
+                            int32_t sx = sInt_h + j;
+                            total += w[wIdx] * src[(sy * width + sx) * channels + c];
+                            wIdx++;
+                        }
+                    }
+                    
+                    // SDK ref: line 1581 - Pin_real32
+                    dst[dst_idx + c] = std::max(0.0f, std::min(1.0f, total));
+                } else {
+                    // Bilinear interpolation (fallback)
+                    int x0 = (int)std::floor(src_x);
+                    int y0 = (int)std::floor(src_y);
+                    int x1 = std::min(x0 + 1, (int)(width - 1));
+                    int y1 = std::min(y0 + 1, (int)(height - 1));
+                    double fx = src_x - x0;
+                    double fy = src_y - y0;
+                    
                     double v00 = src[(y0 * width + x0) * channels + c];
-                    double v01 = src[(y0 * width + x0 + 1) * channels + c];
-                    double v10 = src[((y0+1) * width + x0) * channels + c];
-                    double v11 = src[((y0+1) * width + x0 + 1) * channels + c];
+                    double v01 = src[(y0 * width + x1) * channels + c];
+                    double v10 = src[(y1 * width + x0) * channels + c];
+                    double v11 = src[(y1 * width + x1) * channels + c];
                     
                     dst[dst_idx + c] = (float)(
                         v00 * (1-fx) * (1-fy) +
@@ -974,11 +1109,6 @@ static void warp_rectilinear(
                         v10 * (1-fx) * fy +
                         v11 * fx * fy
                     );
-                }
-            } else {
-                // Out of bounds - use nearest or black
-                for (int c = 0; c < channels; c++) {
-                    dst[dst_idx + c] = 0.0f;
                 }
             }
         }
@@ -1506,6 +1636,87 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     for (npy_intp i = 0; i < total; i++) {
         dst_data[i] = exposure_ramp_evaluate(src_data[i], (float)black, slope, 
                                               radius, qScale, supportOverrange != 0);
+    }
+    
+    Py_DECREF(rgb_cont);
+    return result;
+}
+
+// ============================================================================
+// Exposure Tone (dng_function_exposure_tone from dng_render.cpp lines 107-157)
+// Applied AFTER tone curve for negative exposure compensation
+// Direct port of SDK code
+// ============================================================================
+
+// SDK ref: dng_render.cpp dng_function_exposure_tone::Evaluate() lines 141-157
+static inline float exposure_tone_evaluate(float x, float slope, float a, float b, float c) {
+    // For negative exposure: darkens the image
+    // Region 1: x <= 0.25 → linear darkening
+    if (x <= 0.25f)
+        return x * slope;
+    
+    // Region 2: x > 0.25 → quadratic (maps 1.0 → 1.0)
+    return (a * x + b) * x + c;
+}
+
+// Apply exposure tone function to RGB image
+// SDK ref: dng_render.cpp lines 107-157, 1009-1012
+static PyObject* dng_color_apply_exposure_tone(PyObject* self, PyObject* args) {
+    PyArrayObject* rgb_array = NULL;
+    double exposure;
+    
+    if (!PyArg_ParseTuple(args, "O!d",
+            &PyArray_Type, &rgb_array,
+            &exposure)) {
+        return NULL;
+    }
+    
+    // SDK ref: line 109 - only apply for negative exposure
+    if (exposure >= 0.0) {
+        // Return input unchanged (NOP)
+        Py_INCREF(rgb_array);
+        return (PyObject*)rgb_array;
+    }
+    
+    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
+        return NULL;
+    }
+    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
+        return NULL;
+    }
+    
+    npy_intp height = PyArray_DIM(rgb_array, 0);
+    npy_intp width = PyArray_DIM(rgb_array, 1);
+    
+    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    if (!rgb_cont) return NULL;
+    
+    npy_intp dims[3] = {height, width, 3};
+    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    if (!result) {
+        Py_DECREF(rgb_cont);
+        return NULL;
+    }
+    
+    float* src_data = (float*)PyArray_DATA(rgb_cont);
+    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    
+    // SDK ref: dng_render.cpp lines 122-133
+    // fSlope = pow(2.0, exposure)
+    float slope = (float)pow(2.0, exposure);
+    
+    // Quadratic parameters: maps 1.0 → 1.0 with matching slope at crossover
+    float a = 16.0f / 9.0f * (1.0f - slope);
+    float b = slope - 0.5f * a;
+    float c = 1.0f - a - b;
+    
+    // Process all pixels
+    npy_intp total = height * width * 3;
+    for (npy_intp i = 0; i < total; i++) {
+        dst_data[i] = exposure_tone_evaluate(src_data[i], slope, a, b, c);
     }
     
     Py_DECREF(rgb_cont);
@@ -2337,20 +2548,22 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
 // Warp rectilinear lens distortion correction (Stage 2)
 static PyObject* dng_color_warp_rectilinear(PyObject* self, PyObject* args, PyObject* kwargs) {
     static const char* kwlist[] = {
-        "rgb", "radial_params", "center_x", "center_y", "tangential_params", NULL
+        "rgb", "radial_params", "center_x", "center_y", "tangential_params", "use_bicubic", NULL
     };
     
     PyArrayObject* rgb_array = NULL;
     PyArrayObject* radial_array = NULL;
     PyArrayObject* tangential_array = NULL;
     double center_x = 0.5, center_y = 0.5;
+    int use_bicubic = 1;  // default True (SDK uses bicubic)
     
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!dd|O!",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!dd|O!p",
             const_cast<char**>(kwlist),
             &PyArray_Type, &rgb_array,
             &PyArray_Type, &radial_array,
             &center_x, &center_y,
-            &PyArray_Type, &tangential_array)) {
+            &PyArray_Type, &tangential_array,
+            &use_bicubic)) {
         return NULL;
     }
     
@@ -2368,13 +2581,15 @@ static PyObject* dng_color_warp_rectilinear(PyObject* self, PyObject* args, PyOb
     
     PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
         (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    // radial_array is 2D: (num_planes, num_coeffs)
     PyArrayObject* radial_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)radial_array, NPY_FLOAT64, 1, 1);
+        (PyObject*)radial_array, NPY_FLOAT64, 2, 2);
     PyArrayObject* tan_cont = NULL;
     
     if (tangential_array) {
+        // tangential_array is 2D: (num_planes, 2)
         tan_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-            (PyObject*)tangential_array, NPY_FLOAT64, 1, 1);
+            (PyObject*)tangential_array, NPY_FLOAT64, 2, 2);
     }
     
     if (!rgb_cont || !radial_cont) {
@@ -2383,6 +2598,10 @@ static PyObject* dng_color_warp_rectilinear(PyObject* self, PyObject* args, PyOb
         Py_XDECREF(tan_cont);
         return NULL;
     }
+    
+    // Get dimensions from 2D radial array
+    int num_planes = (int)PyArray_DIM(radial_cont, 0);
+    int num_coeffs = (int)PyArray_DIM(radial_cont, 1);
     
     npy_intp dims[3] = {height, width, 3};
     PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
@@ -2396,10 +2615,9 @@ static PyObject* dng_color_warp_rectilinear(PyObject* self, PyObject* args, PyOb
     const float* src = (const float*)PyArray_DATA(rgb_cont);
     float* dst = (float*)PyArray_DATA((PyArrayObject*)result);
     const double* radial = (const double*)PyArray_DATA(radial_cont);
-    int num_radial = (int)PyArray_SIZE(radial_cont);
     const double* tangential = tan_cont ? (const double*)PyArray_DATA(tan_cont) : NULL;
     
-    warp_rectilinear(src, dst, height, width, 3, radial, num_radial, tangential, center_x, center_y);
+    warp_rectilinear(src, dst, height, width, 3, radial, num_planes, num_coeffs, tangential, center_x, center_y, (bool)use_bicubic);
     
     Py_DECREF(rgb_cont);
     Py_DECREF(radial_cont);
@@ -3010,6 +3228,17 @@ static PyMethodDef DngColorMethods[] = {
      "    supportOverrange (bool, optional): Allow values > 1.0\n\n"
      "Returns:\n"
      "    ndarray: Exposure-adjusted RGB image"},
+    
+    {"apply_exposure_tone", dng_color_apply_exposure_tone, METH_VARARGS,
+     "Apply exposure tone function (dng_function_exposure_tone).\n\n"
+     "SDK ref: dng_render.cpp lines 107-157\n"
+     "For negative exposure: darkens using piecewise linear+quadratic.\n"
+     "For non-negative exposure: returns input unchanged (NOP).\n\n"
+     "Args:\n"
+     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
+     "    exposure (float): Total exposure value (BaselineExposure + offset)\n\n"
+     "Returns:\n"
+     "    ndarray: Exposure-tone-adjusted RGB image"},
     
     {"srgb_gamma", dng_color_srgb_gamma, METH_VARARGS,
      "Apply sRGB gamma encoding (linear to sRGB).\n\n"
