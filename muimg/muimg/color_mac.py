@@ -1,3 +1,4 @@
+import io
 import logging
 import numpy as np
 import os
@@ -6,6 +7,59 @@ from typing import IO, Optional, Union
 from .color import ToneCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_unique_camera_model(dng_data: bytes) -> bytes:
+    """Strip UniqueCameraModel tag from DNG data to avoid Core Image camera-specific processing.
+    
+    When Core Image (CIRAWFilter) recognizes a known camera model via the UniqueCameraModel
+    tag (e.g., "Sony ILCE-7C"), it applies camera-specific processing that can produce
+    significantly darker images compared to Adobe's dng_validate reference output.
+    
+    Investigation findings:
+    - Original camera DNGs with UniqueCameraModel: Core Image renders correctly
+    - DNGs rewritten by tifffile with UniqueCameraModel: Core Image renders ~7% darker
+    - DNGs with UniqueCameraModel stripped or set to unknown model: renders correctly
+    
+    This suggests Core Image validates some structural aspect of the DNG when it recognizes
+    a known camera, and tifffile-written files don't pass this validation, triggering
+    different (incorrect) processing. Stripping the tag forces Core Image to use generic
+    DNG processing which produces output consistent with dng_validate.
+    
+    Uses tifffile to locate the tag, then patches the raw bytes to zero out the tag ID.
+    This preserves the original compression and file structure.
+    
+    Args:
+        dng_data: Raw DNG file bytes
+        
+    Returns:
+        Modified DNG data with UniqueCameraModel tag zeroed out
+    """
+    from tifffile import TiffFile, TIFF
+    
+    UNIQUE_CAMERA_MODEL = TIFF.TAGS["UniqueCameraModel"]
+    
+    try:
+        input_buffer = io.BytesIO(dng_data)
+        
+        with TiffFile(input_buffer) as tif:
+            # Check IFD0 for UniqueCameraModel tag
+            if tif.pages and UNIQUE_CAMERA_MODEL in tif.pages[0].tags:
+                tag = tif.pages[0].tags[UNIQUE_CAMERA_MODEL]
+                # tag.offset is the file offset of the tag entry (12 bytes: code, dtype, count, value/offset)
+                tag_offset = tag.offset
+                
+                # Zero out the tag code (first 2 bytes of the 12-byte entry)
+                data = bytearray(dng_data)
+                data[tag_offset:tag_offset+2] = b'\x00\x00'
+                logger.debug("Stripped UniqueCameraModel tag from DNG data for Core Image processing")
+                return bytes(data)
+        
+        return dng_data
+        
+    except Exception as e:
+        logger.warning(f"Failed to strip UniqueCameraModel: {e}. Using original data.")
+        return dng_data
 
 # --- Core Image (macOS specific) DNG Processing ---
 
@@ -309,19 +363,25 @@ def process_raw_core_image(
                     raw_options[kCIInputLinearSpaceFilter] = linear_tone_filter
 
                 # --- Create CIRAWFilter ---
+                # Always read DNG data and strip UniqueCameraModel to avoid CI camera-specific processing
                 if isinstance(dng_input, (str, os.PathLike)):
-                    image_url = NSURL.fileURLWithPath_(str(dng_input))
-                    raw_filter = CIFilter.filterWithImageURL_options_(image_url, raw_options or None)
+                    with open(dng_input, 'rb') as f:
+                        dng_data = f.read()
                 elif hasattr(dng_input, "read"):
                     dng_data = dng_input.read()
-                    if not dng_data:
-                        raise ValueError("DNG data from file-like object is empty.")
-                    from Quartz import kCGImageSourceTypeIdentifierHint
-                    raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
-                    ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
-                    raw_filter = CIFilter.filterWithImageData_options_(ns_data, raw_options or None)
                 else:
                     raise TypeError("dng_input must be a file path or a file-like object.")
+                
+                if not dng_data:
+                    raise ValueError("DNG data is empty.")
+                
+                # Strip UniqueCameraModel to force generic processing
+                dng_data = _strip_unique_camera_model(dng_data)
+                
+                from Quartz import kCGImageSourceTypeIdentifierHint
+                raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
+                ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
+                raw_filter = CIFilter.filterWithImageData_options_(ns_data, raw_options or None)
 
                 if not raw_filter:
                     raise RuntimeError("Failed to create CIRAWFilter.")
