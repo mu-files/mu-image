@@ -449,11 +449,7 @@ UNSUPPORTED_RENDERING_TAGS = {
     "ReductionMatrix1",
     "ReductionMatrix2",
     "ReductionMatrix3",
-    
-    # =========================================================================
-    # Profile tone curves and gain maps
-    # =========================================================================
-    "ProfileGainTableMap2",       # Version 2 with additional features
+
     
     # =========================================================================
     # Opcode lists (lens corrections, gain maps, warp, etc.)
@@ -1901,14 +1897,20 @@ def process_raw(
         else:
             baseline_exposure = 0.0
         
-        pgtm_data = tags.get("ProfileGainTableMap")
+        # Check for PGTM2 first (takes precedence), then fall back to PGTM1
+        pgtm_data = tags.get("ProfileGainTableMap2")
+        is_version2 = pgtm_data is not None
+        if pgtm_data is None:
+            pgtm_data = tags.get("ProfileGainTableMap")
+        
         if pgtm_data is not None:
             t0 = time.perf_counter()
             try:
-                # PGTM blob is ALWAYS big-endian regardless of file byte order
-                # SDK ref: dng_gain_map.cpp uses dng_stream which reads big-endian
-                pgtm = parse_profile_gain_table_map(bytes(pgtm_data), is_version2=False, byteorder='>')
-                logger.debug(f"ProfileGainTableMap: {pgtm['points_v']}x{pgtm['points_h']}x{pgtm['num_table_points']} "
+                # PGTM uses file's byte order (from TIFF header)
+                # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
+                pgtm_byteorder = dng.byteorder
+                pgtm = parse_profile_gain_table_map(bytes(pgtm_data), is_version2=is_version2, byteorder=pgtm_byteorder)
+                logger.debug(f"ProfileGainTableMap{'2' if is_version2 else ''}: {pgtm['points_v']}x{pgtm['points_h']}x{pgtm['num_table_points']} "
                            f"weights={list(pgtm['weights'])} gamma={pgtm['gamma']}")
                 
                 rgb_prophoto = _dng_color.apply_profile_gain_table_map(
@@ -1923,7 +1925,7 @@ def process_raw(
                     baseline_exposure
                 )
             except Exception as e:
-                logger.warning(f"Failed to apply ProfileGainTableMap: {e}")
+                logger.warning(f"Failed to apply ProfileGainTableMap{'2' if is_version2 else ''}: {e}")
             timings['profile_gain_table_map'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -2014,7 +2016,9 @@ def process_raw(
             # Ensure monotonically increasing x values for spline
             if np.all(np.diff(x_points) > 0):
                 # Create spline and sample to 4096-point LUT
-                spline = CubicSpline(x_points, y_points, bc_type='clamped')
+                # Use 'natural' bc_type - 'clamped' forces zero derivatives at endpoints
+                # which creates non-linear curves even for 2-point linear input
+                spline = CubicSpline(x_points, y_points, bc_type='natural')
                 lut_x = np.linspace(0.0, 1.0, 4096)
                 custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
                 rgb_toned = _dng_color.apply_rgb_tone(rgb_exposed.astype(np.float32), custom_curve)

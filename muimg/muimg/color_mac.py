@@ -14,17 +14,12 @@ def _strip_unique_camera_model(dng_data: bytes) -> bytes:
     
     When Core Image (CIRAWFilter) recognizes a known camera model via the UniqueCameraModel
     tag (e.g., "Sony ILCE-7C"), it applies camera-specific processing that can produce
-    significantly darker images compared to Adobe's dng_validate reference output.
+    images significantly different to Adobe's dng_validate reference output.
     
     Investigation findings:
     - Original camera DNGs with UniqueCameraModel: Core Image renders correctly
-    - DNGs rewritten by tifffile with UniqueCameraModel: Core Image renders ~7% darker
+    - DNGs rewritten by tifffile with UniqueCameraModel: Core Image renders ~7% differently
     - DNGs with UniqueCameraModel stripped or set to unknown model: renders correctly
-    
-    This suggests Core Image validates some structural aspect of the DNG when it recognizes
-    a known camera, and tifffile-written files don't pass this validation, triggering
-    different (incorrect) processing. Stripping the tag forces Core Image to use generic
-    DNG processing which produces output consistent with dng_validate.
     
     Uses tifffile to locate the tag, then patches the raw bytes to zero out the tag ID.
     This preserves the original compression and file structure.

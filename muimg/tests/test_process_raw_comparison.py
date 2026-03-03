@@ -28,15 +28,30 @@ DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targ
 # Comparison thresholds (as percentage of full range)
 # Per-file thresholds for MUIMG (1.1x above measured values)
 MUIMG_THRESHOLDS = {
-    "Sony.bayer.lossy.dng": 0.13,
-    "Sony.bayer.lossy.stripped.dng": 0.13,
-    "asi676mc.cfa.dng": 0.02,
-    "asi676mc.linearraw.dng": 0.14,
-    "asi676mc.lossless.preview1.dng": 0.01,
-    "asi676mc.nopreview.lossy.dng": 0.01,
-    "asi676mc.preview0.lossy.dng": 0.01,
-    "iphone.linearRGB.lossy.dng": 0.72,
-    "iphone.linearRGB.lossy.stripped.dng": 0.21,
+    # Original test files
+    "Sony.bayer.lossy.dng": 0.12,  # measured 0.11%
+    "Sony.bayer.lossy.stripped.dng": 0.12,  # measured 0.11%
+    "asi676mc.cfa.dng": 0.02,  # measured 0.01%
+    "asi676mc.linearraw.dng": 0.13,  # measured 0.12%
+    "asi676mc.lossless.preview1.dng": 0.01,  # measured 0.00%
+    "asi676mc.nopreview.lossy.dng": 0.01,  # measured 0.00%
+    "asi676mc.preview0.lossy.dng": 0.01,  # measured 0.00%
+    "iphone.linearRGB.lossy.dng": 0.72,  # measured 0.65%
+    "iphone.linearRGB.lossy.stripped.dng": 0.21,  # measured 0.19%
+    # DNG SDK test files - JXL
+    "dngsdk.02_jxl_linear_raw_float.dng": 0.08,  # measured 0.07%
+    # DNG SDK test files - PGTM2
+    "dngsdk.04_PGTM2_per_profile.dng": 0.01,  # measured 0.00%
+    "dngsdk.05_PGTM2_unsigned8.dng": 0.01,  # measured 0.00%
+    "dngsdk.06_PGTM2_unsigned16.dng": 0.01,  # measured 0.00%
+    "dngsdk.07_PGTM2_float16.dng": 0.01,  # measured 0.00%
+    "dngsdk.08_PGTM2_float32.dng": 0.01,  # measured 0.00%
+    # DNG SDK test files - ImageSequenceInfo
+    "dngsdk.09_ImageSequenceInfo_1_of_3.dng": 0.01,  # measured 0.00%
+    "dngsdk.10_ImageSequenceInfo_2_of_3.dng": 0.01,  # measured 0.00%
+    "dngsdk.11_ImageSequenceInfo_3_of_3.dng": 0.01,  # measured 0.00%
+    # DNG SDK test files - HDR/SDR
+    "dngsdk.14_hdr_sdr_profiles.dng": 0.01,  # measured 0.00%
 }
 MUIMG_DEFAULT_THRESHOLD = 0.2  # Fallback for unknown files
 CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
