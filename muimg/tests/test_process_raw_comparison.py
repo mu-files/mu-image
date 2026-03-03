@@ -39,7 +39,9 @@ MUIMG_THRESHOLDS = {
     "iphone.linearRGB.lossy.dng": 0.72,  # measured 0.65%
     "iphone.linearRGB.lossy.stripped.dng": 0.21,  # measured 0.19%
     # DNG SDK test files - JXL
+    "dngsdk.01_jxl_linear_raw_integer.dng": 0.02,  # measured 0.01%
     "dngsdk.02_jxl_linear_raw_float.dng": 0.08,  # measured 0.07%
+    "dngsdk.03_jxl_bayer_raw_integer.dng": 0.85,  # measured 0.77%
     # DNG SDK test files - PGTM2
     "dngsdk.04_PGTM2_per_profile.dng": 0.01,  # measured 0.00%
     "dngsdk.05_PGTM2_unsigned8.dng": 0.01,  # measured 0.00%
@@ -50,6 +52,9 @@ MUIMG_THRESHOLDS = {
     "dngsdk.09_ImageSequenceInfo_1_of_3.dng": 0.01,  # measured 0.00%
     "dngsdk.10_ImageSequenceInfo_2_of_3.dng": 0.01,  # measured 0.00%
     "dngsdk.11_ImageSequenceInfo_3_of_3.dng": 0.01,  # measured 0.00%
+    # DNG SDK test files - ImageStats
+    "dngsdk.12_ImageStats_WeightedAverage.dng": 0.02,  # measured 0.01%
+    "dngsdk.13_ImageStats_Several.dng": 0.02,  # measured 0.01%
     # DNG SDK test files - HDR/SDR
     "dngsdk.14_hdr_sdr_profiles.dng": 0.01,  # measured 0.00%
 }

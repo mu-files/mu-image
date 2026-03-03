@@ -455,7 +455,7 @@ UNSUPPORTED_RENDERING_TAGS = {
     # Opcode lists (lens corrections, gain maps, warp, etc.)
     # =========================================================================
     "OpcodeList1",                # Pre-demosaic opcodes
-    "OpcodeList2",                # Post-demosaic, pre-color opcodes  
+    # OpcodeList2 now supported (MapPolynomial opcode)
     "OpcodeList3",                # Post-color opcodes (e.g. WarpRectilinear)
     
     # =========================================================================
@@ -593,6 +593,219 @@ def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteord
         'gamma': gamma,
         'gains': gains,
     }
+
+
+def parse_opcode_list(data: bytes) -> list[dict]:
+    """Parse OpcodeList1/2/3 binary blob.
+    
+    SDK ref: dng_opcode_list.cpp, dng_misc_opcodes.cpp
+    
+    Args:
+        data: Raw bytes from OpcodeList tag
+        
+    Returns:
+        List of parsed opcode dicts
+    """
+    import struct
+    opcodes = []
+    offset = 0
+    
+    # OpcodeList is always big-endian
+    count = struct.unpack_from('>I', data, offset)[0]
+    offset += 4
+    
+    for _ in range(count):
+        if offset + 12 > len(data):
+            break
+        opcode_id = struct.unpack_from('>I', data, offset)[0]
+        offset += 4
+        min_version = struct.unpack_from('>I', data, offset)[0]
+        offset += 4
+        flags = struct.unpack_from('>I', data, offset)[0]
+        offset += 4
+        data_size = struct.unpack_from('>I', data, offset)[0]
+        offset += 4
+        
+        opcode_data = data[offset:offset + data_size]
+        offset += data_size
+        
+        opcode = {
+            'id': opcode_id,
+            'min_version': min_version,
+            'flags': flags,
+            'data': opcode_data,
+        }
+        
+        # Parse known opcodes
+        if opcode_id == 1 and len(opcode_data) >= 20:  # WarpRectilinear
+            opcode.update(parse_warp_rectilinear(opcode_data))
+        elif opcode_id == 3 and len(opcode_data) >= 56:  # FixVignetteRadial
+            opcode.update(parse_fix_vignette_radial(opcode_data))
+        elif opcode_id == 8 and len(opcode_data) >= 36:  # MapPolynomial
+            opcode.update(parse_map_polynomial(opcode_data))
+        
+        opcodes.append(opcode)
+    
+    return opcodes
+
+
+def parse_area_spec(data: bytes, offset: int = 0) -> tuple[dict, int]:
+    """Parse dng_area_spec from opcode data.
+    
+    SDK ref: dng_opcodes.h dng_area_spec (32 bytes)
+    """
+    import struct
+    top = struct.unpack_from('>i', data, offset)[0]; offset += 4
+    left = struct.unpack_from('>i', data, offset)[0]; offset += 4
+    bottom = struct.unpack_from('>i', data, offset)[0]; offset += 4
+    right = struct.unpack_from('>i', data, offset)[0]; offset += 4
+    plane = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    planes = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    row_pitch = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    col_pitch = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    return {
+        'area': {'top': top, 'left': left, 'bottom': bottom, 'right': right},
+        'plane': plane, 'planes': planes,
+        'row_pitch': row_pitch, 'col_pitch': col_pitch,
+    }, offset
+
+
+def parse_map_polynomial(data: bytes) -> dict:
+    """Parse MapPolynomial opcode data (opcode 8).
+    
+    SDK ref: dng_misc_opcodes.cpp dng_opcode_MapPolynomial
+    """
+    import struct
+    area_spec, offset = parse_area_spec(data, 0)
+    
+    degree = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    coefficients = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(degree + 1)]
+    
+    return {
+        'type': 'MapPolynomial',
+        **area_spec,
+        'degree': degree,
+        'coefficients': np.array(coefficients, dtype=np.float64),
+    }
+
+
+def parse_warp_rectilinear(data: bytes) -> dict:
+    """Parse WarpRectilinear opcode data (opcode 1).
+    
+    SDK ref: dng_lens_correct.cpp dng_opcode_WarpRectilinear
+    """
+    import struct
+    offset = 0
+    num_planes = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    
+    # Per-plane warp params: 6 radial + 2 tangential coefficients per plane
+    planes_data = []
+    for _ in range(num_planes):
+        radial = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(6)]
+        offset += 48
+        tangential = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(2)]
+        offset += 16
+        planes_data.append({'radial': radial, 'tangential': tangential})
+    
+    center_x = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    center_y = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    
+    return {
+        'type': 'WarpRectilinear',
+        'num_planes': num_planes,
+        'planes': planes_data,
+        'center_x': center_x,
+        'center_y': center_y,
+    }
+
+
+def parse_fix_vignette_radial(data: bytes) -> dict:
+    """Parse FixVignetteRadial opcode data (opcode 3).
+    
+    SDK ref: dng_lens_correct.cpp dng_opcode_FixVignetteRadial
+    """
+    import struct
+    offset = 0
+    # 5 polynomial coefficients k0-k4
+    k = [struct.unpack_from('>d', data, offset + i*8)[0] for i in range(5)]
+    offset += 40
+    center_x = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    center_y = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    
+    return {
+        'type': 'FixVignetteRadial',
+        'coefficients': np.array(k, dtype=np.float64),
+        'center_x': center_x,
+        'center_y': center_y,
+    }
+
+
+def apply_opcodes(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
+    """Apply parsed opcodes to image data.
+    
+    Supported opcodes:
+    - 1: WarpRectilinear (C++ warp_rectilinear)
+    - 3: FixVignetteRadial (C++ fix_vignette)
+    - 8: MapPolynomial (C++ RefBaselineMapPoly32)
+    
+    Args:
+        data: Image data (H, W, C), float32, range [0, 1]
+        opcodes: List of parsed opcodes from parse_opcode_list
+        
+    Returns:
+        Processed image data
+    """
+    result = data.astype(np.float32)
+    
+    opcode_names = {
+        1: 'WarpRectilinear', 2: 'WarpFisheye', 3: 'FixVignetteRadial',
+        4: 'FixBadPixelsConstant', 5: 'FixBadPixelsList', 6: 'TrimBounds',
+        7: 'MapTable', 8: 'MapPolynomial', 9: 'GainMap',
+        10: 'DeltaPerRow', 11: 'DeltaPerColumn', 12: 'ScalePerRow',
+        13: 'ScalePerColumn', 14: 'WarpRectilinear2',
+    }
+    
+    for opcode in opcodes:
+        opcode_type = opcode.get('type')
+        
+        if opcode_type == 'WarpRectilinear':
+            # Use plane 0 params for all (simplified)
+            plane0 = opcode['planes'][0]
+            radial = np.array(plane0['radial'][:4], dtype=np.float64)  # k0-k3
+            tangential = np.array(plane0['tangential'], dtype=np.float64) if plane0['tangential'] else None
+            result = _dng_color.warp_rectilinear(
+                result, radial,
+                center_x=opcode['center_x'],
+                center_y=opcode['center_y'],
+                tangential_params=tangential
+            )
+            
+        elif opcode_type == 'FixVignetteRadial':
+            result = _dng_color.fix_vignette(
+                result,
+                opcode['coefficients'],
+                opcode['center_x'],
+                opcode['center_y']
+            )
+            
+        elif opcode_type == 'MapPolynomial':
+            # C++ implementation matching SDK RefBaselineMapPoly32
+            coefficients = opcode['coefficients'].astype(np.float32)
+            area = opcode['area']
+            result = _dng_color.apply_map_polynomial(
+                result,
+                coefficients,
+                area['top'], area['left'], area['bottom'], area['right'],
+                opcode['plane'], opcode['planes'],
+                opcode['row_pitch'], opcode['col_pitch'],
+                opcode['degree']
+            )
+            
+        else:
+            name = opcode_names.get(opcode['id'], f"Unknown({opcode['id']})")
+            logger.warning(f"Skipping unsupported opcode: {name}")
+    
+    return result
 
 
 def validate_dng_tags(tags: dict, strict: bool = True) -> list[str]:
@@ -1703,6 +1916,22 @@ def process_raw(
         # NOTE: Orientation rotation moved to END of pipeline (after all color processing)
         # to match SDK behavior - SDK processes in native sensor orientation
         timings['demosaic'] = time.perf_counter() - t0
+        
+        # =====================================================================
+        # OpcodeList2: Post-demosaic, pre-color opcodes
+        # SDK ref: dng_negative.cpp Stage2Image() applies OpcodeList2
+        # Applied AFTER demosaic/normalization, BEFORE color transforms
+        # =====================================================================
+        opcode_list2 = tags.get("OpcodeList2")
+        if opcode_list2 is not None:
+            t0 = time.perf_counter()
+            try:
+                opcodes = parse_opcode_list(bytes(opcode_list2))
+                logger.debug(f"OpcodeList2: {len(opcodes)} opcodes")
+                rgb_camera = apply_opcodes(rgb_camera, opcodes)
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList2: {e}")
+            timings['opcode_list2'] = time.perf_counter() - t0
         
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)

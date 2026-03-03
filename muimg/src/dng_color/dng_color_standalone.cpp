@@ -2717,6 +2717,220 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
     return result;
 }
 
+// =============================================================================
+// MapPolynomial opcode (OpcodeList2)
+// SDK ref: dng_reference.cpp RefBaselineMapPoly32
+// =============================================================================
+
+// Port of RefBaselineMapPoly32 from dng_reference.cpp
+// Note: Uses existing Pin_real32() defined above
+// Applies polynomial: y = c0 + c1*x + c2*x^2 + ... 
+// For negative x, alternates signs on even powers
+static void RefBaselineMapPoly32(
+    float* dPtr,
+    const int32_t rowStep,
+    const uint32_t rows,
+    const uint32_t cols,
+    const uint32_t rowPitch,
+    const uint32_t colPitch,
+    const float* coefficients,
+    const uint32_t degree,
+    uint16_t blackLevel)
+{
+    float blackScale1 = 1.0f;
+    float blackScale2 = 1.0f;
+    float blackOffset1 = 0.0f;
+    float blackOffset2 = 0.0f;
+
+    if (blackLevel != 0) {
+        blackOffset2 = ((float)blackLevel) / 65535.0f;
+        blackScale2 = 1.0f - blackOffset2;
+        blackScale1 = (blackScale2 != 0.0f) ? 1.0f / blackScale2 : 0.0f;
+        blackOffset1 = 1.0f - blackScale1;
+    }
+
+    for (uint32_t row = 0; row < rows; row += rowPitch) {
+        
+        if (blackLevel != 0) {
+            for (uint32_t col = 0; col < cols; col += colPitch) {
+                dPtr[col] = dPtr[col] * blackScale1 + blackOffset1;
+            }
+        }
+
+        switch (degree) {
+            case 0: {
+                float y = Pin_real32(-1.0f, coefficients[0], 1.0f);
+                for (uint32_t col = 0; col < cols; col += colPitch) {
+                    dPtr[col] = y;
+                }
+                break;
+            }
+
+            case 1: {
+                for (uint32_t col = 0; col < cols; col += colPitch) {
+                    float x = dPtr[col];
+                    float y = coefficients[0] + x * coefficients[1];
+                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
+                }
+                break;
+            }
+
+            case 2: {
+                for (uint32_t col = 0; col < cols; col += colPitch) {
+                    float x = dPtr[col];
+                    float y;
+                    if (x < 0.0f) {
+                        y = coefficients[0] + x * (coefficients[1] - x * coefficients[2]);
+                    } else {
+                        y = coefficients[0] + x * (coefficients[1] + x * coefficients[2]);
+                    }
+                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
+                }
+                break;
+            }
+
+            case 3: {
+                for (uint32_t col = 0; col < cols; col += colPitch) {
+                    float x = dPtr[col];
+                    float y;
+                    if (x < 0.0f) {
+                        y = coefficients[0] + x * (coefficients[1] - x * (coefficients[2] - x * coefficients[3]));
+                    } else {
+                        y = coefficients[0] + x * (coefficients[1] + x * (coefficients[2] + x * coefficients[3]));
+                    }
+                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
+                }
+                break;
+            }
+
+            case 4: {
+                for (uint32_t col = 0; col < cols; col += colPitch) {
+                    float x = dPtr[col];
+                    float y;
+                    if (x < 0.0f) {
+                        y = coefficients[0] + x * (coefficients[1] - x * (coefficients[2] - x * (coefficients[3] - x * coefficients[4])));
+                    } else {
+                        y = coefficients[0] + x * (coefficients[1] + x * (coefficients[2] + x * (coefficients[3] + x * coefficients[4])));
+                    }
+                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
+                }
+                break;
+            }
+
+            default: {
+                for (uint32_t col = 0; col < cols; col += colPitch) {
+                    float x = dPtr[col];
+                    float y = coefficients[0];
+
+                    if (x < 0.0f) {
+                        x = -x;
+                        float xx = x;
+                        for (uint32_t j = 1; j <= degree; j++) {
+                            y -= coefficients[j] * xx;
+                            xx *= x;
+                        }
+                    } else {
+                        float xx = x;
+                        for (uint32_t j = 1; j <= degree; j++) {
+                            y += coefficients[j] * xx;
+                            xx *= x;
+                        }
+                    }
+                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
+                }
+                break;
+            }
+        }
+
+        if (blackLevel != 0) {
+            for (uint32_t col = 0; col < cols; col += colPitch) {
+                dPtr[col] = dPtr[col] * blackScale2 + blackOffset2;
+            }
+        }
+
+        dPtr += rowStep;
+    }
+}
+
+// Python wrapper for apply_map_polynomial
+static PyObject* dng_color_apply_map_polynomial(PyObject* self, PyObject* args) {
+    PyObject* rgb_obj;
+    PyObject* coeffs_obj;
+    int top, left, bottom, right;
+    int plane, planes, row_pitch, col_pitch;
+    int degree;
+    
+    if (!PyArg_ParseTuple(args, "OOiiiiiiiii",
+            &rgb_obj, &coeffs_obj,
+            &top, &left, &bottom, &right,
+            &plane, &planes, &row_pitch, &col_pitch,
+            &degree)) {
+        return NULL;
+    }
+    
+    // Get contiguous arrays
+    PyObject* rgb_cont = PyArray_ContiguousFromAny(rgb_obj, NPY_FLOAT32, 3, 3);
+    PyObject* coeffs_cont = PyArray_ContiguousFromAny(coeffs_obj, NPY_FLOAT32, 1, 1);
+    if (!rgb_cont || !coeffs_cont) {
+        Py_XDECREF(rgb_cont);
+        Py_XDECREF(coeffs_cont);
+        return NULL;
+    }
+    
+    npy_intp* dims = PyArray_DIMS((PyArrayObject*)rgb_cont);
+    int height = (int)dims[0];
+    int width = (int)dims[1];
+    int num_planes = (int)dims[2];
+    
+    // Handle area bounds (0 means full image per SDK)
+    if (top == 0 && bottom == 0) { top = 0; bottom = height; }
+    if (left == 0 && right == 0) { left = 0; right = width; }
+    
+    // Create output (copy input)
+    PyObject* result = PyArray_Copy((PyArrayObject*)rgb_cont);
+    if (!result) {
+        Py_DECREF(rgb_cont);
+        Py_DECREF(coeffs_cont);
+        return NULL;
+    }
+    
+    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    const float* coefficients = (const float*)PyArray_DATA((PyArrayObject*)coeffs_cont);
+    
+    // Apply to each specified plane
+    // For interleaved RGB (H,W,3), each row has width*3 elements
+    // SDK iterates: for (col = 0; col < cols; col += colPitch)
+    // So cols must be width * num_planes, and colPitch = num_planes to hit same plane
+    int area_height = bottom - top;
+    int area_width = right - left;
+    
+    for (int p = plane; p < plane + planes && p < num_planes; p++) {
+        // Get pointer to start of area for this plane
+        float* plane_ptr = dst_data + (top * width + left) * num_planes + p;
+        
+        // rowStep: elements to advance per row (width * num_planes)
+        int32_t rowStep = (int32_t)(width * num_planes * row_pitch);
+        
+        // cols: total elements in row (area_width * num_planes)
+        // colPitch: skip between same-plane values (num_planes * col_pitch)
+        RefBaselineMapPoly32(
+            plane_ptr,
+            rowStep,
+            (uint32_t)area_height,
+            (uint32_t)(area_width * num_planes),  // cols = total elements in row
+            (uint32_t)row_pitch,
+            (uint32_t)(col_pitch * num_planes),   // colPitch to skip between same-plane
+            coefficients,
+            (uint32_t)degree,
+            0  // blackLevel - stage 2 is already normalized
+        );
+    }
+    
+    Py_DECREF(rgb_cont);
+    Py_DECREF(coeffs_cont);
+    return result;
+}
+
 // Module method definitions
 static PyMethodDef DngColorMethods[] = {
     {"temp_to_xy", dng_color_temp_to_xy, METH_VARARGS,
@@ -2914,6 +3128,23 @@ static PyMethodDef DngColorMethods[] = {
      "        Values: 0=Red, 1=Green, 2=Blue (per fCFAPlaneColor)\n\n"
      "Returns:\n"
      "    ndarray: Demosaiced RGB image, float32, shape (H, W, 3)"},
+    
+    {"apply_map_polynomial", dng_color_apply_map_polynomial, METH_VARARGS,
+     "Apply MapPolynomial opcode to RGB image (OpcodeList2 Stage 2).\n\n"
+     "SDK ref: dng_reference.cpp RefBaselineMapPoly32\n"
+     "Applies polynomial: y = c0 + c1*x + c2*x^2 + ...\n"
+     "For negative x, alternates signs on even powers.\n\n"
+     "Args:\n"
+     "    rgb (ndarray): RGB image, float32, (H,W,3)\n"
+     "    coefficients (ndarray): Polynomial coefficients, float32\n"
+     "    top, left, bottom, right (int): Area bounds (0 = full)\n"
+     "    plane (int): First plane to process\n"
+     "    planes (int): Number of planes\n"
+     "    row_pitch (int): Row stride\n"
+     "    col_pitch (int): Column stride\n"
+     "    degree (int): Polynomial degree\n\n"
+     "Returns:\n"
+     "    ndarray: RGB with polynomial applied"},
     
     {NULL, NULL, 0, NULL}
 };
