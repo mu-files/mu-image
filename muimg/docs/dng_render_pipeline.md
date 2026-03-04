@@ -20,6 +20,14 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
+│                         OPCODELIST1 (Pre-linearization)                     │
+│  Tags: OpcodeList1                                                          │
+│  • Applied to raw sensor data before any processing                         │
+│  • Hot pixel removal, defect correction                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 1: LINEARIZATION & BLACK SUBTRACTION               │
 │  Tags: LinearizationTable, BlackLevel, WhiteLevel, ActiveArea               │
 │  • Apply LinearizationTable LUT (if present) - maps ADC values to linear    │
@@ -27,6 +35,18 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 │  • Scale to [0, 1] range using WhiteLevel                                   │
 │  • Apply zero-offset ramp function: (x - blackLevel) / (1 - blackLevel)     │
 │  (LinearRaw: typically BlackLevel=0, making this an identity operation)     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  OPCODELIST2 (Post-linearization, Pre-demosaic)             │
+│  Tags: OpcodeList2                                                          │
+│  DNG Spec: "applied to the raw image, just after it has been mapped to     │
+│             linear reference values"                                        │
+│  • CFA: Applied to LINEAR CFA data before demosaic                          │
+│  • LinearRaw: Applied to LINEAR RGB data (already 3-channel)                │
+│  • Lens shading correction (GainMap), polynomial corrections (MapPolynomial)│
+│  • CFA uses per-position corrections (row_pitch=2, col_pitch=2)             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -58,6 +78,14 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 │  2. Interpolate ColorMatrix based on white point temperature                │
 │  3. Apply: CameraToRGB = ProPhotoFromPCS × CameraToPCS                      │
 │  4. White balance by dividing by camera white vector                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         OPCODELIST3 (Post-color)                            │
+│  Tags: OpcodeList3                                                          │
+│  • Applied to RGB data after color transforms                               │
+│  • Additional corrections, noise reduction profiles                         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -205,9 +233,9 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `ProfileToneCurve` | Custom tone curve | Stage 8 |
 | `ForwardMatrix1/2` | Camera RGB → XYZ | Direct (avoids inverting ColorMatrix) |
 | `CameraCalibration1/2` | Per-camera fine-tuning | Stage 3 |
-| `OpcodeList1` | Pre-demosaic opcodes | Before Stage 1 (lens corrections, hot pixel removal) |
-| `OpcodeList2` | Post-demosaic opcodes | After Stage 2 (gain maps, vignette correction) |
-| `OpcodeList3` | Post-color opcodes | After Stage 3 (noise reduction, sharpening) |
+| `OpcodeList1` | Pre-linearization opcodes | Before Stage 1 (hot pixel removal, defect correction) |
+| `OpcodeList2` | Post-demosaic opcodes | After Stage 2 (GainMap, MapPolynomial, FixVignetteRadial) |
+| `OpcodeList3` | Post-color opcodes | After Stage 3 (additional corrections) |
 
 ## Color Matrix Interpolation
 

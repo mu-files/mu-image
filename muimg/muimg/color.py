@@ -643,6 +643,8 @@ def parse_opcode_list(data: bytes) -> list[dict]:
             opcode.update(parse_fix_vignette_radial(opcode_data))
         elif opcode_id == 8 and len(opcode_data) >= 36:  # MapPolynomial
             opcode.update(parse_map_polynomial(opcode_data))
+        elif opcode_id == 9 and len(opcode_data) >= 76:  # GainMap
+            opcode.update(parse_gain_map(opcode_data))
         
         opcodes.append(opcode)
     
@@ -742,13 +744,61 @@ def parse_fix_vignette_radial(data: bytes) -> dict:
     }
 
 
+def parse_gain_map(data: bytes) -> dict:
+    """Parse GainMap opcode data (opcode 9).
+    
+    SDK ref: dng_gain_map.cpp dng_opcode_GainMap, dng_gain_map::GetStream
+    """
+    import struct
+    
+    area_spec, offset = parse_area_spec(data, 0)
+    
+    points_v = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    points_h = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    spacing_v = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    spacing_h = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    origin_v = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    origin_h = struct.unpack_from('>d', data, offset)[0]; offset += 8
+    map_planes = struct.unpack_from('>I', data, offset)[0]; offset += 4
+    
+    # Handle single-point maps
+    if points_v == 1:
+        spacing_v = 1.0
+        origin_v = 0.0
+    if points_h == 1:
+        spacing_h = 1.0
+        origin_h = 0.0
+    
+    # Read gain values [row][col][plane]
+    gain_values = np.zeros((points_v, points_h, map_planes), dtype=np.float32)
+    for row in range(points_v):
+        for col in range(points_h):
+            for plane in range(map_planes):
+                gain_values[row, col, plane] = struct.unpack_from('>f', data, offset)[0]
+                offset += 4
+    
+    return {
+        'type': 'GainMap',
+        **area_spec,
+        'points_v': points_v,
+        'points_h': points_h,
+        'spacing_v': spacing_v,
+        'spacing_h': spacing_h,
+        'origin_v': origin_v,
+        'origin_h': origin_h,
+        'map_planes': map_planes,
+        'gain_values': gain_values,
+    }
+
+
 def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = True) -> np.ndarray:
     """Apply parsed opcodes to image data.
     
     Supported opcodes:
-    - 1: WarpRectilinear (C++ warp_rectilinear)
-    - 3: FixVignetteRadial (C++ fix_vignette)
-    - 8: MapPolynomial (C++ RefBaselineMapPoly32)
+    - 1: WarpRectilinear (C++ op_warp_rectilinear)
+    - 3: FixVignetteRadial (C++ op_fix_vignette)
+    - 8: MapPolynomial (C++ op_map_polynomial)
+    - 9: GainMap (C++ op_gain_map)
     
     Args:
         data: Image data (H, W, C), float32, range [0, 1]
@@ -779,7 +829,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             # Build per-plane radial coefficients array (num_planes x 4)
             radial_per_plane = np.array([p['radial'][:4] for p in planes[:num_planes]], dtype=np.float64)
             tangential_per_plane = np.array([p['tangential'] for p in planes[:num_planes]], dtype=np.float64)
-            result = _dng_color.warp_rectilinear(
+            result = _dng_color.op_warp_rectilinear(
                 result, radial_per_plane,
                 center_x=opcode['center_x'],
                 center_y=opcode['center_y'],
@@ -788,7 +838,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             )
             
         elif opcode_type == 'FixVignetteRadial':
-            result = _dng_color.fix_vignette(
+            result = _dng_color.op_fix_vignette(
                 result,
                 opcode['coefficients'],
                 opcode['center_x'],
@@ -799,7 +849,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             # C++ implementation matching SDK RefBaselineMapPoly32
             coefficients = opcode['coefficients'].astype(np.float32)
             area = opcode['area']
-            result = _dng_color.apply_map_polynomial(
+            result = _dng_color.op_map_polynomial(
                 result,
                 coefficients,
                 area['top'], area['left'], area['bottom'], area['right'],
@@ -808,9 +858,92 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
                 opcode['degree']
             )
             
+        elif opcode_type == 'GainMap':
+            area = opcode['area']
+            logger.debug(f"GainMap: area={area}, plane={opcode['plane']}, planes={opcode['planes']}, "
+                        f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
+                        f"points={opcode['points_v']}x{opcode['points_h']}, map_planes={opcode['map_planes']}, "
+                        f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
+                        f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
+                        f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
+            result = _dng_color.op_gain_map(
+                result,
+                opcode['gain_values'],
+                area['top'], area['left'], area['bottom'], area['right'],
+                opcode['plane'], opcode['planes'],
+                opcode['row_pitch'], opcode['col_pitch'],
+                opcode['spacing_v'], opcode['spacing_h'],
+                opcode['origin_v'], opcode['origin_h']
+            )
+            
         else:
             name = opcode_names.get(opcode['id'], f"Unknown({opcode['id']})")
             logger.warning(f"Skipping unsupported opcode: {name}")
+    
+    return result
+
+
+def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
+    """Apply parsed opcodes to CFA data (pre-demosaic).
+    
+    DNG Spec: OpcodeList2 is "applied to the raw image, just after it has been
+    mapped to linear reference values" - i.e., to linear CFA before demosaic.
+    
+    Supported opcodes:
+    - 9: GainMap (C++ op_gain_map_cfa)
+    
+    Args:
+        data: CFA data (H, W), float32, range [0, 1]
+        opcodes: List of parsed opcodes from parse_opcode_list
+        
+    Returns:
+        Processed CFA data
+    """
+    result = data.astype(np.float32)
+    
+    opcode_names = {
+        1: 'WarpRectilinear', 2: 'WarpFisheye', 3: 'FixVignetteRadial',
+        4: 'FixBadPixelsConstant', 5: 'FixBadPixelsList', 6: 'TrimBounds',
+        7: 'MapTable', 8: 'MapPolynomial', 9: 'GainMap',
+        10: 'DeltaPerRow', 11: 'DeltaPerColumn', 12: 'ScalePerRow',
+        13: 'ScalePerColumn', 14: 'WarpRectilinear2',
+    }
+    
+    for opcode in opcodes:
+        opcode_type = opcode.get('type')
+        
+        if opcode_type == 'GainMap':
+            area = opcode['area']
+            logger.debug(f"GainMap CFA: area={area}, plane={opcode['plane']}, planes={opcode['planes']}, "
+                        f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
+                        f"points={opcode['points_v']}x{opcode['points_h']}, map_planes={opcode['map_planes']}, "
+                        f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
+                        f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
+                        f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
+            result = _dng_color.op_gain_map_cfa(
+                result,
+                opcode['gain_values'],
+                area['top'], area['left'], area['bottom'], area['right'],
+                opcode['row_pitch'], opcode['col_pitch'],
+                opcode['spacing_v'], opcode['spacing_h'],
+                opcode['origin_v'], opcode['origin_h']
+            )
+        
+        elif opcode_type == 'MapPolynomial':
+            area = opcode['area']
+            coefficients = np.asarray(opcode['coefficients'], dtype=np.float64)
+            logger.debug(f"MapPolynomial CFA: area={area}, degree={opcode['degree']}, coeffs={coefficients}")
+            result = _dng_color.op_map_polynomial_cfa(
+                result,
+                coefficients,
+                area['top'], area['left'], area['bottom'], area['right'],
+                opcode['row_pitch'], opcode['col_pitch'],
+                opcode['degree']
+            )
+            
+        else:
+            name = opcode_names.get(opcode['id'], f"Unknown({opcode['id']})")
+            logger.warning(f"Skipping unsupported CFA opcode: {name}")
     
     return result
 
@@ -1757,6 +1890,7 @@ def process_raw(
             logger.warning(f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}")
         
         photometric = tags.get("PhotometricInterpretation")
+        opcode_list2 = tags.get("OpcodeList2")
         
         # =================================================================
         # Black/White level handling per SDK dng_ifd.cpp
@@ -1880,6 +2014,19 @@ def process_raw(
                 black_delta_v=black_delta_v,
                 linearization_table=linearization_table,
             )
+            
+            # =================================================================
+            # OpcodeList2: Post-linearization (LINEAR_RAW is already RGB)
+            # =================================================================
+            if opcode_list2 is not None:
+                t0_op = time.perf_counter()
+                try:
+                    opcodes = parse_opcode_list(bytes(opcode_list2))
+                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes (applying to LINEAR_RAW RGB)")
+                    rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
+                except Exception as e:
+                    logger.warning(f"Failed to apply OpcodeList2: {e}")
+                timings['opcode_list2'] = time.perf_counter() - t0_op
         else:
             cfa_result = dng.get_raw_cfa_by_id(page_id)
             if cfa_result is None:
@@ -1915,6 +2062,22 @@ def process_raw(
                 linearization_table=linearization_table,
             )
             
+            # =================================================================
+            # OpcodeList2: Post-linearization, Pre-demosaic
+            # DNG Spec: "applied to the raw image, just after it has been
+            #            mapped to linear reference values"
+            # =================================================================
+            opcode_list2 = tags.get("OpcodeList2")
+            if opcode_list2 is not None:
+                t0 = time.perf_counter()
+                try:
+                    opcodes = parse_opcode_list(bytes(opcode_list2))
+                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes (applying to CFA)")
+                    cfa_normalized = apply_opcodes_cfa(cfa_normalized, opcodes)
+                except Exception as e:
+                    logger.warning(f"Failed to apply OpcodeList2: {e}")
+                timings['opcode_list2'] = time.perf_counter() - t0
+            
             # Demosaic without rotation - rotation applied after crop below
             if algorithm == "DNGSDK_BILINEAR":
                 # DNG SDK bilinear demosaic - uses raw CFAPattern codes directly
@@ -1942,22 +2105,6 @@ def process_raw(
             rgb_camera = rgb_camera[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
         
         timings['demosaic'] = time.perf_counter() - t0
-        
-        # =====================================================================
-        # OpcodeList2: Post-demosaic, pre-color opcodes
-        # SDK ref: dng_negative.cpp Stage2Image() applies OpcodeList2
-        # Applied AFTER demosaic/normalization, BEFORE color transforms
-        # =====================================================================
-        opcode_list2 = tags.get("OpcodeList2")
-        if opcode_list2 is not None:
-            t0 = time.perf_counter()
-            try:
-                opcodes = parse_opcode_list(bytes(opcode_list2))
-                logger.debug(f"OpcodeList2: {len(opcodes)} opcodes")
-                rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
-            except Exception as e:
-                logger.warning(f"Failed to apply OpcodeList2: {e}")
-            timings['opcode_list2'] = time.perf_counter() - t0
         
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)
