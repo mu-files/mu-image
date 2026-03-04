@@ -26,8 +26,8 @@ DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targ
 # Per-file thresholds for MUIMG (1.1x above measured values)
 MUIMG_THRESHOLDS = {
     # Original test files
-    "Sony.bayer.lossy.dng": 0.07,  # measured 0.06%
-    "Sony.bayer.lossy.stripped.dng": 0.07,  # measured 0.06%
+    "Sony.bayer.lossy.dng": 0.05,  # measured 0.04%
+    "Sony.bayer.lossy.stripped.dng": 0.05,  # measured 0.04%
     "asi676mc.cfa.dng": 0.01,  # measured 0.01%
     "asi676mc.linearraw.dng": 0.13,  # measured 0.12%
     "asi676mc.lossless.preview1.dng": 0.01,  # measured 0.00%
@@ -38,7 +38,7 @@ MUIMG_THRESHOLDS = {
     # DNG SDK test files - JXL
     "dngsdk.01_jxl_linear_raw_integer.dng": 0.01,  # measured 0.01%
     "dngsdk.02_jxl_linear_raw_float.dng": 0.08,  # measured 0.07%
-    "dngsdk.03_jxl_bayer_raw_integer.dng": 0.39,  # measured 0.35%
+    "dngsdk.03_jxl_bayer_raw_integer.dng": 0.22,  # measured 0.20%
     # DNG SDK test files - PGTM2
     "dngsdk.04_PGTM2_per_profile.dng": 0.01,  # measured 0.00%
     "dngsdk.05_PGTM2_unsigned8.dng": 0.01,  # measured 0.00%
@@ -59,11 +59,11 @@ MUIMG_THRESHOLDS = {
     "CanonR5-II.cfa.dng": 0.02,  # measured 0.02%
     # Sony
     "SonyRX100-VII.cfa.dng": 0.02,  # measured 0.01%
-    "SonyRX100-VII.cfa.uncompressed.dng": 0.75,  # measured 0.68%
+    "SonyRX100-VII.cfa.uncompressed.dng": 0.28,  # measured 0.25%
     # Insta360
     "Insta360.dng": 0.02,  # measured 0.01%
 }
-MUIMG_DEFAULT_THRESHOLD = 0.2  # Fallback for unknown files
+MUIMG_DEFAULT_THRESHOLD = 0.15  # Fallback for unknown files
 CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
 
 

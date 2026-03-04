@@ -1,6 +1,9 @@
 # DNG RAW Development Pipeline
 
-This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_render.cpp`) to convert RAW CFA data to a final display-referred RGB image. It maps how each DNG tag is interpreted and when it is applied during processing.
+This document describes the rendering pipeline implemented in `muimg.color.py`,
+which is a port of the Adobe DNG SDK (`dng_render.cpp`). It converts RAW CFA
+data to a final display-referred RGB image, mapping how each DNG tag is
+interpreted and applied during processing.
 
 ## Pipeline Overview
 
@@ -29,11 +32,12 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 1: LINEARIZATION & BLACK SUBTRACTION               │
-│  Tags: LinearizationTable, BlackLevel, WhiteLevel, ActiveArea               │
+│  Tags: LinearizationTable, BlackLevel, BlackLevelRepeatDim,                 │
+│        BlackLevelDeltaH, BlackLevelDeltaV, WhiteLevel                       │
 │  • Apply LinearizationTable LUT (if present) - maps ADC values to linear    │
-│  • Subtract BlackLevel from each pixel                                      │
-│  • Scale to [0, 1] range using WhiteLevel                                   │
-│  • Apply zero-offset ramp function: (x - blackLevel) / (1 - blackLevel)     │
+│  • Compute total black: BlackLevel[r%rR][c%rC][s] + DeltaH[c] + DeltaV[r]   │
+│  • Normalize: (pixel - totalBlack) / (WhiteLevel[s] - totalBlack)           │
+│  • Clamp result to [0, 1]                                                   │
 │  (LinearRaw: typically BlackLevel=0, making this an identity operation)     │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -41,12 +45,10 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                  OPCODELIST2 (Post-linearization, Pre-demosaic)             │
 │  Tags: OpcodeList2                                                          │
-│  DNG Spec: "applied to the raw image, just after it has been mapped to     │
+│  DNG Spec: "applied to the raw image, just after it has been mapped to      │
 │             linear reference values"                                        │
-│  • CFA: Applied to LINEAR CFA data before demosaic                          │
-│  • LinearRaw: Applied to LINEAR RGB data (already 3-channel)                │
-│  • Lens shading correction (GainMap), polynomial corrections (MapPolynomial)│
-│  • CFA uses per-position corrections (row_pitch=2, col_pitch=2)             │
+│  • CFA: GainMap, MapPolynomial                                              │
+│  • LinearRaw: GainMap, MapPolynomial, FixVignetteRadial, WarpRectilinear    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -62,58 +64,62 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│               STAGE 3: CAMERA RGB → LINEAR ProPhoto RGB                     │
-│                                                                             │
-│  Combined Matrix = AnalogBalance × CameraCalibration × ColorMatrix          │
-│                                                                             │
-│  Tags Applied:                                                              │
-│  • AnalogBalance - Per-channel scaling before color conversion              │
-│  • CameraCalibration1/2 - Per-image calibration adjustment                  │
-│  • ColorMatrix1/2/3 - Maps camera RGB to XYZ (based on illuminant)          │
-│  • CalibrationIlluminant1/2/3 - Identifies light source for each matrix    │
-│  • AsShotNeutral / AsShotWhiteXY - White balance reference                  │
-│                                                                             │
-│  Process:                                                                   │
-│  1. Determine white point from AsShotNeutral or AsShotWhiteXY               │
-│  2. Interpolate ColorMatrix based on white point temperature                │
-│  3. Apply: CameraToRGB = ProPhotoFromPCS × CameraToPCS                      │
-│  4. White balance by dividing by camera white vector                        │
+│                    OPCODELIST3 (Post-demosaic)                              │
+│  Tags: OpcodeList3                                                          │
+│  DNG Spec: "applied to the raw image, just after it has been demosaiced"    │
+│  • Supported: WarpRectilinear, FixVignetteRadial, MapPolynomial, GainMap    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         OPCODELIST3 (Post-color)                            │
-│  Tags: OpcodeList3                                                          │
-│  • Applied to RGB data after color transforms                               │
-│  • Additional corrections, noise reduction profiles                         │
+│                         DEFAULT CROP                                        │
+│  Tags: DefaultCropOrigin, DefaultCropSize                                   │
+│  • Trim image to final crop area                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│               STAGE 3: CAMERA RGB → LINEAR ProPhoto RGB                     │
+│                                                                             │
+│  Tags: ColorMatrix1/2, ForwardMatrix1/2, CameraCalibration1/2,              │
+│        CalibrationIlluminant1/2, AnalogBalance, AsShotNeutral/AsShotWhiteXY │
+│                                                                             │
+│  Process:                                                                   │
+│  1. Apply: ColorMatrix = AnalogBalance × CameraCalibration × ColorMatrix    │
+│  2. Interpolate matrices based on scene temperature (dual-illuminant)       │
+│  3. Determine white point from AsShotNeutral or AsShotWhiteXY               │
+│  4. If ForwardMatrix present: CameraToPCS = FM × inv(cameraWhite) × inv(AB) │
+│     Else: CameraToPCS = inv(ColorMatrix × BradfordAdapt)                    │
+│  5. CameraToProPhoto = ProPhotoFromPCS × CameraToPCS                        │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 4: HUE/SAT MAP (Profile LUT)                       │
-│  Tags: HueSatMap (from camera profile)                                      │
+│  Tags: ProfileHueSatMapDims, ProfileHueSatMapData1/2                        │
 │  • 3D LUT that adjusts hue, saturation, and value                           │
-│  • Interpolated based on white point                                        │
+│  • Dual-illuminant: interpolate Data1/Data2 based on scene temperature      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │               STAGE 5: PROFILE GAIN TABLE MAP                               │
-│  Tags: ProfileGainTableMap (from profile or negative)                       │
-│  • Spatially-varying exposure adjustment                                    │
-│  • Applied with BaselineExposure weighting                                  │
-│  • Supports HDR/overrange values                                            │
+│  Tags: ProfileGainTableMap, ProfileGainTableMap2 (v2 takes precedence)      │
+│        BaselineExposure, BaselineExposureOffset                             │
+│  • 3D gain table: (row, col, brightness) - spatially & tonally varying      │
+│  • Brightness index scaled by pow(2, BaselineExposure + Offset)             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 6: EXPOSURE ADJUSTMENT                             │
-│  Tags: BaselineExposure, BaselineExposureOffset, DefaultBlackRender         │
+│  Tags: BaselineExposure, BaselineExposureOffset, DefaultBlackRender,        │
+│        ShadowScale                                                          │
 │                                                                             │
-│  exposure = UserExposure + BaselineExposure + BaselineExposureOffset        │
+│  exposure = BaselineExposure + BaselineExposureOffset                       │
 │  white = 1.0 / pow(2, max(0, exposure))                                     │
-│  black = Shadows × ShadowScale × 0.001                                      │
-│    (Shadows = 5.0 if DefaultBlackRender=Auto, 0.0 if DefaultBlackRender=None)│
+│  black = Shadows × ShadowScale × 0.001, clamped to < 0.99 × white           │
+│   (Shadows = 5.0 if DefaultBlackRender=Auto, 0.0 if None)                   │
 │                                                                             │
 │  • Applies exposure ramp function                                           │
 │  • Soft clipping near black point with quadratic toe                        │
@@ -122,9 +128,9 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 7: LOOK TABLE                                      │
-│  Tags: LookTable (from camera profile)                                      │
-│  • Creative 3D LUT for color grading                                        │
-│  • Applied after exposure, before tone curve                                │
+│  Tags: ProfileLookTableDims, ProfileLookTableData                           │
+│  • Creative 3D LUT for color grading (same format as HueSatMap)             │
+│  • Applied after exposure ramp, before tone curve                           │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -134,44 +140,41 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 │                                                                             │
 │  • Default: ACR3 baseline tone curve (S-curve)                              │
 │  • Or custom ProfileToneCurve from camera profile                           │
-│  • Applied per-channel but ratio-preserving (RGBTone)                       │
-│  • Negative exposure compensation baked into curve                          │
-│  • HDR: slope extension beyond 1.0 for overrange                            │
+│  • Hue-preserving: curve applied to max/min, middle interpolated            │
+│  • Negative exposure: apply_exposure_tone() darkening before curve          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    STAGE 9: RGB TABLES                                      │
-│  Tags: RGBTables (masked 3D LUTs with semantic masks)                       │
-│  • Multiple 3D LUTs with associated masks                                   │
-│  • Weighted sum or sequential application                                   │
-│  • Background table for unmasked regions                                    │
+│                    STAGE 9: RGB TABLES (NOT IMPLEMENTED)                    │
+│  Tags: RGBTables (DNG 1.6+)                                                 │
+│  • Listed in UNSUPPORTED_RENDERING_TAGS - skipped                           │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │               STAGE 10: OUTPUT COLOR SPACE CONVERSION                       │
 │                                                                             │
-│  RGBtoFinal = FinalSpaceFromPCS × ProPhotoToPCS                             │
+│  prophoto_to_srgb = XYZ_D65_TO_SRGB × BradfordAdapt(D50→D65) × ProPhotoToXYZ│
 │                                                                             │
-│  • Convert from linear ProPhoto RGB to final color space                    │
-│  • Common targets: sRGB, Adobe RGB, Display P3, Rec.2020                    │
-│  • HDR profiles get linear gamma variant of color space                     │
+│  • Convert from linear ProPhoto RGB (D50) to linear sRGB (D65)              │
+│  • Only sRGB output currently implemented                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    STAGE 11: GAMMA ENCODING                                 │
 │                                                                             │
-│  • Apply output space gamma function                                        │
-│  • sRGB: ~2.2 gamma with linear toe                                         │
-│  • HDR: Linear (gamma 1.0)                                                  │
+│  sRGB transfer: x <= 0.0031308 ? 12.92*x : 1.055*x^(1/2.4) - 0.055          │
+│                                                                             │
+│  • Clips to [0, 1] and applies sRGB gamma                                   │
+│  • Only sRGB gamma currently implemented                                    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         FINAL DISPLAY IMAGE                                 │
-│                    (8-bit or 16-bit RGB per channel)                        │
+│                         FINAL OUTPUT IMAGE                                  │
+│  Output dtype options: uint8, uint16, float16, float32                      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -181,8 +184,8 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 
 | Tag | Purpose | Pipeline Stage |
 |-----|---------|----------------|
-| `PhotometricInterpretation` | CFA or LinearRaw | Input/demosaic routing |
-| `Compression` | Decode algorithm (1=none, 7=JPEG, 52546=JXL) | Decompression |
+| `PhotometricInterpretation` | CFA or LinearRaw | Input/demosaic |
+| `Compression` | Decode algorithm (1=none, 7=JPEG, 52546=JXL) | Decompress |
 | `SamplesPerPixel` | 1 for CFA, 3 for LinearRaw | Input validation |
 | `PlanarConfiguration` | Data layout | Reading |
 | `CFARepeatPatternDim` | CFA pattern size (usually 2×2) | Demosaicing |
@@ -193,8 +196,8 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `BlackLevelRepeatDim` | Black level pattern size (rows, cols) | Stage 1 |
 | `BlackLevelDeltaH` | Per-column black level offset | Stage 1 |
 | `BlackLevelDeltaV` | Per-row black level offset | Stage 1 |
-| `WhiteLevel` | Sensor saturation level (default: 2^BitsPerSample - 1) | Stage 1 |
-| `LinearizationTable` | Sensor linearization LUT (applied before black/white) | Stage 1 |
+| `WhiteLevel` | Sensor saturation level (default: 2^BPS - 1) | Stage 1 |
+| `LinearizationTable` | Sensor linearization LUT | Stage 1 |
 | `ColumnInterleaveFactor` | Column interleaving | De-interleaving |
 | `RowInterleaveFactor` | Row interleaving | De-interleaving |
 | `JXLDistance` | JPEG XL quality parameter | Decompression |
@@ -212,9 +215,9 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `DNGVersion` | DNG specification version | Validation |
 | `DNGBackwardVersion` | Minimum reader version | Validation |
 | `Orientation` | Image orientation | Final output |
-| `ColorMatrix1` | XYZ → Camera RGB for illuminant 1 (inverted for rendering) | Stage 3 |
-| `ColorMatrix2` | XYZ → Camera RGB for illuminant 2 (inverted for rendering) | Stage 3 |
-| `ColorMatrix3` | XYZ → Camera RGB for illuminant 3 (inverted for rendering) | Stage 3 |
+| `ColorMatrix1` | XYZ → Camera RGB for illuminant 1 (inverted) | Stage 3 |
+| `ColorMatrix2` | XYZ → Camera RGB for illuminant 2 (inverted) | Stage 3 |
+| `ColorMatrix3` | XYZ → Camera RGB for illuminant 3 (inverted) | Stage 3 |
 | `CalibrationIlluminant1` | Light source for ColorMatrix1 | Stage 3 |
 | `CalibrationIlluminant2` | Light source for ColorMatrix2 | Stage 3 |
 | `CalibrationIlluminant3` | Light source for ColorMatrix3 | Stage 3 |
@@ -233,94 +236,32 @@ This document describes the rendering pipeline used by the Adobe DNG SDK (`dng_r
 | `ProfileToneCurve` | Custom tone curve | Stage 8 |
 | `ForwardMatrix1/2` | Camera RGB → XYZ | Direct (avoids inverting ColorMatrix) |
 | `CameraCalibration1/2` | Per-camera fine-tuning | Stage 3 |
-| `OpcodeList1` | Pre-linearization opcodes | Before Stage 1 (hot pixel removal, defect correction) |
-| `OpcodeList2` | Post-demosaic opcodes | After Stage 2 (GainMap, MapPolynomial, FixVignetteRadial) |
+| `OpcodeList1` | Pre-linearization opcodes | Before Stage 1 (defect correction) |
+| `OpcodeList2` | Post-linearization opcodes | After Stage 1 (GainMap, MapPolynomial) |
 | `OpcodeList3` | Post-color opcodes | After Stage 3 (additional corrections) |
-
-## Color Matrix Interpolation
-
-The DNG SDK interpolates between calibration matrices based on the scene white point temperature:
-
-```
-If ColorMatrix2 exists AND illuminant temperatures differ:
-    
-    Temperature → fraction g:
-    - If T ≤ T1: g = 1.0 (use ColorMatrix1)
-    - If T ≥ T2: g = 0.0 (use ColorMatrix2)  
-    - Otherwise: g = (1/T - 1/T2) / (1/T1 - 1/T2)
-    
-    Final ColorMatrix = g × ColorMatrix1 + (1-g) × ColorMatrix2
-```
-
-For triple-illuminant profiles (ColorMatrix3), a more complex triangular interpolation is used.
-
-## White Balance Application
-
-The white balance is determined by (in priority order):
-1. User-specified WhiteXY
-2. `AsShotNeutral` → converted to XY via `NeutralToXY()`
-3. `AsShotWhiteXY` → used directly
-4. Default to D55 (5500K daylight)
-
-The camera white vector scales each channel to neutralize the white point:
-```cpp
-fCameraWhite = spec->CameraWhite();  // Per-channel multipliers
-```
-
-## Tone Curve Details
-
-The default ACR3 tone curve is a lookup table with 421 entries that:
-- Lifts shadows (input 0.0 → output 0.0)
-- Applies an S-curve for contrast
-- Compresses highlights (input 1.0 → output 1.0)
-
-For HDR profiles, the tone curve extends beyond 1.0 using slope continuation.
-
-## Processing Order Summary
-
-1. **Black/White Level** → Linearize raw data
-2. **Demosaic** → Interpolate to full RGB
-3. **AnalogBalance × CameraCalibration × ColorMatrix** → Camera → XYZ → ProPhoto
-4. **HueSatMap** → Profile color adjustments  
-5. **ProfileGainTableMap** → Local exposure adjustments
-6. **Exposure Ramp** → Apply BaselineExposure
-7. **LookTable** → Creative color grading
-8. **Tone Curve** → Scene → Display mapping
-9. **RGBTables** → Masked 3D LUTs
-10. **Color Space** → ProPhoto → Output space
-11. **Gamma** → Linear → Encoded
 
 ## muimg Implementation Status
 
 Current implementation in `muimg.color.process_raw()`:
 
-| Stage | SDK Function | muimg Status | Notes |
-|-------|--------------|--------------|-------|
-| 1. Linearization/Black/White | `DoBaseline1DTable` | ✓ Implemented | LinearizationTable + black/white normalization |
-| 2. Demosaic | — | ✓ Implemented | CFA + LinearRaw paths |
-| 3. Camera → ProPhoto | `DoBaselineABCtoRGB` | ✓ Implemented | Dual-illuminant, ForwardMatrix, CameraCalibration |
-| 4. HueSatMap | `DoBaselineHueSatMap` | ✓ Implemented | ProfileHueSatMap with dual-illuminant interpolation |
-| 5. ProfileGainTableMap | `DoBaselineProfileGainTableMap` | ✗ Not implemented | |
-| 6. Exposure Ramp | `DoBaseline1DFunction` | ✓ Implemented | Uses `BaselineExposure`, `ShadowScale` |
-| 7. LookTable | `DoBaselineHueSatMap` | ✓ Implemented | ProfileLookTable |
-| 8. Tone Curve | `DoBaselineRGBTone` | ✓ Implemented | ACR3 default + ProfileToneCurve support |
-| 9. RGBTables | `ProcessRGBTables` | ✗ Not implemented | |
-| 10. Color Space | `DoBaselineRGBtoRGB` | ✓ Implemented | ProPhoto → sRGB only |
-| 11. Gamma | `DoBaseline1DTable` | ✓ Implemented | sRGB gamma |
+| Stage | muimg Status | Notes |
+|-------|--------------|-------|
+| OpcodeList1 | 🔴 Not implemented | Pre-linearization (defect correction) |
+| 1. Linearization | ✓ Implemented | LinearizationTable + black/white |
+| OpcodeList2 | ✓ Implemented | GainMap, MapPolynomial, etc. |
+| 2. Demosaic | ✓ Implemented | CFA + LinearRaw paths |
+| OpcodeList3 | ✓ Implemented | WarpRectilinear, etc. |
+| DefaultCrop | ✓ Implemented | After OpcodeList3 |
+| 3. Camera → ProPhoto | ✓ Implemented | 🔴 Not implemented: Triple-illuminant |
+| 4. HueSatMap | ✓ Implemented | ProfileHueSatMap |
+| 5. ProfileGainTableMap | ✓ Implemented | PGTM1 + PGTM2 |
+| 6. Exposure Ramp | ✓ Implemented | BaselineExposure, ShadowScale |
+| 7. LookTable | ✓ Implemented | ProfileLookTable |
+| 8. Tone Curve | ✓ Implemented | ACR3 + ProfileToneCurve |
+| 9. RGBTables | 🔴 Not implemented | DNG 1.6+ |
+| 10. Color Space | ✓ Implemented | ProPhoto → sRGB only |
+| 11. Gamma | ✓ Implemented | sRGB only |
+| ReductionMatrix | 🔴 Not implemented | >3 color channels |
+| SemanticMasks | 🔴 Not implemented | DNG 1.6+ depth/masks |
+| HDR/Overrange | 🔴 Not implemented | ProfileDynamicRange |
 
-### Stage 3 Detail
-
-| Tag | muimg Status |
-|-----|--------------|
-| `ColorMatrix1` | ✓ Implemented |
-| `ColorMatrix2` | ✓ Implemented (dual-illuminant interpolation) |
-| `ColorMatrix3` | ✗ Not implemented (triple illuminant) |
-| `CalibrationIlluminant1/2` | ✓ Implemented |
-| `CalibrationIlluminant3` | ✗ Not implemented |
-| `AnalogBalance` | ✓ Implemented |
-| `CameraCalibration1/2` | ✓ Implemented |
-| `ForwardMatrix1/2` | ✓ Implemented (with NormalizeForwardMatrix) |
-| `AsShotNeutral` | ✓ Implemented |
-| `AsShotWhiteXY` | ✓ Implemented |
-| `BaselineExposure` | ✓ Implemented |
-| `ShadowScale` | ✓ Implemented |

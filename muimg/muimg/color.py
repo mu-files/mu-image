@@ -455,13 +455,15 @@ UNSUPPORTED_RENDERING_TAGS = {
     # Opcode lists (lens corrections, gain maps, warp, etc.)
     # =========================================================================
     "OpcodeList1",                # Pre-demosaic opcodes
-    # OpcodeList2 now supported (MapPolynomial opcode)
-    # OpcodeList3 now supported (WarpRectilinear opcode)
+    # OpcodeList2/3 supported opcodes: WarpRectilinear, FixVignetteRadial,
+    # MapPolynomial, GainMap
     
     # =========================================================================
-    # Linearization
+    # Linearization - LinearResponseLimit is NOT in this list because:
+    # It's only used for advanced highlight recovery, not the basic render
+    # pipeline. dng_render.cpp doesn't reference it, so it doesn't affect
+    # our SDK-matching output.
     # =========================================================================
-    "LinearResponseLimit",        # Clips linear values above this
     
     # =========================================================================
     # (BaselineExposure and BaselineExposureOffset are now implemented)
@@ -826,9 +828,16 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             # SDK applies different warp per color plane for lateral CA correction
             planes = opcode['planes']
             num_planes = min(len(planes), 3)  # RGB
-            # Build per-plane radial coefficients array (num_planes x 4)
-            radial_per_plane = np.array([p['radial'][:4] for p in planes[:num_planes]], dtype=np.float64)
-            tangential_per_plane = np.array([p['tangential'] for p in planes[:num_planes]], dtype=np.float64)
+            logger.debug(f"WarpRectilinear: center=({opcode['center_x']:.4f}, {opcode['center_y']:.4f})")
+            # Build per-plane radial/tangential arrays (num_planes x 4, num_planes x 2)
+            radial_list = []
+            tangential_list = []
+            for i, p in enumerate(planes[:num_planes]):
+                logger.debug(f"  Plane {i}: radial={p['radial']}, tan={p['tangential']}")
+                radial_list.append(p['radial'][:4])
+                tangential_list.append(p['tangential'])
+            radial_per_plane = np.array(radial_list, dtype=np.float64)
+            tangential_per_plane = np.array(tangential_list, dtype=np.float64)
             result = _dng_color.op_warp_rectilinear(
                 result, radial_per_plane,
                 center_x=opcode['center_x'],
@@ -2094,17 +2103,33 @@ def process_raw(
                 )
                 rgb_camera = rgb_linear.astype(np.float32) / 65535.0
         
-        # Apply DefaultCrop BEFORE rotation
-        # SDK ref: dng_negative.cpp:2535-2575 DefaultCropArea() uses H/V directly
-        # SDK ref: dng_negative.cpp:3321-3327 crop values read without transformation
+        timings['demosaic'] = time.perf_counter() - t0
+        
+        # =====================================================================
+        # OpcodeList3: Post-demosaic opcodes (BEFORE crop)
+        # DNG Spec: "applied to the raw image, just after it has been demosaiced"
+        # SDK ref: dng_negative.cpp BuildStage3Image() applies OpcodeList3 at 5232
+        # SDK ref: dng_negative.cpp Trim(defaultCropArea) happens later at 6885
+        # =====================================================================
+        opcode_list3 = tags.get("OpcodeList3")
+        if opcode_list3 is not None:
+            t0 = time.perf_counter()
+            try:
+                opcodes = parse_opcode_list(bytes(opcode_list3))
+                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
+                rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList3: {e}")
+            timings['opcode_list3'] = time.perf_counter() - t0
+        
+        # Apply DefaultCrop AFTER OpcodeList3, BEFORE color transforms
+        # SDK ref: dng_negative.cpp:6885 Trim(defaultCropArea)
         if crop_origin is not None and crop_size is not None:
             crop_x = int(crop_origin[0])
             crop_y = int(crop_origin[1])
             crop_w = int(crop_size[0])
             crop_h = int(crop_size[1])
             rgb_camera = rgb_camera[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
-        
-        timings['demosaic'] = time.perf_counter() - t0
         
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)
@@ -2472,28 +2497,6 @@ def process_raw(
         t0 = time.perf_counter()
         rgb_final = _dng_color.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
         timings['srgb_gamma'] = time.perf_counter() - t0
-        
-        # =====================================================================
-        # OpcodeList3: Post-render opcodes (e.g. WarpRectilinear)
-        # SDK ref: dng_negative.cpp Stage3Image() applies OpcodeList3
-        # Applied AFTER color transforms and gamma, BEFORE final output
-        # =====================================================================
-        opcode_list3 = tags.get("OpcodeList3")
-        logger.debug(f"OpcodeList3 in tags: {opcode_list3 is not None}")
-        if opcode_list3 is not None:
-            t0 = time.perf_counter()
-            try:
-                opcodes = parse_opcode_list(bytes(opcode_list3))
-                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
-                for op in opcodes:
-                    if op.get('type') == 'WarpRectilinear':
-                        logger.debug(f"  WarpRectilinear: center=({op['center_x']:.4f}, {op['center_y']:.4f})")
-                        for i, p in enumerate(op['planes']):
-                            logger.debug(f"    Plane {i}: radial={p['radial']}, tan={p['tangential']}")
-                rgb_final = apply_opcodes(rgb_final, opcodes, use_bicubic=False)
-            except Exception as e:
-                logger.warning(f"Failed to apply OpcodeList3: {e}")
-            timings['opcode_list3'] = time.perf_counter() - t0
         
         # Convert to output dtype
         t0 = time.perf_counter()
