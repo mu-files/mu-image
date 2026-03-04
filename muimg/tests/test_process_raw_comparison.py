@@ -14,8 +14,7 @@ import tifffile
 
 from muimg import color
 from muimg.color_mac import core_image_available, process_raw_core_image
-from conftest import TEST_FILES_DIR
-
+from conftest import TEST_FILES_DIR, LOCAL_TEST_FILES_DIR, OUTPUT_COMPARISON_DIR
 
 # Output directory for comparison files
 OUTPUT_DIR = Path(__file__).parent / "output_comparison"
@@ -29,15 +28,15 @@ MUIMG_THRESHOLDS = {
     # Original test files
     "Sony.bayer.lossy.dng": 0.07,  # measured 0.06%
     "Sony.bayer.lossy.stripped.dng": 0.07,  # measured 0.06%
-    "asi676mc.cfa.dng": 0.02,  # measured 0.01%
-    "asi676mc.linearraw.dng": 0.14,  # measured 0.12%
+    "asi676mc.cfa.dng": 0.01,  # measured 0.01%
+    "asi676mc.linearraw.dng": 0.13,  # measured 0.12%
     "asi676mc.lossless.preview1.dng": 0.01,  # measured 0.00%
     "asi676mc.nopreview.lossy.dng": 0.01,  # measured 0.00%
     "asi676mc.preview0.lossy.dng": 0.01,  # measured 0.00%
     "iphone.linearRGB.lossy.dng": 0.72,  # measured 0.65%
     "iphone.linearRGB.lossy.stripped.dng": 0.21,  # measured 0.19%
     # DNG SDK test files - JXL
-    "dngsdk.01_jxl_linear_raw_integer.dng": 0.02,  # measured 0.01%
+    "dngsdk.01_jxl_linear_raw_integer.dng": 0.01,  # measured 0.01%
     "dngsdk.02_jxl_linear_raw_float.dng": 0.08,  # measured 0.07%
     "dngsdk.03_jxl_bayer_raw_integer.dng": 0.39,  # measured 0.35%
     # DNG SDK test files - PGTM2
@@ -56,11 +55,13 @@ MUIMG_THRESHOLDS = {
     # DNG SDK test files - HDR/SDR
     "dngsdk.14_hdr_sdr_profiles.dng": 0.01,  # measured 0.00%
     # Canon
-    "CanonR5.cfa.dng": 0.03,  # measured 0.02%
-    "CanonR5-II.cfa.dng": 0.03,  # measured 0.02%
+    "CanonR5.cfa.dng": 0.02,  # measured 0.02%
+    "CanonR5-II.cfa.dng": 0.02,  # measured 0.02%
     # Sony
     "SonyRX100-VII.cfa.dng": 0.02,  # measured 0.01%
     "SonyRX100-VII.cfa.uncompressed.dng": 0.75,  # measured 0.68%
+    # Insta360
+    "Insta360.dng": 0.02,  # measured 0.01%
 }
 MUIMG_DEFAULT_THRESHOLD = 0.2  # Fallback for unknown files
 CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
@@ -68,9 +69,12 @@ CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
 
 def get_dng_files():
     """Get list of DNG files for parametrized tests."""
-    if not TEST_FILES_DIR.exists():
-        return []
-    return sorted(TEST_FILES_DIR.glob("*.dng"))
+    files = []
+    if TEST_FILES_DIR.exists():
+        files.extend(TEST_FILES_DIR.glob("*.dng"))
+    if LOCAL_TEST_FILES_DIR.exists():
+        files.extend(LOCAL_TEST_FILES_DIR.glob("*.dng"))
+    return sorted(files)
 
 
 def normalize_image(img: np.ndarray) -> np.ndarray:

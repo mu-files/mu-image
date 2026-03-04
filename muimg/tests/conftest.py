@@ -18,6 +18,7 @@ _TESTDATA_REPO_URL = "git@github.com:mu-files/mu-image-testdata.git"
 
 # Paths that tests should use
 TEST_FILES_DIR = _TESTDATA_REPO / "dngtestfiles"
+LOCAL_TEST_FILES_DIR = _TESTDATA_REPO / "dngtestfiles" / "local_testfiles"  # gitignored in testdata repo
 OUTPUT_COMPARISON_DIR = Path(__file__).parent / "output_comparison"
 
 
