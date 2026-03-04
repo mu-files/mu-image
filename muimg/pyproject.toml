@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260304.1244"
+version = "0.1.20260304.1410"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
@@ -49,4 +49,7 @@ Repository = "https://github.com/mu-files/mu-image"
 packages = ["muimg"]
 
 [tool.pytest.ini_options]
-addopts = "--tb=no"
+log_cli = true
+log_cli_level = "WARNING"
+log_cli_format = "%(levelname)-8s %(name)s:%(filename)s:%(lineno)d %(message)s"
+addopts = "--tb=line"

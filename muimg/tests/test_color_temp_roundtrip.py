@@ -6,6 +6,8 @@ from muimg.color import (
     uvUCS_to_xy,
     xy_to_uvUCS,
     uv_to_colortemp,
+    temp_tint_to_xy,
+    xy_to_temp_tint,
 )
 
 
@@ -44,3 +46,48 @@ def test_color_temp_tint_roundtrip(temp: int, tint: int):
         f"Tint roundtrip mismatch [case: temp={temp}, tint={tint}]: "
         f"start={tint}, end={tint2:.6f}, diff={abs(tint2 - tint):.6f} (tol={TINT_ABS_TOL})"
     )
+
+
+@pytest.mark.parametrize("temp", [2000, 3200, 5000, 5500, 6500, 10000, 15000])
+@pytest.mark.parametrize("tint", [-50, -10, 0, 10, 50])
+def test_temp_tint_to_xy_roundtrip(temp: int, tint: int):
+    """Verify temp_tint_to_xy and xy_to_temp_tint are inverses."""
+    x, y = temp_tint_to_xy(temp, tint)
+    temp2, tint2 = xy_to_temp_tint(x, y)
+    
+    assert nearly_equal(temp2, float(temp), 0.5), (
+        f"Temperature roundtrip mismatch: {temp} -> ({x},{y}) -> {temp2}"
+    )
+    assert nearly_equal(tint2, float(tint), 0.01), (
+        f"Tint roundtrip mismatch: {tint} -> ({x},{y}) -> {tint2}"
+    )
+
+
+def test_acr3_curve_basic():
+    """Verify get_acr3_curve produces valid tone curve."""
+    from muimg.color import get_acr3_curve
+    import numpy as np
+    
+    for num_points in [256, 512, 1024, 4096]:
+        curve = get_acr3_curve(num_points)
+        
+        assert curve.shape == (num_points,), f"Wrong shape: {curve.shape}"
+        assert curve.dtype == np.float32, f"Wrong dtype: {curve.dtype}"
+        assert curve[0] == 0.0, f"Curve should start at 0: {curve[0]}"
+        assert curve[-1] == 1.0, f"Curve should end at 1: {curve[-1]}"
+        assert np.all(np.diff(curve) >= 0), "Curve should be monotonic"
+
+
+def test_bradford_adaptation_basic():
+    """Verify compute_bradford_adaptation produces valid adaptation matrices."""
+    from muimg.color import compute_bradford_adaptation, D50_xy, D65_xy
+    import numpy as np
+    
+    # D50 -> D65 should produce a non-identity matrix
+    adapt = compute_bradford_adaptation(D50_xy[0], D50_xy[1], D65_xy[0], D65_xy[1])
+    assert adapt.shape == (3, 3), f"Wrong shape: {adapt.shape}"
+    assert adapt.dtype == np.float64, f"Wrong dtype: {adapt.dtype}"
+    
+    # Identity adaptation (same src/dst) should give identity matrix
+    identity = compute_bradford_adaptation(D50_xy[0], D50_xy[1], D50_xy[0], D50_xy[1])
+    assert np.allclose(identity, np.eye(3), atol=1e-10), "Same src/dst should give identity"
