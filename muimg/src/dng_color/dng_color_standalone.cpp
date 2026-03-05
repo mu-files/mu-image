@@ -971,87 +971,6 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     return result;
 }
 
-// ============================================================================
-// Exposure Tone (dng_function_exposure_tone from dng_render.cpp lines 107-157)
-// Applied AFTER tone curve for negative exposure compensation
-// Direct port of SDK code
-// ============================================================================
-
-// SDK ref: dng_render.cpp dng_function_exposure_tone::Evaluate() lines 141-157
-static inline float exposure_tone_evaluate(float x, float slope, float a, float b, float c) {
-    // For negative exposure: darkens the image
-    // Region 1: x <= 0.25 → linear darkening
-    if (x <= 0.25f)
-        return x * slope;
-    
-    // Region 2: x > 0.25 → quadratic (maps 1.0 → 1.0)
-    return (a * x + b) * x + c;
-}
-
-// Apply exposure tone function to RGB image
-// SDK ref: dng_render.cpp lines 107-157, 1009-1012
-static PyObject* dng_color_apply_exposure_tone(PyObject* self, PyObject* args) {
-    PyArrayObject* rgb_array = NULL;
-    double exposure;
-    
-    if (!PyArg_ParseTuple(args, "O!d",
-            &PyArray_Type, &rgb_array,
-            &exposure)) {
-        return NULL;
-    }
-    
-    // SDK ref: line 109 - only apply for negative exposure
-    if (exposure >= 0.0) {
-        // Return input unchanged (NOP)
-        Py_INCREF(rgb_array);
-        return (PyObject*)rgb_array;
-    }
-    
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
-        return NULL;
-    }
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
-        return NULL;
-    }
-    
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    if (!rgb_cont) return NULL;
-    
-    npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
-    if (!result) {
-        Py_DECREF(rgb_cont);
-        return NULL;
-    }
-    
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    
-    // SDK ref: dng_render.cpp lines 122-133
-    // fSlope = pow(2.0, exposure)
-    float slope = (float)pow(2.0, exposure);
-    
-    // Quadratic parameters: maps 1.0 → 1.0 with matching slope at crossover
-    float a = 16.0f / 9.0f * (1.0f - slope);
-    float b = slope - 0.5f * a;
-    float c = 1.0f - a - b;
-    
-    // Process all pixels
-    npy_intp total = height * width * 3;
-    for (npy_intp i = 0; i < total; i++) {
-        dst_data[i] = exposure_tone_evaluate(src_data[i], slope, a, b, c);
-    }
-    
-    Py_DECREF(rgb_cont);
-    return result;
-}
-
 // Apply hue-preserving RGB tone curve (RefBaselineRGBTone from dng_reference.cpp)
 // This preserves color relationships by interpolating the middle channel
 static PyObject* dng_color_apply_rgb_tone(PyObject* self, PyObject* args) {
@@ -2891,17 +2810,6 @@ static PyMethodDef DngColorMethods[] = {
      "    supportOverrange (bool, optional): Allow values > 1.0\n\n"
      "Returns:\n"
      "    ndarray: Exposure-adjusted RGB image"},
-    
-    {"apply_exposure_tone", dng_color_apply_exposure_tone, METH_VARARGS,
-     "Apply exposure tone function (dng_function_exposure_tone).\n\n"
-     "SDK ref: dng_render.cpp lines 107-157\n"
-     "For negative exposure: darkens using piecewise linear+quadratic.\n"
-     "For non-negative exposure: returns input unchanged (NOP).\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    exposure (float): Total exposure value (BaselineExposure + offset)\n\n"
-     "Returns:\n"
-     "    ndarray: Exposure-tone-adjusted RGB image"},
     
     {"srgb_gamma", dng_color_srgb_gamma, METH_VARARGS,
      "Apply sRGB gamma encoding (linear to sRGB).\n\n"

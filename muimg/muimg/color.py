@@ -1822,6 +1822,70 @@ class ToneCurve:
 #   - dng_linearization_info.cpp: normalize_black_white implementation
 # =============================================================================
 
+def exposure_tone(x: np.ndarray, exposure: float) -> np.ndarray:
+    """Apply the DNG SDK exposure tone function.
+    
+    SDK ref: dng_render.cpp dng_function_exposure_tone::Evaluate() lines 141-157
+    For negative exposure: darkens using piecewise linear+quadratic.
+    For non-negative exposure: returns input unchanged.
+    
+    Can be applied to pixel values or used to remap curve inputs.
+    
+    Args:
+        x: Input values in [0, 1]
+        exposure: Exposure compensation in stops
+    
+    Returns:
+        Transformed values
+    """
+    if exposure >= 0.0:
+        return x.copy()
+    
+    # SDK ref: dng_render.cpp lines 122-133
+    slope = 2.0 ** exposure
+    
+    # Quadratic parameters: maps 1.0 → 1.0 with matching slope at crossover
+    a = 16.0 / 9.0 * (1.0 - slope)
+    b = slope - 0.5 * a
+    c = 1.0 - a - b
+    
+    # Region 1: x <= 0.25 → linear darkening
+    # Region 2: x > 0.25 → quadratic (maps 1.0 → 1.0)
+    return np.where(x <= 0.25, x * slope, (a * x + b) * x + c)
+
+
+def remap_curve_input(
+    tone_curve: np.ndarray,
+    remap_fn=None,
+    num_points: int = 4096
+) -> np.ndarray:
+    """Remap the input values of a tone curve, baking into a single LUT.
+    
+    SDK ref: dng_render.cpp lines 1009-1012
+    dng_1d_concatenate(f1, f2) - result(x) = curve(remap(x))
+    
+    Args:
+        tone_curve: Tone curve LUT
+        remap_fn: Function(x) -> x that remaps input values before the curve.
+                  If None, no remapping is applied.
+        num_points: Number of input sample points. Output LUT has same size.
+    
+    Returns:
+        Combined LUT as float32 array with num_points elements
+    """
+    if remap_fn is None:
+        return tone_curve.astype(np.float32)
+    
+    lut_x = np.linspace(0.0, 1.0, num_points, dtype=np.float64)
+    remap_x = remap_fn(lut_x)
+    
+    # Interpolate through the tone curve at remapped positions
+    tone_x = np.linspace(0.0, 1.0, len(tone_curve), dtype=np.float64)
+    combined = np.interp(remap_x, tone_x, tone_curve)
+    
+    return np.clip(combined, 0.0, 1.0).astype(np.float32)
+
+
 def apply_acr3_tone_curve(image: np.ndarray) -> np.ndarray:
     """Apply the ACR3 default tone curve to a linear RGB image.
     
@@ -2681,6 +2745,8 @@ def process_raw(
         # Check for ProfileToneCurve (custom tone curve from camera profile)
         # SDK ref: dng_render.cpp lines 2153-2162
         profile_tone_curve = tags.get("ProfileToneCurve")
+        custom_curve = None
+        
         if profile_tone_curve is not None and len(profile_tone_curve) >= 4:
             # ProfileToneCurve is array of 2N values: [x0, y0, x1, y1, ...]
             # SDK uses cubic spline interpolation (dng_spline_solver)
@@ -2699,24 +2765,20 @@ def process_raw(
                 spline = CubicSpline(x_points, y_points, bc_type='natural')
                 lut_x = np.linspace(0.0, 1.0, 4096)
                 custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
-                # SDK ref: dng_render.cpp lines 1009-1012
-                # dng_1d_concatenate(exposureTone, ToneCurve) - exposureTone FIRST
-                rgb_exposure_toned = _dng_color.apply_exposure_tone(rgb_exposed.astype(np.float32), exposure)
-                rgb_toned = _dng_color.apply_rgb_tone(rgb_exposure_toned.astype(np.float32), custom_curve)
                 logger.debug(f"Using ProfileToneCurve with {n_points} control points")
             else:
                 # Fallback to ACR3 if curve is invalid
                 logger.warning("ProfileToneCurve has non-monotonic x values, using ACR3")
-                # SDK ref: dng_render.cpp lines 1009-1012
-                # dng_1d_concatenate(exposureTone, ToneCurve) - exposureTone FIRST
-                rgb_exposure_toned = _dng_color.apply_exposure_tone(rgb_exposed.astype(np.float32), exposure)
-                rgb_toned = apply_acr3_tone_curve(rgb_exposure_toned)
-        else:
-            # Use ACR3 default tone curve
-            # SDK ref: dng_render.cpp lines 1009-1012
-            # dng_1d_concatenate(exposureTone, ToneCurve) - exposureTone FIRST
-            rgb_exposure_toned = _dng_color.apply_exposure_tone(rgb_exposed.astype(np.float32), exposure)
-            rgb_toned = apply_acr3_tone_curve(rgb_exposure_toned)
+        
+        # SDK ref: dng_render.cpp lines 1009-1012
+        # dng_1d_concatenate(exposureTone, ToneCurve) - bake exposure into LUT
+        base_curve = custom_curve if custom_curve is not None else get_acr3_curve(4096)
+        combined_curve = remap_curve_input(
+            base_curve, lambda x: exposure_tone(x, exposure)
+        )
+        rgb_toned = _dng_color.apply_rgb_tone(
+            rgb_exposed.astype(np.float32), combined_curve
+        )
         
         timings['tone_curve'] = time.perf_counter() - t0
         
