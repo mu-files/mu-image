@@ -218,8 +218,10 @@ class MetadataTags:
                 bag_props[key] = value
             # Check if value has coordinate pairs (list of 2-tuples) - needs <rdf:Seq> structure
             elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
-                # ToneCurve object with points attribute
-                sequence_props[key] = getattr(value, 'points')
+                # SplineCurve object with points attribute (normalized 0-1)
+                # Convert to 8-bit for XMP compatibility
+                points = getattr(value, 'points')
+                sequence_props[key] = [(int(x * 255), int(y * 255)) for x, y in points]
             elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
                 # Direct list of 2-tuples
                 sequence_props[key] = value
@@ -367,7 +369,13 @@ class XmpMetadata:
                     processed_values.append(coords[0])
                 elif len(coords) == 2:
                     # Coordinate pair (e.g., ToneCurve: "0, 0")
-                    processed_values.append(f"({coords[0]},{coords[1]})")
+                    # Normalize 8-bit values to 0-1 for tone curve properties
+                    if 'ToneCurve' in seq_name:
+                        x_norm = float(coords[0]) / 255.0
+                        y_norm = float(coords[1]) / 255.0
+                        processed_values.append(f"({x_norm},{y_norm})")
+                    else:
+                        processed_values.append(f"({coords[0]},{coords[1]})")
                 else:
                     # Multiple values (e.g., PointColors with 19 values)
                     # Store as bracketed list for clarity
@@ -1646,7 +1654,7 @@ def decode_raw(
         
         # Only process parameters if we have XMP to read or explicit parameters to apply
         if use_xmp or processing_params:
-            from .color import ToneCurve as TC
+            from .color import SplineCurve as SC
             
             # Define mapping: param_name -> (option_name, xmp_name, value_type)
             # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
@@ -1654,7 +1662,7 @@ def decode_raw(
                 "temperature": ("neutralTemperature", "Temperature", float),
                 "tint": ("neutralTint", "Tint", float),
                 "exposure": ("exposure", "Exposure2012", float),
-                "tone_curve": ("toneCurve", "ToneCurvePV2012", TC),
+                "tone_curve": ("toneCurve", "ToneCurvePV2012", SC),
                 "orientation": ("imageOrientation", None, int),
                 "noise_reduction": ("luminanceNoiseReductionAmount", None, float),
             }
@@ -1703,14 +1711,13 @@ def decode_raw(
                     s = 12.92 * lin
                 return s
 
-            tone_curve = options["toneCurve"]
-            # Get normalized points and apply lin2srgb transformation
-            normalized_points = tone_curve.to_normalized()
-            transformed_points = [(lin2srgb(x), lin2srgb(y)) for x, y in normalized_points]
-            # Convert back to 8-bit range and create new tone curve
-            new_tone_curve = TC()
-            new_tone_curve.points = [(int(x * 255), int(y * 255)) for x, y in transformed_points]
-            options["toneCurve"] = new_tone_curve
+            spline_curve = options["toneCurve"]
+            # Points are already normalized 0-1, apply lin2srgb transformation
+            transformed_points = [
+                (lin2srgb(x), lin2srgb(y)) for x, y in spline_curve.points
+            ]
+            # Create new SplineCurve with transformed points
+            options["toneCurve"] = SC(transformed_points)
 
         # Ensure file pointer is at beginning for Core Image processing
         # (XMP reading above may have moved the pointer)

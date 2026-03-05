@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 from typing import IO, Optional, Union
-from .color import ToneCurve
+from .color import SplineCurve
 
 logger = logging.getLogger(__name__)
 
@@ -120,83 +120,37 @@ RAW_FILTER_OPTION_MAP = {
     "neutralLocation": ("kCIInputNeutralLocationKey", "point_nsvalue"),
 }
 
-def _create_tone_curve_filter(tone_curve):
+def _create_tone_curve_filter(spline_curve):
     """
-    Create a CIToneCurve filter from a ToneCurve object.
+    Create a CIToneCurve filter from a SplineCurve object.
     
     Args:
-        tone_curve: ToneCurve object with to_normalized() method
+        spline_curve: SplineCurve object with normalized 0-1 points
 
     Returns:
         CIFilter instance configured with tone curve points, or None if invalid
     """
     from Quartz import CIVector, CIFilter
     
-    # Get normalized points from ToneCurve object
-    normalized_points = tone_curve.to_normalized()
-
-    num_points = len(normalized_points)
+    num_points = len(spline_curve.points)
     
-    # Validate point count and provide error messages
+    # Validate point count
     if num_points < 2:
         logger.warning(f"Invalid tone curve: {num_points} points provided. "
                       f"Minimum 2 points required. Skipping tone curve.")
         return None
-    elif num_points > 5:
-        logger.warning(f"Invalid tone curve: {num_points} points provided. "
-                      f"Maximum 5 points supported. Skipping tone curve.")
-        return None
     
-    # Generate 5 points based on number of input points, preserving originals
+    # CIToneCurve requires exactly 5 points - resample if needed
     if num_points == 5:
-        # Use original points as-is
-        final_points = normalized_points
+        final_points = spline_curve.points
     else:
-        # Use SciPy CubicSpline to generate smooth interpolation while preserving original points
-        from scipy.interpolate import CubicSpline
-        import numpy as np
-        
-        # Extract x and y coordinates
-        x_coords = [point[0] for point in normalized_points]
-        y_coords = [point[1] for point in normalized_points]
-    
-        # Create cubic spline
-        spline = CubicSpline(x_coords, y_coords)
-        
-        if num_points == 2:
-            # Keep first and last exactly, interpolate 3 points between them
-            first, last = normalized_points[0], normalized_points[1]
-            # Generate 3 intermediate x values
-            x_interp = np.linspace(first[0], last[0], 5)
-            # Use original points for first and last, spline for middle 3
-            final_points = [
-                first,  # Preserve original first point exactly
-                (x_interp[1], float(spline(x_interp[1]))),
-                (x_interp[2], float(spline(x_interp[2]))),
-                (x_interp[3], float(spline(x_interp[3]))),
-                last   # Preserve original last point exactly
-            ]
-        elif num_points == 3:
-            # Keep first, middle, last and add 2 interpolated points
-            first, middle, last = normalized_points[0], normalized_points[1], normalized_points[2]
-            # Interpolate between first-middle and middle-last
-            mid1_x = (first[0] + middle[0]) / 2
-            mid1_y = float(spline(mid1_x))
-            mid2_x = (middle[0] + last[0]) / 2
-            mid2_y = float(spline(mid2_x))
-            final_points = [first, (mid1_x, mid1_y), middle, (mid2_x, mid2_y), last]
-        elif num_points == 4:
-            # Keep first and last, add 1 point between the middle 2
-            first, mid1, mid2, last = normalized_points
-            # Interpolate between the two middle points
-            between_x = (mid1[0] + mid2[0]) / 2
-            between_y = float(spline(between_x))
-            final_points = [first, mid1, (between_x, between_y), mid2, last]
+        resampled = spline_curve.resample(5)
+        final_points = resampled.points
     
     # Create tone curve filter
     tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
     
-    # Set the 5 final points
+    # Set the 5 points
     for i in range(5):
         x, y = final_points[i]
         vector = CIVector.vectorWithX_Y_(float(x), float(y))

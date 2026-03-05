@@ -10,6 +10,125 @@ from . import _dng_color
 
 logger = logging.getLogger(__name__)
 
+
+class SplineCurve:
+    """
+    Represents a spline curve with control points in normalized 0-1 range.
+    
+    Uses scipy CubicSpline for interpolation. Points are stored as float tuples.
+    """
+    
+    def __init__(self, points_or_string=None):
+        """
+        Initialize SplineCurve.
+        
+        Args:
+            points_or_string: Optional. Can be:
+                - None: Initialize with default linear curve (0.0, 0.0), (1.0, 1.0)
+                - str: Parse from string format "(0.0,0.0),(1.0,1.0)"
+                - list: Use provided float points directly
+        """
+        if points_or_string is None:
+            # Default linear curve
+            self.points = [(0.0, 0.0), (1.0, 1.0)]
+        elif isinstance(points_or_string, str):
+            # Parse from string format
+            self._parse_from_string(points_or_string)
+        elif isinstance(points_or_string, list):
+            # Use provided points directly (ensure float)
+            self.points = [(float(x), float(y)) for x, y in points_or_string]
+        else:
+            raise TypeError(
+                f"SplineCurve constructor expects None, str, or list, "
+                f"got {type(points_or_string)}"
+            )
+        
+        # Create the spline immediately
+        self._create_spline()
+    
+    def _parse_from_string(self, string_data: str):
+        """Helper method to parse points from string format.
+        
+        Expects normalized 0-1 float format: "(0.0,0.0),(0.5,0.5),(1.0,1.0)"
+        """
+        import re
+        
+        # Extract coordinate pairs using regex (supports int or float)
+        tuple_pattern = r'\(([0-9.]+),\s*([0-9.]+)\)'
+        matches = re.findall(tuple_pattern, string_data)
+        
+        if not matches:
+            raise ValueError(
+                f"No valid coordinate pairs found in spline curve data: {string_data}"
+            )
+        
+        # Convert string coordinates to float tuples
+        self.points = [(float(x), float(y)) for x, y in matches]
+    
+    def _create_spline(self):
+        """Create the CubicSpline from current points."""
+        from scipy.interpolate import CubicSpline
+        
+        x_coords = [p[0] for p in self.points]
+        y_coords = [p[1] for p in self.points]
+        
+        # Ensure monotonically increasing x values
+        if not all(x_coords[i] < x_coords[i+1] for i in range(len(x_coords)-1)):
+            raise ValueError("SplineCurve x coordinates must be monotonically increasing")
+        
+        self._spline = CubicSpline(x_coords, y_coords, bc_type='natural')
+    
+    def lookup(self, x: float) -> float:
+        """
+        Evaluate the spline at a given x value.
+        
+        Args:
+            x: Input value (typically 0-1 range)
+            
+        Returns:
+            Interpolated y value
+        """
+        return float(self._spline(x))
+    
+    def resample(self, num_points: int) -> 'SplineCurve':
+        """
+        Create a new SplineCurve with evenly-spaced points sampled from this curve.
+        
+        Args:
+            num_points: Number of points in the new curve
+            
+        Returns:
+            New SplineCurve with resampled points
+        """
+        import numpy as np
+        
+        if num_points < 2:
+            raise ValueError("resample requires at least 2 points")
+        
+        # Sample at evenly spaced x values
+        x_values = np.linspace(0.0, 1.0, num_points)
+        y_values = self._spline(x_values)
+        
+        # Clip y values to 0-1 range
+        y_values = np.clip(y_values, 0.0, 1.0)
+        
+        new_points = [(float(x), float(y)) for x, y in zip(x_values, y_values)]
+        return SplineCurve(new_points)
+    
+    def __str__(self) -> str:
+        """
+        Convert SplineCurve to string format.
+        
+        Returns:
+            String representation in format "(0.0,0.0),(0.5,0.5),(1.0,1.0)"
+        """
+        tuple_strings = [f"({x:.6g},{y:.6g})" for x, y in self.points]
+        return ','.join(tuple_strings)
+    
+    def __repr__(self):
+        return f"SplineCurve(points={self.points})"
+
+
 # Adobe DNG temperature/tint conversion (exact port of dng_temperature.cpp)
 # Source: /3dparty/dng_sdk_1_7_1/dng_sdk/source/dng_temperature.cpp
 _K_TINT_SCALE = -3000.0  # kTintScale
@@ -1697,116 +1816,6 @@ def linear_raw_from_dng(
         hot_pixel_min_brightness=hot_pixel_min_brightness
     )
 
-class ToneCurve:
-    """
-    Represents a tone curve with 5 control points.
-    
-    The curve uses 8-bit values (0-255) for compatibility with XMP tone curve format,
-    but can be normalized to 0-1 range for use with Core Image filters.
-    """
-    
-    def __init__(self, points_or_string=None):
-        """
-        Initialize ToneCurve.
-        
-        Args:
-            points_or_string: Optional. Can be:
-                - None: Initialize with default linear curve (0,0), (255,255)
-                - str: Parse from string format "(0,0),(255,255)"
-                - list: Use provided points directly
-        """
-        if points_or_string is None:
-            # Default linear curve
-            self.points = [
-                (0, 0),
-                (255, 255)  # Using 255 instead of 256 for proper 8-bit range
-            ]
-        elif isinstance(points_or_string, str):
-            # Parse from string format
-            self._parse_from_string(points_or_string)
-        elif isinstance(points_or_string, list):
-            # Use provided points directly
-            self.points = points_or_string
-        else:
-            raise TypeError(f"ToneCurve constructor expects None, str, or list, got {type(points_or_string)}")
-    
-    def _parse_from_string(self, string_data: str):
-        """Helper method to parse points from string format."""
-        import re
-        
-        # Extract coordinate pairs using regex
-        tuple_pattern = r'\((\d+),(\d+)\)'
-        matches = re.findall(tuple_pattern, string_data)
-        
-        if not matches:
-            raise ValueError(f"No valid coordinate pairs found in tone curve data: {string_data}")
-        
-        # Convert string coordinates to integer tuples
-        self.points = [(int(x), int(y)) for x, y in matches]
-    
-
-    
-    def to_normalized(self):
-        """
-        Convert 8-bit points to normalized 0-1 range for Core Image.
-        
-        Returns:
-            List of (x, y) tuples with values normalized to 0-1 range.
-        """
-        return [(x / 255.0, y / 255.0) for x, y in self.points]
-    
-    @classmethod
-    def from_scurve(cls, strength: float):
-        """
-        Create a new ToneCurve instance with S-curve adjustment applied.
-        
-        Args:
-            strength: Float between 0.0 and 1.0, where 0.0 is no adjustment
-                     and 1.0 is maximum S-curve effect.
-        
-        Returns:
-            ToneCurve: New instance with S-curve applied.
-        """
-        curve = cls()
-        
-        # Clamp strength to valid range
-        s = min(max(float(strength), 0.0), 1.0)
-        
-        # Constants matching the Core Image implementation
-        SHADOW_PULL_FACTOR = 0.3
-        HIGHLIGHT_PUSH_FACTOR = 0.015
-        
-        # Convert the Core Image normalized coordinates to 8-bit values
-        # Core Image uses 0-1 range, we use 0-255 range
-        curve.points = [
-            (0, 0),  # Black point stays fixed
-            (int(0.53 * 255), int((0.53 - s * SHADOW_PULL_FACTOR) * 255)),  # Shadow adjustment
-            (int(0.73 * 255), int(0.73 * 255)),  # Midtone anchor point
-            (int(0.90 * 255), int((0.90 + s * HIGHLIGHT_PUSH_FACTOR) * 255)),  # Highlight adjustment  
-            (255, 255)  # White point stays fixed
-        ]
-        
-        # Ensure output values stay within valid 8-bit range
-        curve.points = [
-            (x, min(max(y, 0), 255)) for x, y in curve.points
-        ]
-        
-        return curve
-    
-    def __str__(self) -> str:
-        """
-        Convert ToneCurve to string format.
-        
-        Returns:
-            String representation in format "(0,0),(56,30),(124,125),(188,212),(255,255)"
-        """
-        tuple_strings = [f"({x},{y})" for x, y in self.points]
-        return ','.join(tuple_strings)
-    
-    def __repr__(self):
-        return f"ToneCurve(points={self.points})"
-
-
 # =============================================================================
 # DNG SDK Port (Python + C++ Extension)
 # =============================================================================
@@ -2805,26 +2814,20 @@ def process_raw(
         
         if profile_tone_curve is not None and len(profile_tone_curve) >= 4:
             # ProfileToneCurve is array of 2N values: [x0, y0, x1, y1, ...]
-            # SDK uses cubic spline interpolation (dng_spline_solver)
-            from scipy.interpolate import CubicSpline
-            
             curve_data = np.asarray(profile_tone_curve, dtype=np.float64)
             n_points = len(curve_data) // 2
-            x_points = curve_data[0::2]  # input values
-            y_points = curve_data[1::2]  # output values
+            points = [(curve_data[i*2], curve_data[i*2+1]) for i in range(n_points)]
             
-            # Ensure monotonically increasing x values for spline
-            if np.all(np.diff(x_points) > 0):
-                # Create spline and sample to 4096-point LUT
-                # Use 'natural' bc_type - 'clamped' forces zero derivatives at endpoints
-                # which creates non-linear curves even for 2-point linear input
-                spline = CubicSpline(x_points, y_points, bc_type='natural')
+            try:
+                spline = SplineCurve(points)
                 lut_x = np.linspace(0.0, 1.0, 4096)
-                custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
+                custom_curve = np.clip(
+                    [spline.lookup(x) for x in lut_x], 0.0, 1.0
+                ).astype(np.float32)
                 logger.debug(f"Using ProfileToneCurve with {n_points} control points")
-            else:
-                # Fallback to ACR3 if curve is invalid
-                logger.warning("ProfileToneCurve has non-monotonic x values, using ACR3")
+            except ValueError as e:
+                # Fallback to ACR3 if curve is invalid (e.g., non-monotonic x)
+                logger.warning(f"ProfileToneCurve invalid ({e}), using ACR3")
         
         # SDK ref: dng_render.cpp lines 1009-1012
         # dng_1d_concatenate(exposureTone, ToneCurve) - bake exposure into LUT

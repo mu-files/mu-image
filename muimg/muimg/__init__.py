@@ -25,7 +25,7 @@ from .processing import ProcessingPipeline
 from .imgio import decode_image
 from .videoio import SequenceEncodePipeline
 from .color import (
-    ToneCurve,
+    SplineCurve,
     UnsupportedDNGTagError,
     interp_center,
     interp_center_green,
@@ -60,7 +60,7 @@ __all__ = [
     'SequenceEncodePipeline',
     'rgb_planes_from_cfa',
     'rgb_planes_from_dng',
-    'ToneCurve',
+    'SplineCurve',
     'write_dng',
     'write_dng_linearraw',
     'write_dng_from_page',
