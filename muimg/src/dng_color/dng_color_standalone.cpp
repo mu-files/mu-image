@@ -971,9 +971,73 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     return result;
 }
 
-// Apply hue-preserving RGB tone curve (RefBaselineRGBTone from dng_reference.cpp)
+// Apply simple per-pixel curve via LUT interpolation
+// No hue preservation - each channel processed independently
+static PyObject* dng_color_apply_curve(PyObject* self, PyObject* args) {
+    PyArrayObject* rgb_array = NULL;
+    PyArrayObject* curve_array = NULL;
+    
+    if (!PyArg_ParseTuple(args, "O!O!",
+            &PyArray_Type, &rgb_array,
+            &PyArray_Type, &curve_array)) {
+        return NULL;
+    }
+    
+    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
+        return NULL;
+    }
+    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
+        return NULL;
+    }
+    
+    npy_intp height = PyArray_DIM(rgb_array, 0);
+    npy_intp width = PyArray_DIM(rgb_array, 1);
+    int curve_size = (int)PyArray_SIZE(curve_array);
+    
+    if (curve_size < 2) {
+        PyErr_SetString(PyExc_ValueError, "Curve must have at least 2 points");
+        return NULL;
+    }
+    
+    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    PyArrayObject* curve_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)curve_array, NPY_FLOAT32, 1, 1);
+    
+    if (!rgb_cont || !curve_cont) {
+        Py_XDECREF(rgb_cont);
+        Py_XDECREF(curve_cont);
+        return NULL;
+    }
+    
+    npy_intp dims[3] = {height, width, 3};
+    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    if (!result) {
+        Py_DECREF(rgb_cont);
+        Py_DECREF(curve_cont);
+        return NULL;
+    }
+    
+    const float* src_data = (const float*)PyArray_DATA(rgb_cont);
+    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    const float* curve = (const float*)PyArray_DATA(curve_cont);
+    
+    // Simple per-pixel LUT interpolation
+    npy_intp total = height * width * 3;
+    for (npy_intp i = 0; i < total; i++) {
+        dst_data[i] = interpolate_tone_curve(src_data[i], curve, curve_size);
+    }
+    
+    Py_DECREF(rgb_cont);
+    Py_DECREF(curve_cont);
+    return result;
+}
+
+// Apply hue-preserving RGB curve (RefBaselineRGBTone from dng_reference.cpp)
 // This preserves color relationships by interpolating the middle channel
-static PyObject* dng_color_apply_rgb_tone(PyObject* self, PyObject* args) {
+static PyObject* dng_color_apply_curve_hue_preserving(PyObject* self, PyObject* args) {
     PyArrayObject* rgb_array = NULL;
     PyArrayObject* curve_array = NULL;
     
@@ -2788,15 +2852,24 @@ static PyMethodDef DngColorMethods[] = {
      "Returns:\n"
      "    ndarray: Tone-mapped RGB image"},
     
-    {"apply_rgb_tone", dng_color_apply_rgb_tone, METH_VARARGS,
-     "Apply hue-preserving RGB tone curve (RefBaselineRGBTone).\n\n"
-     "This is the SDK's default tone mapping that preserves color relationships\n"
-     "by applying the curve to max/min channels and interpolating the middle.\n\n"
+    {"apply_curve", dng_color_apply_curve, METH_VARARGS,
+     "Apply simple per-pixel curve via LUT interpolation.\n\n"
+     "Each channel processed independently (no hue preservation).\n\n"
      "Args:\n"
      "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    curve (ndarray): 1D tone curve LUT, float32, maps [0,1] -> [0,1]\n\n"
+     "    curve (ndarray): 1D curve LUT, float32, maps [0,1] -> [0,1]\n\n"
      "Returns:\n"
-     "    ndarray: Hue-preserving tone-mapped RGB image"},
+     "    ndarray: Curve-mapped RGB image"},
+    
+    {"apply_curve_hue_preserving", dng_color_apply_curve_hue_preserving, METH_VARARGS,
+     "Apply hue-preserving RGB curve (RefBaselineRGBTone).\n\n"
+     "This preserves color relationships by applying the curve to max/min\n"
+     "channels and interpolating the middle channel.\n\n"
+     "Args:\n"
+     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
+     "    curve (ndarray): 1D curve LUT, float32, maps [0,1] -> [0,1]\n\n"
+     "Returns:\n"
+     "    ndarray: Hue-preserving curve-mapped RGB image"},
     
     {"apply_exposure_ramp", dng_color_apply_exposure_ramp, METH_VARARGS,
      "Apply exposure ramp function (dng_function_exposure_ramp).\n\n"

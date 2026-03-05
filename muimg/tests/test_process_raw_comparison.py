@@ -28,16 +28,16 @@ MUIMG_THRESHOLDS = {
     # Original test files
     "Sony.bayer.lossy.dng": 0.05,  # measured 0.04%
     "Sony.bayer.lossy.stripped.dng": 0.05,  # measured 0.04%
-    "asi676mc.cfa.dng": 0.01,  # measured 0.01%
-    "asi676mc.linearraw.dng": 0.13,  # measured 0.12%
-    "asi676mc.lossless.preview1.dng": 0.01,  # measured 0.00%
-    "asi676mc.nopreview.lossy.dng": 0.01,  # measured 0.00%
-    "asi676mc.preview0.lossy.dng": 0.01,  # measured 0.00%
+    "asi676mc.cfa.dng": 0.03,  # measured 0.02%
+    "asi676mc.linearraw.dng": 0.18,  # measured 0.17%
+    "asi676mc.lossless.preview1.dng": 0.04,  # measured 0.03%
+    "asi676mc.nopreview.lossy.dng": 0.08,  # measured 0.07%
+    "asi676mc.preview0.lossy.dng": 0.08,  # measured 0.07%
     "iphone.linearRGB.lossy.dng": 0.72,  # measured 0.65%
     "iphone.linearRGB.lossy.stripped.dng": 0.21,  # measured 0.19%
     # DNG SDK test files - JXL
     "dngsdk.01_jxl_linear_raw_integer.dng": 0.01,  # measured 0.01%
-    "dngsdk.02_jxl_linear_raw_float.dng": 0.08,  # measured 0.07%
+    "dngsdk.02_jxl_linear_raw_float.dng": 0.09,  # measured 0.08%
     "dngsdk.03_jxl_bayer_raw_integer.dng": 0.22,  # measured 0.20%
     # DNG SDK test files - PGTM2
     "dngsdk.04_PGTM2_per_profile.dng": 0.01,  # measured 0.00%

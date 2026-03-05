@@ -1854,6 +1854,64 @@ def exposure_tone(x: np.ndarray, exposure: float) -> np.ndarray:
     return np.where(x <= 0.25, x * slope, (a * x + b) * x + c)
 
 
+def exposure_ramp(
+    x: np.ndarray,
+    white: float,
+    black: float,
+    min_black: float,
+    support_overrange: bool = False
+) -> np.ndarray:
+    """Apply the DNG SDK exposure ramp function.
+    
+    SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
+    3 regions: below black-radius→0, above black+radius→linear, between→quadratic
+    
+    Can be applied to pixel values or used to remap curve inputs.
+    
+    Args:
+        x: Input values in [0, 1]
+        white: White point (1.0 / pow(2, max(0, exposure)))
+        black: Black point (shadows * shadowScale * 0.001)
+        min_black: Minimum black for radius calculation
+        support_overrange: Allow values > 1.0
+    
+    Returns:
+        Transformed values
+    """
+    # SDK ref: dng_render.cpp lines 55-75 (constructor)
+    slope = 1.0 / (white - black)
+    
+    # Compute radius for quadratic blend region
+    kMaxCurveX = 0.5      # Fraction of minBlack
+    kMaxCurveY = 1.0 / 16.0  # Fraction of white
+    
+    radius = min(kMaxCurveX * min_black, kMaxCurveY / slope)
+    
+    q_scale = 0.0
+    if radius > 0.0:
+        q_scale = slope / (4.0 * radius)
+    
+    # Region 1: x <= black - radius → 0
+    # Region 2: x >= black + radius → linear ramp
+    # Region 3: between → quadratic blend
+    result = np.zeros_like(x)
+    
+    # Region 2: linear ramp
+    mask_linear = x >= (black + radius)
+    y_linear = (x[mask_linear] - black) * slope
+    if not support_overrange:
+        y_linear = np.minimum(y_linear, 1.0)
+    result[mask_linear] = y_linear
+    
+    # Region 3: quadratic blend (between black-radius and black+radius)
+    mask_quad = (x > (black - radius)) & (x < (black + radius))
+    y_quad = x[mask_quad] - (black - radius)
+    result[mask_quad] = q_scale * y_quad * y_quad
+    
+    # Region 1 stays at 0 (already initialized)
+    return result
+
+
 def remap_curve_input(
     tone_curve: np.ndarray,
     remap_fn=None,
@@ -1884,19 +1942,6 @@ def remap_curve_input(
     combined = np.interp(remap_x, tone_x, tone_curve)
     
     return np.clip(combined, 0.0, 1.0).astype(np.float32)
-
-
-def apply_acr3_tone_curve(image: np.ndarray) -> np.ndarray:
-    """Apply the ACR3 default tone curve to a linear RGB image.
-    
-    This implements hue-preserving RGB tone mapping as per SDK's RefBaselineRGBTone.
-    The curve is applied to max and min channels, and the middle channel is
-    interpolated to preserve the original hue relationship.
-    
-    SDK ref: dng_reference.cpp lines 1868-1990
-    """
-    curve = get_acr3_curve(4096)
-    return _dng_color.apply_rgb_tone(image.astype(np.float32), curve)
 
 
 # Standard illuminant xy chromaticities (from DNG SDK)
@@ -2315,6 +2360,7 @@ def process_raw(
             
             # Normalize using C++ implementation per DNG spec Chapter 5
             # LinearizationTable is applied inside normalize_raw before black/white
+            t0 = time.perf_counter()
             rgb_camera = _dng_color.normalize_raw(
                 data=rgb_data.astype(np.float32),
                 black_level=black_level,
@@ -2326,6 +2372,7 @@ def process_raw(
                 black_delta_v=black_delta_v,
                 linearization_table=linearization_table,
             )
+            timings['normalize_raw'] = time.perf_counter() - t0
             
             # =================================================================
             # OpcodeList2: Post-linearization (LINEAR_RAW is already RGB)
@@ -2362,6 +2409,7 @@ def process_raw(
             # Normalize CFA data using C++ implementation per DNG spec Chapter 5
             # LinearizationTable is applied inside normalize_raw before black/white
             # SDK demosaics on float32 throughout
+            t0 = time.perf_counter()
             cfa_normalized = _dng_color.normalize_raw(
                 data=cfa_data.astype(np.float32),
                 black_level=black_level,
@@ -2373,6 +2421,7 @@ def process_raw(
                 black_delta_v=black_delta_v,
                 linearization_table=linearization_table,
             )
+            timings['normalize_raw'] = time.perf_counter() - t0
             
             # =================================================================
             # OpcodeList2: Post-linearization, Pre-demosaic
@@ -2391,6 +2440,7 @@ def process_raw(
                 timings['opcode_list2'] = time.perf_counter() - t0
             
             # Demosaic without rotation - rotation applied after crop below
+            t0 = time.perf_counter()
             if algorithm == "DNGSDK_BILINEAR":
                 # DNG SDK bilinear demosaic - uses raw CFAPattern codes directly
                 # SDK ref: dng_mosaic_info::fCFAPattern[row][col]
@@ -2405,8 +2455,8 @@ def process_raw(
                     algorithm=algorithm
                 )
                 rgb_camera = rgb_linear.astype(np.float32) / 65535.0
-        
-        timings['demosaic'] = time.perf_counter() - t0
+            
+            timings['demosaic'] = time.perf_counter() - t0
         
         # =====================================================================
         # OpcodeList3: Post-demosaic opcodes (BEFORE crop)
@@ -2710,23 +2760,25 @@ def process_raw(
         exposure_black = shadows * shadow_scale * 0.001
         exposure_black = min(exposure_black, 0.99 * exposure_white)
         
-        # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
-        # 3 regions: below black-radius=0, above black+radius=linear, between=quadratic
-        # SDK line 996: minBlack = black
-        rgb_exposed = _dng_color.apply_exposure_ramp(
-            rgb_prophoto.astype(np.float32),
-            exposure_white,
-            exposure_black,
-            exposure_black  # minBlack = black per SDK line 996
-        )
-        timings['exposure_ramp'] = time.perf_counter() - t0
-        
         # =====================================================================
         # Step 2.5: DoBaselineHueSatMap (ProfileLookTable)
         # SDK ref: dng_render.cpp lines 1930-1947
         # Applied AFTER exposure ramp, BEFORE tone curve
         # =====================================================================
+        # Optimization: if no look_table, combine exposure_ramp into tone curve LUT
         if look_table is not None:
+            # Must apply exposure_ramp separately when look_table exists
+            # (If no look_table, exposure_ramp is baked into tone curve below)
+            # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
+            lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
+            exposure_ramp_lut = exposure_ramp(
+                lut_x, exposure_white, exposure_black, exposure_black
+            ).astype(np.float32)
+            rgb_exposed = _dng_color.apply_curve(
+                rgb_prophoto.astype(np.float32), exposure_ramp_lut
+            )
+            timings['exposure_ramp'] = time.perf_counter() - t0
+            
             t0 = time.perf_counter()
             rgb_exposed = _dng_color.apply_hue_sat_map(
                 rgb_exposed.astype(np.float32),
@@ -2734,6 +2786,10 @@ def process_raw(
                 look_hue_divs, look_sat_divs, look_val_divs
             )
             timings['look_table'] = time.perf_counter() - t0
+        else:
+            # No look_table: exposure_ramp will be baked into tone curve below
+            rgb_exposed = rgb_prophoto
+            timings['exposure_ramp'] = 0.0
         
         # =====================================================================
         # Step 3: DoBaselineRGBTone (ALWAYS applied)
@@ -2773,10 +2829,20 @@ def process_raw(
         # SDK ref: dng_render.cpp lines 1009-1012
         # dng_1d_concatenate(exposureTone, ToneCurve) - bake exposure into LUT
         base_curve = custom_curve if custom_curve is not None else get_acr3_curve(4096)
+        
+        # Remap 1: bake exposure_tone into curve (always)
         combined_curve = remap_curve_input(
             base_curve, lambda x: exposure_tone(x, exposure)
         )
-        rgb_toned = _dng_color.apply_rgb_tone(
+        
+        # Remap 2: if no look_table, also bake exposure_ramp into curve
+        if look_table is None:
+            combined_curve = remap_curve_input(
+                combined_curve,
+                lambda x: exposure_ramp(x, exposure_white, exposure_black, exposure_black)
+            )
+        
+        rgb_toned = _dng_color.apply_curve_hue_preserving(
             rgb_exposed.astype(np.float32), combined_curve
         )
         
