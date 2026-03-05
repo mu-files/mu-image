@@ -8,54 +8,6 @@ from .color import SplineCurve
 
 logger = logging.getLogger(__name__)
 
-
-def _strip_unique_camera_model(dng_data: bytes) -> bytes:
-    """Strip UniqueCameraModel tag from DNG data to avoid Core Image camera-specific processing.
-    
-    When Core Image (CIRAWFilter) recognizes a known camera model via the UniqueCameraModel
-    tag (e.g., "Sony ILCE-7C"), it applies camera-specific processing that can produce
-    images significantly different to Adobe's dng_validate reference output.
-    
-    Investigation findings:
-    - Original camera DNGs with UniqueCameraModel: Core Image renders correctly
-    - DNGs rewritten by tifffile with UniqueCameraModel: Core Image renders ~7% differently
-    - DNGs with UniqueCameraModel stripped or set to unknown model: renders correctly
-    
-    Uses tifffile to locate the tag, then patches the raw bytes to zero out the tag ID.
-    This preserves the original compression and file structure.
-    
-    Args:
-        dng_data: Raw DNG file bytes
-        
-    Returns:
-        Modified DNG data with UniqueCameraModel tag zeroed out
-    """
-    from tifffile import TiffFile, TIFF
-    
-    UNIQUE_CAMERA_MODEL = TIFF.TAGS["UniqueCameraModel"]
-    
-    try:
-        input_buffer = io.BytesIO(dng_data)
-        
-        with TiffFile(input_buffer) as tif:
-            # Check IFD0 for UniqueCameraModel tag
-            if tif.pages and UNIQUE_CAMERA_MODEL in tif.pages[0].tags:
-                tag = tif.pages[0].tags[UNIQUE_CAMERA_MODEL]
-                # tag.offset is the file offset of the tag entry (12 bytes: code, dtype, count, value/offset)
-                tag_offset = tag.offset
-                
-                # Zero out the tag code (first 2 bytes of the 12-byte entry)
-                data = bytearray(dng_data)
-                data[tag_offset:tag_offset+2] = b'\x00\x00'
-                logger.debug("Stripped UniqueCameraModel tag from DNG data for Core Image processing")
-                return bytes(data)
-        
-        return dng_data
-        
-    except Exception as e:
-        logger.warning(f"Failed to strip UniqueCameraModel: {e}. Using original data.")
-        return dng_data
-
 # --- Core Image (macOS specific) DNG Processing ---
 
 # PyObjC imports - these will only work on macOS
@@ -158,6 +110,53 @@ def _create_tone_curve_filter(spline_curve):
     
     return tone_curve_filter
 
+def _strip_unique_camera_model(dng_data: bytes) -> bytes:
+    """Strip UniqueCameraModel tag from DNG data to avoid Core Image camera-specific processing.
+    
+    When Core Image (CIRAWFilter) recognizes a known camera model via the UniqueCameraModel
+    tag (e.g., "Sony ILCE-7C"), it applies camera-specific processing that can produce
+    images significantly different to Adobe's dng_validate reference output.
+    
+    Investigation findings:
+    - Original camera DNGs with UniqueCameraModel: Core Image renders correctly
+    - DNGs rewritten by tifffile with UniqueCameraModel: Core Image renders ~7% differently
+    - DNGs with UniqueCameraModel stripped or set to unknown model: renders correctly
+    
+    Uses tifffile to locate the tag, then patches the raw bytes to zero out the tag ID.
+    This preserves the original compression and file structure.
+    
+    Args:
+        dng_data: Raw DNG file bytes
+        
+    Returns:
+        Modified DNG data with UniqueCameraModel tag zeroed out
+    """
+    from tifffile import TiffFile, TIFF
+    
+    UNIQUE_CAMERA_MODEL = TIFF.TAGS["UniqueCameraModel"]
+    
+    try:
+        input_buffer = io.BytesIO(dng_data)
+        
+        with TiffFile(input_buffer) as tif:
+            # Check IFD0 for UniqueCameraModel tag
+            if tif.pages and UNIQUE_CAMERA_MODEL in tif.pages[0].tags:
+                tag = tif.pages[0].tags[UNIQUE_CAMERA_MODEL]
+                # tag.offset is the file offset of the tag entry (12 bytes: code, dtype, count, value/offset)
+                tag_offset = tag.offset
+                
+                # Zero out the tag code (first 2 bytes of the 12-byte entry)
+                data = bytearray(dng_data)
+                data[tag_offset:tag_offset+2] = b'\x00\x00'
+                logger.debug("Stripped UniqueCameraModel tag from DNG data for Core Image processing")
+                return bytes(data)
+        
+        return dng_data
+        
+    except Exception as e:
+        logger.warning(f"Failed to strip UniqueCameraModel: {e}. Using original data.")
+        return dng_data
+
 
 class CoreImageContext:
     """
@@ -234,6 +233,7 @@ def process_raw_core_image(
     use_gpu: bool = False,
     icc_profile_path: Optional[str] = None,
     output_dtype: type = np.uint16,
+    use_system_camera_profiles: bool = True,
 ) -> Optional[np.ndarray]:
     """
     Processes a DNG file by creating a temporary Core Image context for the operation.
@@ -245,6 +245,8 @@ def process_raw_core_image(
         use_gpu: Whether to use GPU acceleration for processing
         icc_profile_path: Optional path to ICC profile for color space conversion
         output_dtype: Output numpy data type. Supported: np.uint8, np.uint16, np.float16, np.float32
+        use_system_camera_profiles: If True, use macOS built-in camera profiles. If False,
+            strip UniqueCameraModel tag to force generic DNG processing.
     
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype, or None on failure
@@ -261,11 +263,6 @@ def process_raw_core_image(
                 options_copy = dict(raw_filter_options) if raw_filter_options else {}
                 tone_curve = options_copy.pop('toneCurve', None)
                 tone_curve_linear = options_copy.pop('toneCurveLinear', None)
-                
-                # Prepare linear space filter for inclusion in raw_options
-                linear_tone_filter = None
-                if tone_curve_linear is not None:
-                    linear_tone_filter = _create_tone_curve_filter(tone_curve_linear)
 
                 raw_options = {}
                 for key, value in options_copy.items():
@@ -307,9 +304,9 @@ def process_raw_core_image(
                         logger.warning(f"Error processing option {key} with value {value}: {e}. Skipping.")
 
                 # Add linear space filter to raw_options if provided
-                if linear_tone_filter is not None:
+                if tone_curve_linear is not None:
                     from Quartz import kCIInputLinearSpaceFilter
-                    raw_options[kCIInputLinearSpaceFilter] = linear_tone_filter
+                    raw_options[kCIInputLinearSpaceFilter] = _create_tone_curve_filter(tone_curve_linear)
 
                 # --- Create CIRAWFilter ---
                 # Always read DNG data and strip UniqueCameraModel to avoid CI camera-specific processing
@@ -324,8 +321,9 @@ def process_raw_core_image(
                 if not dng_data:
                     raise ValueError("DNG data is empty.")
                 
-                # Strip UniqueCameraModel to force generic processing
-                dng_data = _strip_unique_camera_model(dng_data)
+                # Optionally strip UniqueCameraModel to force generic processing
+                if not use_system_camera_profiles:
+                    dng_data = _strip_unique_camera_model(dng_data)
                 
                 from Quartz import kCGImageSourceTypeIdentifierHint
                 raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"

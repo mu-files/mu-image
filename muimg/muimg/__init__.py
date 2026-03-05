@@ -4,10 +4,15 @@ DNG and raw image processing utilities.
 This module provides functionality for working with DNG files and raw image data.
 """
 
-from .dngio import (
+from .tiff_metadata import (
     BAYER_PATTERN_MAP,
-    DngFile,
+    INVERSE_BAYER_PATTERN_MAP,
     MetadataTags,
+    XmpMetadata,
+    translate_dng_tag,
+)
+from .dngio import (
+    DngFile,
     cfa_from_dng,
     cfa_from_rgb_planes,
     rgb_planes_from_cfa,
@@ -37,11 +42,14 @@ from .color import (
 
 __all__ = [
     'BAYER_PATTERN_MAP',
+    'INVERSE_BAYER_PATTERN_MAP',
     'CsvOrderedWriter',
     'CsvReader',
     'CsvWriter',
     'DngFile',
     'MetadataTags',
+    'XmpMetadata',
+    'translate_dng_tag',
     'UnsupportedDNGTagError',
     'cfa_from_dng',
     'cfa_from_rgb_planes',

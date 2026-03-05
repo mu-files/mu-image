@@ -13,436 +13,14 @@ from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
 
 logger = logging.getLogger(__name__)
 
-BAYER_PATTERN_MAP = {
-    "RGGB": (0, 1, 1, 2),  # R G / G B
-    "BGGR": (2, 1, 1, 0),  # B G / G R
-    "GRBG": (1, 0, 2, 1),  # G R / B G
-    "GBRG": (1, 2, 0, 1),  # G B / R G
-}
-
-# Inverse mapping from 2x2 CFA codes to string key
-INVERSE_BAYER_PATTERN_MAP = {v: k for k, v in BAYER_PATTERN_MAP.items()}
-
-# helper class to convert create a list of tags for tifffile.TiffWriter
-class MetadataTags:
-
-    '''
-    TIFF.DATA_DTYPES (2nd argument to add_tag) used in tifffile.py below have following mapping:
-        'B': unsigned byte
-        's': ascii string
-        'H': unsigned short
-        'I': unsigned long
-        '2I': unsigned rational
-        'b': signed byte
-        'h': signed short
-        'i': signed long
-        '2i': signed rational
-        'f': float
-        'd': double
-    '''
-
-    @staticmethod
-    def _matrix_to_rational_tuple(matrix: np.ndarray, denominator: int = 10000) -> tuple:
-        """Converts a NumPy float matrix to a flat tuple of (numerator, denominator) pairs."""
-        # Flatten the matrix and use the common rational conversion helper
-        flat_array = matrix.flatten()
-        rational_list = MetadataTags.float_array_to_rationals(flat_array, max_denominator=denominator)
-        return tuple(rational_list)
-
-    @staticmethod
-    def float_array_to_rationals(float_array, max_denominator: int = 10000):
-        """Convert a list/array of floats to TIFF rational format using Fraction for precision."""
-        from fractions import Fraction
-        
-        rationals = []
-        for val in float_array:
-            frac = Fraction(val).limit_denominator(max_denominator)
-            rationals.extend([frac.numerator, frac.denominator])
-        return rationals
-
-    def __init__(self):
-        self._tags = []
-        self._xmp_data = None  # Store XMP dict for retrieval
-
-    def add_tag(self, tag):
-        tag_code = -1
-
-        if isinstance(tag[0], str):
-            tag_code = TIFF.TAGS[tag[0]]
-        elif isinstance(tag[0], int):
-            tag_code = tag[0]
-
-        # Handle dtype parameter - can be string key or DATATYPE enum value
-        if isinstance(tag[1], str):
-            tag_dtype = TIFF.DATA_DTYPES[tag[1]]
-        else:
-            # Assume it's already a DATATYPE enum value
-            tag_dtype = tag[1]
-
-        tag_formatted_contents = (tag_code, tag_dtype, tag[2], tag[3], False)
-        
-        # Check for duplicates and overwrite if one is found, else append
-        for i, existing_tag in enumerate(self._tags):
-            if existing_tag[0] == tag_code:
-                self._tags[i] = tag_formatted_contents
-                return
-
-        self._tags.append(tag_formatted_contents)
-
-    def add_string_tag(self, tag_name_str, string_value):
-        """Helper to add a standard ASCII string tag with null termination."""
-        string_value_with_null = string_value + "\x00"
-        length = len(string_value_with_null)
-        self.add_tag((tag_name_str, "s", length, string_value_with_null))
-
-    def extend(self, other: "MetadataTags") -> None:
-        """Add all tags from another MetadataTags instance."""
-        if not isinstance(other, MetadataTags):
-            raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
-        # Use add_tag to ensure proper duplicate handling instead of direct list extension
-        for tag_tuple in other._tags:
-            # tag_tuple format: (tag_code, tag_dtype, count, value, writeonce)
-            # Convert to add_tag format: (tag_name_or_code, dtype, count, value)
-            self.add_tag((tag_tuple[0], tag_tuple[1], tag_tuple[2], tag_tuple[3]))
-    
-    def copy(self) -> "MetadataTags":
-        """Create a deep copy of this MetadataTags instance.
-        
-        Returns:
-            New MetadataTags instance with copied tags and XMP data.
-        """
-        import copy
-        new_instance = MetadataTags()
-        # Deep copy the tags list to avoid shared mutable objects
-        new_instance._tags = copy.deepcopy(self._tags)
-        # Copy XMP data if present
-        if self._xmp_data is not None:
-            new_instance._xmp_data = self._xmp_data.copy()
-        return new_instance
-
-    def add_cfa_pattern_tag(self, cfa_pattern_key: str):
-        """Helper to add the CFAPattern tag using the class's Bayer pattern map."""
-        pattern_tuple = BAYER_PATTERN_MAP.get(cfa_pattern_key, BAYER_PATTERN_MAP["RGGB"])
-        pattern_bytes = bytes(pattern_tuple)
-        self.add_tag(("CFAPattern", "B", 4, pattern_bytes))
-
-    def add_matrix_as_rational_tag(
-        self,
-        tag_name_str: str,
-        float_matrix_np: np.ndarray,
-        denominator: int = 10000,
-    ):
-        """Converts a float matrix to rationals and adds it as a tag."""
-        flat_tuple_values = MetadataTags._matrix_to_rational_tuple(float_matrix_np, denominator)
-        self.add_tag((tag_name_str, "2i", 9, flat_tuple_values))
-
-    def add_float_array_as_rational_tag(
-        self,
-        tag_name_str: str,
-        float_array,
-        max_denominator: int = 10000,
-    ):
-        """Converts a float array to rationals and adds it as a tag."""
-        rational_list = MetadataTags.float_array_to_rationals(float_array, max_denominator)
-        count = len(float_array)
-        self.add_tag((tag_name_str, "2I", count, tuple(rational_list)))
-
-    def get_tags(self):
-        self._tags.sort(key=lambda x: x[0])
-        return self._tags
-    
-    def get_xmp(self) -> Optional[Dict[str, Union[str, int, float]]]:
-        """Get a copy of the XMP data dictionary that was added via add_xmp().
-        
-        Returns:
-            Copy of XMP properties dictionary, or None if add_xmp() was never called.
-            Returns a copy to prevent inadvertent modification of internal state.
-        """
-        return self._xmp_data.copy() if self._xmp_data is not None else None
-
-    def add_xmp(self, xmp_data: Dict[str, Union[str, int, float]]) -> None:
-        """
-        Add XMP metadata to this MetadataTags instance.
-        
-        Args:
-            xmp_data: Dictionary of XMP properties to add. Keys can include namespace 
-                     prefixes (e.g., 'crs:Temperature', 'tiff:Orientation') or will 
-                     default to 'crs:' namespace if no prefix is provided.
-                     
-        Example:
-            camera_metadata.add_xmp({
-                'Temperature': 5500,
-                'Tint': 0,
-                'Exposure2012': -0.5,
-                'tiff:Orientation': 1
-            })
-        """
-        from datetime import datetime
-        
-        # Generate timestamp in ISO format with timezone
-        now = datetime.now()
-        iso_date = now.strftime('%Y-%m-%dT%H:%M:%S')
-        
-        # Try to format timezone as -07:00 instead of -0700
-        try:
-            iso_date_tz = now.astimezone().strftime('%Y-%m-%dT%H:%M:%S%z')
-            # Insert colon in timezone offset: -0700 -> -07:00
-            if len(iso_date_tz) >= 5 and iso_date_tz[-5] in '+-':
-                iso_date_tz = iso_date_tz[:-2] + ':' + iso_date_tz[-2:]
-        except:
-            iso_date_tz = None
-        
-        # Build XMP properties with namespace handling
-        xmp_props = []
-        
-        # Add standard metadata - minimal required set
-        standard_props = {
-            'tiff:Orientation': '1',
-            'dc:format': 'image/dng',
-            'xmp:CreatorTool': 'muimg',
-            'xmp:ModifyDate': iso_date,
-            'crs:Version': '17.4',
-            'crs:ProcessVersion': '15.4',
-        }
-        
-        # Add user-provided data
-        sequence_props = {}
-        bag_props = {}  # New: for dc:subject style bags
-        for key, value in xmp_data.items():
-            # Auto-prepend 'crs:' if no namespace specified
-            if ':' not in key:
-                key = f'crs:{key}'
-            
-            # Check for bag structure (dc:subject with list of strings)
-            if key == 'dc:subject' and isinstance(value, list):
-                bag_props[key] = value
-            # Check if value has coordinate pairs (list of 2-tuples) - needs <rdf:Seq> structure
-            elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
-                # SplineCurve object with points attribute (normalized 0-1)
-                # Convert to 8-bit for XMP compatibility
-                points = getattr(value, 'points')
-                sequence_props[key] = [(int(x * 255), int(y * 255)) for x, y in points]
-            elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
-                # Direct list of 2-tuples
-                sequence_props[key] = value
-            else:
-                standard_props[key] = str(value)
-        
-        # Format as XMP attributes
-        for prop, value in standard_props.items():
-            xmp_props.append(f'    {prop}="{value}"')
-        
-        # Build sequence structures for coordinate pairs
-        sequence_xml = ""
-        if sequence_props:
-            sequence_elements = []
-            for prop_name, points in sequence_props.items():
-                # Extract namespace and property name for XML element
-                if ':' in prop_name:
-                    namespace, prop = prop_name.split(':', 1)
-                    element_name = f'{namespace}:{prop}'
-                else:
-                    element_name = prop_name
-                
-                # Build rdf:li items from coordinate pairs
-                sequence_items = []
-                for x, y in points:
-                    sequence_items.append(f'      <rdf:li>{x}, {y}</rdf:li>')
-                
-                sequence_elements.append(f'''    <{element_name}>
-     <rdf:Seq>
-{chr(10).join(sequence_items)}
-     </rdf:Seq>
-    </{element_name}>''')
-            
-            sequence_xml = chr(10).join(sequence_elements)
-
-        # Build bag structures for dc:subject style keywords
-        bag_xml = ""
-        if bag_props:
-            bag_elements = []
-            for prop_name, items in bag_props.items():
-                # Extract namespace and property name for XML element
-                if ':' in prop_name:
-                    namespace, prop = prop_name.split(':', 1)
-                    element_name = f'{namespace}:{prop}'
-                else:
-                    element_name = prop_name
-                
-                # Build rdf:li items from list of strings
-                bag_items = []
-                for item in items:
-                    bag_items.append(f'      <rdf:li>{item}</rdf:li>')
-                
-                bag_elements.append(f'''    <{element_name}>
-     <rdf:Bag>
-{chr(10).join(bag_items)}
-     </rdf:Bag>
-    </{element_name}>''')
-            
-            bag_xml = chr(10).join(bag_elements)
-
-        # Create minimal XMP structure based on Lightroom format
-        xmp_content = f'''<?xpacket begin="\\357\\273\\277" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="muimg XMP Core">
- <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about=""
-    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
-    xmlns:dc="http://purl.org/dc/elements/1.1/"
-    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-{chr(10).join(xmp_props)}>{sequence_xml}{bag_xml}
-  </rdf:Description>
- </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>'''
-        
-        xmp_bytes = xmp_content.encode('utf-8')
-        self.add_tag(("XMP", "B", len(xmp_bytes), xmp_bytes))
-        
-        # Store the XMP data for later retrieval
-        self._xmp_data = xmp_data.copy()
-        
-        logger.debug(f"Added XMP metadata with {len(xmp_data)} user properties")
-
-
-
-class XmpMetadata:
-    """Encapsulates XMP metadata parsing and querying for DNG files."""
-    
-    def __init__(self, xmp_string: str):
-        """Initialize XmpMetadata from an XMP string.
-        
-        Args:
-            xmp_string: Raw XMP metadata string from DNG file
-        """
-        self._attributes = self._parse(xmp_string)
-    
-    def _parse(self, xmp_data: str) -> Dict[str, str]:
-        """Parse all XMP attributes and sequences from the XMP metadata into a dictionary.
-        
-        Returns:
-            Dictionary mapping attribute names to values. Simple attributes map to strings
-            (e.g., 'crs:Temperature': '3900'), while sequences map to comma-separated values
-            (e.g., 'crs:ToneCurvePV2012': '0,0,56,30,124,125,188,212,255,255')
-        """
-        if not xmp_data:
-            return {}
-        
-        import re
-        
-        # Dictionary to store all XMP attributes
-        attributes = {}
-        
-        # Pattern to match XML attributes in the format namespace:attribute="value"
-        # This captures attributes like crs:Temperature="3900", tiff:Orientation="1", etc.
-        attribute_pattern = r'([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*)="([^"]*?)"'
-        
-        # Find all attribute matches
-        matches = re.findall(attribute_pattern, xmp_data)
-        
-        for attr_name, attr_value in matches:
-            attributes[attr_name] = attr_value
-        
-
-        # Pattern to match rdf:Seq structures like ToneCurvePV2012
-        # Use flexible matching that handles any whitespace/newlines between tags
-        # Matches: <crs:PropertyName>...<rdf:Seq>...<rdf:li>...</rdf:li>...</rdf:Seq>...</crs:PropertyName>
-        # - exclude rdf: namespace
-        seq_pattern = r'<((?!rdf:)[a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Seq>(.*?)</rdf:Seq>.*?</\1>'
-        seq_matches = re.findall(seq_pattern, xmp_data, re.DOTALL)
-        
-        logger.debug(f"Found {len(seq_matches)} XMP sequences")
-        for seq_name, seq_content in seq_matches:
-            # Extract all rdf:li values from the sequence
-            li_pattern = r'<rdf:li>([^<]*?)</rdf:li>'
-            li_values = re.findall(li_pattern, seq_content)
-            
-            # Handle different sequence types based on content structure
-            processed_values = []
-            for li_value in li_values:
-                # Split by comma and clean up values
-                coords = [coord.strip() for coord in li_value.split(',')]
-                
-                if len(coords) == 1:
-                    # Single value (e.g., ColorVariance: "-50.000000")
-                    processed_values.append(coords[0])
-                elif len(coords) == 2:
-                    # Coordinate pair (e.g., ToneCurve: "0, 0")
-                    # Normalize 8-bit values to 0-1 for tone curve properties
-                    if 'ToneCurve' in seq_name:
-                        x_norm = float(coords[0]) / 255.0
-                        y_norm = float(coords[1]) / 255.0
-                        processed_values.append(f"({x_norm},{y_norm})")
-                    else:
-                        processed_values.append(f"({coords[0]},{coords[1]})")
-                else:
-                    # Multiple values (e.g., PointColors with 19 values)
-                    # Store as bracketed list for clarity
-                    processed_values.append(f"[{','.join(coords)}]")
-            
-            attributes[seq_name] = ','.join(processed_values)
-        
-        # Pattern to match rdf:Bag structures like dc:subject
-        # Matches: <dc:subject>...<rdf:Bag>...<rdf:li>...</rdf:li>...</rdf:Bag>...</dc:subject>
-        bag_pattern = r'<([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Bag>(.*?)</rdf:Bag>.*?</\1>'
-        bag_matches = re.findall(bag_pattern, xmp_data, re.DOTALL)
-        
-        logger.debug(f"Found {len(bag_matches)} XMP bags")
-        for bag_name, bag_content in bag_matches:
-            # Extract all rdf:li values from the bag
-            li_pattern = r'<rdf:li>([^<]*?)</rdf:li>'
-            li_values = re.findall(li_pattern, bag_content)
-            
-            # Store as comma-separated values (same as sequences)
-            attributes[bag_name] = ','.join(li_values)
-        
-        logger.debug(f"Parsed {len(attributes)} XMP attributes")
-        return attributes
-    
-    def has_prop(self, prop: str) -> bool:
-        """Check if an XMP property exists.
-        
-        Args:
-            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
-                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
-        
-        Returns:
-            True if the property exists in XMP metadata
-        """
-        # Auto-prepend 'crs:' if no namespace specified
-        if ':' not in prop:
-            prop = f'crs:{prop}'
-        return prop in self._attributes
-    
-    def get_prop(self, prop: str, return_type: Optional[Type] = None) -> Optional[Any]:
-        """Get an XMP property value with optional type conversion.
-        
-        Args:
-            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
-                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
-            return_type: Optional type to convert the value to (e.g., float, int)
-        
-        Returns:
-            The property value, optionally converted to return_type. None if not found.
-        """
-        # Auto-prepend 'crs:' if no namespace specified
-        if ':' not in prop:
-            prop = f'crs:{prop}'
-        
-        value = self._attributes.get(prop)
-        if value is None:
-            return None
-        
-        if return_type is None:
-            return value
-        
-        # Try to convert using the type's constructor
-        try:
-            return return_type(value)
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type}: {e}")
-            return None
+# Import metadata classes from tiff_metadata module
+from .tiff_metadata import (
+    MetadataTags,
+    XmpMetadata,
+    BAYER_PATTERN_MAP,
+    INVERSE_BAYER_PATTERN_MAP,
+    translate_dng_tag,
+)
 
 
 # Default values for tags
@@ -681,7 +259,7 @@ def rgb_planes_from_dng(
     return rgb_planes_from_cfa(raw_cfa, cfa_pattern_value)
 
 
-def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_tags: "MetadataTags") -> None:
+def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_tags: MetadataTags) -> None:
     """Write thumbnail IFD exactly as in write_dng function."""
     # Prepare thumbnail specific tags
     dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
@@ -692,7 +270,7 @@ def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_
         "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
         "compression": "jpeg",  # JPEG compression for thumbnail
         "compressionargs": {"level": 90},  # JPEG quality (0-100, higher is better)
-        "extratags": dng_tags.get_tags(),
+        "extratags": dng_tags,
         "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
         "subifds": 1,  # Has main image as subifd
     }
@@ -705,8 +283,11 @@ def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_
     )
 
 
-def _create_dng_tags(camera_profile: Optional["MetadataTags"], has_jxl: bool) -> "MetadataTags":
+def _create_dng_tags(camera_profile: Optional[MetadataTags], has_jxl: bool) -> MetadataTags:
     """Create DNG metadata tags with defaults and version info.
+    
+    Tag names are from tifffile.py TiffTagRegistry.
+    Tag types are from tifffile.py DATA_DTYPES.
     
     Args:
         camera_profile: Optional camera profile metadata to include
@@ -721,20 +302,15 @@ def _create_dng_tags(camera_profile: Optional["MetadataTags"], has_jxl: bool) ->
     if camera_profile is not None:
         dng_tags.extend(camera_profile)
     
-    # Check for required tags and add defaults if missing
-    existing_tags = {tag[0] for tag in dng_tags.get_tags()}
-    
-    # Add Orientation if not set (default to horizontal)
-    if TIFF.TAGS["Orientation"] not in existing_tags:
+    # Add required tags if not already set
+    if "Orientation" not in dng_tags:
         dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
     
-    # Add ColorMatrix1 if not set (default to 3x3 identity)
-    if TIFF.TAGS["ColorMatrix1"] not in existing_tags:
+    if "ColorMatrix1" not in dng_tags:
         identity_matrix = np.identity(3, dtype=np.float64)
         dng_tags.add_matrix_as_rational_tag("ColorMatrix1", identity_matrix)
     
-    # Add CalibrationIlluminant1 if not set (default to unknown)
-    if TIFF.TAGS["CalibrationIlluminant1"] not in existing_tags:
+    if "CalibrationIlluminant1" not in dng_tags:
         dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, 0))  # 0 = Unknown
 
     dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
@@ -747,7 +323,7 @@ def _create_dng_tags(camera_profile: Optional["MetadataTags"], has_jxl: bool) ->
     return dng_tags
 
 
-def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_tags: "MetadataTags") -> None:
+def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_tags: MetadataTags) -> None:
     """Write thumbnail IFD exactly as in write_dng function."""
     # Prepare thumbnail specific tags
     dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
@@ -758,7 +334,7 @@ def _write_thumbnail_ifd(writer: "TiffWriter", thumbnail_image: np.ndarray, dng_
         "planarconfig": 1,  # Standard for RGB: 1 = CONTIG
         "compression": "jpeg",  # JPEG compression for thumbnail
         "compressionargs": {"level": 90},  # JPEG quality (0-100, higher is better)
-        "extratags": dng_tags.get_tags(),
+        "extratags": dng_tags,
         "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
         "subifds": 1,  # Has main image as subifd
     }
@@ -775,7 +351,7 @@ def write_dng(
     destination_file: Union[Path, io.BytesIO],
     bits_per_pixel: int,
     cfa_pattern: str = "RGGB",
-    camera_profile: Optional["MetadataTags"] = None,
+    camera_profile: Optional[MetadataTags] = None,
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
     color_data: Optional[np.ndarray] = None
@@ -816,8 +392,6 @@ def write_dng(
     else:
         processed_raw_data = raw_data
 
-    # the tag names are from tifffile.py TiffTagRegistry
-    # the tag types are from tifffile.py DATA_DTYPES
     dng_tags = _create_dng_tags(camera_profile, has_jxl=jxl_distance is not None)
 
     try:
@@ -874,7 +448,7 @@ def write_dng(
                 "subifds": 0,
                 "compression": compression_type,
                 "compressionargs": compressionargs,
-                "extratags": dng_cfa_tags.get_tags()
+                "extratags": dng_cfa_tags
             }
 
             # Write Main Raw Image to IFD
@@ -896,7 +470,7 @@ def write_dng_linearraw(
     raw_data: np.ndarray,
     destination_file: Union[Path, io.BytesIO],
     bits_per_pixel: int,
-    camera_profile: Optional["MetadataTags"] = None,
+    camera_profile: Optional[MetadataTags] = None,
     jxl_distance: Optional[float] = None,
     jxl_effort: Optional[int] = None,
     color_data: Optional[np.ndarray] = None,
@@ -962,7 +536,7 @@ def write_dng_linearraw(
                 "planarconfig": 1,  # CONTIG
                 "compression": compression_type,
                 "compressionargs": compressionargs,
-                "extratags": linearraw_tags.get_tags(),
+                "extratags": linearraw_tags,
             }
 
             # Calculate rowsperstrip to avoid many strips (mirror write_dng)
@@ -983,9 +557,9 @@ def write_dng_linearraw(
         raise
 
 def write_dng_from_page(
-    page: "TiffPage",
+    page: TiffPage,
     destination_file: Union[Path, io.BytesIO],
-    camera_profile: Optional["MetadataTags"] = None,
+    camera_profile: Optional[MetadataTags] = None,
     color_data: Optional[np.ndarray] = None,
     skip_tags: Optional[set[str]] = None
 ) -> None:
@@ -1080,7 +654,7 @@ def write_dng_from_page(
                 "photometric": page.photometric,
                 "subifds": 0,
                 "compression": page.compression,
-                "extratags": dng_cfa_tags.get_tags()
+                "extratags": dng_cfa_tags
             }
 
             # Determine shape based on samples per pixel (1 for CFA, 3 for LINEAR_RAW)
@@ -1129,73 +703,6 @@ def write_dng_from_page(
 class DngFile(TiffFile):
 
     """A TIFF file with DNG-specific extensions and helper methods."""
-
-    @staticmethod
-    def _rational_tuple_to_matrix(tag_value: tuple) -> np.ndarray:
-        """
-        Converts a flat tuple of 18 signed integers, representing 9 rational
-        numbers (n1, d1, n2, d2, ..., n9, d9), into a 3x3 float NumPy array.
-        """
-        if not isinstance(tag_value, tuple) or len(tag_value) != 18:
-            raise ValueError(
-                f"Input must be a flat tuple of 18 integers for a 3x3 matrix. "
-                f"Expected 18 elements, got {len(tag_value) if isinstance(tag_value, tuple) else type(tag_value)}."
-            )
-
-        float_values = []
-        for i in range(0, 18, 2): # Iterate 9 times, taking 2 elements each time
-            num = tag_value[i]
-            den = tag_value[i+1]
-            float_values.append(float(num) / float(den))
-
-        return np.array(float_values).reshape((3, 3))
-
-    @staticmethod
-    def _translate_dng_tag_value(tag_name: str, tag_value, tag_dtype: int = None) -> Any:
-        """Translate raw TIFF tag values to usable Python types.
-        
-        Args:
-            tag_name: Name of the tag
-            tag_value: Raw tag value from tifffile
-            tag_dtype: TIFF data type code (5=RATIONAL, 10=SRATIONAL)
-        """
-        _bayer_pattern_bytes_to_str_map = {
-            bytes(v): k for k, v in BAYER_PATTERN_MAP.items()
-        }
-
-        MATRIX_TAG_NAMES = {
-            "ColorMatrix1", "ColorMatrix2", "ColorMatrix3",
-            "ForwardMatrix1", "ForwardMatrix2", "ForwardMatrix3",
-            "CameraCalibration1", "CameraCalibration2", "CameraCalibration3",
-        }
-
-        # Handle special cases first
-        if tag_name == "CFAPattern":
-            cfa_bytes = tag_value
-            if isinstance(cfa_bytes, bytes):
-                tag_value = _bayer_pattern_bytes_to_str_map.get(cfa_bytes, tag_value)
-        elif tag_name == "PhotometricInterpretation":
-            if tag_value == PHOTOMETRIC.CFA:
-                tag_value = "CFA"
-            elif tag_value == PHOTOMETRIC.LINEAR_RAW:
-                tag_value = "LINEAR_RAW"
-        elif tag_name in MATRIX_TAG_NAMES:
-            try:
-                tag_value = DngFile._rational_tuple_to_matrix(tag_value)
-            except (ValueError, ZeroDivisionError, TypeError, AttributeError) as e:
-                raise ValueError(
-                    f"Error converting DNG tag '{tag_name}' to matrix. Original error: {e}. "
-                    f"Value type: {type(tag_value)}, Value: {str(tag_value)[:100]}"
-                ) from e
-        # Auto-convert RATIONAL (5) and SRATIONAL (10) types to float arrays
-        elif tag_dtype in (5, 10):
-            if isinstance(tag_value, tuple) and len(tag_value) % 2 == 0:
-                tag_value = np.array([
-                    tag_value[i] / tag_value[i+1] if tag_value[i+1] != 0 else 0.0
-                    for i in range(0, len(tag_value), 2)
-                ])
-
-        return tag_value
 
     def __init__(self, file, *args, **kwargs):
         import io
@@ -1327,8 +834,7 @@ class DngFile(TiffFile):
                 tag_id = TIFF.TAGS[tag_name]
                 if tag_id in first_page.tags:
                     page_tag = first_page.tags[tag_id]
-                    global_tags_data[tag_name] = self._translate_dng_tag_value(
-                        tag_name, page_tag.value, page_tag.dtype)
+                    global_tags_data[tag_name] = translate_dng_tag(page_tag)
 
         # 2. Iterate through all pages
         for current_page_id, page in enumerate(self._iter_all_pages_recursive(self.pages)):
@@ -1345,9 +851,7 @@ class DngFile(TiffFile):
                         tag_id = TIFF.TAGS[tag_name]
                         if tag_id in page.tags:
                             page_tag = page.tags[tag_id]
-                            current_page_tags[tag_name] = self._translate_dng_tag_value(
-                                tag_name, page_tag.value, page_tag.dtype
-                            )
+                            current_page_tags[tag_name] = translate_dng_tag(page_tag)
 
                 info_list.append((current_page_id, page.shape, current_page_tags))
 
@@ -1360,21 +864,18 @@ class DngFile(TiffFile):
                 return page
         return None
 
-    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[tuple[np.ndarray, str, tuple]]:
+    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[tuple[np.ndarray, str]]:
         """Retrieves the raw CFA array and CFAPattern for a specific 'CFA' page.
         
-        Returns a tuple (raw_cfa_array, cfa_pattern_str, cfa_pattern_codes) or None if page not found/invalid.
-        cfa_pattern_codes is the raw CFAPattern tag values (0=Red, 1=Green, 2=Blue) as a 4-tuple.
+        Returns a tuple (raw_cfa_array, cfa_pattern_str) or None if page not found/invalid.
         """
         p = self.get_page_by_id(target_page_id)
         return self.get_raw_cfa_from_page(p)
 
-    def get_raw_cfa_from_page(self, page: Optional[TiffPage]) -> Optional[tuple[np.ndarray, str, tuple]]:
+    def get_raw_cfa_from_page(self, page: Optional[TiffPage]) -> Optional[tuple[np.ndarray, str]]:
         """Retrieves the raw CFA array and CFAPattern from a given TiffPage.
         
-        Returns a tuple (raw_cfa_array, cfa_pattern_str, cfa_pattern_codes) or None if page not valid/unsupported.
-        cfa_pattern_codes is the raw CFAPattern tag values (0=Red, 1=Green, 2=Blue) as a 4-tuple,
-        matching SDK dng_mosaic_info::fCFAPattern[row][col] layout.
+        Returns a tuple (raw_cfa_array, cfa_pattern_str) or None if page not valid/unsupported.
         """
         p = page
         if p is None or p.photometric is None or p.photometric.name != "CFA":
@@ -1393,18 +894,16 @@ class DngFile(TiffFile):
         else:
             raw_cfa = p.asarray()
 
-        # Fetch CFAPattern - raw codes and string representation
-        # SDK ref: dng_mosaic_info::fCFAPattern[row][col] stores these raw values
+        # Fetch CFAPattern string representation
         cfa_tag = p.tags.get(TIFF.TAGS.get("CFAPattern"))
         cfa_str = None
-        cfa_codes = None
         if cfa_tag is not None:
             v = cfa_tag.value
             if isinstance(v, (bytes, bytearray)) and len(v) == 4:
                 cfa_codes = tuple(int(b) for b in v)
                 cfa_str = INVERSE_BAYER_PATTERN_MAP.get(cfa_codes)
 
-        return raw_cfa, cfa_str, cfa_codes
+        return raw_cfa, cfa_str
 
     def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
         """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID.

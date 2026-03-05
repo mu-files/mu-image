@@ -4,6 +4,7 @@ import logging
 
 from typing import Dict
 from . import _vng, _rcd
+from .tiff_metadata import BAYER_PATTERN_MAP
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
 from . import _dng_color
@@ -92,13 +93,14 @@ class SplineCurve:
     
     def resample(self, num_points: int) -> 'SplineCurve':
         """
-        Create a new SplineCurve with evenly-spaced points sampled from this curve.
+        Create a new SplineCurve with evenly-spaced control points sampled 
+        from this curve.
         
         Args:
-            num_points: Number of points in the new curve
+            num_points: Number of control points in the new curve
             
         Returns:
-            New SplineCurve with resampled points
+            New SplineCurve with resampled control points
         """
         import numpy as np
         
@@ -2248,7 +2250,7 @@ def process_raw(
             logger.error("No raw pages found in DNG file")
             return None
         
-        page_id, shape, tags = raw_pages[0]
+        page_id, _, tags = raw_pages[0]
         
         # Validate that we support all rendering-related tags in this DNG
         unsupported = validate_dng_tags(tags, strict=strict)
@@ -2401,11 +2403,10 @@ def process_raw(
                 logger.error("Failed to extract CFA data from DNG")
                 return None
             
-            cfa_data, cfa_pattern, cfa_pattern_codes = cfa_result
+            cfa_data, cfa_pattern = cfa_result
             if cfa_pattern is None:
                 cfa_pattern = "RGGB"
-            if cfa_pattern_codes is None:
-                cfa_pattern_codes = (0, 1, 1, 2)  # Default RGGB
+            cfa_pattern_codes = BAYER_PATTERN_MAP.get(cfa_pattern, (0, 1, 1, 2))
             
             # Apply ActiveArea crop BEFORE normalization
             # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea first
