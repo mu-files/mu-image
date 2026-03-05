@@ -122,34 +122,21 @@ def cfa_from_dng(
         RuntimeError: If DNG processing fails.
     """
     try:
-        # 1. Get info about raw pages to find the CFA data
-        raw_pages_info = dng_file.get_raw_pages_info()
-        if not raw_pages_info:
-            raise ValueError("No raw pages found in DNG")
+        # Get the main image page (should be CFA)
+        cfa_page = dng_file.get_main_page()
+        if cfa_page is None or not cfa_page.is_cfa:
+            raise ValueError("No CFA main page found in DNG")
 
-        # 2. Find the first page with CFA photometric interpretation
-        cfa_page_id = None
-        for page_id_loop, shape, tags_loop in raw_pages_info:
-            if tags_loop.get("PhotometricInterpretation") == "CFA":
-                cfa_page_id = page_id_loop
-                break
-
-        if cfa_page_id is None:
-            raise ValueError("No page with CFA interpretation found in DNG")
-
-        # 3. Get the CFA data array and pattern via API
-        result = dng_file.get_raw_cfa_by_id(cfa_page_id)
+        # Get the CFA data array and pattern
+        result = cfa_page.get_raw_cfa()
         if result is None:
-            raise RuntimeError(
-                f"Failed to retrieve raw CFA data for page {cfa_page_id}"
-            )
+            raise RuntimeError("Failed to retrieve raw CFA data")
         raw_cfa, cfa_pattern_value = result
 
         if cfa_pattern_value is None:
-            raise ValueError(f"Missing CFAPattern tag for page {cfa_page_id}")
+            raise ValueError("Missing CFAPattern tag")
 
     except (ValueError, RuntimeError):
-        # Re-raise our specific errors as-is
         raise
     except Exception as e:
         raise RuntimeError(f"Error processing DNG file: {e}") from e
@@ -700,188 +687,139 @@ def write_dng_from_page(
         raise
 
 
-class DngFile(TiffFile):
-
-    """A TIFF file with DNG-specific extensions and helper methods."""
-
-    def __init__(self, file, *args, **kwargs):
-        import io
-        from pathlib import Path
+class DngPage:
+    """Wrapper around a tifffile TiffPage with DNG-specific functionality.
+    
+    Provides convenient access to DNG tags with automatic translation,
+    parent IFD tag inheritance, and raw data extraction methods.
+    """
+    
+    # NewSubFileType values from DNG spec
+    SF_MAIN_IMAGE = 0
+    SF_PREVIEW_IMAGE = 1
+    SF_TRANSPARENCY_MASK = 2
+    SF_PREVIEW_MASK = 8
+    SF_ALT_PREVIEW_IMAGE = 65537
+    
+    def __init__(self, tiff_page: TiffPage, page_id: int, parent: Optional['DngPage'] = None):
+        """Initialize DngPage wrapper.
         
-        # Normalize file input to BytesIO for consistent in-memory operation
-        if isinstance(file, (str, Path)):
-            # Read file into memory
-            with open(file, 'rb') as f:
-                file_data = f.read()
-            file = io.BytesIO(file_data)
-        elif isinstance(file, io.IOBase):
-            # Ensure we're at the beginning for consistent behavior
-            file.seek(0)
-        # For any other type, let TiffFile handle it and potentially fail with a clear error
-        
-        super().__init__(file, *args, **kwargs)
-        self._xmp_metadata = None  # Lazy-loaded XmpMetadata instance
-
-    def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
-        """Recursively iterates through all TIFF pages, including nested ones."""
-        if pages_list is None:
-            return
-        for page in pages_list:
-            yield page
-            if page.pages:  # Check if there are sub-pages
-                yield from self._iter_all_pages_recursive(page.pages)
-
-    def get_raw_pages_info(self) -> List[Tuple[int, tuple, Dict[str, Any]]]:
+        Args:
+            tiff_page: The underlying tifffile TiffPage object
+            page_id: The flattened 0-based page index
+            parent: Optional parent DngPage for tag inheritance
         """
-        Returns info for pages with 'CFA' or 'LINEAR_RAW' interpretation.
-        Each item in the list is a tuple: (page_id, shape, tags_dict).
-        page_id is the 0-based index of the page in the flattened list of all TIFF pages.
-        tags_dict contains relevant DNG tags from global and page-specific IFDs.
-        """
-
-        test_val = (TIFF.TAGS["Orientation"], "Orientation")
-
-        global_tags = [
-            "Make",
-            "Model",
-            "DNGVersion",
-            "DNGBackwardVersion",
-            "Orientation",
-            # Color matrices
-            "ColorMatrix1",
-            "ColorMatrix2",
-            "ColorMatrix3",
-            "CalibrationIlluminant1",
-            "CalibrationIlluminant2",
-            "CalibrationIlluminant3",
-            "AnalogBalance",
-            "AsShotNeutral",
-            "AsShotWhiteXY",
-            # Forward matrices
-            "ForwardMatrix1",
-            "ForwardMatrix2",
-            "ForwardMatrix3",
-            # Camera calibration
-            "CameraCalibration1",
-            "CameraCalibration2",
-            "CameraCalibration3",
-            "CameraCalibrationSignature",
-            "ProfileCalibrationSignature",
-            # Exposure and rendering
-            "BaselineExposure",
-            "BaselineExposureOffset",
-            "ShadowScale",
-            "LinearResponseLimit",
-            # Profile HueSatMap
-            "ProfileHueSatMapDims",
-            "ProfileHueSatMapData1",
-            "ProfileHueSatMapData2",
-            "ProfileHueSatMapData3",
-            "ProfileHueSatMapEncoding",
-            # Profile LookTable
-            "ProfileLookTableDims",
-            "ProfileLookTableData",
-            "ProfileLookTableEncoding",
-            # Profile tone and gain
-            "ProfileToneCurve",
-            "ProfileGainTableMap",
-            "ProfileGainTableMap2",
-            "DefaultBlackRender",
-            # Opcode lists
-            "OpcodeList1",
-            "OpcodeList2",
-            "OpcodeList3",
-            # Reduction matrices
-            "ReductionMatrix1",
-            "ReductionMatrix2",
-            "ReductionMatrix3",
-            # Linearization
-            "LinearizationTable",
-            # RGB Tables
-            "RGBTables",
-        ]
-
-        cfa_subifd_tags = [
-            "PhotometricInterpretation",
-            "Compression",
-            "BitsPerSample",
-            "SamplesPerPixel",
-            "PlanarConfiguration",
-            "CFARepeatPatternDim",
-            "CFAPattern",
-            "CFAPlaneColor",
-            "BlackLevel",
-            "BlackLevelRepeatDim",
-            "BlackLevelDeltaH",
-            "BlackLevelDeltaV",
-            "WhiteLevel",
-            "ColumnInterleaveFactor",
-            "RowInterleaveFactor",
-            "JXLDistance",
-            "JXLEffort",
-            "ActiveArea",
-            "DefaultCropOrigin",
-            "DefaultCropSize",
-        ]
-
-        info_list: List[Tuple[int, tuple, Dict[str, Any]]] = []
-        global_tags_data: Dict[str, Any] = {}
-
-        # 1. Read Global Tags from the first page (IFD0)
-        if self.pages and len(self.pages) > 0:
-            first_page = self.pages[0]
-            for tag_name in global_tags:
-                tag_id = TIFF.TAGS[tag_name]
-                if tag_id in first_page.tags:
-                    page_tag = first_page.tags[tag_id]
-                    global_tags_data[tag_name] = translate_dng_tag(page_tag)
-
-        # 2. Iterate through all pages
-        for current_page_id, page in enumerate(self._iter_all_pages_recursive(self.pages)):
-            if page.photometric and page.photometric.name in ("CFA", "LINEAR_RAW",):
-                current_page_tags: Dict[str, Any] = {}
-                # Start with a copy of global tags
-                current_page_tags.update(global_tags_data)
-
-                # Iterate through all tags on this page's IFD.
-                # If the tag's name is in cfa_globaltags OR cfa_subifd_tags,
-                # use its page-specific value, overwriting any global default.
-                for lut in [global_tags, cfa_subifd_tags]:
-                    for tag_name in lut:
-                        tag_id = TIFF.TAGS[tag_name]
-                        if tag_id in page.tags:
-                            page_tag = page.tags[tag_id]
-                            current_page_tags[tag_name] = translate_dng_tag(page_tag)
-
-                info_list.append((current_page_id, page.shape, current_page_tags))
-
-        return info_list
-
-    def get_page_by_id(self, target_page_id: int) -> Optional[TiffPage]:
-        """Retrieve a specific TiffPage by its flattened, 0-based ID."""
-        for i, page in enumerate(self._iter_all_pages_recursive(self.pages)):
-            if i == target_page_id:
-                return page
+        self._page = tiff_page
+        self.page_id = page_id
+        self.parent = parent
+    
+    @property
+    def shape(self) -> tuple:
+        """Image dimensions as (height, width) or (height, width, samples)."""
+        return self._page.shape
+    
+    @property
+    def tags(self):
+        """Direct access to underlying TiffPage tags dict."""
+        return self._page.tags
+    
+    @property
+    def photometric(self) -> Optional[str]:
+        """Photometric interpretation string (e.g., 'CFA', 'LINEAR_RAW', 'RGB')."""
+        if self._page.photometric is not None:
+            return self._page.photometric.name
         return None
-
-    def get_raw_cfa_by_id(self, target_page_id: int) -> Optional[tuple[np.ndarray, str]]:
-        """Retrieves the raw CFA array and CFAPattern for a specific 'CFA' page.
+    
+    @property
+    def is_cfa(self) -> bool:
+        """True if this page contains CFA (Bayer) raw data."""
+        return self.photometric == "CFA"
+    
+    @property
+    def is_linear_raw(self) -> bool:
+        """True if this page contains LINEAR_RAW (demosaiced) data."""
+        return self.photometric == "LINEAR_RAW"
+    
+    @property
+    def is_main_image(self) -> bool:
+        """True if this page is the main image (NewSubfileType == 0)."""
+        tag = self._page.tags.get(254)  # NewSubfileType tag ID
+        if tag is None:
+            return False
+        return tag.value == self.SF_MAIN_IMAGE
+    
+    @property
+    def is_preview(self) -> bool:
+        """True if this page is a preview image."""
+        tag = self._page.tags.get(254)  # NewSubfileType tag ID
+        if tag is None:
+            return False
+        return tag.value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
+    
+    @property
+    def xmp(self) -> XmpMetadata:
+        """XMP metadata from this page (or parent if not found locally)."""
+        xmp_string = self.get_tag('XMP')
+        if xmp_string is None:
+            xmp_string = ''
+        if isinstance(xmp_string, bytes):
+            xmp_string = xmp_string.decode('utf-8', errors='replace')
+        return XmpMetadata(xmp_string)
+    
+    def get_tag(self, tag_name: str, return_type: Optional[Type] = None) -> Optional[Any]:
+        """Get a translated tag value from this page, falling back to parent.
         
-        Returns a tuple (raw_cfa_array, cfa_pattern_str) or None if page not found/invalid.
-        """
-        p = self.get_page_by_id(target_page_id)
-        return self.get_raw_cfa_from_page(p)
-
-    def get_raw_cfa_from_page(self, page: Optional[TiffPage]) -> Optional[tuple[np.ndarray, str]]:
-        """Retrieves the raw CFA array and CFAPattern from a given TiffPage.
+        Args:
+            tag_name: Name of the TIFF/DNG tag (e.g., 'ColorMatrix1', 'CFAPattern')
+            return_type: Optional type to convert the value to (e.g., float, int, str)
         
-        Returns a tuple (raw_cfa_array, cfa_pattern_str) or None if page not valid/unsupported.
+        Returns:
+            Translated tag value, optionally converted to return_type. 
+            None if not found in this page or any parent.
         """
-        p = page
-        if p is None or p.photometric is None or p.photometric.name != "CFA":
+        tag_id = TIFF.TAGS.get(tag_name)
+        if tag_id is None:
+            logger.warning(f"Tag '{tag_name}' not found in TIFF tag registry.")
             return None
-
-        # Determine if data is interleaved and needs deswizzling
+        
+        value = None
+        if tag_id in self._page.tags:
+            value = translate_dng_tag(self._page.tags[tag_id])
+        elif self.parent is not None:
+            value = self.parent.get_tag(tag_name)
+        
+        if value is None:
+            return None
+        
+        if return_type is None:
+            return value
+        
+        try:
+            if return_type is float and isinstance(value, tuple) and len(value) == 2:
+                # Handle rational to float conversion
+                num, den = value
+                return float(num / den) if den != 0 else 0.0
+            else:
+                return return_type(value)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                f"Could not convert tag '{tag_name}' value '{value}' to type {return_type}: {e}"
+            )
+            return None
+    
+    def get_raw_cfa(self) -> Optional[tuple[np.ndarray, str]]:
+        """Extract raw CFA data and pattern from this page.
+        
+        Returns:
+            Tuple of (cfa_array, cfa_pattern_str) or None if not a CFA page.
+            cfa_pattern_str is e.g., 'RGGB', 'BGGR'.
+        """
+        if not self.is_cfa:
+            return None
+        
+        p = self._page
+        
+        # Handle interleaved data that needs deswizzling
         col_interleave_tag = p.tags.get(TIFF.TAGS["ColumnInterleaveFactor"])
         row_interleave_tag = p.tags.get(TIFF.TAGS["RowInterleaveFactor"])
         if (
@@ -893,40 +831,27 @@ class DngFile(TiffFile):
             raw_cfa = deswizzle_cfa_data(p.asarray())
         else:
             raw_cfa = p.asarray()
-
-        # Fetch CFAPattern string representation
-        cfa_tag = p.tags.get(TIFF.TAGS.get("CFAPattern"))
-        cfa_str = None
-        if cfa_tag is not None:
-            v = cfa_tag.value
-            if isinstance(v, (bytes, bytearray)) and len(v) == 4:
-                cfa_codes = tuple(int(b) for b in v)
-                cfa_str = INVERSE_BAYER_PATTERN_MAP.get(cfa_codes)
-
+        
+        # Get CFA pattern string
+        cfa_str = self.get_tag("CFAPattern")
+        
         return raw_cfa, cfa_str
-
-    def get_raw_linear_by_id(self, target_page_id: int) -> Optional[np.ndarray]:
-        """Retrieves the raw data array for a specific 'LINEAR_RAW' page by its ID.
+    
+    def get_raw_linear(self) -> Optional[np.ndarray]:
+        """Extract raw LINEAR_RAW data from this page.
         
-        For single-tile JPEG XL images, uses imagecodecs directly to avoid
-        tifffile's chroma subsampling limitation. Per tifffile documentation:
-        "chroma subsampling without JPEG compression" is not implemented,
-        meaning JPEG XL with 4:2:0 or 4:2:2 chroma subsampling may not be
-        correctly upsampled by tifffile.asarray().
+        For JPEG XL compressed images, handles tile assembly and chroma subsampling.
         
-        For multi-tile JPEG XL, we use tifffile.asarray() which correctly
-        assembles tiles - each tile is a separate JPEG XL bitstream that
-        must be decoded and positioned individually.
+        Returns:
+            Raw linear data array or None if not a LINEAR_RAW page.
         """
-
-        p = self.get_page_by_id(target_page_id)
-
-        if p is None or p.photometric is None or p.photometric.name != "LINEAR_RAW":
+        if not self.is_linear_raw:
             return None
-
+        
+        p = self._page
+        
         # Check if this is JPEG XL compression
         if p.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            # Use imagecodecs directly to handle chroma subsampling correctly
             fh = p.parent.filehandle
             
             if len(p.dataoffsets) == 1:
@@ -975,150 +900,94 @@ class DngFile(TiffFile):
             # Use asarray() for other compressions
             return p.asarray()
 
-    def get_tag(
-        self,
-        tag_name: str,
-        ifd: Optional[int] = None,
-        return_type: Optional[Type] = None,
-    ) -> Union[Any, None]:
-        """Retrieves a metadata tag's value from the DNG file.
 
-        Args:
-            tag_name: The name of the tag to retrieve (e.g., "ExposureTime").
-            ifd: Optional integer specifying the IFD to search. If None, all IFDs are searched.
-            return_type: The desired type for the return value (e.g., float, int, str).
+class DngFile(TiffFile):
 
+    """A TIFF file with DNG-specific extensions and helper methods."""
+
+    def __init__(self, file, *args, **kwargs):
+        import io
+        from pathlib import Path
+        
+        # Normalize file input to BytesIO for consistent in-memory operation
+        if isinstance(file, (str, Path)):
+            # Read file into memory
+            with open(file, 'rb') as f:
+                file_data = f.read()
+            file = io.BytesIO(file_data)
+        elif isinstance(file, io.IOBase):
+            # Ensure we're at the beginning for consistent behavior
+            file.seek(0)
+        # For any other type, let TiffFile handle it and potentially fail with a clear error
+        
+        super().__init__(file, *args, **kwargs)
+
+    def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
+        """Recursively iterates through all TIFF pages, including nested ones."""
+        if pages_list is None:
+            return
+        for page in pages_list:
+            yield page
+            if page.pages:  # Check if there are sub-pages
+                yield from self._iter_all_pages_recursive(page.pages)
+
+    def _build_dng_pages_recursive(
+        self, 
+        pages_list: Optional[List[TiffPage]], 
+        parent: Optional[DngPage],
+        page_id_counter: List[int]
+    ) -> List[DngPage]:
+        """Build DngPage wrappers with parent references for all pages."""
+        result = []
+        if pages_list is None:
+            return result
+        
+        for tiff_page in pages_list:
+            page_id = page_id_counter[0]
+            page_id_counter[0] += 1
+            
+            dng_page = DngPage(tiff_page, page_id, parent)
+            result.append(dng_page)
+            
+            # Recursively process sub-pages with this page as parent
+            if tiff_page.pages:
+                result.extend(self._build_dng_pages_recursive(
+                    tiff_page.pages, dng_page, page_id_counter
+                ))
+        
+        return result
+
+    def get_flattened_pages(self) -> List[DngPage]:
+        """Get all pages as DngPage wrappers with parent references.
+        
         Returns:
-            The tag's value, converted to `return_type` if possible. Returns None if the tag
-            is not found or if type conversion fails.
+            List of DngPage objects in flattened order, each with a parent
+            reference for tag inheritance.
         """
-        try:
-            tag_id = TIFF.TAGS[tag_name]
-        except KeyError:
-            logger.warning(f"Tag '{tag_name}' not found in TIFF tag registry.")
-            return None
-
-        # If specific IFD requested, search only that IFD; otherwise search all pages recursively
-        if ifd is not None and ifd < len(self.pages):
-            pages_to_search = [self.pages[ifd]]
-        else:
-            pages_to_search = list(self._iter_all_pages_recursive(self.pages))
-
-        for page in pages_to_search:
-            if tag_id in page.tags:
-                tag = page.tags[tag_id]
-                value = tag.value
-
-                if return_type is None:
-                    return value
-
-                try:
-                    if return_type is float and isinstance(value, tuple) and len(value) == 2:
-                        # Handle rational to float conversion
-                        num, den = value
-                        return float(num / den) if den != 0 else 0.0
-                    else:
-                        return return_type(value)
-                except (TypeError, ValueError) as e:
-                    logger.warning(
-                        f"Could not convert tag '{tag_name}' value '{value}' to type {return_type}: {e}"
-                    )
-                    return None
-
-        # Fallback: search ExifIFD if available
-        exif_value = self._get_exif_tag(tag_name, return_type)
-        if exif_value is not None:
-            return exif_value
-
+        return self._build_dng_pages_recursive(self.pages, None, [0])
+    
+    def get_main_page(self) -> Optional[DngPage]:
+        """Get the main image page.
+        
+        First looks for a page with NewSubFileType == 0 (explicit main image).
+        If not found, falls back to the first CFA or LINEAR_RAW page.
+        
+        Returns:
+            The main image DngPage, or None if not found.
+        """
+        pages = self.get_flattened_pages()
+        
+        # First try to find explicit main image (NewSubFileType == 0)
+        for page in pages:
+            if page.is_main_image:
+                return page
+        
+        # Fall back to first CFA or LINEAR_RAW page
+        for page in pages:
+            if page.is_cfa or page.is_linear_raw:
+                return page
+        
         return None
-
-    def _get_exif_tag(self, tag_name: str, return_type: Optional[Type] = None) -> Union[Any, None]:
-        """Search for a tag in the ExifIFD using tifffile's parsed structure.
-        
-        Args:
-            tag_name: The name of the tag to retrieve (e.g., "ExposureTime").
-            return_type: The desired type for the return value (e.g., float, int, str).
-            
-        Returns:
-            The tag's value from ExifIFD, converted to return_type if possible. 
-            Returns None if not found in ExifIFD.
-        """
-        # Look for ExifIFDPointer (tag 34665) on the first page (IFD0)
-        if not self.pages:
-            return None
-            
-        first_page = self.pages[0]
-        exif_ptr_tag_id = TIFF.TAGS.get("ExifTag")  # ExifIFDPointer
-        if exif_ptr_tag_id is None:
-            return None
-        exif_ptr_tag = first_page.tags.get(exif_ptr_tag_id)
-        
-        if exif_ptr_tag is None:
-            return None
-            
-        # tifffile parses ExifIFD into a dict accessible via tag.value
-        exif_ifd_dict = exif_ptr_tag.value
-        if not isinstance(exif_ifd_dict, dict):
-            return None
-            
-        # Search for our tag by name in the ExifIFD dict
-        if tag_name not in exif_ifd_dict:
-            return None
-            
-        value = exif_ifd_dict[tag_name]
-        
-        if return_type is None:
-            return value
-            
-        try:
-            if return_type is float and isinstance(value, tuple) and len(value) == 2:
-                # Handle rational to float conversion
-                num, den = value
-                return float(num / den) if den != 0 else 0.0
-            else:
-                return return_type(value)
-        except (TypeError, ValueError) as e:
-            logger.warning(
-                f"Could not convert ExifIFD tag '{tag_name}' value '{value}' to type {return_type}: {e}"
-            )
-            return None
-
-    @property
-    def xmp_metadata(self) -> XmpMetadata:
-        """Lazy-loaded XmpMetadata instance.
-        
-        Returns:
-            XmpMetadata instance for querying XMP attributes. Returns an empty instance if no XMP data found.
-        """
-        if self._xmp_metadata is None:
-            xmp_string = self.get_tag('XMP', return_type=str) or ''
-            self._xmp_metadata = XmpMetadata(xmp_string)
-        return self._xmp_metadata
-
-    def xmp_has(self, prop: str) -> bool:
-        """Check if an XMP property exists.
-        
-        Args:
-            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
-                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
-        
-        Returns:
-            True if the property exists in XMP metadata
-        """
-        return self.xmp_metadata.has_prop(prop)
-
-    def xmp(self, prop: str, return_type: Optional[Type] = None) -> Optional[Any]:
-        """Get an XMP property value with optional type conversion.
-        
-        Args:
-            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
-                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
-            return_type: Optional type to convert the value to (e.g., float, int)
-        
-        Returns:
-            The property value, optionally converted to return_type. None if not found.
-        """
-        return self.xmp_metadata.get_prop(prop, return_type)
 
 
 def decode_raw(
@@ -1173,8 +1042,10 @@ def decode_raw(
                 if param_value is not None:
                     options[option_name] = param_value
                 # Otherwise use XMP default if available, requested, and xmp_name is specified
-                elif xmp_name is not None and use_xmp and dng_file.xmp_has(xmp_name):
-                    options[option_name] = dng_file.xmp(xmp_name, value_type)
+                elif xmp_name is not None and use_xmp:
+                    main_page = dng_file.get_main_page()
+                    if main_page is not None and main_page.xmp.has_prop(xmp_name):
+                        options[option_name] = main_page.xmp.get_prop(xmp_name, value_type)
 
             # Add noise reduction to both luminance and color (convention)
             if ("noise_reduction" in processing_params and 

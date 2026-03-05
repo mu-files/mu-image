@@ -802,9 +802,16 @@ UNSUPPORTED_RENDERING_TAGS = {
     # =========================================================================
     # Image enhancement flags that may affect rendering interpretation
     # =========================================================================
-    "NewRawImageDigest",          # May indicate modified raw data
-    "RawImageDigest",
     "EnhanceParams",              # Enhanced image parameters
+    
+    # =========================================================================
+    # NOT PORTED: Data integrity validation (does not affect rendering)
+    # =========================================================================
+    # NewRawImageDigest / RawImageDigest - MD5 fingerprint of raw image data
+    # SDK ref: dng_negative.cpp ValidateRawImageDigest(), FindNewRawImageDigest()
+    # The SDK validates that the stored digest matches the actual raw data,
+    # but this is a data integrity check only and does not affect rendering.
+    # We do not currently perform this validation.
 }
 
 class UnsupportedDNGTagError(Exception):
@@ -1265,11 +1272,11 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
     return result
 
 
-def validate_dng_tags(tags: dict, strict: bool = True) -> list[str]:
-    """Check if DNG tags contain unsupported rendering features.
+def validate_dng_tags(page: "dngio.DngPage", strict: bool = True) -> list[str]:
+    """Check if DNG page contains unsupported rendering features.
     
     Args:
-        tags: Dictionary of DNG tags from the raw page (uses tifffile tag names)
+        page: DngPage to validate
         strict: If True, raise UnsupportedDNGTagError on finding unsupported tags.
                 If False, return list of unsupported tag names.
     
@@ -1282,7 +1289,7 @@ def validate_dng_tags(tags: dict, strict: bool = True) -> list[str]:
     found_unsupported = []
     
     for tag_name in UNSUPPORTED_RENDERING_TAGS:
-        if tag_name in tags and tags[tag_name] is not None:
+        if page.get_tag(tag_name) is not None:
             found_unsupported.append(tag_name)
     
     if found_unsupported and strict:
@@ -2245,20 +2252,18 @@ def process_raw(
         dng = dngio.DngFile(dng_input)
         timings['dng_open'] = time.perf_counter() - t0
         
-        raw_pages = dng.get_raw_pages_info()
-        if not raw_pages:
-            logger.error("No raw pages found in DNG file")
+        # Get the main image page (CFA or LINEAR_RAW)
+        page = dng.get_main_page()
+        if page is None:
+            logger.error("No main image page found in DNG file")
             return None
         
-        page_id, _, tags = raw_pages[0]
-        
         # Validate that we support all rendering-related tags in this DNG
-        unsupported = validate_dng_tags(tags, strict=strict)
+        unsupported = validate_dng_tags(page, strict=strict)
         if unsupported and not strict:
             logger.warning(f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}")
         
-        photometric = tags.get("PhotometricInterpretation")
-        opcode_list2 = tags.get("OpcodeList2")
+        photometric = page.photometric
         
         # =================================================================
         # Black/White level handling per SDK dng_ifd.cpp
@@ -2279,14 +2284,14 @@ def process_raw(
         #           fWhiteLevel[j] = (real64) defaultWhite;
         # =================================================================
         
-        samples_per_pixel = tags.get("SamplesPerPixel", 1)
-        black_repeat_dim = tags.get("BlackLevelRepeatDim", (1, 1))
+        samples_per_pixel = page.get_tag("SamplesPerPixel") or 1
+        black_repeat_dim = page.get_tag("BlackLevelRepeatDim") or (1, 1)
         black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, '__len__') else 1
         black_repeat_cols = int(black_repeat_dim[1]) if hasattr(black_repeat_dim, '__len__') and len(black_repeat_dim) > 1 else 1
         expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
         
         # BlackLevel: SDK initializes to 0.0 for all [row][col][plane]
-        black_level_raw = tags.get("BlackLevel")
+        black_level_raw = page.get_tag("BlackLevel")
         if black_level_raw is None:
             # No tag: all zeros (SDK constructor behavior)
             black_level = np.zeros(expected_black_size, dtype=np.float32)
@@ -2298,14 +2303,14 @@ def process_raw(
         
         # WhiteLevel: SDK initializes to -1.0 (sentinel), then PostParse sets default
         # Default: (1 << BitsPerSample) - 1, or 1 for floating point
-        bits_per_sample = tags.get("BitsPerSample", 16)
+        bits_per_sample = page.get_tag("BitsPerSample") or 16
         if isinstance(bits_per_sample, (list, tuple)):
             bits_per_sample = int(bits_per_sample[0])
         else:
             bits_per_sample = int(bits_per_sample)
         default_white = float((1 << bits_per_sample) - 1)
         
-        white_level_raw = tags.get("WhiteLevel")
+        white_level_raw = page.get_tag("WhiteLevel")
         if white_level_raw is None:
             # No tag: use default for all planes (SDK PostParse behavior)
             white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
@@ -2320,8 +2325,8 @@ def process_raw(
                     np.full(samples_per_pixel - len(white_level), default_white, dtype=np.float32)
                 ])
         
-        black_delta_h = tags.get("BlackLevelDeltaH")
-        black_delta_v = tags.get("BlackLevelDeltaV")
+        black_delta_h = page.get_tag("BlackLevelDeltaH")
+        black_delta_v = page.get_tag("BlackLevelDeltaV")
         
         # Convert delta arrays if present
         if black_delta_h is not None:
@@ -2329,7 +2334,7 @@ def process_raw(
         if black_delta_v is not None:
             black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
         
-        orientation = tags.get("Orientation", 1)
+        orientation = page.get_tag("Orientation") or 1
         
         # =====================================================================
         # Pre-processing: Demosaic / extract linear camera RGB
@@ -2341,22 +2346,25 @@ def process_raw(
         # Get ActiveArea - defines valid pixel region (top, left, bottom, right)
         # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea
         # DefaultCrop coordinates are relative to ActiveArea, not raw sensor
-        active_area = tags.get("ActiveArea")
+        active_area = page.get_tag("ActiveArea")
         
         # Get crop parameters (relative to ActiveArea, not raw sensor)
-        crop_origin = tags.get("DefaultCropOrigin")
-        crop_size = tags.get("DefaultCropSize")
+        crop_origin = page.get_tag("DefaultCropOrigin")
+        crop_size = page.get_tag("DefaultCropSize")
         
         # Get LinearizationTable if present
         # SDK ref: dng_linearization_info.cpp lines 1233-1250
         # Applied BEFORE black/white level normalization (inside C++ normalize_raw)
-        linearization_table = tags.get("LinearizationTable")
+        linearization_table = page.get_tag("LinearizationTable")
         if linearization_table is not None:
             linearization_table = np.asarray(linearization_table, dtype=np.uint16)
             logger.debug(f"LinearizationTable: {len(linearization_table)} entries")
         
+        # Get OpcodeList2 for post-linearization processing
+        opcode_list2 = page.get_tag("OpcodeList2")
+        
         if photometric == "LINEAR_RAW":
-            rgb_data = dng.get_raw_linear_by_id(page_id)
+            rgb_data = page.get_raw_linear()
             if rgb_data is None:
                 logger.error("Failed to extract LINEAR_RAW data from DNG")
                 return None
@@ -2398,7 +2406,7 @@ def process_raw(
                     logger.warning(f"Failed to apply OpcodeList2: {e}")
                 timings['opcode_list2'] = time.perf_counter() - t0_op
         else:
-            cfa_result = dng.get_raw_cfa_by_id(page_id)
+            cfa_result = page.get_raw_cfa()
             if cfa_result is None:
                 logger.error("Failed to extract CFA data from DNG")
                 return None
@@ -2438,7 +2446,6 @@ def process_raw(
             # DNG Spec: "applied to the raw image, just after it has been
             #            mapped to linear reference values"
             # =================================================================
-            opcode_list2 = tags.get("OpcodeList2")
             if opcode_list2 is not None:
                 t0 = time.perf_counter()
                 try:
@@ -2474,7 +2481,7 @@ def process_raw(
         # SDK ref: dng_negative.cpp BuildStage3Image() applies OpcodeList3 at 5232
         # SDK ref: dng_negative.cpp Trim(defaultCropArea) happens later at 6885
         # =====================================================================
-        opcode_list3 = tags.get("OpcodeList3")
+        opcode_list3 = page.get_tag("OpcodeList3")
         if opcode_list3 is not None:
             t0 = time.perf_counter()
             try:
@@ -2500,7 +2507,7 @@ def process_raw(
         # =====================================================================
         
         # Get ColorMatrix1 (XYZ to Camera, 3x3)
-        color_matrix1 = tags.get("ColorMatrix1")
+        color_matrix1 = page.get_tag("ColorMatrix1")
         if color_matrix1 is None:
             logger.warning("No ColorMatrix1 found, using identity")
             color_matrix1 = np.eye(3, dtype=np.float64)
@@ -2508,35 +2515,35 @@ def process_raw(
             color_matrix1 = np.asarray(color_matrix1, dtype=np.float64)
         
         # Get ColorMatrix2 for dual-illuminant interpolation
-        color_matrix2 = tags.get("ColorMatrix2")
+        color_matrix2 = page.get_tag("ColorMatrix2")
         if color_matrix2 is not None:
             color_matrix2 = np.asarray(color_matrix2, dtype=np.float64)
         
         # Get ForwardMatrix1/2 (camera to PCS, 3x3)
         # SDK ref: dng_color_spec.cpp lines 126-128, 177, 213, 586-596
         # NormalizeForwardMatrix is called BEFORE AnalogBalance/CameraCalibration
-        forward_matrix1 = _normalize_forward_matrix(tags.get("ForwardMatrix1"))
-        forward_matrix2 = _normalize_forward_matrix(tags.get("ForwardMatrix2"))
+        forward_matrix1 = _normalize_forward_matrix(page.get_tag("ForwardMatrix1"))
+        forward_matrix2 = _normalize_forward_matrix(page.get_tag("ForwardMatrix2"))
         
         # Get CameraCalibration1/2 matrices (3x3, default to identity)
         # SDK ref: dng_color_spec.cpp lines 134-166
-        camera_calib1 = tags.get("CameraCalibration1")
-        camera_calib2 = tags.get("CameraCalibration2")
+        camera_calib1 = page.get_tag("CameraCalibration1")
+        camera_calib2 = page.get_tag("CameraCalibration2")
         if camera_calib1 is None:
             camera_calib1 = np.eye(3, dtype=np.float64)
         if camera_calib2 is None:
             camera_calib2 = np.eye(3, dtype=np.float64)
         
         # Get calibration illuminant temperatures
-        illum1 = tags.get("CalibrationIlluminant1")
-        illum2 = tags.get("CalibrationIlluminant2")
+        illum1 = page.get_tag("CalibrationIlluminant1")
+        illum2 = page.get_tag("CalibrationIlluminant2")
         temp1 = illuminant_to_temperature(illum1) if illum1 is not None else None
         temp2 = illuminant_to_temperature(illum2) if illum2 is not None else None
         
         # Get AsShotNeutral -> convert to white point XY
         # SDK ref: dng_render.cpp lines 889-908
-        as_shot = tags.get("AsShotNeutral")
-        as_shot_xy = tags.get("AsShotWhiteXY")
+        as_shot = page.get_tag("AsShotNeutral")
+        as_shot_xy = page.get_tag("AsShotWhiteXY")
         camera_neutral = None
         white_xy_override = None
         
@@ -2549,7 +2556,7 @@ def process_raw(
         
         # Get AnalogBalance
         ab_diag = np.eye(3, dtype=np.float64)
-        analog_balance = tags.get("AnalogBalance")
+        analog_balance = page.get_tag("AnalogBalance")
         if analog_balance is not None:
             analog_balance = np.asarray(analog_balance, dtype=np.float64)
             if analog_balance.size >= 3:
@@ -2623,13 +2630,13 @@ def process_raw(
         # SDK ref: dng_render.cpp lines 917-955 (HueSatMap), 926-931 (LookTable)
         # =====================================================================
         hue_sat_map = None
-        hue_sat_dims = tags.get("ProfileHueSatMapDims")
-        hue_sat_data1 = tags.get("ProfileHueSatMapData1")
+        hue_sat_dims = page.get_tag("ProfileHueSatMapDims")
+        hue_sat_data1 = page.get_tag("ProfileHueSatMapData1")
         
         if hue_sat_dims is not None and hue_sat_data1 is not None:
             hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
             hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
-            hue_sat_data2 = tags.get("ProfileHueSatMapData2")
+            hue_sat_data2 = page.get_tag("ProfileHueSatMapData2")
             
             # Interpolate between dual illuminant HueSatMaps if available
             if hue_sat_data2 is not None and temp1 is not None and temp2 is not None and temp1 != temp2:
@@ -2644,8 +2651,8 @@ def process_raw(
             logger.debug(f"ProfileHueSatMap: {hue_divs}x{sat_divs}x{val_divs}")
         
         look_table = None
-        look_table_dims = tags.get("ProfileLookTableDims")
-        look_table_data = tags.get("ProfileLookTableData")
+        look_table_dims = page.get_tag("ProfileLookTableDims")
+        look_table_data = page.get_tag("ProfileLookTableData")
         
         if look_table_dims is not None and look_table_data is not None:
             look_hue_divs, look_sat_divs, look_val_divs = int(look_table_dims[0]), int(look_table_dims[1]), int(look_table_dims[2])
@@ -2683,12 +2690,12 @@ def process_raw(
         # =====================================================================
         # SDK ref: dng_render.cpp line 1882: exposureWeightGain = pow(2.0, fBaselineExposure)
         # fBaselineExposure = TotalBaselineExposure (Stage3Gain = 1.0 for normal images)
-        baseline_exposure = tags.get("BaselineExposure")
+        baseline_exposure = page.get_tag("BaselineExposure")
         if baseline_exposure is not None:
             baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
         else:
             baseline_exposure = 0.0
-        baseline_exposure_offset = tags.get("BaselineExposureOffset")
+        baseline_exposure_offset = page.get_tag("BaselineExposureOffset")
         if baseline_exposure_offset is not None:
             baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
         else:
@@ -2696,10 +2703,10 @@ def process_raw(
         pgtm_baseline_exposure = baseline_exposure + baseline_exposure_offset
         
         # Check for PGTM2 first (takes precedence), then fall back to PGTM1
-        pgtm_data = tags.get("ProfileGainTableMap2")
+        pgtm_data = page.get_tag("ProfileGainTableMap2")
         is_version2 = pgtm_data is not None
         if pgtm_data is None:
-            pgtm_data = tags.get("ProfileGainTableMap")
+            pgtm_data = page.get_tag("ProfileGainTableMap")
         
         if pgtm_data is not None:
             t0 = time.perf_counter()
@@ -2737,12 +2744,12 @@ def process_raw(
         # TotalBaselineExposure = BaselineExposure + BaselineExposureOffset
         # exposure = params.Exposure() + TotalBaselineExposure
         # white = 1.0 / pow(2.0, max(0.0, exposure))
-        baseline_exposure = tags.get("BaselineExposure")
+        baseline_exposure = page.get_tag("BaselineExposure")
         if baseline_exposure is not None:
             baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
         else:
             baseline_exposure = 0.0
-        baseline_exposure_offset = tags.get("BaselineExposureOffset")
+        baseline_exposure_offset = page.get_tag("BaselineExposureOffset")
         if baseline_exposure_offset is not None:
             baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
         else:
@@ -2755,14 +2762,14 @@ def process_raw(
         # SDK ref: dng_render.cpp lines 986-991
         # black = shadows * ShadowScale * Stage3Gain * 0.001
         # Stage3Gain = 1.0 for normal images (only set for multi-channel CFA merging)
-        shadow_scale = tags.get("ShadowScale")
+        shadow_scale = page.get_tag("ShadowScale")
         if shadow_scale is not None:
             shadow_scale = float(np.atleast_1d(shadow_scale)[0])
         else:
             shadow_scale = 1.0
         # SDK ref: dng_render.cpp lines 2164-2171
         # DefaultBlackRender: 0 = Auto (shadows=5.0), 1 = None (shadows=0.0)
-        default_black_render = tags.get("DefaultBlackRender", 0)
+        default_black_render = page.get_tag("DefaultBlackRender") or 0
         if default_black_render == 1:  # defaultBlackRender_None
             shadows = 0.0
         else:
@@ -2810,7 +2817,7 @@ def process_raw(
         
         # Check for ProfileToneCurve (custom tone curve from camera profile)
         # SDK ref: dng_render.cpp lines 2153-2162
-        profile_tone_curve = tags.get("ProfileToneCurve")
+        profile_tone_curve = page.get_tag("ProfileToneCurve")
         custom_curve = None
         
         if profile_tone_curve is not None and len(profile_tone_curve) >= 4:

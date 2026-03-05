@@ -13,6 +13,7 @@ from .tiff_metadata import (
 )
 from .dngio import (
     DngFile,
+    DngPage,
     cfa_from_dng,
     cfa_from_rgb_planes,
     rgb_planes_from_cfa,
@@ -47,6 +48,7 @@ __all__ = [
     'CsvReader',
     'CsvWriter',
     'DngFile',
+    'DngPage',
     'MetadataTags',
     'XmpMetadata',
     'translate_dng_tag',
