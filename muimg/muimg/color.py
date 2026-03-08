@@ -2161,7 +2161,7 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
 
 
 def process_raw(
-    dng_input,
+    dng_input: "str | Path | IO | dngio.DngFile | dngio.DngPage",
     output_dtype: type = np.uint16,
     algorithm: str = "RCD",
     strict: bool = True,
@@ -2184,7 +2184,7 @@ def process_raw(
            SDK ref: dng_render.cpp lines 2050-2068
     
     Args:
-        dng_input: Path to DNG file or file-like object
+        dng_input: Path to DNG file, file-like object, DngFile, or DngPage
         output_dtype: Output dtype (np.uint8, np.uint16, np.float16, np.float32)
         algorithm: Demosaic algorithm for CFA data
         strict: If True, raise UnsupportedDNGTagError if the DNG contains tags
@@ -2203,14 +2203,19 @@ def process_raw(
     
     try:
         t0 = time.perf_counter()
-        dng = dngio.DngFile(dng_input)
-        timings['dng_open'] = time.perf_counter() - t0
         
-        # Get the main image page (CFA or LINEAR_RAW)
-        page = dng.get_main_page()
-        if page is None:
-            logger.error("No main image page found in DNG file")
-            return None
+        # Handle different input types
+        if isinstance(dng_input, dngio.DngPage):
+            page = dng_input
+        else:
+            if not isinstance(dng_input, dngio.DngFile):
+                dng_input = dngio.DngFile(dng_input)
+            page = dng_input.get_main_page()
+            if page is None:
+                logger.error("No main image page found in DNG file")
+                return None
+        
+        timings['dng_open'] = time.perf_counter() - t0
         
         # Validate that we support all rendering-related tags in this DNG
         unsupported = validate_dng_tags(page, strict=strict)
@@ -2670,7 +2675,7 @@ def process_raw(
             try:
                 # PGTM uses file's byte order (from TIFF header)
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
-                pgtm_byteorder = dng.byteorder
+                pgtm_byteorder = page.byteorder
                 pgtm = parse_profile_gain_table_map(bytes(pgtm_data), is_version2=is_version2, byteorder=pgtm_byteorder)
                 logger.debug(f"ProfileGainTableMap{'2' if is_version2 else ''}: {pgtm['points_v']}x{pgtm['points_h']}x{pgtm['num_table_points']} "
                            f"weights={list(pgtm['weights'])} gamma={pgtm['gamma']}")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260307.1915"
+version = "0.1.20260307.2104"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"

@@ -565,8 +565,46 @@ def write_dng_from_page(
     """
     # the tag names are from tifffile.py TiffTagRegistry
     # the tag types are from tifffile.py DATA_DTYPES
-    has_jxl = page.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
-    dng_tags = _create_dng_tags(camera_profile, has_jxl)
+    
+    # Tags that TiffWriter handles automatically - don't copy as extratags
+    dont_copy_tags = {
+        'NewSubfileType',
+        'ImageWidth',
+        'ImageLength',
+        'BitsPerSample',
+        'Compression',
+        'PhotometricInterpretation',
+        'ImageDescription',
+        'StripOffsets',
+        'SamplesPerPixel',
+        'RowsPerStrip',
+        'StripByteCounts',
+        'XResolution',
+        'YResolution',
+        'PlanarConfiguration',
+        'ResolutionUnit',
+        'Software',
+        'TileWidth',
+        'TileLength',
+        'TileOffsets',
+        'TileByteCounts',
+        'SubIFDs',
+        'ExifTag',
+    }
+    if skip_tags:
+        dont_copy_tags.update(skip_tags)
+    
+    # Build dng_tags from parent IFD0 (color calibration, camera info, etc.)
+    dng_tags = MetadataTags()
+    parent_ifd0 = page.parent.pages[0]
+    for tag in parent_ifd0.tags.values():
+        if tag.name not in dont_copy_tags:
+            dng_tags.add_raw_tag(tag.name, tag.dtype, tag.count, tag.value)
+    
+    # Apply camera_profile overrides on top (if provided)
+    if camera_profile is not None:
+        for code, stored_tag in camera_profile._tags.items():
+            dng_tags.add_raw_tag(code, stored_tag.dtype, stored_tag.count, stored_tag.value)
 
     if isinstance(destination_file, Path):
         logger.debug(f"Writing DNG from TiffPage to {destination_file}")
@@ -581,38 +619,10 @@ def write_dng_from_page(
 
             dng_cfa_tags = MetadataTags()
             
-            # Tags that TiffWriter handles automatically - don't copy as extratags
-            dont_copy_tags = {
-                'NewSubfileType',      # 254 - handled by subfiletype parameter
-                'ImageWidth',          # 256 - handled by shape parameter
-                'ImageLength',         # 257 - handled by shape parameter
-                'Compression',         # 259 - handled by compression parameter
-                'PhotometricInterpretation', # 262 - handled by photometric parameter
-                'ImageDescription',    # 270 - handled by description parameter
-                'StripOffsets',        # 273 - handled automatically by TiffWriter
-                'SamplesPerPixel',     # 277 - handled by dtype/shape parameters
-                'RowsPerStrip',        # 278 - handled by rowsperstrip parameter
-                'StripByteCounts',     # 279 - handled automatically by TiffWriter
-                'XResolution',         # 282 - handled by resolution parameter
-                'YResolution',         # 283 - handled by resolution parameter
-                'TileOffsets',         # 284 - handled internally by tifffile
-                'ResolutionUnit',      # 296 - handled by resolution parameter
-                'Software',            # 305 - handled by software parameter
-                'SubIFDs'              # 330 - handled internally by tifffile
-            }
-            
-            # Combine default skip tags with user-provided skip tags
-            all_skip_tags = dont_copy_tags.copy()
-            if skip_tags:
-                all_skip_tags.update(skip_tags)
-            
-            # Copy page-specific tags (like the test pattern)
-            if hasattr(page, 'tags'):
-                for tag in page.tags.values():
-                    # Skip tags that TiffWriter handles automatically or user wants to skip
-                    if tag.name not in all_skip_tags:
-                        # Copy tag as-is (bypasses registry conversion)
-                        dng_cfa_tags.add_raw_tag(tag.name, tag.dtype, tag.count, tag.value)
+            # Copy SubIFD page tags (CFAPattern, etc.)
+            for tag in page.tags.values():
+                if tag.name not in dont_copy_tags:
+                    dng_cfa_tags.add_raw_tag(tag.name, tag.dtype, tag.count, tag.value)
 
             if color_data is None:
                 dng_cfa_tags.extend(dng_tags)
@@ -636,13 +646,30 @@ def write_dng_from_page(
             logger.debug(f"Read {len(compressed_segments)} compressed segments from CFA page")
 
             # Prepare main image arguments
+            # Forward tag values via tif.write parameters (not extratags)
             main_image_ifd_args = {
                 "subfiletype": 0,
                 "photometric": page.photometric,
                 "subifds": 0,
                 "compression": page.compression,
-                "extratags": dng_cfa_tags
+                "extratags": dng_cfa_tags,
             }
+            
+            # Add optional parameters from parent IFD0 tags (these are global tags)
+            parent_tags = parent_ifd0.tags
+            if 'Software' in parent_tags:
+                main_image_ifd_args["software"] = parent_tags['Software'].value
+            if 'XResolution' in parent_tags and 'YResolution' in parent_tags:
+                x_res = parent_tags['XResolution'].value
+                y_res = parent_tags['YResolution'].value
+                # tifffile expects (x, y) tuple or single value
+                if isinstance(x_res, tuple):
+                    x_res = x_res[0] / x_res[1] if x_res[1] else x_res[0]
+                if isinstance(y_res, tuple):
+                    y_res = y_res[0] / y_res[1] if y_res[1] else y_res[0]
+                main_image_ifd_args["resolution"] = (x_res, y_res)
+            if 'ResolutionUnit' in parent_tags:
+                main_image_ifd_args["resolutionunit"] = parent_tags['ResolutionUnit'].value
 
             # Determine shape based on samples per pixel (1 for CFA, 3 for LINEAR_RAW)
             samples_per_pixel = page.samplesperpixel if hasattr(page, 'samplesperpixel') else 1
@@ -653,8 +680,21 @@ def write_dng_from_page(
             
             # Handle tiled vs stripped images
             if page.is_tiled:
-                # Tiled image - use tile parameter
                 tile_shape = (page.tilelength, page.tilewidth)
+                # tifffile requires: tile <= image AND tile dimensions multiple of 16.
+                # Some cameras use non-standard tiles for small previews.
+                # We cannot reinterpret tile-compressed data as strips, so raise an error.
+                tile_valid = (
+                    tile_shape[0] <= page.imagelength and 
+                    tile_shape[1] <= page.imagewidth and
+                    tile_shape[0] % 16 == 0 and 
+                    tile_shape[1] % 16 == 0
+                )
+                if not tile_valid:
+                    raise ValueError(
+                        f"Cannot copy tiled page: tile {tile_shape} not supported by tifffile "
+                        f"(must be <= image size and multiple of 16)"
+                    )
                 tif.write(
                     data=compressed_data_iterator(),
                     shape=write_shape,
@@ -717,6 +757,11 @@ class DngPage:
     def shape(self) -> tuple:
         """Image dimensions as (height, width) or (height, width, samples)."""
         return self._page.shape
+    
+    @property
+    def byteorder(self) -> str:
+        """File byte order ('>' for big-endian, '<' for little-endian)."""
+        return self._page.parent.byteorder
     
     @property
     def tags(self):
