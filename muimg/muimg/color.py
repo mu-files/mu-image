@@ -2222,7 +2222,7 @@ def process_raw(
         if unsupported and not strict:
             logger.warning(f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}")
         
-        photometric = page.photometric
+        photometric = page.photometric_name
         
         # =================================================================
         # Black/White level handling per SDK dng_ifd.cpp
@@ -2675,7 +2675,7 @@ def process_raw(
             try:
                 # PGTM uses file's byte order (from TIFF header)
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
-                pgtm_byteorder = page.byteorder
+                pgtm_byteorder = page.parent.byteorder
                 pgtm = parse_profile_gain_table_map(bytes(pgtm_data), is_version2=is_version2, byteorder=pgtm_byteorder)
                 logger.debug(f"ProfileGainTableMap{'2' if is_version2 else ''}: {pgtm['points_v']}x{pgtm['points_h']}x{pgtm['num_table_points']} "
                            f"weights={list(pgtm['weights'])} gamma={pgtm['gamma']}")

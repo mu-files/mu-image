@@ -3,8 +3,6 @@
 Compares MUIMG (our Python port) and Core Image against C++ DNG SDK reference (dng_validate).
 """
 
-import logging
-import subprocess
 import time
 from pathlib import Path
 
@@ -14,13 +12,16 @@ import tifffile
 
 from muimg import color
 from muimg.color_mac import core_image_available, process_raw_core_image
-from conftest import TEST_FILES_DIR, LOCAL_TEST_FILES_DIR, OUTPUT_COMPARISON_DIR
+from conftest import (
+    TEST_FILES_DIR,
+    LOCAL_TEST_FILES_DIR,
+    DNG_VALIDATE_PATH,
+    compute_diff_stats,
+    run_dng_validate,
+)
 
 # Output directory for comparison files
 OUTPUT_DIR = Path(__file__).parent / "output_comparison"
-
-# Path to the C++ SDK dng_validate tool (reference)
-DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targets/mac/release64/dng_validate"
 
 # Comparison thresholds (as percentage of full range)
 # Per-file thresholds for MUIMG (1.1x above measured values)
@@ -77,40 +78,6 @@ def get_dng_files():
     return sorted(files)
 
 
-def normalize_image(img: np.ndarray) -> np.ndarray:
-    """Normalize image to float [0,1] range."""
-    if img.dtype == np.uint8:
-        return img.astype(np.float32) / 255.0
-    elif img.dtype == np.uint16:
-        return img.astype(np.float32) / 65535.0
-    return img.astype(np.float32)
-
-
-def compute_diff_stats(img1: np.ndarray, img2: np.ndarray) -> dict:
-    """Compute difference statistics between two images."""
-    diff = np.abs(normalize_image(img1) - normalize_image(img2))
-    return {
-        "mean": np.mean(diff) * 100,
-        "p99": np.percentile(diff, 99) * 100,
-        "max": np.max(diff) * 100,
-    }
-
-
-def load_tiff(path: Path) -> np.ndarray | None:
-    """Load TIFF and convert to interleaved format if needed."""
-    if path is None or not path.exists():
-        return None
-    try:
-        with tifffile.TiffFile(str(path)) as tif:
-            img = tif.pages[0].asarray()
-            # Convert planar (3,H,W) to interleaved (H,W,3)
-            if img.ndim == 3 and img.shape[0] == 3 and img.shape[0] < img.shape[1]:
-                img = np.moveaxis(img, 0, -1)
-            return img
-    except Exception:
-        return None
-
-
 @pytest.fixture(scope="module")
 def output_dir():
     """Create output directory for comparison files."""
@@ -118,31 +85,11 @@ def output_dir():
     return OUTPUT_DIR
 
 
-def generate_reference(dng_path: Path, output_dir: Path) -> np.ndarray | None:
-    """Generate C++ SDK reference TIFF for a single DNG file."""
-    if not DNG_VALIDATE_PATH.exists():
-        return None
-    
-    output_base = output_dir / f"{dng_path.stem}_dngvalidate"
-    output_tiff = output_dir / f"{dng_path.stem}_dngvalidate.tif"
-    
-    try:
-        subprocess.run(
-            [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-    except (subprocess.TimeoutExpired, Exception):
-        return None
-    
-    return load_tiff(output_tiff)
-
-
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
 def test_muimg_vs_dngvalidate(dng_path, output_dir):
     """Test MUIMG process_raw() against C++ DNG SDK reference."""
-    ref = generate_reference(dng_path, output_dir)
+    output_base = output_dir / f"{dng_path.stem}_dngvalidate"
+    ref = run_dng_validate(dng_path, output_base, timeout=60)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     
@@ -172,7 +119,8 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
 def test_coreimage_vs_dngvalidate(dng_path, output_dir):
     """Test Core Image against C++ DNG SDK reference."""
-    ref = generate_reference(dng_path, output_dir)
+    output_base = output_dir / f"{dng_path.stem}_dngvalidate"
+    ref = run_dng_validate(dng_path, output_base, timeout=60)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     

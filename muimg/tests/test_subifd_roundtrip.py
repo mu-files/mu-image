@@ -104,8 +104,8 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 2. write_dng_from_page -> {stem}_ifd{n}.dng
             # Skip if tile dimensions not supported by tifffile
-            if page._page.is_tiled:
-                tile_h, tile_w = page._page.tilelength, page._page.tilewidth
+            if page.is_tiled:
+                tile_h, tile_w = page.tilelength, page.tilewidth
                 tile_valid = (
                     tile_h <= page.shape[0] and tile_w <= page.shape[1] and
                     tile_h % 16 == 0 and tile_w % 16 == 0
@@ -115,7 +115,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                     continue
             
             try:
-                write_dng_from_page(page._page, roundtrip_dng)
+                write_dng_from_page(page, roundtrip_dng)
                 print(f"    -> {roundtrip_dng.name}")
             except Exception as e:
                 pytest.fail(f"write_dng_from_page failed for IFD {i}: {e}")

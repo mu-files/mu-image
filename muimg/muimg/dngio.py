@@ -727,11 +727,14 @@ def write_dng_from_page(
         raise
 
 
-class DngPage:
-    """Wrapper around a tifffile TiffPage with DNG-specific functionality.
+class DngPage(TiffPage):
+    """TiffPage subclass with DNG-specific functionality.
     
     Provides convenient access to DNG tags with automatic translation,
     parent IFD tag inheritance, and raw data extraction methods.
+    
+    Inherits all TiffPage attributes and methods. Created by "upgrading"
+    an existing TiffPage instance.
     """
     
     # NewSubFileType values from DNG spec
@@ -741,54 +744,45 @@ class DngPage:
     SF_PREVIEW_MASK = 8
     SF_ALT_PREVIEW_IMAGE = 65537
     
-    def __init__(self, tiff_page: TiffPage, page_id: int, parent: Optional['DngPage'] = None):
-        """Initialize DngPage wrapper.
+    def __new__(cls, *args, **kwargs):
+        """Create DngPage instance without calling TiffPage.__init__."""
+        return object.__new__(cls)
+    
+    def __init__(self, tiff_page: TiffPage):
+        """Initialize DngPage by copying TiffPage state.
         
         Args:
-            tiff_page: The underlying tifffile TiffPage object
-            page_id: The flattened 0-based page index
-            parent: Optional parent DngPage for tag inheritance
+            tiff_page: The TiffPage to upgrade
         """
-        self._page = tiff_page
-        self.page_id = page_id
-        self.parent = parent
+        self.__dict__.update(tiff_page.__dict__)
     
     @property
-    def shape(self) -> tuple:
-        """Image dimensions as (height, width) or (height, width, samples)."""
-        return self._page.shape
+    def ifd0(self) -> Optional[TiffPage]:
+        """Return IFD0, or None if this page IS IFD0."""
+        page0 = self.parent.pages[0]
+        return None if page0 is self else page0
     
     @property
-    def byteorder(self) -> str:
-        """File byte order ('>' for big-endian, '<' for little-endian)."""
-        return self._page.parent.byteorder
-    
-    @property
-    def tags(self):
-        """Direct access to underlying TiffPage tags dict."""
-        return self._page.tags
-    
-    @property
-    def photometric(self) -> Optional[str]:
+    def photometric_name(self) -> Optional[str]:
         """Photometric interpretation string (e.g., 'CFA', 'LINEAR_RAW', 'RGB')."""
-        if self._page.photometric is not None:
-            return self._page.photometric.name
+        if self.photometric is not None:
+            return self.photometric.name
         return None
     
     @property
     def is_cfa(self) -> bool:
         """True if this page contains CFA (Bayer) raw data."""
-        return self.photometric == "CFA"
+        return self.photometric_name == "CFA"
     
     @property
     def is_linear_raw(self) -> bool:
         """True if this page contains LINEAR_RAW (demosaiced) data."""
-        return self.photometric == "LINEAR_RAW"
+        return self.photometric_name == "LINEAR_RAW"
     
     @property
     def is_main_image(self) -> bool:
         """True if this page is the main image (NewSubfileType == 0)."""
-        tag = self._page.tags.get(254)  # NewSubfileType tag ID
+        tag = self.tags.get(254)  # NewSubfileType tag ID
         if tag is None:
             return False
         return tag.value == self.SF_MAIN_IMAGE
@@ -796,7 +790,7 @@ class DngPage:
     @property
     def is_preview(self) -> bool:
         """True if this page is a preview image."""
-        tag = self._page.tags.get(254)  # NewSubfileType tag ID
+        tag = self.tags.get(254)  # NewSubfileType tag ID
         if tag is None:
             return False
         return tag.value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
@@ -841,21 +835,22 @@ class DngPage:
                 logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
                 return None
         
-        # Get value from page or parent
-        if tag_id in self._page.tags:
-            raw_tag = self._page.tags[tag_id]
-            effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
-            
-            # Use registry spec shape only if count matches tag
-            shape_spec = None
-            if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
-                shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
-            
-            return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
-        elif self.parent is not None:
-            return self.parent.get_tag(tag, return_type)
+        # Get value from page, or fall back to IFD0 for global tags
+        raw_tag = None
+        if tag_id in self.tags:
+            raw_tag = self.tags[tag_id]
+        elif self.ifd0 is not None and tag_id in self.ifd0.tags:
+            raw_tag = self.ifd0.tags[tag_id]
         
-        return None
+        if raw_tag is None:
+            return None
+        
+        effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
+        shape_spec = None
+        if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
+            shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
+        
+        return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
 
     def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
         """Get raw tag value without any type conversion.
@@ -878,10 +873,12 @@ class DngPage:
                 logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
                 return None
         
-        if tag_id in self._page.tags:
-            return self._page.tags[tag_id].value
-        elif self.parent is not None:
-            return self.parent.get_raw_tag(tag)
+        if tag_id in self.tags:
+            return self.tags[tag_id].value
+        
+        # Fall back to IFD0 for global tags
+        if self.ifd0 is not None and tag_id in self.ifd0.tags:
+            return self.ifd0.tags[tag_id].value
         
         return None
     
@@ -911,6 +908,58 @@ class DngPage:
         from .tiff_metadata import _get_time_impl
         return _get_time_impl(self, time_type)
     
+    def _decode_jpegxl(self) -> np.ndarray:
+        """Decode JPEG XL compressed image data, handling tiled images.
+        
+        Returns:
+            Decoded image array.
+        """
+        fh = self.parent.filehandle
+        
+        # Read all segments using tifffile's read_segments API
+        segments = list(fh.read_segments(
+            self.dataoffsets,
+            self.databytecounts,
+            sort=True
+        ))
+        
+        if len(segments) == 1:
+            # Single tile/strip
+            compressed_data, _ = segments[0]
+            return imagecodecs.jpegxl_decode(compressed_data)
+        else:
+            # Multiple tiles - decode each and assemble
+            tile_width = self.tilewidth
+            tile_height = self.tilelength
+            img_width = self.imagewidth
+            img_height = self.imagelength
+            samples = self.samplesperpixel or 1
+            
+            # Determine output dtype from first tile
+            first_tile = imagecodecs.jpegxl_decode(segments[0][0])
+            dtype = first_tile.dtype
+            
+            # Create output array - handle both 2D (single sample) and 3D (multi-sample)
+            if samples == 1:
+                output = np.zeros((img_height, img_width), dtype=dtype)
+            else:
+                output = np.zeros((img_height, img_width, samples), dtype=dtype)
+            
+            # Decode and place each tile
+            tiles_x = (img_width + tile_width - 1) // tile_width
+            for i, (tile_data, _) in enumerate(segments):
+                tile = imagecodecs.jpegxl_decode(tile_data)
+                
+                ty = (i // tiles_x) * tile_height
+                tx = (i % tiles_x) * tile_width
+                
+                # Handle edge tiles that may be smaller
+                th = min(tile_height, img_height - ty)
+                tw = min(tile_width, img_width - tx)
+                output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
+            
+            return output
+
     def get_raw_cfa(self) -> Optional[tuple[np.ndarray, str]]:
         """Extract raw CFA data and pattern from this page.
         
@@ -921,20 +970,22 @@ class DngPage:
         if not self.is_cfa:
             return None
         
-        p = self._page
+        # Decode image data
+        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            raw_cfa = self._decode_jpegxl()
+        else:
+            raw_cfa = self.asarray()
         
         # Handle interleaved data that needs deswizzling
-        col_interleave_tag = p.tags.get(LOCAL_TIFF_TAGS["ColumnInterleaveFactor"])
-        row_interleave_tag = p.tags.get(LOCAL_TIFF_TAGS["RowInterleaveFactor"])
+        col_interleave_tag = self.tags.get(LOCAL_TIFF_TAGS["ColumnInterleaveFactor"])
+        row_interleave_tag = self.tags.get(LOCAL_TIFF_TAGS["RowInterleaveFactor"])
         if (
             col_interleave_tag is not None
             and col_interleave_tag.value == 2
             and row_interleave_tag is not None
             and row_interleave_tag.value == 2
         ):
-            raw_cfa = deswizzle_cfa_data(p.asarray())
-        else:
-            raw_cfa = p.asarray()
+            raw_cfa = deswizzle_cfa_data(raw_cfa)
         
         # Get CFA pattern string
         cfa_str = self.get_tag("CFAPattern", str)
@@ -952,57 +1003,10 @@ class DngPage:
         if not self.is_linear_raw:
             return None
         
-        p = self._page
-        
-        # Check if this is JPEG XL compression
-        if p.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            fh = p.parent.filehandle
-            
-            if len(p.dataoffsets) == 1:
-                # Single tile/strip
-                compressed_segments = list(fh.read_segments(
-                    p.dataoffsets,
-                    p.databytecounts,
-                    sort=True
-                ))
-                compressed_data = b''.join(segment_data for segment_data, index in compressed_segments)
-                return imagecodecs.jpegxl_decode(compressed_data)
-            else:
-                # Multiple tiles - decode each and assemble
-                tile_width = p.tilewidth
-                tile_height = p.tilelength
-                img_width = p.imagewidth
-                img_height = p.imagelength
-                samples = p.samplesperpixel or 3
-                
-                # Determine output dtype from first tile
-                fh.seek(p.dataoffsets[0])
-                first_tile_data = fh.read(p.databytecounts[0])
-                first_tile = imagecodecs.jpegxl_decode(first_tile_data)
-                dtype = first_tile.dtype
-                
-                # Create output array
-                output = np.zeros((img_height, img_width, samples), dtype=dtype)
-                
-                # Decode and place each tile
-                tiles_x = (img_width + tile_width - 1) // tile_width
-                for i, (offset, bytecount) in enumerate(zip(p.dataoffsets, p.databytecounts)):
-                    fh.seek(offset)
-                    tile_data = fh.read(bytecount)
-                    tile = imagecodecs.jpegxl_decode(tile_data)
-                    
-                    ty = (i // tiles_x) * tile_height
-                    tx = (i % tiles_x) * tile_width
-                    
-                    # Handle edge tiles that may be smaller
-                    th = min(tile_height, img_height - ty)
-                    tw = min(tile_width, img_width - tx)
-                    output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
-                
-                return output
+        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            return self._decode_jpegxl()
         else:
-            # Use asarray() for other compressions
-            return p.asarray()
+            return self.asarray()
 
 
 class DngFile(TiffFile):
@@ -1035,40 +1039,30 @@ class DngFile(TiffFile):
             if page.pages:  # Check if there are sub-pages
                 yield from self._iter_all_pages_recursive(page.pages)
 
-    def _build_dng_pages_recursive(
-        self, 
-        pages_list: Optional[List[TiffPage]], 
-        parent: Optional[DngPage],
-        page_id_counter: List[int]
-    ) -> List[DngPage]:
-        """Build DngPage wrappers with parent references for all pages."""
+    def _build_dng_pages_recursive(self, pages_list: Optional[List[TiffPage]]) -> List[DngPage]:
+        """Build DngPage instances from TiffPages."""
         result = []
         if pages_list is None:
             return result
         
         for tiff_page in pages_list:
-            page_id = page_id_counter[0]
-            page_id_counter[0] += 1
-            
-            dng_page = DngPage(tiff_page, page_id, parent)
+            dng_page = DngPage(tiff_page)
             result.append(dng_page)
             
-            # Recursively process sub-pages with this page as parent
+            # Recursively process sub-pages
             if tiff_page.pages:
-                result.extend(self._build_dng_pages_recursive(
-                    tiff_page.pages, dng_page, page_id_counter
-                ))
+                result.extend(self._build_dng_pages_recursive(tiff_page.pages))
         
         return result
 
     def get_flattened_pages(self) -> List[DngPage]:
-        """Get all pages as DngPage wrappers with parent references.
+        """Get all pages as DngPage instances.
         
         Returns:
-            List of DngPage objects in flattened order, each with a parent
-            reference for tag inheritance.
+            List of DngPage objects in flattened order. Tag inheritance
+            falls back to IFD0 via TiffPage.parent.
         """
-        return self._build_dng_pages_recursive(self.pages, None, [0])
+        return self._build_dng_pages_recursive(self.pages)
     
     def get_main_page(self) -> Optional[DngPage]:
         """Get the main image page.
