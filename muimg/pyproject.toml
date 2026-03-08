@@ -4,33 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260308.1455"
+version = "0.1.20260308.1504"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-]
 dependencies = [
-    "opencv-python-headless",
-    "numpy",
-    "scipy>=1.9.0",
-    "pyobjc-framework-Quartz",
-    "pyobjc-framework-Cocoa",
-    "tifffile",
-    "imagecodecs[all]",
+    "av",
     "click",
-    "setproctitle",
     "google-auth>=2.0.0",
     "google-auth-oauthlib>=1.0.0",
-    "requests>=2.25.0",
+    "imagecodecs[all]",
+    "numpy",
+    "opencv-python-headless",
+    "pyobjc-framework-Cocoa",
+    "pyobjc-framework-Quartz",
     "rawpy",
-    "av",
+    "requests>=2.25.0",
+    "scipy>=1.9.0",
+    "setproctitle",
+    "tifffile",
 ]
 
 [project.optional-dependencies]
