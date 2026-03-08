@@ -6,6 +6,7 @@ import io
 import logging
 import imagecodecs
 import numpy as np
+from datetime import datetime
 
 from pathlib import Path
 from tifffile import COMPRESSION, PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
@@ -16,10 +17,14 @@ logger = logging.getLogger(__name__)
 # Import metadata classes from tiff_metadata module
 from .tiff_metadata import (
     MetadataTags,
+    TagSpec,
+    TIFF_DTYPE_TO_STR,
     XmpMetadata,
-    BAYER_PATTERN_MAP,
-    INVERSE_BAYER_PATTERN_MAP,
-    translate_dng_tag,
+    get_cfa_pattern_codes,
+    get_native_type,
+    decode_tag_value,
+    resolve_tag,
+    LOCAL_TIFF_TAGS,
 )
 
 
@@ -162,14 +167,11 @@ def rgb_planes_from_cfa(
         ValueError: If the CFA pattern is invalid.
     """
     # Parse the CFA pattern string
-    cfa_pattern_flat = BAYER_PATTERN_MAP.get(cfa_pattern_str)
-    if cfa_pattern_flat is None:
-        raise ValueError(f"Unknown CFAPattern string '{cfa_pattern_str}'")
-
+    cfa_pattern_flat = get_cfa_pattern_codes(cfa_pattern_str)
     cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
     
     # Extract R, G, B planes based on their positions in the CFA pattern
-    # The BAYER_PATTERN_MAP uses integer values (0=R, 1=G, 2=B)
+    # CFA codes are: 0=R, 1=G, 2=B
     r_pos_list = np.argwhere(cfa_pattern == 0)
     g_pos_list = np.argwhere(cfa_pattern == 1)
     b_pos_list = np.argwhere(cfa_pattern == 2)
@@ -209,9 +211,7 @@ def cfa_from_rgb_planes(
     r, g1, g2, b = channels
     
     # Parse the CFA pattern string
-    cfa_pattern_flat = BAYER_PATTERN_MAP.get(cfa_pattern_str)
-    if cfa_pattern_flat is None:
-        raise ValueError(f"Unknown CFAPattern string '{cfa_pattern_str}'")
+    cfa_pattern_flat = get_cfa_pattern_codes(cfa_pattern_str)
     
     cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
     
@@ -249,7 +249,7 @@ def rgb_planes_from_dng(
 def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_tags: MetadataTags) -> None:
     """Write thumbnail IFD exactly as in write_dng function."""
     # Prepare thumbnail specific tags
-    dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
+    dng_tags.add_tag("PreviewColorSpace", PREVIEWCOLORSPACE_SRGB)
 
     # Write Thumbnail to SubIFD 0
     thumb_ifd_args = {
@@ -291,21 +291,21 @@ def _create_dng_tags(camera_profile: Optional[MetadataTags], has_jxl: bool) -> M
     
     # Add required tags if not already set
     if "Orientation" not in dng_tags:
-        dng_tags.add_tag(("Orientation", "H", 1, ORIENTATION_HORIZONTAL))
+        dng_tags.add_tag("Orientation", ORIENTATION_HORIZONTAL)
     
     if "ColorMatrix1" not in dng_tags:
         identity_matrix = np.identity(3, dtype=np.float64)
-        dng_tags.add_matrix_as_rational_tag("ColorMatrix1", identity_matrix)
+        dng_tags.add_tag("ColorMatrix1", identity_matrix)
     
     if "CalibrationIlluminant1" not in dng_tags:
-        dng_tags.add_tag(("CalibrationIlluminant1", "H", 1, 0))  # 0 = Unknown
+        dng_tags.add_tag("CalibrationIlluminant1", 0)  # 0 = Unknown
 
-    dng_tags.add_tag(("DNGVersion", "B", 4, (1, 7, 1, 0)))
+    dng_tags.add_tag("DNGVersion", bytes([1, 7, 1, 0]))
     if not has_jxl:
         # need latest version for CFA compression but lots of old software can't handle it
-        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 4, 0, 0)))
+        dng_tags.add_tag("DNGBackwardVersion", bytes([1, 4, 0, 0]))
     else:
-        dng_tags.add_tag(("DNGBackwardVersion", "B", 4, (1, 7, 1, 0)))
+        dng_tags.add_tag("DNGBackwardVersion", bytes([1, 7, 1, 0]))
         
     return dng_tags
 
@@ -313,7 +313,7 @@ def _create_dng_tags(camera_profile: Optional[MetadataTags], has_jxl: bool) -> M
 def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_tags: MetadataTags) -> None:
     """Write thumbnail IFD exactly as in write_dng function."""
     # Prepare thumbnail specific tags
-    dng_tags.add_tag(("PreviewColorSpace", "I", 1, PREVIEWCOLORSPACE_SRGB))
+    dng_tags.add_tag("PreviewColorSpace", PREVIEWCOLORSPACE_SRGB)
 
     # Write Thumbnail to SubIFD 0
     thumb_ifd_args = {
@@ -388,9 +388,9 @@ def write_dng(
     
             # prepare main image
             dng_cfa_tags = MetadataTags()
-            dng_cfa_tags.add_cfa_pattern_tag(cfa_pattern)
-            dng_cfa_tags.add_tag(("CFARepeatPatternDim", "H", 2, (2, 2)))
-            dng_cfa_tags.add_tag(("CFAPlaneColor", "B", 3, (0, 1, 2)))
+            dng_cfa_tags.add_tag("CFAPattern", cfa_pattern)
+            dng_cfa_tags.add_tag("CFARepeatPatternDim", (2, 2))
+            dng_cfa_tags.add_tag("CFAPlaneColor", bytes([0, 1, 2]))
 
             if jxl_distance is not None:
                 if not (0.0 <= jxl_distance <= 15.0):
@@ -417,10 +417,10 @@ def write_dng(
                 # if compressing, need to swizzle the CFA data and indicate
                 # this via tags
                 processed_raw_data = swizzle_cfa_data(processed_raw_data)
-                dng_cfa_tags.add_tag(("ColumnInterleaveFactor", "H", 1, 2))
-                dng_cfa_tags.add_tag(("RowInterleaveFactor", "H", 1, 2))
-                dng_cfa_tags.add_tag(("JXLDistance", "f", 1, jxl_distance))
-                dng_cfa_tags.add_tag(("JXLEffort", "I", 1, actual_effort))
+                dng_cfa_tags.add_tag("ColumnInterleaveFactor", 2)
+                dng_cfa_tags.add_tag("RowInterleaveFactor", 2)
+                dng_cfa_tags.add_tag("JXLDistance", jxl_distance)
+                dng_cfa_tags.add_tag("JXLEffort", actual_effort)
             else:
                 compression_type = COMPRESSION.NONE
                 compressionargs = {}
@@ -508,8 +508,8 @@ def write_dng_linearraw(
                         f"JXL distance {jxl_distance} is outside the typical range [0.0, 15.0]."
                     )
                 actual_effort = jxl_effort if jxl_effort is not None else 5
-                linearraw_tags.add_tag(("JXLDistance", "f", 1, jxl_distance))
-                linearraw_tags.add_tag(("JXLEffort", "I", 1, actual_effort))
+                linearraw_tags.add_tag("JXLDistance", jxl_distance)
+                linearraw_tags.add_tag("JXLEffort", actual_effort)
                 compression_type = "JPEGXL_DNG"
                 compressionargs = {"distance": jxl_distance, "effort": actual_effort}
 
@@ -611,8 +611,8 @@ def write_dng_from_page(
                 for tag in page.tags.values():
                     # Skip tags that TiffWriter handles automatically or user wants to skip
                     if tag.name not in all_skip_tags:
-                        # Use the same pattern as the original test: tag.code, tag.dtype, tag.count, tag.value
-                        dng_cfa_tags.add_tag((tag.name, tag.dtype, tag.count, tag.value))
+                        # Copy tag as-is (bypasses registry conversion)
+                        dng_cfa_tags.add_raw_tag(tag.name, tag.dtype, tag.count, tag.value)
 
             if color_data is None:
                 dng_cfa_tags.extend(dng_tags)
@@ -759,53 +759,112 @@ class DngPage:
     @property
     def xmp(self) -> XmpMetadata:
         """XMP metadata from this page (or parent if not found locally)."""
-        xmp_string = self.get_tag('XMP')
+        xmp_string = self.get_tag('XMP', str)
         if xmp_string is None:
             xmp_string = ''
-        if isinstance(xmp_string, bytes):
-            xmp_string = xmp_string.decode('utf-8', errors='replace')
         return XmpMetadata(xmp_string)
     
-    def get_tag(self, tag_name: str, return_type: Optional[Type] = None) -> Optional[Any]:
-        """Get a translated tag value from this page, falling back to parent.
+    def get_tag(
+        self, 
+        tag: Union[str, int], 
+        return_type: Optional[type] = None
+    ) -> Optional[Any]:
+        """Get a tag value with type conversion.
         
         Args:
-            tag_name: Name of the TIFF/DNG tag (e.g., 'ColorMatrix1', 'CFAPattern')
-            return_type: Optional type to convert the value to (e.g., float, int, str)
+            tag: Either a numeric tag code (int) or tag name string 
+                 (e.g., 'ColorMatrix1', 'CFAPattern')
+            return_type: Controls type conversion:
+                - None (default): auto-convert to native type from TagSpec
+                - specific type (str, float, list, etc.): convert to that type
         
         Returns:
-            Translated tag value, optionally converted to return_type. 
-            None if not found in this page or any parent.
+            Tag value (converted based on return_type), or None if not found.
+            
+        See also:
+            get_raw_tag: Returns raw tag value without any conversion.
         """
-        tag_id = TIFF.TAGS.get(tag_name)
-        if tag_id is None:
-            logger.warning(f"Tag '{tag_name}' not found in TIFF tag registry.")
-            return None
+        # Resolve tag to id/name and get registry spec (for shape info)
+        if isinstance(tag, int):
+            tag_id = tag
+            _, tag_name, registry_spec = resolve_tag(tag)
+            if tag_name is None:
+                tag_name = str(tag)
+        else:
+            tag_id, tag_name, registry_spec = resolve_tag(tag)
+            if tag_id is None:
+                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+                return None
         
-        value = None
+        # Get value from page or parent
         if tag_id in self._page.tags:
-            value = translate_dng_tag(self._page.tags[tag_id])
+            raw_tag = self._page.tags[tag_id]
+            effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
+            
+            # Use registry spec shape only if count matches tag
+            shape_spec = None
+            if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
+                shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
+            
+            return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
         elif self.parent is not None:
-            value = self.parent.get_tag(tag_name)
+            return self.parent.get_tag(tag, return_type)
         
-        if value is None:
-            return None
+        return None
+
+    def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
+        """Get raw tag value without any type conversion.
         
-        if return_type is None:
-            return value
+        Args:
+            tag: Either a numeric tag code (int) or tag name string
         
-        try:
-            if return_type is float and isinstance(value, tuple) and len(value) == 2:
-                # Handle rational to float conversion
-                num, den = value
-                return float(num / den) if den != 0 else 0.0
-            else:
-                return return_type(value)
-        except (TypeError, ValueError) as e:
-            logger.warning(
-                f"Could not convert tag '{tag_name}' value '{value}' to type {return_type}: {e}"
-            )
-            return None
+        Returns:
+            Raw tag value as stored, or None if not found.
+            
+        See also:
+            get_tag: Returns tag value with automatic or specified type conversion.
+        """
+        # For raw access, we can work with tags not in the registry
+        if isinstance(tag, int):
+            tag_id = tag
+        else:
+            tag_id, _, _ = resolve_tag(tag)
+            if tag_id is None:
+                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+                return None
+        
+        if tag_id in self._page.tags:
+            return self._page.tags[tag_id].value
+        elif self.parent is not None:
+            return self.parent.get_raw_tag(tag)
+        
+        return None
+    
+    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+        """Extract datetime from EXIF time tags with subseconds and timezone.
+        
+        This is the inverse of MetadataTags.add_time_tags(). Reads the datetime,
+        subsecond, and timezone offset tags and combines them into a single
+        datetime object.
+        
+        Args:
+            time_type: Which set of tags to read:
+                - "original" (default): DateTimeOriginal, SubsecTimeOriginal, OffsetTimeOriginal
+                - "digitized": DateTimeDigitized, SubsecTimeDigitized, OffsetTimeDigitized
+                - "modified": DateTime, SubsecTime, OffsetTime
+                - "preview": PreviewDateTime (no subsec/offset tags)
+                
+        Returns:
+            datetime object with microseconds and timezone if available, or None if
+            the datetime tag is not present or cannot be parsed.
+            
+        Example:
+            capture_time = page.get_time("original")
+            if capture_time:
+                print(f"Captured at {capture_time}")
+        """
+        from .tiff_metadata import _get_time_impl
+        return _get_time_impl(self, time_type)
     
     def get_raw_cfa(self) -> Optional[tuple[np.ndarray, str]]:
         """Extract raw CFA data and pattern from this page.
@@ -820,8 +879,8 @@ class DngPage:
         p = self._page
         
         # Handle interleaved data that needs deswizzling
-        col_interleave_tag = p.tags.get(TIFF.TAGS["ColumnInterleaveFactor"])
-        row_interleave_tag = p.tags.get(TIFF.TAGS["RowInterleaveFactor"])
+        col_interleave_tag = p.tags.get(LOCAL_TIFF_TAGS["ColumnInterleaveFactor"])
+        row_interleave_tag = p.tags.get(LOCAL_TIFF_TAGS["RowInterleaveFactor"])
         if (
             col_interleave_tag is not None
             and col_interleave_tag.value == 2
@@ -833,7 +892,7 @@ class DngPage:
             raw_cfa = p.asarray()
         
         # Get CFA pattern string
-        cfa_str = self.get_tag("CFAPattern")
+        cfa_str = self.get_tag("CFAPattern", str)
         
         return raw_cfa, cfa_str
     

@@ -72,7 +72,7 @@ RAW_FILTER_OPTION_MAP = {
     "neutralLocation": ("kCIInputNeutralLocationKey", "point_nsvalue"),
 }
 
-def _create_tone_curve_filter(spline_curve):
+def _create_tone_curve_filter(spline_curve: SplineCurve):
     """
     Create a CIToneCurve filter from a SplineCurve object.
     

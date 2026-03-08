@@ -5,11 +5,10 @@ This module provides functionality for working with DNG files and raw image data
 """
 
 from .tiff_metadata import (
-    BAYER_PATTERN_MAP,
-    INVERSE_BAYER_PATTERN_MAP,
     MetadataTags,
     XmpMetadata,
-    translate_dng_tag,
+    decode_tag_value,
+    get_cfa_pattern_codes,
 )
 from .dngio import (
     DngFile,
@@ -42,8 +41,6 @@ from .color import (
 )
 
 __all__ = [
-    'BAYER_PATTERN_MAP',
-    'INVERSE_BAYER_PATTERN_MAP',
     'CsvOrderedWriter',
     'CsvReader',
     'CsvWriter',
@@ -51,7 +48,8 @@ __all__ = [
     'DngPage',
     'MetadataTags',
     'XmpMetadata',
-    'translate_dng_tag',
+    'decode_tag_value',
+    'get_cfa_pattern_codes',
     'UnsupportedDNGTagError',
     'cfa_from_dng',
     'cfa_from_rgb_planes',

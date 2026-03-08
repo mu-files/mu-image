@@ -4,7 +4,6 @@ import logging
 
 from typing import Dict
 from . import _vng, _rcd
-from .tiff_metadata import BAYER_PATTERN_MAP
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
 from . import _dng_color
@@ -732,88 +731,6 @@ def interpolate_hue_sat_map(
         return g * map_data1 + (1.0 - g) * map_data2
 
 
-# =============================================================================
-# DNG Tag Validation for process_raw()
-# =============================================================================
-
-# DNG tags that affect rendering but are NOT implemented in process_raw()
-# Based on Adobe DNG SDK 1.7.1 - COMPREHENSIVE LIST
-# These tags would cause our output to differ from the SDK reference
-# Tag names match tifffile's tag name mapping
-UNSUPPORTED_RENDERING_TAGS = {
-    # =========================================================================
-    # Triple illuminant support (DNG 1.6+) - we only support dual illuminant
-    # =========================================================================
-    "ColorMatrix3",
-    "CalibrationIlluminant3",
-    "CameraCalibration3",
-    "ForwardMatrix3",
-    "ProfileHueSatMapData3",
-    "IlluminantData3",
-    
-    # =========================================================================
-    # Reduction matrices (for >3 color channels)
-    # =========================================================================
-    "ReductionMatrix1",
-    "ReductionMatrix2",
-    "ReductionMatrix3",
-
-    
-    # =========================================================================
-    # Opcode lists (lens corrections, gain maps, warp, etc.)
-    # =========================================================================
-    "OpcodeList1",                # Pre-demosaic opcodes
-    # OpcodeList2/3 supported opcodes: WarpRectilinear, FixVignetteRadial,
-    # MapPolynomial, GainMap
-    
-    # =========================================================================
-    # Linearization - LinearResponseLimit is NOT in this list because:
-    # It's only used for advanced highlight recovery, not the basic render
-    # pipeline. dng_render.cpp doesn't reference it, so it doesn't affect
-    # our SDK-matching output.
-    # =========================================================================
-    
-    # =========================================================================
-    # (BaselineExposure and BaselineExposureOffset are now implemented)
-    # =========================================================================
-    
-    # =========================================================================
-    # RGB Tables (DNG 1.6+)
-    # =========================================================================
-    "RGBTables",
-    
-    # =========================================================================
-    # Semantic masks and depth maps (DNG 1.6+)
-    # =========================================================================
-    "SemanticName",
-    "SemanticInstanceID",
-    "MaskSubArea",
-    "DepthFormat",
-    "DepthNear",
-    "DepthFar",
-    "DepthUnits",
-    "DepthMeasureType",
-    
-    # =========================================================================
-    # HDR / overrange support
-    # =========================================================================
-    "ProfileDynamicRange",        # HDR profile indicator
-    
-    # =========================================================================
-    # Image enhancement flags that may affect rendering interpretation
-    # =========================================================================
-    "EnhanceParams",              # Enhanced image parameters
-    
-    # =========================================================================
-    # NOT PORTED: Data integrity validation (does not affect rendering)
-    # =========================================================================
-    # NewRawImageDigest / RawImageDigest - MD5 fingerprint of raw image data
-    # SDK ref: dng_negative.cpp ValidateRawImageDigest(), FindNewRawImageDigest()
-    # The SDK validates that the stored digest matches the actual raw data,
-    # but this is a data integrity check only and does not affect rendering.
-    # We do not currently perform this validation.
-}
-
 class UnsupportedDNGTagError(Exception):
     """Raised when a DNG file contains tags that process_raw() cannot handle."""
     pass
@@ -1286,9 +1203,46 @@ def validate_dng_tags(page: "dngio.DngPage", strict: bool = True) -> list[str]:
     Raises:
         UnsupportedDNGTagError: If strict=True and unsupported tags are found
     """
+    # DNG tags that affect rendering but are NOT implemented in process_raw()
+    # Based on Adobe DNG SDK 1.7.1 - COMPREHENSIVE LIST
+    # These tags would cause our output to differ from the SDK reference
+    # Tag names match tifffile's tag name mapping
+    unsupported_rendering_tags = {
+        # Triple illuminant support (DNG 1.6+) - we only support dual illuminant
+        "ColorMatrix3",
+        "CalibrationIlluminant3",
+        "CameraCalibration3",
+        "ForwardMatrix3",
+        "ProfileHueSatMapData3",
+        "IlluminantData3",
+        # Reduction matrices (for >3 color channels)
+        "ReductionMatrix1",
+        "ReductionMatrix2",
+        "ReductionMatrix3",
+        # Opcode lists (lens corrections, gain maps, warp, etc.)
+        # OpcodeList2/3 supported opcodes: WarpRectilinear, FixVignetteRadial,
+        # MapPolynomial, GainMap
+        "OpcodeList1",  # Pre-demosaic opcodes
+        # RGB Tables (DNG 1.6+)
+        "RGBTables",
+        # Semantic masks and depth maps (DNG 1.6+)
+        "SemanticName",
+        "SemanticInstanceID",
+        "MaskSubArea",
+        "DepthFormat",
+        "DepthNear",
+        "DepthFar",
+        "DepthUnits",
+        "DepthMeasureType",
+        # HDR / overrange support
+        "ProfileDynamicRange",  # HDR profile indicator
+        # Image enhancement flags that may affect rendering interpretation
+        "EnhanceParams",  # Enhanced image parameters
+    }
+    
     found_unsupported = []
     
-    for tag_name in UNSUPPORTED_RENDERING_TAGS:
+    for tag_name in unsupported_rendering_tags:
         if page.get_tag(tag_name) is not None:
             found_unsupported.append(tag_name)
     
@@ -2285,7 +2239,9 @@ def process_raw(
         # =================================================================
         
         samples_per_pixel = page.get_tag("SamplesPerPixel") or 1
-        black_repeat_dim = page.get_tag("BlackLevelRepeatDim") or (1, 1)
+        black_repeat_dim = page.get_tag("BlackLevelRepeatDim")
+        if black_repeat_dim is None:
+            black_repeat_dim = (1, 1)
         black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, '__len__') else 1
         black_repeat_cols = int(black_repeat_dim[1]) if hasattr(black_repeat_dim, '__len__') and len(black_repeat_dim) > 1 else 1
         expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
@@ -2303,11 +2259,15 @@ def process_raw(
         
         # WhiteLevel: SDK initializes to -1.0 (sentinel), then PostParse sets default
         # Default: (1 << BitsPerSample) - 1, or 1 for floating point
-        bits_per_sample = page.get_tag("BitsPerSample") or 16
-        if isinstance(bits_per_sample, (list, tuple)):
-            bits_per_sample = int(bits_per_sample[0])
+        bits_per_sample_raw = page.get_tag("BitsPerSample")
+        if bits_per_sample_raw is None:
+            bits_per_sample = 16
+        elif isinstance(bits_per_sample_raw, np.ndarray):
+            bits_per_sample = int(bits_per_sample_raw.flat[0])
+        elif isinstance(bits_per_sample_raw, (list, tuple)):
+            bits_per_sample = int(bits_per_sample_raw[0])
         else:
-            bits_per_sample = int(bits_per_sample)
+            bits_per_sample = int(bits_per_sample_raw)
         default_white = float((1 << bits_per_sample) - 1)
         
         white_level_raw = page.get_tag("WhiteLevel")
@@ -2411,10 +2371,7 @@ def process_raw(
                 logger.error("Failed to extract CFA data from DNG")
                 return None
             
-            cfa_data, cfa_pattern = cfa_result
-            if cfa_pattern is None:
-                cfa_pattern = "RGGB"
-            cfa_pattern_codes = BAYER_PATTERN_MAP.get(cfa_pattern, (0, 1, 1, 2))
+            cfa_data, _ = cfa_result
             
             # Apply ActiveArea crop BEFORE normalization
             # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea first
@@ -2459,9 +2416,13 @@ def process_raw(
             # Demosaic without rotation - rotation applied after crop below
             t0 = time.perf_counter()
             if algorithm == "DNGSDK_BILINEAR":
+                cfa_pattern_codes = page.get_tag("CFAPattern", list)
+                if cfa_pattern_codes is None:
+                    cfa_pattern_codes = [0, 1, 1, 2]  # Default RGGB
+                cfa_pattern_array = np.array(cfa_pattern_codes, dtype=np.int32)
+
                 # DNG SDK bilinear demosaic - uses raw CFAPattern codes directly
                 # SDK ref: dng_mosaic_info::fCFAPattern[row][col]
-                cfa_pattern_array = np.array(cfa_pattern_codes, dtype=np.int32)
                 rgb_camera = _dng_color.bilinear_demosaic(cfa_normalized, cfa_pattern_array)
             else:
                 # Other algorithms require uint16 input
@@ -2691,14 +2652,10 @@ def process_raw(
         # SDK ref: dng_render.cpp line 1882: exposureWeightGain = pow(2.0, fBaselineExposure)
         # fBaselineExposure = TotalBaselineExposure (Stage3Gain = 1.0 for normal images)
         baseline_exposure = page.get_tag("BaselineExposure")
-        if baseline_exposure is not None:
-            baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
-        else:
+        if baseline_exposure is None:
             baseline_exposure = 0.0
         baseline_exposure_offset = page.get_tag("BaselineExposureOffset")
-        if baseline_exposure_offset is not None:
-            baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
-        else:
+        if baseline_exposure_offset is None:
             baseline_exposure_offset = 0.0
         pgtm_baseline_exposure = baseline_exposure + baseline_exposure_offset
         
@@ -2745,14 +2702,10 @@ def process_raw(
         # exposure = params.Exposure() + TotalBaselineExposure
         # white = 1.0 / pow(2.0, max(0.0, exposure))
         baseline_exposure = page.get_tag("BaselineExposure")
-        if baseline_exposure is not None:
-            baseline_exposure = float(np.atleast_1d(baseline_exposure)[0])
-        else:
+        if baseline_exposure is None:
             baseline_exposure = 0.0
         baseline_exposure_offset = page.get_tag("BaselineExposureOffset")
-        if baseline_exposure_offset is not None:
-            baseline_exposure_offset = float(np.atleast_1d(baseline_exposure_offset)[0])
-        else:
+        if baseline_exposure_offset is None:
             baseline_exposure_offset = 0.0
         
         total_baseline_exposure = baseline_exposure + baseline_exposure_offset
@@ -2763,9 +2716,7 @@ def process_raw(
         # black = shadows * ShadowScale * Stage3Gain * 0.001
         # Stage3Gain = 1.0 for normal images (only set for multi-channel CFA merging)
         shadow_scale = page.get_tag("ShadowScale")
-        if shadow_scale is not None:
-            shadow_scale = float(np.atleast_1d(shadow_scale)[0])
-        else:
+        if shadow_scale is None:
             shadow_scale = 1.0
         # SDK ref: dng_render.cpp lines 2164-2171
         # DefaultBlackRender: 0 = Auto (shadows=5.0), 1 = None (shadows=0.0)
