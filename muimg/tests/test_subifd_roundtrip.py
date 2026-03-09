@@ -30,17 +30,17 @@ ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
 
 
 def get_multi_ifd_dng_files():
-    """Get list of DNG files known to have multiple SubIFDs."""
-    # Files with multiple SubIFDs for testing
-    multi_ifd_files = [
-        "CanonR5-II.cfa.dng",  # 5 SubIFDs
-    ]
+    """Get list of DNG files with >2 IFDs (indicating SubIFDs)."""
     files = []
     if TEST_FILES_DIR.exists():
-        for name in multi_ifd_files:
-            path = TEST_FILES_DIR / name
-            if path.exists():
-                files.append(path)
+        for path in sorted(TEST_FILES_DIR.glob("*.dng")):
+            try:
+                with muimg.DngFile(str(path)) as dng:
+                    ifd_count = len(dng.get_flattened_pages())
+                    if ifd_count > 2:
+                        files.append(path)
+            except Exception:
+                pass  # Skip files that can't be opened
     return files
 
 

@@ -536,7 +536,7 @@ def write_dng(
 _TIFFWRITER_MANAGED_TAGS = {
     'NewSubfileType', 'SubfileType', 'ImageWidth', 'ImageLength',
     'BitsPerSample', 'Compression', 'PhotometricInterpretation',
-    'ImageDescription', 'StripOffsets', 'SamplesPerPixel',
+    'ImageDescription', 'StripOffsets', 'SamplesPerPixel', 'SampleFormat',
     'RowsPerStrip', 'StripByteCounts', 'XResolution', 'YResolution',
     'PlanarConfiguration', 'ResolutionUnit', 'Software',
     'TileWidth', 'TileLength', 'TileOffsets', 'TileByteCounts',
@@ -686,7 +686,8 @@ def write_dng_from_page(
             preview_image=preview_image,
         )
     else:
-        # Direct compressed copy path - preserves original compression
+        # Direct copy path - preserves original compression
+        is_uncompressed = page.compression == COMPRESSION.NONE
         try:
             with TiffWriter(destination_file, bigtiff=False, byteorder='>') as tif:
 
@@ -696,22 +697,27 @@ def write_dng_from_page(
                     # No preview: raw IFD becomes IFD0 and needs ifd0_tags
                     raw_ifd_tags.extend(ifd0_tags)
 
-                # Read compressed raw data and create an iterator
-                fh = page.parent.filehandle
-                compressed_segments = list(fh.read_segments(
-                    page.dataoffsets,
-                    page.databytecounts,
-                    sort=True
-                ))
+                # For uncompressed data, use numpy array so tifffile handles byte order
+                # For compressed data, use raw bytes iterator
+                if is_uncompressed:
+                    raw_data = page.asarray()
+                    logger.debug(f"Read uncompressed data: {raw_data.shape} {raw_data.dtype}")
+                else:
+                    fh = page.parent.filehandle
+                    compressed_segments = list(fh.read_segments(
+                        page.dataoffsets,
+                        page.databytecounts,
+                        sort=True
+                    ))
 
-                def compressed_data_iterator():
-                    try:
-                        for segment_data, index in compressed_segments:
-                            yield segment_data
-                    except GeneratorExit:
-                        return
+                    def compressed_data_iterator():
+                        try:
+                            for segment_data, index in compressed_segments:
+                                yield segment_data
+                        except GeneratorExit:
+                            return
 
-                logger.debug(f"Read {len(compressed_segments)} compressed segments from page")
+                    logger.debug(f"Read {len(compressed_segments)} compressed segments from page")
 
                 # Prepare raw image IFD arguments (extracts Software/Resolution)
                 raw_ifd_args = _prepare_ifd_args(
@@ -729,8 +735,16 @@ def write_dng_from_page(
                 else:
                     write_shape = (page.imagelength, page.imagewidth)
                 
-                # Handle tiled vs stripped images
-                if page.is_tiled:
+                if is_uncompressed:
+                    # Uncompressed: pass numpy array, tifffile handles byte order
+                    tif.write(
+                        data=raw_data,
+                        bitspersample=page.bitspersample,
+                        **raw_ifd_args,
+                    )
+                    logger.debug(f"Successfully wrote uncompressed raw data")
+                elif page.is_tiled:
+                    # Compressed tiled: use iterator
                     tile_shape = (page.tilelength, page.tilewidth)
                     tile_valid = (
                         tile_shape[0] <= page.imagelength and 
@@ -751,7 +765,9 @@ def write_dng_from_page(
                         tile=tile_shape,
                         **raw_ifd_args,
                     )
+                    logger.debug(f"Successfully copied tiled compressed data ({sum(page.databytecounts)} bytes)")
                 else:
+                    # Compressed stripped: use iterator
                     raw_datasize = page.imagelength * page.imagewidth * samples_per_pixel * (page.bitspersample // 8)
                     tif.write(
                         data=compressed_data_iterator(),
@@ -761,8 +777,7 @@ def write_dng_from_page(
                         rowsperstrip=raw_datasize,
                         **raw_ifd_args,
                     )
-                
-                logger.debug(f"Successfully copied compressed raw data ({sum(page.databytecounts)} bytes)")
+                    logger.debug(f"Successfully copied stripped compressed data ({sum(page.databytecounts)} bytes)")
             
             if isinstance(destination_file, Path):
                 logger.debug(f"Successfully wrote DNG file to {destination_file}")

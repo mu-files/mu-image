@@ -10,7 +10,9 @@ import numpy as np
 import pytest
 import tifffile
 
+import muimg
 from muimg import color
+from muimg.dngio import write_dng_from_page
 from muimg.color_mac import core_image_available, process_raw_core_image
 from conftest import (
     TEST_FILES_DIR,
@@ -23,19 +25,28 @@ from conftest import (
 # Output directory for comparison files
 OUTPUT_DIR = Path(__file__).parent / "output_comparison"
 
-# Comparison thresholds (as percentage of full range)
 # Per-file thresholds for MUIMG (1.1x above measured values)
 MUIMG_THRESHOLDS = {
-    # Original test files
-    "Sony.bayer.lossy.dng": 0.05,  # measured 0.04%
-    "Sony.bayer.lossy.stripped.dng": 0.05,  # measured 0.04%
-    "asi676mc.cfa.dng": 0.03,  # measured 0.02%
-    "asi676mc.linearraw.dng": 0.18,  # measured 0.17%
-    "asi676mc.lossless.preview1.dng": 0.04,  # measured 0.03%
-    "asi676mc.nopreview.lossy.dng": 0.08,  # measured 0.07%
-    "asi676mc.preview0.lossy.dng": 0.08,  # measured 0.07%
-    "iphone.linearRGB.lossy.dng": 0.72,  # measured 0.65%
-    "iphone.linearRGB.lossy.stripped.dng": 0.21,  # measured 0.19%
+    # Sony
+    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": 0.05,  # measured 0.04%
+    "sony_ilce-7c.cfa.jxl_lossy.1ifds.dng": 0.05,  # measured 0.04%
+    "sony_dsc-rx100m7.linearraw.jxl_lossy.2ifds.dng": 0.02,  # measured 0.01%
+    "sony_dsc-rx100m7.cfa.ljpeg.2ifds.dng": 0.28,  # measured 0.25%
+    # ASI676MC
+    "asi676mc.cfa.jxl_lossy.2ifds.dng": 0.03,  # measured 0.02%
+    "asi676mc.linearraw.jxl_lossy.1ifds.dng": 0.18,  # measured 0.17%
+    "asi676mc.cfa.uncomp.2ifds.dng": 0.04,  # measured 0.03%
+    "asi676mc.cfa.jxl_lossy.1ifds.dng": 0.08,  # measured 0.07%
+    # iPhone
+    "iphone16_1_back_camera.linearraw.jxl_lossy.2ifds.dng": 0.72,  # measured 0.65%
+    "iphone16_1_back_camera.linearraw.jxl_lossy.1ifds.dng": 0.21,  # measured 0.19%
+    # Canon
+    "canon_eos_r5.cfa.ljpeg.6ifds.dng": 0.02,  # measured 0.02%
+    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": 0.02,  # measured 0.02%
+    # Insta360
+    "insta360_oners.cfa.uncomp.1ifds.dng": 0.02,  # measured 0.01%
+    # Nikon
+    "nikon_z_9.cfa.ljpeg.2ifds.dng": 0.15,  # default threshold
     # DNG SDK test files - JXL
     "dngsdk.01_jxl_linear_raw_integer.dng": 0.01,  # measured 0.01%
     "dngsdk.02_jxl_linear_raw_float.dng": 0.09,  # measured 0.08%
@@ -55,14 +66,6 @@ MUIMG_THRESHOLDS = {
     "dngsdk.13_ImageStats_Several.dng": 0.02,  # measured 0.01%
     # DNG SDK test files - HDR/SDR
     "dngsdk.14_hdr_sdr_profiles.dng": 0.01,  # measured 0.00%
-    # Canon
-    "CanonR5.cfa.dng": 0.02,  # measured 0.02%
-    "CanonR5-II.cfa.dng": 0.02,  # measured 0.02%
-    # Sony
-    "SonyRX100-VII.cfa.dng": 0.02,  # measured 0.01%
-    "SonyRX100-VII.cfa.uncompressed.dng": 0.28,  # measured 0.25%
-    # Insta360
-    "Insta360.dng": 0.02,  # measured 0.01%
 }
 MUIMG_DEFAULT_THRESHOLD = 0.15  # Fallback for unknown files
 CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
@@ -138,3 +141,126 @@ def test_coreimage_vs_dngvalidate(dng_path, output_dir):
     print(f"\n  [CI] {dng_path.name}: {elapsed_ms:.0f}ms, diff:{stats['mean']:.2f}%")
     
     assert stats["mean"] < CI_MEAN_DIFF_THRESHOLD, f"Mean diff {stats['mean']:.2f}% > {CI_MEAN_DIFF_THRESHOLD}%"
+
+
+# Per-file thresholds for stripped DNG test (1.1x above measured values)
+STRIPPED_THRESHOLDS = {
+    "asi676mc.cfa.jxl_lossy.1ifds.dng": 0.08,  # measured 0.07%
+    "asi676mc.linearraw.jxl_lossy.1ifds.dng": 0.19,  # measured 0.17%
+    "iphone16_1_back_camera.linearraw.jxl_lossy.1ifds.dng": 0.13,  # measured 0.11%
+}
+STRIPPED_DEFAULT_THRESHOLD = 0.05
+
+
+# Tags to strip for simplified DNG comparison test
+# These are advanced processing features that add complexity to comparison
+STRIPPED_TAGS = {
+    # ProfileHueSatMap (color adjustments)
+    'ProfileHueSatMapDims', 'ProfileHueSatMapData1', 'ProfileHueSatMapData2',
+    # ProfileLookTable
+    'ProfileLookTableDims', 'ProfileLookTableData',
+    # ProfileGainTableMap (PGTM)
+    'ProfileGainTableMap', 'ProfileGainTableMap2',
+    # Baseline exposure
+    'BaselineExposure', 'BaselineExposureOffset',
+    # Opcode lists
+    'OpcodeList1', 'OpcodeList2', 'OpcodeList3',
+    # Orientation (rotation)
+    'Orientation',
+}
+
+
+def get_non_sdk_dng_files():
+    """Get list of non-SDK DNG files for stripped tag tests."""
+    files = []
+    if TEST_FILES_DIR.exists():
+        for f in TEST_FILES_DIR.glob("*.dng"):
+            if not f.name.startswith("dngsdk."):
+                files.append(f)
+    if LOCAL_TEST_FILES_DIR.exists():
+        for f in LOCAL_TEST_FILES_DIR.glob("*.dng"):
+            if not f.name.startswith("dngsdk."):
+                files.append(f)
+    return sorted(files)
+
+
+@pytest.mark.parametrize("dng_path", get_non_sdk_dng_files(), ids=lambda p: p.name)
+def test_stripped_dng_comparison(dng_path, output_dir):
+    """Test muimg vs dng_validate on stripped DNGs (no advanced processing tags).
+    
+    Creates a stripped copy of each DNG without HueSatMap, LookTable, PGTM,
+    BaselineExposure, and Opcode tags, then compares muimg output to dng_validate.
+    This tests the core demosaic and color pipeline without advanced features.
+    
+    Also compares stripped output to original when no tags were actually stripped,
+    to catch data corruption during copy (e.g., byte order issues).
+    """
+    stripped_dng = output_dir / f"{dng_path.stem}_stripped.dng"
+    
+    # Create stripped DNG and track which tags were actually stripped
+    tags_stripped = set()
+    with muimg.DngFile(str(dng_path)) as dng:
+        page = dng.get_main_page()
+        if page is None:
+            pytest.skip(f"No main page found in {dng_path.name}")
+        
+        # Check which tags exist in the original
+        for tag in page.tags.values():
+            if tag.name in STRIPPED_TAGS:
+                tags_stripped.add(tag.name)
+        if page.ifd0 is not None:
+            for tag in page.ifd0.tags.values():
+                if tag.name in STRIPPED_TAGS:
+                    tags_stripped.add(tag.name)
+        
+        write_dng_from_page(
+            page=page,
+            destination_file=stripped_dng,
+            skip_tags=STRIPPED_TAGS,
+        )
+    
+    # Run dng_validate on stripped DNG
+    ref_base = output_dir / f"{dng_path.stem}_stripped_dngvalidate"
+    ref = run_dng_validate(stripped_dng, ref_base, timeout=60)
+    if ref is None:
+        pytest.skip("dng_validate reference not available")
+    
+    # Run muimg on stripped DNG
+    t0 = time.perf_counter()
+    result = color.process_raw(
+        str(stripped_dng),
+        output_dtype=np.uint16,
+        algorithm="DNGSDK_BILINEAR",
+        strict=False
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    
+    assert result is not None, "MUIMG returned None on stripped DNG"
+    tifffile.imwrite(str(output_dir / f"{dng_path.stem}_stripped_muimg.tiff"), result)
+    
+    if result.shape != ref.shape:
+        pytest.fail(f"Shape mismatch: MUIMG {result.shape} vs REF {ref.shape}")
+    
+    stats = compute_diff_stats(result, ref)
+    threshold = STRIPPED_THRESHOLDS.get(dng_path.name, STRIPPED_DEFAULT_THRESHOLD)
+    tags_info = f", stripped: {sorted(tags_stripped)}" if tags_stripped else ", no tags stripped"
+    print(f"\n  [STRIPPED] {dng_path.name}: {elapsed_ms:.0f}ms, diff:{stats['mean']:.2f}% (threshold:{threshold}%){tags_info}")
+    
+    assert stats["mean"] < threshold, f"Mean diff {stats['mean']:.2f}% > {threshold}%"
+    
+    # If no tags were stripped, also compare to original file decode
+    # This catches data corruption during copy (e.g., byte order issues)
+    if not tags_stripped:
+        original_result = color.process_raw(
+            str(dng_path),
+            output_dtype=np.uint16,
+            algorithm="DNGSDK_BILINEAR",
+            strict=False
+        )
+        assert original_result is not None, "MUIMG returned None on original DNG"
+        
+        if result.shape == original_result.shape:
+            orig_stats = compute_diff_stats(result, original_result)
+            print(f"    -> vs original: diff:{orig_stats['mean']:.4f}%")
+            # Should be nearly identical (only metadata differences, not pixel data)
+            assert orig_stats["mean"] < 0.01, f"Stripped vs original diff {orig_stats['mean']:.4f}% > 0.01% - possible data corruption"

@@ -2430,6 +2430,8 @@ def process_raw(
                 # SDK ref: dng_mosaic_info::fCFAPattern[row][col]
                 rgb_camera = _dng_color.bilinear_demosaic(cfa_normalized, cfa_pattern_array)
             else:
+                cfa_pattern = page.get_tag("CFAPattern", str) or "RGGB"
+
                 # Other algorithms require uint16 input
                 cfa_uint16 = (cfa_normalized * 65535).astype(np.uint16)
                 rgb_linear = linear_raw_from_cfa(
