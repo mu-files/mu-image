@@ -979,6 +979,22 @@ class MetadataTags:
             tag = LOCAL_TIFF_TAGS.get(tag, tag)
         return tag in self._tags
 
+    def remove_tag(self, tag: Union[int, str]) -> bool:
+        """Remove a tag by code (int) or name (str).
+        
+        Args:
+            tag: Tag code or name to remove
+            
+        Returns:
+            True if tag was removed, False if it didn't exist
+        """
+        if isinstance(tag, str):
+            tag = LOCAL_TIFF_TAGS.get(tag, tag)
+        if tag in self._tags:
+            del self._tags[tag]
+            return True
+        return False
+
     def copy(self) -> MetadataTags:
         """Create a deep copy of this MetadataTags instance.
         
@@ -1184,8 +1200,10 @@ class MetadataTags:
             if offset_str:
                 self.add_tag(offset_tag, offset_str)
 
-    def extend(self, other: MetadataTags) -> None:
+    def extend(self, other: Optional[MetadataTags]) -> None:
         """Add all tags from another MetadataTags instance."""
+        if other is None:
+            return
         if not isinstance(other, MetadataTags):
             raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
         # Dict update - other's tags override existing

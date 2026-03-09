@@ -1684,7 +1684,7 @@ def linear_raw_from_cfa(
             cfa_pattern=cfa_pattern,
             destination_file=dng_buffer,
             bits_per_pixel=16,
-            camera_profile=None,  # Minimal DNG, no profile needed
+            metadata=None,  # Minimal DNG, no profile needed
             jxl_distance=None,  # No compression for rawpy compatibility
             jxl_effort=None,
         )

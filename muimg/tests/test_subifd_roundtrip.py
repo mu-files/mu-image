@@ -103,7 +103,8 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                 pytest.fail(f"process_raw failed for IFD {i}: {e}")
             
             # 2. write_dng_from_page -> {stem}_ifd{n}.dng
-            # Skip if tile dimensions not supported by tifffile
+            # Use decoded fallback if tile dimensions not supported by tifffile
+            use_decoded_fallback = False
             if page.is_tiled:
                 tile_h, tile_w = page.tilelength, page.tilewidth
                 tile_valid = (
@@ -111,16 +112,31 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                     tile_h % 16 == 0 and tile_w % 16 == 0
                 )
                 if not tile_valid:
-                    print(f"    Skipping roundtrip: tile ({tile_h}x{tile_w}) not supported by tifffile")
-                    continue
+                    use_decoded_fallback = True
             
             try:
-                write_dng_from_page(page, roundtrip_dng)
-                print(f"    -> {roundtrip_dng.name}")
+                if use_decoded_fallback:
+                    write_dng_from_page(page, roundtrip_dng, decompress=True)
+                    print(f"    -> {roundtrip_dng.name} (decoded)")
+                else:
+                    write_dng_from_page(page, roundtrip_dng)
+                    print(f"    -> {roundtrip_dng.name}")
             except Exception as e:
                 pytest.fail(f"write_dng_from_page failed for IFD {i}: {e}")
             
-            # 3. dng_validate on roundtrip DNG -> {stem}_ifd{n}_dngvalidate.tif
+            # 3. Try muimg decode on the roundtrip DNG
+            roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
+            try:
+                roundtrip_decoded = color.process_raw(roundtrip_dng, output_dtype=np.uint16, strict=False)
+                if roundtrip_decoded is not None:
+                    tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
+                    print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")
+                else:
+                    print(f"    -> muimg roundtrip decode returned None")
+            except Exception as e:
+                print(f"    -> muimg roundtrip decode failed: {e}")
+            
+            # 4. dng_validate on roundtrip DNG -> {stem}_ifd{n}_dngvalidate.tif
             dngvalidate_out = run_dng_validate(roundtrip_dng, dngvalidate_base)
             if dngvalidate_out is None:
                 pytest.fail(f"dng_validate failed on {roundtrip_dng.name}")

@@ -18,7 +18,6 @@ from .dngio import (
     rgb_planes_from_cfa,
     rgb_planes_from_dng,
     write_dng,
-    write_dng_linearraw,
     write_dng_from_page,
     decode_raw,
     convert_raw,
@@ -70,6 +69,5 @@ __all__ = [
     'rgb_planes_from_dng',
     'SplineCurve',
     'write_dng',
-    'write_dng_linearraw',
     'write_dng_from_page',
 ]
