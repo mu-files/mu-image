@@ -204,7 +204,7 @@ class TestValueConversion:
     def test_string_conversion(self):
         """String values are null-terminated."""
         spec = TagSpec("s", None)
-        dtype, count, value = encode_tag_value("Hello", spec)
+        dtype, count, value = encode_tag_value("TestTag", "Hello", spec)
         assert dtype == "s"
         assert value.endswith("\x00")
         assert count == 6  # "Hello" + null
@@ -212,7 +212,7 @@ class TestValueConversion:
     def test_int_to_short(self):
         """Integer converts to SHORT."""
         spec = TagSpec("H", 1)
-        dtype, count, value = encode_tag_value(42, spec)
+        dtype, count, value = encode_tag_value("TestTag", 42, spec)
         assert dtype == "H"
         assert count == 1
         assert value == 42
@@ -220,7 +220,7 @@ class TestValueConversion:
     def test_float_to_rational(self):
         """Float converts to rational tuple."""
         spec = TagSpec("2I", 1)
-        dtype, count, value = encode_tag_value(0.5, spec)
+        dtype, count, value = encode_tag_value("TestTag", 0.5, spec)
         assert dtype == "2I"
         assert count == 1
         # Value should be (numerator, denominator) representing 0.5
@@ -232,7 +232,7 @@ class TestValueConversion:
         """Float array converts to rational array."""
         spec = TagSpec("2I", 3)
         values = [1.0, 0.5, 0.25]
-        dtype, count, result = encode_tag_value(values, spec)
+        dtype, count, result = encode_tag_value("TestTag", values, spec)
         assert dtype == "2I"
         assert count == 3
         # Result should be flat tuple of (num, denom, num, denom, num, denom)
@@ -242,7 +242,7 @@ class TestValueConversion:
         """NumPy arrays are flattened correctly."""
         spec = TagSpec("2i", None)
         matrix = np.array([[1.0, 0.0], [0.0, 1.0]])
-        dtype, count, result = encode_tag_value(matrix, spec)
+        dtype, count, result = encode_tag_value("TestTag", matrix, spec)
         assert dtype == "2i"
         assert count == 4  # 2x2 matrix = 4 elements
     
@@ -250,7 +250,7 @@ class TestValueConversion:
         """Bytes pass through unchanged."""
         spec = TagSpec("B", None)
         data = b"\x01\x02\x03\x04"
-        dtype, count, value = encode_tag_value(data, spec)
+        dtype, count, value = encode_tag_value("TestTag", data, spec)
         assert dtype == "B"
         assert value == data
 

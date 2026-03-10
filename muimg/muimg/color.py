@@ -1971,11 +1971,7 @@ _BRADFORD_MATRIX = np.array([
     [ 0.0389, -0.0685,  1.0296]
 ], dtype=np.float64)
 
-_BRADFORD_MATRIX_INV = np.array([
-    [ 0.9869929, -0.1470543,  0.1599627],
-    [ 0.4323053,  0.5183603,  0.0492912],
-    [-0.0085287,  0.0400428,  0.9684867]
-], dtype=np.float64)
+_BRADFORD_MATRIX_INV = np.linalg.inv(_BRADFORD_MATRIX)
 
 
 def _xy_to_XYZ(x: float, y: float) -> np.ndarray:
