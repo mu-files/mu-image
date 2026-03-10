@@ -227,7 +227,7 @@ class CoreImageContext:
         self.close()
 
 
-def process_raw_core_image(
+def render_dng_coreimage(
     dng_input: Union[str, os.PathLike, IO[bytes]],
     raw_filter_options: Optional[dict] = None,
     use_gpu: bool = False,
@@ -385,3 +385,123 @@ def process_raw_core_image(
                 raise RuntimeError(f"An error occurred during Core Image processing: {e}") from e
 
 
+def decode_dng_coreimage(
+    file: Union[str, os.PathLike, IO[bytes], "DngFile"],
+    use_xmp: bool = True,
+    output_dtype: type = np.uint16,
+    **processing_params
+) -> np.ndarray:
+    """
+    Decode a DNG file to a numpy array using Core Image processing.
+    
+    Args:
+        file: Path to DNG file, file-like object containing DNG data, or DngFile instance
+        use_xmp: Whether to read XMP metadata for default values
+        output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
+        **processing_params: Processing parameters (temperature, tint, exposure, 
+                           tone_curve, noise_reduction, orientation, etc.)
+    
+    Returns:
+        RGB image array with shape (height, width, 3) and specified dtype
+    """
+    from pathlib import Path
+    from . import dngio
+    DngFile = dngio.DngFile
+    
+    try:
+        # Create or use DngFile - DngFile.__init__ handles file normalization and seeking
+        dng_file = file if isinstance(file, DngFile) else DngFile(file)
+        dng_input = dng_file.filehandle
+        
+        # Build processing options using configuration mapping
+        options = {}
+        
+        # Only process parameters if we have XMP to read or explicit parameters to apply
+        if use_xmp or processing_params:
+            SC = SplineCurve
+            
+            # Define mapping: param_name -> (option_name, xmp_name, value_type)
+            # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
+            xmp_mappings = {
+                "temperature": ("neutralTemperature", "Temperature", float),
+                "tint": ("neutralTint", "Tint", float),
+                "exposure": ("exposure", "Exposure2012", float),
+                "tone_curve": ("toneCurve", "ToneCurvePV2012", SC),
+                "orientation": ("imageOrientation", None, int),
+                "noise_reduction": ("luminanceNoiseReductionAmount", None, float),
+            }
+            
+            # Process each mapping: CLI params first, then XMP fallback
+            for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
+                param_value = processing_params.get(param_name)
+                # Use CLI parameter if provided (highest priority)
+                if param_value is not None:
+                    options[option_name] = param_value
+                # Otherwise use XMP default if available, requested, and xmp_name is specified
+                elif xmp_name is not None and use_xmp:
+                    main_page = dng_file.get_main_page()
+                    if main_page is not None and main_page.xmp.has_prop(xmp_name):
+                        options[option_name] = main_page.xmp.get_prop(xmp_name, value_type)
+
+            # Add noise reduction to both luminance and color (convention)
+            if ("noise_reduction" in processing_params and 
+                processing_params["noise_reduction"] is not None):
+                options["colorNoiseReductionAmount"] = processing_params["noise_reduction"]
+        
+        # Format file and options for logging
+        if isinstance(file, io.BytesIO):
+            file_desc = "BytesIO buffer"
+        elif isinstance(file, (str, Path)):
+            file_desc = str(file)
+        else:
+            file_desc = type(file).__name__
+        
+        formatted_opts = {}
+        for key, value in options.items():
+            if isinstance(value, (float, np.floating)):
+                formatted_opts[key] = f"{float(value):.3f}"
+            else:
+                formatted_opts[key] = value
+        logger.debug(f"Processing {file_desc} with options: {formatted_opts}")
+        
+        # Special case: apply lin2srgb transformation to tone curve points
+        # TODO: since CI is an opaque RAW pipeline it is not possible to sequence tone curve 
+        #       in the same way in Photoshop and CI so we apply the transformation here.
+        if "toneCurve" in options and options["toneCurve"] is not None:
+
+            def lin2srgb(lin):
+                if lin > 0.0031308:
+                    s = 1.055 * (pow(lin, (1.0 / 2.4))) - 0.055
+                else:
+                    s = 12.92 * lin
+                return s
+
+            spline_curve = options["toneCurve"]
+            # Points are already normalized 0-1, apply lin2srgb transformation
+            transformed_points = [
+                (lin2srgb(x), lin2srgb(y)) for x, y in spline_curve.points
+            ]
+            # Create new SplineCurve with transformed points
+            options["toneCurve"] = SC(transformed_points)
+
+        # Ensure file pointer is at beginning for Core Image processing
+        # (XMP reading above may have moved the pointer)
+        dng_input.seek(0) 
+
+        # Process with Core Image
+        preview_image = render_dng_coreimage(
+            dng_input=dng_input,
+            raw_filter_options=options,
+            use_gpu=True,
+            output_dtype=output_dtype,
+        )
+        
+        if preview_image is None:
+            raise RuntimeError(f"Failed to process DNG file: {file}")
+        
+        logger.debug(f"Successfully decoded DNG to array with shape {preview_image.shape} and dtype {preview_image.dtype}")
+        return preview_image
+                
+    except Exception as e:
+        logger.error(f"Error decoding {file}: {e}", exc_info=True)
+        raise

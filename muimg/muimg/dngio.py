@@ -24,40 +24,373 @@ from .tiff_metadata import (
     get_cfa_pattern_codes,
     get_native_type,
     decode_tag_value,
-    resolve_tag,
-    LOCAL_TIFF_TAGS,
+    resolve_tag
 )
 
 
-# Default values for tags
-ORIENTATION_HORIZONTAL = 1
+# =============================================================================
+# Core DNG Classes
+# =============================================================================
 
-# Complete illuminant mapping (from EXIF specification)
-ILLUMINANTS = {
-    0: 'Unknown',
-    1: 'Daylight',
-    2: 'Fluorescent', 
-    3: 'Tungsten (incandescent light)',
-    4: 'Flash',
-    9: 'Fine weather',
-    10: 'Cloudy weather',
-    11: 'Shade',
-    12: 'Daylight fluorescent (D 5700 – 7100K)',
-    13: 'Day white fluorescent (N 4600 – 5400K)',
-    14: 'Cool white fluorescent (W 3900 – 4500K)',
-    15: 'White fluorescent (WW 3200 – 3700K)',
-    17: 'Standard light A',
-    18: 'Standard light B',
-    19: 'Standard light C',
-    20: 'D55',
-    21: 'D65',
-    22: 'D75',
-    23: 'D50',
-    24: 'ISO studio tungsten',
-    255: 'Other light source',
-}
+class DngPage(TiffPage):
+    """TiffPage subclass with DNG-specific functionality.
+    
+    Provides convenient access to DNG tags with automatic translation,
+    parent IFD tag inheritance, and raw data extraction methods.
+    
+    Inherits all TiffPage attributes and methods. Created by "upgrading"
+    an existing TiffPage instance.
+    """
+    
+    # NewSubFileType values from DNG spec
+    SF_MAIN_IMAGE = 0
+    SF_PREVIEW_IMAGE = 1
+    SF_TRANSPARENCY_MASK = 2
+    SF_PREVIEW_MASK = 8
+    SF_ALT_PREVIEW_IMAGE = 65537
+    
+    def __new__(cls, *args, **kwargs):
+        """Create DngPage instance without calling TiffPage.__init__."""
+        return object.__new__(cls)
+    
+    def __init__(self, tiff_page: TiffPage):
+        """Initialize DngPage by copying TiffPage state.
+        
+        Args:
+            tiff_page: The TiffPage to upgrade
+        """
+        self.__dict__.update(tiff_page.__dict__)
+    
+    @property
+    def ifd0(self) -> Optional[TiffPage]:
+        """Return IFD0, or None if this page IS IFD0."""
+        page0 = self.parent.pages[0]
+        return None if page0 is self else page0
+    
+    @property
+    def photometric_name(self) -> Optional[str]:
+        """Photometric interpretation string (e.g., 'CFA', 'LINEAR_RAW', 'RGB')."""
+        if self.photometric is not None:
+            return self.photometric.name
+        return None
+    
+    @property
+    def is_cfa(self) -> bool:
+        """True if this page contains CFA (Bayer) raw data."""
+        return self.photometric_name == "CFA"
+    
+    @property
+    def is_linear_raw(self) -> bool:
+        """True if this page contains LINEAR_RAW (demosaiced) data."""
+        return self.photometric_name == "LINEAR_RAW"
+    
+    @property
+    def is_main_image(self) -> bool:
+        """True if this page is the main image (NewSubfileType == 0)."""
+        tag = self.tags.get(254)  # NewSubfileType tag ID
+        if tag is None:
+            return False
+        return tag.value == self.SF_MAIN_IMAGE
+    
+    @property
+    def is_preview(self) -> bool:
+        """True if this page is a preview image."""
+        tag = self.tags.get(254)  # NewSubfileType tag ID
+        if tag is None:
+            return False
+        return tag.value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
+    
+    @property
+    def xmp(self) -> XmpMetadata:
+        """XMP metadata from this page (or parent if not found locally)."""
+        xmp_string = self.get_tag('XMP', str)
+        if xmp_string is None:
+            xmp_string = ''
+        return XmpMetadata(xmp_string)
+    
+    def get_tag(
+        self, 
+        tag: Union[str, int], 
+        return_type: Optional[type] = None
+    ) -> Optional[Any]:
+        """Get a tag value with type conversion.
+        
+        Args:
+            tag: Either a numeric tag code (int) or tag name string 
+                 (e.g., 'ColorMatrix1', 'CFAPattern')
+            return_type: Controls type conversion:
+                - None (default): auto-convert to native type from TagSpec
+                - specific type (str, float, list, etc.): convert to that type
+        
+        Returns:
+            Tag value (converted based on return_type), or None if not found.
+            
+        See also:
+            get_raw_tag: Returns raw tag value without any conversion.
+        """
+        # Resolve tag to id/name and get registry spec (for shape info)
+        if isinstance(tag, int):
+            tag_id = tag
+            _, tag_name, registry_spec = resolve_tag(tag)
+            if tag_name is None:
+                tag_name = str(tag)
+        else:
+            tag_id, tag_name, registry_spec = resolve_tag(tag)
+            if tag_id is None:
+                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+                return None
+        
+        # Get value from page, or fall back to IFD0 for global tags
+        raw_tag = None
+        if tag_id in self.tags:
+            raw_tag = self.tags[tag_id]
+        elif self.ifd0 is not None and tag_id in self.ifd0.tags:
+            raw_tag = self.ifd0.tags[tag_id]
+        
+        if raw_tag is None:
+            return None
+        
+        effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
+        shape_spec = None
+        if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
+            shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
+        
+        return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
 
-PREVIEWCOLORSPACE_SRGB = 1
+    def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
+        """Get raw tag value without any type conversion.
+        
+        Args:
+            tag: Either a numeric tag code (int) or tag name string
+        
+        Returns:
+            Raw tag value as stored, or None if not found.
+            
+        See also:
+            get_tag: Returns tag value with automatic or specified type conversion.
+        """
+        # For raw access, we can work with tags not in the registry
+        if isinstance(tag, int):
+            tag_id = tag
+        else:
+            tag_id, _, _ = resolve_tag(tag)
+            if tag_id is None:
+                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+                return None
+        
+        if tag_id in self.tags:
+            return self.tags[tag_id].value
+        
+        # Fall back to IFD0 for global tags
+        if self.ifd0 is not None and tag_id in self.ifd0.tags:
+            return self.ifd0.tags[tag_id].value
+        
+        return None
+    
+    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+        """Extract datetime from EXIF time tags with subseconds and timezone.
+        
+        This is the inverse of MetadataTags.add_time_tags(). Reads the datetime,
+        subsecond, and timezone offset tags and combines them into a single
+        datetime object.
+        
+        Args:
+            time_type: Which set of tags to read:
+                - "original" (default): DateTimeOriginal, SubsecTimeOriginal, OffsetTimeOriginal
+                - "digitized": DateTimeDigitized, SubsecTimeDigitized, OffsetTimeDigitized
+                - "modified": DateTime, SubsecTime, OffsetTime
+                - "preview": PreviewDateTime (no subsec/offset tags)
+                
+        Returns:
+            datetime object with microseconds and timezone if available, or None if
+            the datetime tag is not present or cannot be parsed.
+            
+        Example:
+            capture_time = page.get_time("original")
+            if capture_time:
+                print(f"Captured at {capture_time}")
+        """
+        from .tiff_metadata import _get_time_impl
+        return _get_time_impl(self, time_type)
+    
+    def _decode_jpegxl(self) -> np.ndarray:
+        """Decode JPEG XL compressed image data, handling tiled images.
+        
+        Returns:
+            Decoded image array.
+        """
+        fh = self.parent.filehandle
+        
+        # Read all segments using tifffile's read_segments API
+        segments = list(fh.read_segments(
+            self.dataoffsets,
+            self.databytecounts,
+            sort=True
+        ))
+        
+        if len(segments) == 1:
+            # Single tile/strip
+            compressed_data, _ = segments[0]
+            return imagecodecs.jpegxl_decode(compressed_data)
+        else:
+            # Multiple tiles - decode each and assemble
+            tile_width = self.tilewidth
+            tile_height = self.tilelength
+            img_width = self.imagewidth
+            img_height = self.imagelength
+            samples = self.samplesperpixel or 1
+            
+            # Determine output dtype from first tile
+            first_tile = imagecodecs.jpegxl_decode(segments[0][0])
+            dtype = first_tile.dtype
+            
+            # Create output array - handle both 2D (single sample) and 3D (multi-sample)
+            if samples == 1:
+                output = np.zeros((img_height, img_width), dtype=dtype)
+            else:
+                output = np.zeros((img_height, img_width, samples), dtype=dtype)
+            
+            # Decode and place each tile
+            tiles_x = (img_width + tile_width - 1) // tile_width
+            for i, (tile_data, _) in enumerate(segments):
+                tile = imagecodecs.jpegxl_decode(tile_data)
+                
+                ty = (i // tiles_x) * tile_height
+                tx = (i % tiles_x) * tile_width
+                
+                # Handle edge tiles that may be smaller
+                th = min(tile_height, img_height - ty)
+                tw = min(tile_width, img_width - tx)
+                output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
+            
+            return output
+
+    def get_raw_cfa(self) -> Optional[tuple[np.ndarray, str]]:
+        """Extract raw CFA data and pattern from this page.
+        
+        Returns:
+            Tuple of (cfa_array, cfa_pattern_str) or None if not a CFA page.
+            cfa_pattern_str is e.g., 'RGGB', 'BGGR'.
+        """
+        if not self.is_cfa:
+            return None
+        
+        # Decode image data
+        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            raw_cfa = self._decode_jpegxl()
+        else:
+            raw_cfa = self.asarray()
+        
+        # Handle interleaved data that needs deswizzling
+        col_interleave = self.get_tag("ColumnInterleaveFactor")
+        row_interleave = self.get_tag("RowInterleaveFactor")
+        if col_interleave == 2 and row_interleave == 2:
+            raw_cfa = deswizzle_cfa_data(raw_cfa)
+        
+        # Get CFA pattern string
+        cfa_str = self.get_tag("CFAPattern", str)
+        
+        return raw_cfa, cfa_str
+    
+    def get_raw_linear(self) -> Optional[np.ndarray]:
+        """Extract raw LINEAR_RAW data from this page.
+        
+        For JPEG XL compressed images, handles tile assembly and chroma subsampling.
+        
+        Returns:
+            Raw linear data array or None if not a LINEAR_RAW page.
+        """
+        if not self.is_linear_raw:
+            return None
+        
+        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            return self._decode_jpegxl()
+        else:
+            return self.asarray()
+
+
+class DngFile(TiffFile):
+
+    """A TIFF file with DNG-specific extensions and helper methods."""
+
+    def __init__(self, file, *args, **kwargs):
+        import io
+        from pathlib import Path
+        
+        # Normalize file input to BytesIO for consistent in-memory operation
+        if isinstance(file, (str, Path)):
+            # Read file into memory
+            with open(file, 'rb') as f:
+                file_data = f.read()
+            file = io.BytesIO(file_data)
+        elif isinstance(file, io.IOBase):
+            # Ensure we're at the beginning for consistent behavior
+            file.seek(0)
+        # For any other type, let TiffFile handle it and potentially fail with a clear error
+        
+        super().__init__(file, *args, **kwargs)
+
+    def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
+        """Recursively iterates through all TIFF pages, including nested ones."""
+        if pages_list is None:
+            return
+        for page in pages_list:
+            yield page
+            if page.pages:  # Check if there are sub-pages
+                yield from self._iter_all_pages_recursive(page.pages)
+
+    def _build_dng_pages_recursive(self, pages_list: Optional[List[TiffPage]]) -> List[DngPage]:
+        """Build DngPage instances from TiffPages."""
+        result = []
+        if pages_list is None:
+            return result
+        
+        for tiff_page in pages_list:
+            dng_page = DngPage(tiff_page)
+            result.append(dng_page)
+            
+            # Recursively process sub-pages
+            if tiff_page.pages:
+                result.extend(self._build_dng_pages_recursive(tiff_page.pages))
+        
+        return result
+
+    def get_flattened_pages(self) -> List[DngPage]:
+        """Get all pages as DngPage instances.
+        
+        Returns:
+            List of DngPage objects in flattened order. Tag inheritance
+            falls back to IFD0 via TiffPage.parent.
+        """
+        return self._build_dng_pages_recursive(self.pages)
+    
+    def get_main_page(self) -> Optional[DngPage]:
+        """Get the main image page.
+        
+        First looks for a page with NewSubFileType == 0 (explicit main image).
+        If not found, falls back to the first CFA or LINEAR_RAW page.
+        
+        Returns:
+            The main image DngPage, or None if not found.
+        """
+        pages = self.get_flattened_pages()
+        
+        # First try to find explicit main image (NewSubFileType == 0)
+        for page in pages:
+            if page.is_main_image:
+                return page
+        
+        # Fall back to first CFA or LINEAR_RAW page
+        for page in pages:
+            if page.is_cfa or page.is_linear_raw:
+                return page
+        
+        return None
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
     """Swizzle RGGB CFA data into a 2x2 grid of R, G1, G2, B sub-images."""
@@ -150,87 +483,6 @@ def cfa_from_dng(
     return raw_cfa, cfa_pattern_value
 
 
-def rgb_planes_from_cfa(
-    raw_cfa: np.ndarray, 
-    cfa_pattern_str: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Extracts R, G1, G2, and B planes from CFA data using the given pattern.
-    
-    Args:
-        raw_cfa: Raw CFA data array
-        cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
-        
-    Returns:
-        Tuple of (r_plane, g1_plane, g2_plane, b_plane)
-        
-    Raises:
-        ValueError: If the CFA pattern is invalid.
-    """
-    # Parse the CFA pattern string
-    cfa_pattern_flat = get_cfa_pattern_codes(cfa_pattern_str)
-    cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
-    
-    # Extract R, G, B planes based on their positions in the CFA pattern
-    # CFA codes are: 0=R, 1=G, 2=B
-    r_pos_list = np.argwhere(cfa_pattern == 0)
-    g_pos_list = np.argwhere(cfa_pattern == 1)
-    b_pos_list = np.argwhere(cfa_pattern == 2)
-
-    # There should be exactly one R, one B, and two G channels
-    if len(r_pos_list) != 1 or len(b_pos_list) != 1 or len(g_pos_list) != 2:
-        raise ValueError(f"Unexpected CFA pattern layout: {cfa_pattern}")
-
-    # Extract planes
-    r_plane = raw_cfa[r_pos_list[0][0]::2, r_pos_list[0][1]::2]
-    b_plane = raw_cfa[b_pos_list[0][0]::2, b_pos_list[0][1]::2]
-    
-    g1_plane = raw_cfa[g_pos_list[0][0]::2, g_pos_list[0][1]::2]
-    g2_plane = raw_cfa[g_pos_list[1][0]::2, g_pos_list[1][1]::2]
-
-    return r_plane, g1_plane, g2_plane, b_plane
-
-
-def cfa_from_rgb_planes(
-    channels: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    cfa_pattern_str: str,
-    cfa_shape: tuple[int, int]
-) -> np.ndarray:
-    """Recompose CFA data from individual R, G1, G2, B planes.
-    
-    Args:
-        channels: Tuple of (r, g1, g2, b) channel arrays (H/2, W/2) uint16
-        cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
-        cfa_shape: Shape of output CFA (H, W)
-        
-    Returns:
-        Reconstructed CFA data (H, W) uint16
-        
-    Raises:
-        ValueError: If the CFA pattern is invalid.
-    """
-    r, g1, g2, b = channels
-    
-    # Parse the CFA pattern string
-    cfa_pattern_flat = get_cfa_pattern_codes(cfa_pattern_str)
-    
-    cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
-    
-    # Find positions of each channel in the 2x2 pattern
-    r_pos = np.argwhere(cfa_pattern == 0)[0]  # 0 = R
-    g_pos = np.argwhere(cfa_pattern == 1)     # 1 = G (two positions)
-    b_pos = np.argwhere(cfa_pattern == 2)[0]  # 2 = B
-    
-    # Write channels to CFA
-    cfa = np.zeros(cfa_shape, dtype=np.uint16)
-    cfa[r_pos[0]::2, r_pos[1]::2] = r
-    cfa[g_pos[0][0]::2, g_pos[0][1]::2] = g1
-    cfa[g_pos[1][0]::2, g_pos[1][1]::2] = g2
-    cfa[b_pos[0]::2, b_pos[1]::2] = b
-    
-    return cfa
-
-
 def rgb_planes_from_dng(
     dng_file: "DngFile",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -243,8 +495,63 @@ def rgb_planes_from_dng(
         RuntimeError: If DNG processing fails.
     """
     # Extract CFA data and pattern, then process to RGB planes
+    from .color import rgb_planes_from_cfa
     raw_cfa, cfa_pattern_value = cfa_from_dng(dng_file)
     return rgb_planes_from_cfa(raw_cfa, cfa_pattern_value)
+
+
+def linear_raw_from_dng(
+    dng_file: "DngFile",
+    orientation: int | None = None,
+    algorithm: str = "RCD",
+    hot_candidates: tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None
+    ] = (None, None, None, None),
+    hot_pixel_threshold: float = 2.5,
+    hot_pixel_min_brightness: int = 32768
+) -> np.ndarray:
+    """Demosaic DNG file to RGB with optional hot pixel correction.
+    
+    Convenience wrapper that extracts CFA from DNG file and calls
+    linear_raw_from_cfa.
+    
+    Args:
+        dng_file: DngFile object
+        orientation: Optional EXIF orientation code (1, 3, 6, or 8)
+        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR",
+            "DCB", "AHD", or "OPENCV_EA"
+        hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
+            hot pixel candidates (H/2, W/2)
+        hot_pixel_threshold: Multiplier threshold for hot pixel detection
+            (default: 2.5)
+        hot_pixel_min_brightness: Minimum brightness to consider for hot
+            pixels (default: 32768)
+        
+    Returns:
+        RGB array (uint16)
+        
+    Raises:
+        ValueError: If the DNG file format is invalid or missing required
+            data.
+    """
+    from .color import linear_raw_from_cfa
+    
+    # Extract CFA data and pattern from DNG
+    cfa, cfa_pattern = cfa_from_dng(dng_file)
+    
+    # Call linear_raw_from_cfa with all parameters
+    return linear_raw_from_cfa(
+        cfa,
+        cfa_pattern,
+        orientation=orientation,
+        algorithm=algorithm,
+        hot_candidates=hot_candidates,
+        hot_pixel_threshold=hot_pixel_threshold,
+        hot_pixel_min_brightness=hot_pixel_min_brightness
+    )
 
 
 def _ensure_float_tags_be(tags: MetadataTags) -> MetadataTags:
@@ -263,7 +570,9 @@ def _ensure_float_tags_be(tags: MetadataTags) -> MetadataTags:
 def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_tags: MetadataTags) -> None:
     """Write thumbnail IFD exactly as in write_dng function."""
     # Prepare thumbnail specific tags
-    dng_tags.add_tag("PreviewColorSpace", PREVIEWCOLORSPACE_SRGB)
+
+    _PREVIEWCOLORSPACE_SRGB = 1
+    dng_tags.add_tag("PreviewColorSpace", _PREVIEWCOLORSPACE_SRGB)
 
     # Write Thumbnail to SubIFD 0
     thumb_ifd_args = {
@@ -330,8 +639,7 @@ def _prepare_ifd_args(metadata: MetadataTags, **base_args) -> dict:
     
     return ifd_args
 
-
-def _create_dng_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> MetadataTags:
+def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> MetadataTags:
     """Create DNG metadata tags with defaults and version info.
     
     Tag names are from tifffile.py TiffTagRegistry.
@@ -352,7 +660,9 @@ def _create_dng_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metadat
     
     # Add required tags if not already set
     if "Orientation" not in dng_tags:
-        dng_tags.add_tag("Orientation", ORIENTATION_HORIZONTAL)
+        _ORIENTATION_HORIZONTAL = 1
+        
+        dng_tags.add_tag("Orientation", _ORIENTATION_HORIZONTAL)
     
     if "ColorMatrix1" not in dng_tags:
         identity_matrix = np.identity(3, dtype=np.float64)
@@ -440,7 +750,7 @@ def write_dng(
     # IFD structure:
     # - If preview_image exists: IFD0 = preview (JPEG thumbnail), SubIFD0 = raw image
     # - If no preview_image: IFD0 = raw image (main image)
-    ifd0_tags = _create_dng_tags(metadata, has_jxl=jxl_distance is not None)
+    ifd0_tags = _prepare_ifd0_tags(metadata, has_jxl=jxl_distance is not None)
     _ensure_float_tags_be(ifd0_tags)
 
     try:
@@ -789,593 +1099,64 @@ def write_dng_from_page(
             raise
 
 
-class DngPage(TiffPage):
-    """TiffPage subclass with DNG-specific functionality.
-    
-    Provides convenient access to DNG tags with automatic translation,
-    parent IFD tag inheritance, and raw data extraction methods.
-    
-    Inherits all TiffPage attributes and methods. Created by "upgrading"
-    an existing TiffPage instance.
-    """
-    
-    # NewSubFileType values from DNG spec
-    SF_MAIN_IMAGE = 0
-    SF_PREVIEW_IMAGE = 1
-    SF_TRANSPARENCY_MASK = 2
-    SF_PREVIEW_MASK = 8
-    SF_ALT_PREVIEW_IMAGE = 65537
-    
-    def __new__(cls, *args, **kwargs):
-        """Create DngPage instance without calling TiffPage.__init__."""
-        return object.__new__(cls)
-    
-    def __init__(self, tiff_page: TiffPage):
-        """Initialize DngPage by copying TiffPage state.
-        
-        Args:
-            tiff_page: The TiffPage to upgrade
-        """
-        self.__dict__.update(tiff_page.__dict__)
-    
-    @property
-    def ifd0(self) -> Optional[TiffPage]:
-        """Return IFD0, or None if this page IS IFD0."""
-        page0 = self.parent.pages[0]
-        return None if page0 is self else page0
-    
-    @property
-    def photometric_name(self) -> Optional[str]:
-        """Photometric interpretation string (e.g., 'CFA', 'LINEAR_RAW', 'RGB')."""
-        if self.photometric is not None:
-            return self.photometric.name
-        return None
-    
-    @property
-    def is_cfa(self) -> bool:
-        """True if this page contains CFA (Bayer) raw data."""
-        return self.photometric_name == "CFA"
-    
-    @property
-    def is_linear_raw(self) -> bool:
-        """True if this page contains LINEAR_RAW (demosaiced) data."""
-        return self.photometric_name == "LINEAR_RAW"
-    
-    @property
-    def is_main_image(self) -> bool:
-        """True if this page is the main image (NewSubfileType == 0)."""
-        tag = self.tags.get(254)  # NewSubfileType tag ID
-        if tag is None:
-            return False
-        return tag.value == self.SF_MAIN_IMAGE
-    
-    @property
-    def is_preview(self) -> bool:
-        """True if this page is a preview image."""
-        tag = self.tags.get(254)  # NewSubfileType tag ID
-        if tag is None:
-            return False
-        return tag.value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
-    
-    @property
-    def xmp(self) -> XmpMetadata:
-        """XMP metadata from this page (or parent if not found locally)."""
-        xmp_string = self.get_tag('XMP', str)
-        if xmp_string is None:
-            xmp_string = ''
-        return XmpMetadata(xmp_string)
-    
-    def get_tag(
-        self, 
-        tag: Union[str, int], 
-        return_type: Optional[type] = None
-    ) -> Optional[Any]:
-        """Get a tag value with type conversion.
-        
-        Args:
-            tag: Either a numeric tag code (int) or tag name string 
-                 (e.g., 'ColorMatrix1', 'CFAPattern')
-            return_type: Controls type conversion:
-                - None (default): auto-convert to native type from TagSpec
-                - specific type (str, float, list, etc.): convert to that type
-        
-        Returns:
-            Tag value (converted based on return_type), or None if not found.
-            
-        See also:
-            get_raw_tag: Returns raw tag value without any conversion.
-        """
-        # Resolve tag to id/name and get registry spec (for shape info)
-        if isinstance(tag, int):
-            tag_id = tag
-            _, tag_name, registry_spec = resolve_tag(tag)
-            if tag_name is None:
-                tag_name = str(tag)
-        else:
-            tag_id, tag_name, registry_spec = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
-        
-        # Get value from page, or fall back to IFD0 for global tags
-        raw_tag = None
-        if tag_id in self.tags:
-            raw_tag = self.tags[tag_id]
-        elif self.ifd0 is not None and tag_id in self.ifd0.tags:
-            raw_tag = self.ifd0.tags[tag_id]
-        
-        if raw_tag is None:
-            return None
-        
-        effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
-        shape_spec = None
-        if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
-            shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
-        
-        return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
-
-    def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
-        """Get raw tag value without any type conversion.
-        
-        Args:
-            tag: Either a numeric tag code (int) or tag name string
-        
-        Returns:
-            Raw tag value as stored, or None if not found.
-            
-        See also:
-            get_tag: Returns tag value with automatic or specified type conversion.
-        """
-        # For raw access, we can work with tags not in the registry
-        if isinstance(tag, int):
-            tag_id = tag
-        else:
-            tag_id, _, _ = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
-        
-        if tag_id in self.tags:
-            return self.tags[tag_id].value
-        
-        # Fall back to IFD0 for global tags
-        if self.ifd0 is not None and tag_id in self.ifd0.tags:
-            return self.ifd0.tags[tag_id].value
-        
-        return None
-    
-    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
-        """Extract datetime from EXIF time tags with subseconds and timezone.
-        
-        This is the inverse of MetadataTags.add_time_tags(). Reads the datetime,
-        subsecond, and timezone offset tags and combines them into a single
-        datetime object.
-        
-        Args:
-            time_type: Which set of tags to read:
-                - "original" (default): DateTimeOriginal, SubsecTimeOriginal, OffsetTimeOriginal
-                - "digitized": DateTimeDigitized, SubsecTimeDigitized, OffsetTimeDigitized
-                - "modified": DateTime, SubsecTime, OffsetTime
-                - "preview": PreviewDateTime (no subsec/offset tags)
-                
-        Returns:
-            datetime object with microseconds and timezone if available, or None if
-            the datetime tag is not present or cannot be parsed.
-            
-        Example:
-            capture_time = page.get_time("original")
-            if capture_time:
-                print(f"Captured at {capture_time}")
-        """
-        from .tiff_metadata import _get_time_impl
-        return _get_time_impl(self, time_type)
-    
-    def _decode_jpegxl(self) -> np.ndarray:
-        """Decode JPEG XL compressed image data, handling tiled images.
-        
-        Returns:
-            Decoded image array.
-        """
-        fh = self.parent.filehandle
-        
-        # Read all segments using tifffile's read_segments API
-        segments = list(fh.read_segments(
-            self.dataoffsets,
-            self.databytecounts,
-            sort=True
-        ))
-        
-        if len(segments) == 1:
-            # Single tile/strip
-            compressed_data, _ = segments[0]
-            return imagecodecs.jpegxl_decode(compressed_data)
-        else:
-            # Multiple tiles - decode each and assemble
-            tile_width = self.tilewidth
-            tile_height = self.tilelength
-            img_width = self.imagewidth
-            img_height = self.imagelength
-            samples = self.samplesperpixel or 1
-            
-            # Determine output dtype from first tile
-            first_tile = imagecodecs.jpegxl_decode(segments[0][0])
-            dtype = first_tile.dtype
-            
-            # Create output array - handle both 2D (single sample) and 3D (multi-sample)
-            if samples == 1:
-                output = np.zeros((img_height, img_width), dtype=dtype)
-            else:
-                output = np.zeros((img_height, img_width, samples), dtype=dtype)
-            
-            # Decode and place each tile
-            tiles_x = (img_width + tile_width - 1) // tile_width
-            for i, (tile_data, _) in enumerate(segments):
-                tile = imagecodecs.jpegxl_decode(tile_data)
-                
-                ty = (i // tiles_x) * tile_height
-                tx = (i % tiles_x) * tile_width
-                
-                # Handle edge tiles that may be smaller
-                th = min(tile_height, img_height - ty)
-                tw = min(tile_width, img_width - tx)
-                output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
-            
-            return output
-
-    def get_raw_cfa(self) -> Optional[tuple[np.ndarray, str]]:
-        """Extract raw CFA data and pattern from this page.
-        
-        Returns:
-            Tuple of (cfa_array, cfa_pattern_str) or None if not a CFA page.
-            cfa_pattern_str is e.g., 'RGGB', 'BGGR'.
-        """
-        if not self.is_cfa:
-            return None
-        
-        # Decode image data
-        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            raw_cfa = self._decode_jpegxl()
-        else:
-            raw_cfa = self.asarray()
-        
-        # Handle interleaved data that needs deswizzling
-        col_interleave_tag = self.tags.get(LOCAL_TIFF_TAGS["ColumnInterleaveFactor"])
-        row_interleave_tag = self.tags.get(LOCAL_TIFF_TAGS["RowInterleaveFactor"])
-        if (
-            col_interleave_tag is not None
-            and col_interleave_tag.value == 2
-            and row_interleave_tag is not None
-            and row_interleave_tag.value == 2
-        ):
-            raw_cfa = deswizzle_cfa_data(raw_cfa)
-        
-        # Get CFA pattern string
-        cfa_str = self.get_tag("CFAPattern", str)
-        
-        return raw_cfa, cfa_str
-    
-    def get_raw_linear(self) -> Optional[np.ndarray]:
-        """Extract raw LINEAR_RAW data from this page.
-        
-        For JPEG XL compressed images, handles tile assembly and chroma subsampling.
-        
-        Returns:
-            Raw linear data array or None if not a LINEAR_RAW page.
-        """
-        if not self.is_linear_raw:
-            return None
-        
-        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            return self._decode_jpegxl()
-        else:
-            return self.asarray()
-
-
-class DngFile(TiffFile):
-
-    """A TIFF file with DNG-specific extensions and helper methods."""
-
-    def __init__(self, file, *args, **kwargs):
-        import io
-        from pathlib import Path
-        
-        # Normalize file input to BytesIO for consistent in-memory operation
-        if isinstance(file, (str, Path)):
-            # Read file into memory
-            with open(file, 'rb') as f:
-                file_data = f.read()
-            file = io.BytesIO(file_data)
-        elif isinstance(file, io.IOBase):
-            # Ensure we're at the beginning for consistent behavior
-            file.seek(0)
-        # For any other type, let TiffFile handle it and potentially fail with a clear error
-        
-        super().__init__(file, *args, **kwargs)
-
-    def _iter_all_pages_recursive(self, pages_list: Optional[List[TiffPage]]):
-        """Recursively iterates through all TIFF pages, including nested ones."""
-        if pages_list is None:
-            return
-        for page in pages_list:
-            yield page
-            if page.pages:  # Check if there are sub-pages
-                yield from self._iter_all_pages_recursive(page.pages)
-
-    def _build_dng_pages_recursive(self, pages_list: Optional[List[TiffPage]]) -> List[DngPage]:
-        """Build DngPage instances from TiffPages."""
-        result = []
-        if pages_list is None:
-            return result
-        
-        for tiff_page in pages_list:
-            dng_page = DngPage(tiff_page)
-            result.append(dng_page)
-            
-            # Recursively process sub-pages
-            if tiff_page.pages:
-                result.extend(self._build_dng_pages_recursive(tiff_page.pages))
-        
-        return result
-
-    def get_flattened_pages(self) -> List[DngPage]:
-        """Get all pages as DngPage instances.
-        
-        Returns:
-            List of DngPage objects in flattened order. Tag inheritance
-            falls back to IFD0 via TiffPage.parent.
-        """
-        return self._build_dng_pages_recursive(self.pages)
-    
-    def get_main_page(self) -> Optional[DngPage]:
-        """Get the main image page.
-        
-        First looks for a page with NewSubFileType == 0 (explicit main image).
-        If not found, falls back to the first CFA or LINEAR_RAW page.
-        
-        Returns:
-            The main image DngPage, or None if not found.
-        """
-        pages = self.get_flattened_pages()
-        
-        # First try to find explicit main image (NewSubFileType == 0)
-        for page in pages:
-            if page.is_main_image:
-                return page
-        
-        # Fall back to first CFA or LINEAR_RAW page
-        for page in pages:
-            if page.is_cfa or page.is_linear_raw:
-                return page
-        
-        return None
-
-
-def decode_raw(
+def decode_dng(
     file: Union[str, Path, IO[bytes], DngFile],
-    use_xmp: bool = True,
     output_dtype: type = np.uint16,
-    **processing_params
+    demosaic_algorithm: str = "RCD",
+    strict: bool = True,
+    use_coreimage_if_available: bool = False,
+    use_xmp: bool = True,
+    **processing_params,
 ) -> np.ndarray:
     """
-    Decode a DNG file to a numpy array using Core Image processing.
+    Decode a DNG file to a numpy array.
+    
+    By default uses the Python SDK pipeline. When use_coreimage_if_available=True,
+    uses macOS Core Image pipeline if available (supports XMP and processing params).
     
     Args:
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
-        use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
-        **processing_params: Processing parameters (temperature, tint, exposure, 
-                           tone_curve, noise_reduction, orientation, etc.)
+        demosaic_algorithm: Demosaic algorithm for Python pipeline - "RCD" (default), "VNG", etc.
+        strict: If True, raise error on unsupported DNG tags (Python pipeline only)
+        use_coreimage_if_available: If True, use Core Image pipeline when available on macOS
+        use_xmp: Whether to read XMP metadata for processing defaults (Core Image only)
+        **processing_params: Core Image processing parameters:
+            - temperature: Color temperature in Kelvin
+            - tint: Tint adjustment
+            - exposure: Exposure adjustment in EV
+            - tone_curve: SplineCurve for tone mapping
+            - noise_reduction: Noise reduction amount
+            - orientation: EXIF orientation code
     
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype
     """
-    try:
-        # Import here to avoid importing heavy dependencies at module load time
-        from . import color_mac
-        
-        # Create or use DngFile - DngFile.__init__ handles file normalization and seeking
-        dng_file = file if isinstance(file, DngFile) else DngFile(file)
-        dng_input = dng_file.filehandle
-        
-        # Build processing options using configuration mapping
-        options = {}
-        
-        # Only process parameters if we have XMP to read or explicit parameters to apply
-        if use_xmp or processing_params:
-            from .color import SplineCurve as SC
-            
-            # Define mapping: param_name -> (option_name, xmp_name, value_type)
-            # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
-            xmp_mappings = {
-                "temperature": ("neutralTemperature", "Temperature", float),
-                "tint": ("neutralTint", "Tint", float),
-                "exposure": ("exposure", "Exposure2012", float),
-                "tone_curve": ("toneCurve", "ToneCurvePV2012", SC),
-                "orientation": ("imageOrientation", None, int),
-                "noise_reduction": ("luminanceNoiseReductionAmount", None, float),
-            }
-            
-            # Process each mapping: CLI params first, then XMP fallback
-            for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
-                param_value = processing_params.get(param_name)
-                # Use CLI parameter if provided (highest priority)
-                if param_value is not None:
-                    options[option_name] = param_value
-                # Otherwise use XMP default if available, requested, and xmp_name is specified
-                elif xmp_name is not None and use_xmp:
-                    main_page = dng_file.get_main_page()
-                    if main_page is not None and main_page.xmp.has_prop(xmp_name):
-                        options[option_name] = main_page.xmp.get_prop(xmp_name, value_type)
-
-            # Add noise reduction to both luminance and color (convention)
-            if ("noise_reduction" in processing_params and 
-                processing_params["noise_reduction"] is not None):
-                options["colorNoiseReductionAmount"] = processing_params["noise_reduction"]
-        
-        # Format file and options for logging
-        import io
-        if isinstance(file, io.BytesIO):
-            file_desc = "BytesIO buffer"
-        elif isinstance(file, (str, Path)):
-            file_desc = str(file)
-        else:
-            file_desc = type(file).__name__
-        
-        formatted_opts = {}
-        for key, value in options.items():
-            if isinstance(value, (float, np.floating)):
-                formatted_opts[key] = f"{float(value):.3f}"
-            else:
-                formatted_opts[key] = value
-        logger.debug(f"Processing {file_desc} with options: {formatted_opts}")
-        
-        # Special case: apply lin2srgb transformation to tone curve points
-        # TODO: since CI is an opaque RAW pipeline it is not possible to sequence tone curve 
-        #       in the same way in Photoshop and CI so we apply the transformation here.
-        if "toneCurve" in options and options["toneCurve"] is not None:
-
-            def lin2srgb(lin):
-                if lin > 0.0031308:
-                    s = 1.055 * (pow(lin, (1.0 / 2.4))) - 0.055
-                else:
-                    s = 12.92 * lin
-                return s
-
-            spline_curve = options["toneCurve"]
-            # Points are already normalized 0-1, apply lin2srgb transformation
-            transformed_points = [
-                (lin2srgb(x), lin2srgb(y)) for x, y in spline_curve.points
-            ]
-            # Create new SplineCurve with transformed points
-            options["toneCurve"] = SC(transformed_points)
-
-        # Ensure file pointer is at beginning for Core Image processing
-        # (XMP reading above may have moved the pointer)
-        dng_input.seek(0) 
-
-        # Process with Core Image
-        preview_image = color_mac.process_raw_core_image(
-            dng_input=dng_input,
-            raw_filter_options=options,
-            use_gpu=True,
-            output_dtype=output_dtype,
-        )
-        
-        if preview_image is None:
-            raise RuntimeError(f"Failed to process DNG file: {file}")
-        
-        logger.debug(f"Successfully decoded DNG to array with shape {preview_image.shape} and dtype {preview_image.dtype}")
-        return preview_image
-                
-    except Exception as e:
-        logger.error(f"Error decoding {file}: {e}", exc_info=True)
-        raise
-
-
-def convert_raw(
-    file: Union[str, Path, IO[bytes]],
-    output_path: Union[str, Path],
-    use_xmp: bool = True,
-    output_dtype: type = np.uint8,
-    **processing_params
-) -> bool:
-    """
-    Convert a DNG file to an image file.
+    # Try Core Image path if requested
+    if use_coreimage_if_available:
+        from .dngio_coreimage import core_image_available, decode_dng_coreimage
+        if core_image_available:
+            return decode_dng_coreimage(
+                file=file,
+                use_xmp=use_xmp,
+                output_dtype=output_dtype,
+                **processing_params,
+            )
     
-    Args:
-        file: Path to DNG file or file-like object containing DNG data
-        output_path: Output file path (format determined by extension)
-        use_xmp: Whether to read XMP metadata for default values
-        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
-        **processing_params: Processing parameters (temperature, tint, exposure, 
-                           tone_curve, noise_reduction, orientation, etc.)
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        import cv2
-        
-        # Decode DNG to numpy array
-        preview_image = decode_raw(
-            file=file,
-            use_xmp=use_xmp,
-            output_dtype=output_dtype,
-            **processing_params
-        )
-        
-        # Convert RGB to BGR for OpenCV
-        bgr_image = cv2.cvtColor(preview_image, cv2.COLOR_RGB2BGR)
-        
-        # Save to file
-        output_path = Path(output_path)
-        
-        # Save to file
-        success = cv2.imwrite(str(output_path), bgr_image)
-        
-        if success:
-            logger.info(f"Successfully converted {file} to {output_path}")
-            return True
-        else:
-            logger.error(f"Failed to save file: {output_path}")
-            return False
-                
-    except Exception as e:
-        logger.error(f"Error converting {file}: {e}", exc_info=True)
-        raise
-
-
-def convert_raw_to_stream(
-    file: Union[str, Path, IO[bytes]],
-    output_format: str = "jpg",
-    use_xmp: bool = True,
-    output_dtype: type = np.uint8,
-    **processing_params
-) -> bytes:
-    """
-    Convert a DNG file to encoded image bytes.
+    # Python SDK pipeline
+    from .color import render_dng
     
-    Args:
-        file: Path to DNG file or file-like object containing DNG data
-        output_format: Output format ("jpg", "png", "tiff", etc.)
-        use_xmp: Whether to read XMP metadata for default values
-        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
-        **processing_params: Processing parameters (temperature, tint, exposure, 
-                           tone_curve, noise_reduction, orientation, etc.)
-        
-    Returns:
-        bytes: Encoded image data
-    """
-    try:
-        import cv2
-        
-        # Decode DNG to numpy array
-        preview_image = decode_raw(
-            file=file,
-            use_xmp=use_xmp,
-            output_dtype=output_dtype,
-            **processing_params
-        )
-        
-        # Convert RGB to BGR for OpenCV
-        bgr_image = cv2.cvtColor(preview_image, cv2.COLOR_RGB2BGR)
-        
-        # Ensure format has leading dot
-        format_ext = f".{output_format.lstrip('.')}"
-        
-        # Encode image
-        success, encoded_buffer = cv2.imencode(format_ext, bgr_image)
-        
-        if success:
-            encoded_bytes = encoded_buffer.tobytes()
-            logger.info(f"Encoded {file} to {len(encoded_bytes)} bytes as {output_format}")
-            return encoded_bytes
-        else:
-            logger.error(f"Failed to encode image as {output_format}")
-            raise RuntimeError(f"Failed to encode image as {output_format}")
-                
-    except Exception as e:
-        logger.error(f"Error converting {file} to stream: {e}", exc_info=True)
-        raise
-
-
+    # Create or use DngFile
+    dng_file = file if isinstance(file, DngFile) else DngFile(file)
+    
+    result = render_dng(
+        dng_input=dng_file,
+        output_dtype=output_dtype,
+        demosaic_algorithm=demosaic_algorithm,
+        strict=strict,
+    )
+    
+    if result is None:
+        raise RuntimeError(f"Failed to decode DNG file: {file}")
+    
+    return result

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .dngio import convert_raw
+from .imgio import convert_imgformat
 from .google_photos import GooglePhotosClient
 
 logger = logging.getLogger(__name__)
@@ -27,8 +27,8 @@ def cli(verbose):
     )
 
 
-@cli.command()
-@click.argument("input_dng", type=click.Path(exists=True))
+@cli.command(name="convert-dng")
+@click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
@@ -37,17 +37,18 @@ def cli(verbose):
 @click.option("--orientation", type=int, help="Image orientation")
 @click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
-def convert(
-    input_dng, output_file, temperature, tint, exposure, noise_reduction, orientation, bit_depth, no_xmp
+@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
+def convert_dng(
+    input_file, output_file, temperature, tint, exposure, noise_reduction, orientation, bit_depth, no_xmp, use_coreimage
 ):
-    """Convert DNG file to image file (format determined by extension)."""
+    """Convert DNG file to image file with processing options."""
     import numpy as np
     
     # Map bit depth to numpy dtype
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
     
-    success = convert_raw(
-        file=input_dng,
+    success = convert_imgformat(
+        file=input_file,
         output_path=output_file,
         temperature=temperature,
         tint=tint,
@@ -56,6 +57,27 @@ def convert(
         orientation=orientation,
         output_dtype=output_dtype,
         use_xmp=not no_xmp,
+        use_coreimage_if_available=use_coreimage,
+    )
+
+    sys.exit(0 if success else 1)
+
+
+@cli.command(name="convert-image")
+@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("output_file", type=click.Path())
+@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
+def convert_image_cmd(input_file, output_file, bit_depth):
+    """Convert image file to another format."""
+    import numpy as np
+    
+    # Map bit depth to numpy dtype
+    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
+    
+    success = convert_imgformat(
+        file=input_file,
+        output_path=output_file,
+        output_dtype=output_dtype,
     )
 
     sys.exit(0 if success else 1)

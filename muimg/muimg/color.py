@@ -4,6 +4,7 @@ import logging
 
 from typing import Dict
 from . import _vng, _rcd
+from .tiff_metadata import get_cfa_pattern_codes
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
 from . import _dng_color
@@ -574,32 +575,47 @@ def XYZ_to_YuvUCS(image: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 # Light source enum values from DNG SDK dng_tag_values.h
-# Maps EXIF LightSource values to color temperature (Kelvin)
+# Maps EXIF LightSource values to (name, temperature_kelvin)
 # SDK ref: dng_camera_profile.cpp IlluminantToTemperature()
-ILLUMINANT_TO_TEMPERATURE = {
-    0: None,      # lsUnknown - use default
-    1: 5500.0,    # lsDaylight
-    2: 4150.0,    # lsFluorescent (3800+4500)/2
-    3: 2850.0,    # lsTungsten
-    4: 5500.0,    # lsFlash
-    9: 5500.0,    # lsFineWeather
-    10: 6500.0,   # lsCloudyWeather
-    11: 7500.0,   # lsShade
-    12: 6400.0,   # lsDaylightFluorescent (5700+7100)/2
-    13: 5050.0,   # lsDayWhiteFluorescent (4600+5500)/2
-    14: 4150.0,   # lsCoolWhiteFluorescent (3800+4500)/2
-    15: 3525.0,   # lsWhiteFluorescent (3250+3800)/2
-    16: 2925.0,   # lsWarmWhiteFluorescent (2600+3250)/2
-    17: 2850.0,   # lsStandardLightA
-    18: 5500.0,   # lsStandardLightB
-    19: 6500.0,   # lsStandardLightC
-    20: 5500.0,   # lsD55
-    21: 6500.0,   # lsD65
-    22: 7500.0,   # lsD75
-    23: 5000.0,   # lsD50
-    24: 3200.0,   # lsISOStudioTungsten
-    255: None,    # lsOther - requires IlluminantData
+ILLUMINANT_INFO = {
+    0: ('Unknown', None),                    # lsUnknown - use default
+    1: ('Daylight', 5500.0),                 # lsDaylight
+    2: ('Fluorescent', 4150.0),              # lsFluorescent (3800+4500)/2
+    3: ('Tungsten', 2850.0),                 # lsTungsten
+    4: ('Flash', 5500.0),                    # lsFlash
+    9: ('Fine Weather', 5500.0),             # lsFineWeather
+    10: ('Cloudy Weather', 6500.0),          # lsCloudyWeather
+    11: ('Shade', 7500.0),                   # lsShade
+    12: ('Daylight Fluorescent', 6400.0),    # lsDaylightFluorescent (5700+7100)/2
+    13: ('Day White Fluorescent', 5050.0),   # lsDayWhiteFluorescent (4600+5500)/2
+    14: ('Cool White Fluorescent', 4150.0),  # lsCoolWhiteFluorescent (3800+4500)/2
+    15: ('White Fluorescent', 3525.0),       # lsWhiteFluorescent (3250+3800)/2
+    16: ('Warm White Fluorescent', 2925.0),  # lsWarmWhiteFluorescent (2600+3250)/2
+    17: ('Standard Light A', 2850.0),        # lsStandardLightA
+    18: ('Standard Light B', 5500.0),        # lsStandardLightB
+    19: ('Standard Light C', 6500.0),        # lsStandardLightC
+    20: ('D55', 5500.0),                     # lsD55
+    21: ('D65', 6500.0),                     # lsD65
+    22: ('D75', 7500.0),                     # lsD75
+    23: ('D50', 5000.0),                     # lsD50
+    24: ('ISO Studio Tungsten', 3200.0),     # lsISOStudioTungsten
+    255: ('Other', None),                    # lsOther - requires IlluminantData
 }
+
+
+def illuminant_name(illuminant: int) -> str:
+    """Get human-readable name for a DNG CalibrationIlluminant enum value.
+    
+    Args:
+        illuminant: CalibrationIlluminant enum value (EXIF LightSource)
+        
+    Returns:
+        Human-readable illuminant name, or 'Unknown (N)' if not recognized
+    """
+    info = ILLUMINANT_INFO.get(illuminant)
+    if info is None:
+        return f'Unknown ({illuminant})'
+    return info[0]
 
 
 def illuminant_to_xy(illuminant: int) -> tuple[float, float] | None:
@@ -614,12 +630,12 @@ def illuminant_to_xy(illuminant: int) -> tuple[float, float] | None:
     Returns:
         Tuple of (x, y) chromaticity, or None if illuminant is unknown/other
     """
-    temp = ILLUMINANT_TO_TEMPERATURE.get(illuminant)
-    if temp is None:
+    info = ILLUMINANT_INFO.get(illuminant)
+    if info is None or info[1] is None:
         return None
     
     # Convert temperature to xy via Planckian locus (pure Python)
-    return temp_tint_to_xy(temp, 0.0)
+    return temp_tint_to_xy(info[1], 0.0)
 
 
 def illuminant_to_temperature(illuminant: int) -> float | None:
@@ -631,7 +647,8 @@ def illuminant_to_temperature(illuminant: int) -> float | None:
     Returns:
         Temperature in Kelvin, or None if illuminant is unknown/other
     """
-    return ILLUMINANT_TO_TEMPERATURE.get(illuminant)
+    info = ILLUMINANT_INFO.get(illuminant)
+    return info[1] if info is not None else None
 
 
 def interpolate_color_matrix(
@@ -732,7 +749,7 @@ def interpolate_hue_sat_map(
 
 
 class UnsupportedDNGTagError(Exception):
-    """Raised when a DNG file contains tags that process_raw() cannot handle."""
+    """Raised when a DNG file contains tags that render_dng() cannot handle."""
     pass
 
 
@@ -1203,7 +1220,7 @@ def validate_dng_tags(page: "dngio.DngPage", strict: bool = True) -> list[str]:
     Raises:
         UnsupportedDNGTagError: If strict=True and unsupported tags are found
     """
-    # DNG tags that affect rendering but are NOT implemented in process_raw()
+    # DNG tags that affect rendering but are NOT implemented in render_dng()
     # Based on Adobe DNG SDK 1.7.1 - COMPREHENSIVE LIST
     # These tags would cause our output to differ from the SDK reference
     # Tag names match tifffile's tag name mapping
@@ -1249,7 +1266,7 @@ def validate_dng_tags(page: "dngio.DngPage", strict: bool = True) -> list[str]:
     if found_unsupported and strict:
         raise UnsupportedDNGTagError(
             f"DNG contains unsupported rendering tags: {', '.join(found_unsupported)}. "
-            f"process_raw() output will differ from SDK reference. "
+            f"render_dng() output will differ from SDK reference. "
             f"Use strict=False to process anyway."
         )
     
@@ -1513,6 +1530,87 @@ def fix_hot_pixels_channels(
     return (r, g1, g2, b)
 
 
+def rgb_planes_from_cfa(
+    raw_cfa: np.ndarray, 
+    cfa_pattern_str: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extracts R, G1, G2, and B planes from CFA data using the given pattern.
+    
+    Args:
+        raw_cfa: Raw CFA data array
+        cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
+        
+    Returns:
+        Tuple of (r_plane, g1_plane, g2_plane, b_plane)
+        
+    Raises:
+        ValueError: If the CFA pattern is invalid.
+    """
+    # Parse the CFA pattern string
+    cfa_pattern_flat = get_cfa_pattern_codes(cfa_pattern_str)
+    cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
+    
+    # Extract R, G, B planes based on their positions in the CFA pattern
+    # CFA codes are: 0=R, 1=G, 2=B
+    r_pos_list = np.argwhere(cfa_pattern == 0)
+    g_pos_list = np.argwhere(cfa_pattern == 1)
+    b_pos_list = np.argwhere(cfa_pattern == 2)
+
+    # There should be exactly one R, one B, and two G channels
+    if len(r_pos_list) != 1 or len(b_pos_list) != 1 or len(g_pos_list) != 2:
+        raise ValueError(f"Unexpected CFA pattern layout: {cfa_pattern}")
+
+    # Extract planes
+    r_plane = raw_cfa[r_pos_list[0][0]::2, r_pos_list[0][1]::2]
+    b_plane = raw_cfa[b_pos_list[0][0]::2, b_pos_list[0][1]::2]
+    
+    g1_plane = raw_cfa[g_pos_list[0][0]::2, g_pos_list[0][1]::2]
+    g2_plane = raw_cfa[g_pos_list[1][0]::2, g_pos_list[1][1]::2]
+
+    return r_plane, g1_plane, g2_plane, b_plane
+
+
+def cfa_from_rgb_planes(
+    channels: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    cfa_pattern_str: str,
+    cfa_shape: tuple[int, int]
+) -> np.ndarray:
+    """Recompose CFA data from individual R, G1, G2, B planes.
+    
+    Args:
+        channels: Tuple of (r, g1, g2, b) channel arrays (H/2, W/2) uint16
+        cfa_pattern_str: CFA pattern string (e.g., "RGGB", "BGGR")
+        cfa_shape: Shape of output CFA (H, W)
+        
+    Returns:
+        Reconstructed CFA data (H, W) uint16
+        
+    Raises:
+        ValueError: If the CFA pattern is invalid.
+    """
+    r, g1, g2, b = channels
+    
+    # Parse the CFA pattern string
+    cfa_pattern_flat = get_cfa_pattern_codes(cfa_pattern_str)
+    
+    cfa_pattern = np.array(cfa_pattern_flat).reshape(2, 2)
+    
+    # Find positions of each channel in the 2x2 pattern
+    r_pos = np.argwhere(cfa_pattern == 0)[0]  # 0 = R
+    g_pos = np.argwhere(cfa_pattern == 1)     # 1 = G (two positions)
+    b_pos = np.argwhere(cfa_pattern == 2)[0]  # 2 = B
+    
+    # Write channels to CFA
+    cfa = np.zeros(cfa_shape, dtype=np.uint16)
+    cfa[r_pos[0]::2, r_pos[1]::2] = r
+    cfa[g_pos[0][0]::2, g_pos[0][1]::2] = g1
+    cfa[g_pos[1][0]::2, g_pos[1][1]::2] = g2
+    cfa[b_pos[0]::2, b_pos[1]::2] = b
+    
+    return cfa
+
+
 def fix_hot_pixels(
     cfa: np.ndarray,
     cfa_pattern: str,
@@ -1543,14 +1641,12 @@ def fix_hot_pixels(
     Returns:
         Fixed CFA data (H, W) uint16
     """
-    from . import dngio
-    
     # If no candidate maps provided, return original
     if all(c is None for c in hot_candidates):
         return cfa.copy()
     
     # Extract channels
-    channels = dngio.rgb_planes_from_cfa(cfa, cfa_pattern)
+    channels = rgb_planes_from_cfa(cfa, cfa_pattern)
     
     # Fix hot pixels in channels
     fixed_channels = fix_hot_pixels_channels(
@@ -1561,7 +1657,7 @@ def fix_hot_pixels(
     )
     
     # Recompose CFA
-    return dngio.cfa_from_rgb_planes(fixed_channels, cfa_pattern, cfa.shape)
+    return cfa_from_rgb_planes(fixed_channels, cfa_pattern, cfa.shape)
 
 def linear_raw_from_cfa(
     image_data: np.ndarray, 
@@ -1725,59 +1821,6 @@ def linear_raw_from_cfa(
             logger.warning(f"Unsupported EXIF orientation code: {exif_code}; no rotation applied")
 
     return rgb
-
-def linear_raw_from_dng(
-    dng_file: "DngFile",
-    orientation: int | None = None,
-    algorithm: str = "RCD",
-    hot_candidates: tuple[
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None
-    ] = (None, None, None, None),
-    hot_pixel_threshold: float = 2.5,
-    hot_pixel_min_brightness: int = 32768
-) -> np.ndarray:
-    """Demosaic DNG file to RGB with optional hot pixel correction.
-    
-    Convenience wrapper that extracts CFA from DNG file and calls
-    linear_raw_from_cfa.
-    
-    Args:
-        dng_file: DngFile object
-        orientation: Optional EXIF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR",
-            "DCB", "AHD", or "OPENCV_EA"
-        hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
-            hot pixel candidates (H/2, W/2)
-        hot_pixel_threshold: Multiplier threshold for hot pixel detection
-            (default: 2.5)
-        hot_pixel_min_brightness: Minimum brightness to consider for hot
-            pixels (default: 32768)
-        
-    Returns:
-        RGB array (uint16)
-        
-    Raises:
-        ValueError: If the DNG file format is invalid or missing required
-            data.
-    """
-    from . import dngio
-    
-    # Extract CFA data and pattern from DNG
-    cfa, cfa_pattern = dngio.cfa_from_dng(dng_file)
-    
-    # Call linear_raw_from_cfa with all parameters
-    return linear_raw_from_cfa(
-        cfa,
-        cfa_pattern,
-        orientation=orientation,
-        algorithm=algorithm,
-        hot_candidates=hot_candidates,
-        hot_pixel_threshold=hot_pixel_threshold,
-        hot_pixel_min_brightness=hot_pixel_min_brightness
-    )
 
 # =============================================================================
 # DNG SDK Port (Python + C++ Extension)
@@ -2160,33 +2203,21 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
     return camera_white
 
 
-def process_raw(
+def render_dng(
     dng_input: "str | Path | IO | dngio.DngFile | dngio.DngPage",
     output_dtype: type = np.uint16,
-    algorithm: str = "RCD",
+    demosaic_algorithm: str = "RCD",
     strict: bool = True,
 ) -> "np.ndarray | None":
     """Process a DNG file to RGB using the DNG SDK color pipeline.
     
-    Exact port of Adobe DNG SDK 1.7.1 dng_render_task::ProcessArea()
-    SDK source: dng_render.cpp lines 1780-2070
-    
-    Pipeline (matching SDK exactly):
-        1. DoBaselineABCtoRGB - camera RGB to ProPhoto with camera_white clipping
-           SDK ref: dng_reference.cpp lines 1389-1441
-        2. DoBaseline1DFunction (ExposureRamp) - exposure/shadows adjustment
-           SDK ref: dng_render.cpp lines 1907-1928
-        3. DoBaselineRGBTone - ACR3 tone curve (ALWAYS applied)
-           SDK ref: dng_render.cpp lines 1949-1970
-        4. DoBaselineRGBtoRGB - ProPhoto to final space (sRGB)
-           SDK ref: dng_render.cpp lines 2040-2048
-        5. DoBaseline1DTable (EncodeGamma) - sRGB gamma encoding
-           SDK ref: dng_render.cpp lines 2050-2068
+    Port of Adobe DNG SDK 1.7.1 rendering pipeline.
+    See docs/dng_render_pipeline.md for full pipeline documentation.
     
     Args:
         dng_input: Path to DNG file, file-like object, DngFile, or DngPage
         output_dtype: Output dtype (np.uint8, np.uint16, np.float16, np.float32)
-        algorithm: Demosaic algorithm for CFA data
+        demosaic_algorithm: Demosaic algorithm for CFA data
         strict: If True, raise UnsupportedDNGTagError if the DNG contains tags
                 that this function cannot handle. If False, process anyway.
     
@@ -2420,7 +2451,7 @@ def process_raw(
             
             # Demosaic without rotation - rotation applied after crop below
             t0 = time.perf_counter()
-            if algorithm == "DNGSDK_BILINEAR":
+            if demosaic_algorithm == "DNGSDK_BILINEAR":
                 cfa_pattern_codes = page.get_tag("CFAPattern", list)
                 if cfa_pattern_codes is None:
                     cfa_pattern_codes = [0, 1, 1, 2]  # Default RGGB
@@ -2437,7 +2468,7 @@ def process_raw(
                 rgb_linear = linear_raw_from_cfa(
                     cfa_uint16, cfa_pattern,
                     orientation=None,
-                    algorithm=algorithm
+                    algorithm=demosaic_algorithm
                 )
                 rgb_camera = rgb_linear.astype(np.float32) / 65535.0
             
@@ -2863,7 +2894,7 @@ def process_raw(
         
         # Print timing breakdown
         total = sum(timings.values())
-        logger.info(f"process_raw timing breakdown (total: {total*1000:.1f}ms):")
+        logger.info(f"render_dng timing breakdown (total: {total*1000:.1f}ms):")
         for name, t in timings.items():
             logger.info(f"  {name}: {t*1000:.1f}ms ({t/total*100:.1f}%)")
         

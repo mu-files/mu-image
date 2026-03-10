@@ -1,7 +1,7 @@
 """Tests for SubIFD decode/roundtrip validation.
 
 For multi-IFD DNG files, validates that:
-1. Each raw SubIFD can be decoded by muimg's process_raw
+1. Each raw SubIFD can be decoded by muimg's render_dng
 2. write_dng_from_page produces valid DNG output
 3. The roundtrip DNG produces identical results when processed by dng_validate
 """
@@ -57,7 +57,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
     
     For each raw IFD, produces 3 files:
     - {stem}_ifd{n}.dng - roundtrip DNG created by write_dng_from_page
-    - {stem}_ifd{n}_muimg.tif - muimg process_raw output
+    - {stem}_ifd{n}_muimg.tif - muimg render_dng output
     - {stem}_ifd{n}_dngvalidate.tif - dng_validate output on roundtrip DNG
     """
     if not DNG_VALIDATE_PATH.exists():
@@ -92,15 +92,15 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             print(f"\n  Processing IFD {i} ({ifd_type}):")
             
-            # 1. muimg process_raw -> {stem}_ifd{n}_muimg.tif
+            # 1. muimg render_dng -> {stem}_ifd{n}_muimg.tif
             try:
-                decoded = color.process_raw(page, output_dtype=np.uint16, strict=False)
+                decoded = color.render_dng(page, output_dtype=np.uint16, strict=False)
                 if decoded is None:
-                    pytest.fail(f"process_raw returned None for IFD {i}")
+                    pytest.fail(f"render_dng returned None for IFD {i}")
                 tifffile.imwrite(str(muimg_tif), decoded)
                 print(f"    -> {muimg_tif.name} ({decoded.shape})")
             except Exception as e:
-                pytest.fail(f"process_raw failed for IFD {i}: {e}")
+                pytest.fail(f"render_dng failed for IFD {i}: {e}")
             
             # 2. write_dng_from_page -> {stem}_ifd{n}.dng
             # Use decoded fallback if tile dimensions not supported by tifffile
@@ -127,7 +127,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             # 3. Try muimg decode on the roundtrip DNG
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
             try:
-                roundtrip_decoded = color.process_raw(roundtrip_dng, output_dtype=np.uint16, strict=False)
+                roundtrip_decoded = color.render_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
                 if roundtrip_decoded is not None:
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")

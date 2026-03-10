@@ -14,19 +14,16 @@ from .dngio import (
     DngFile,
     DngPage,
     cfa_from_dng,
-    cfa_from_rgb_planes,
-    rgb_planes_from_cfa,
     rgb_planes_from_dng,
+    linear_raw_from_dng,
     write_dng,
     write_dng_from_page,
-    decode_raw,
-    convert_raw,
-    convert_raw_to_stream,
+    decode_dng,
 )
-from .color_mac import process_raw_core_image
+from .dngio_coreimage import render_dng_coreimage, decode_dng_coreimage
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
-from .imgio import decode_image
+from .imgio import convert_imgformat, convert_imgformat_to_stream, decode_image
 from .videoio import SequenceEncodePipeline
 from .color import (
     SplineCurve,
@@ -35,8 +32,9 @@ from .color import (
     interp_center_green,
     fix_hot_pixels,
     linear_raw_from_cfa,
-    linear_raw_from_dng,
-    process_raw,
+    rgb_planes_from_cfa,
+    cfa_from_rgb_planes,
+    render_dng,
 )
 
 __all__ = [
@@ -52,17 +50,18 @@ __all__ = [
     'UnsupportedDNGTagError',
     'cfa_from_dng',
     'cfa_from_rgb_planes',
-    'convert_raw',
-    'convert_raw_to_stream',
+    'convert_imgformat',
+    'convert_imgformat_to_stream',
+    'decode_dng',
+    'decode_dng_coreimage',
     'decode_image',
-    'decode_raw',
     'fix_hot_pixels',
     'interp_center',
     'interp_center_green',
     'linear_raw_from_cfa',
     'linear_raw_from_dng',
-    'process_raw',
-    'process_raw_core_image',
+    'render_dng',
+    'render_dng_coreimage',
     'ProcessingPipeline',
     'SequenceEncodePipeline',
     'rgb_planes_from_cfa',

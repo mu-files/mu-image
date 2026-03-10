@@ -242,7 +242,7 @@ interpreted and applied during processing.
 
 ## muimg Implementation Status
 
-Current implementation in `muimg.color.process_raw()`:
+Current implementation in `muimg.color.render_dng()`:
 
 | Stage | muimg Status | Notes |
 |-------|--------------|-------|
