@@ -483,37 +483,12 @@ def cfa_from_dng(
     return raw_cfa, cfa_pattern_value
 
 
-def rgb_planes_from_dng(
-    dng_file: "DngFile",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Loads a DNG file, finds the primary CFA raw image, and extracts
-    R, G1, G2, and B planes.
-
-    Raises:
-        ValueError: If the DNG file format is invalid or missing required data.
-        RuntimeError: If DNG processing fails.
-    """
-    # Extract CFA data and pattern, then process to RGB planes
-    from .color import rgb_planes_from_cfa
-    raw_cfa, cfa_pattern_value = cfa_from_dng(dng_file)
-    return rgb_planes_from_cfa(raw_cfa, cfa_pattern_value)
-
-
 def linear_raw_from_dng(
     dng_file: "DngFile",
     orientation: int | None = None,
     algorithm: str = "RCD",
-    hot_candidates: tuple[
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None
-    ] = (None, None, None, None),
-    hot_pixel_threshold: float = 2.5,
-    hot_pixel_min_brightness: int = 32768
 ) -> np.ndarray:
-    """Demosaic DNG file to RGB with optional hot pixel correction.
+    """Demosaic DNG file to RGB.
     
     Convenience wrapper that extracts CFA from DNG file and calls demosaic.
     
@@ -521,12 +496,6 @@ def linear_raw_from_dng(
         dng_file: DngFile object
         orientation: Optional TIFF orientation code (1, 3, 6, or 8)
         algorithm: Demosaic algorithm - "RCD" (default), "VNG", or "OPENCV_EA"
-        hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
-            hot pixel candidates (H/2, W/2)
-        hot_pixel_threshold: Multiplier threshold for hot pixel detection
-            (default: 2.5)
-        hot_pixel_min_brightness: Minimum brightness to consider for hot
-            pixels (default: 32768)
         
     Returns:
         RGB array (uint16)
@@ -545,14 +514,7 @@ def linear_raw_from_dng(
         cfa,
         cfa_pattern,
         algorithm=algorithm,
-        hot_candidates=hot_candidates,
-        hot_pixel_threshold=hot_pixel_threshold,
-        hot_pixel_min_brightness=hot_pixel_min_brightness
     )
-    
-    # Apply orientation if requested
-    if orientation is not None:
-        rgb = apply_tiff_orientation(rgb, orientation)
     
     return rgb
 
