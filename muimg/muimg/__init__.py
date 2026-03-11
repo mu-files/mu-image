@@ -24,12 +24,18 @@ from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
 from .imgio import convert_imgformat, convert_imgformat_to_stream, decode_image
 from .videoio import SequenceEncodePipeline
-from .color import (
+from .raw_render import (
     SplineCurve,
     UnsupportedDNGTagError,
     apply_tiff_orientation,
+    colortemp_to_uv,
     demosaic,
     render_dng,
+    temp_tint_to_xy,
+    uv_to_colortemp,
+    uvUCS_to_xy,
+    xy_to_temp_tint,
+    xy_to_uvUCS,
 )
 
 __all__ = [
@@ -43,6 +49,7 @@ __all__ = [
     'decode_tag_value',
     'get_cfa_pattern_codes',
     'UnsupportedDNGTagError',
+    'colortemp_to_uv',
     'cfa_from_dng',
     'convert_imgformat',
     'convert_imgformat_to_stream',
@@ -57,6 +64,11 @@ __all__ = [
     'ProcessingPipeline',
     'SequenceEncodePipeline',
     'SplineCurve',
+    'temp_tint_to_xy',
+    'uv_to_colortemp',
+    'uvUCS_to_xy',
     'write_dng',
     'write_dng_from_page',
+    'xy_to_temp_tint',
+    'xy_to_uvUCS',
 ]

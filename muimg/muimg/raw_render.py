@@ -15,7 +15,7 @@ except ImportError:
     RCD_AVAILABLE = False
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
-from . import _dng_color
+from . import _raw_render
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +317,7 @@ _ACR3_TONE_CURVE = np.array([
 def get_acr3_curve(num_points: int = 256) -> np.ndarray:
     """Get the ACR3 default tone curve as a lookup table.
 
-    This is a pure Python replacement for _dng_color.get_acr3_curve().
+    This is a pure Python replacement for _raw_render.get_acr3_curve().
 
     Args:
         num_points: Number of points in the output LUT (default: 256)
@@ -497,7 +497,7 @@ def xy_to_uvUCS(x: float, y: float) -> tuple[float, float]:
 def temp_tint_to_xy(temperature: float, tint: float) -> tuple[float, float]:
     """Convert color temperature and tint to CIE 1931 (x, y) chromaticity.
 
-    This is a pure Python replacement for _dng_color.temp_to_xy().
+    This is a pure Python replacement for _raw_render.temp_to_xy().
 
     Args:
         temperature: Color temperature in Kelvin (1667-25000)
@@ -513,7 +513,7 @@ def temp_tint_to_xy(temperature: float, tint: float) -> tuple[float, float]:
 def xy_to_temp_tint(x: float, y: float) -> tuple[float, float]:
     """Convert CIE 1931 (x, y) chromaticity to color temperature and tint.
 
-    This is a pure Python replacement for _dng_color.xy_to_temp().
+    This is a pure Python replacement for _raw_render.xy_to_temp().
 
     Args:
         x: x chromaticity coordinate
@@ -1095,7 +1095,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
                 tangential_list.append(p['tangential'])
             radial_per_plane = np.array(radial_list, dtype=np.float64)
             tangential_per_plane = np.array(tangential_list, dtype=np.float64)
-            result = _dng_color.op_warp_rectilinear(
+            result = _raw_render.op_warp_rectilinear(
                 result, radial_per_plane,
                 center_x=opcode['center_x'],
                 center_y=opcode['center_y'],
@@ -1104,7 +1104,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             )
             
         elif opcode_type == 'FixVignetteRadial':
-            result = _dng_color.op_fix_vignette(
+            result = _raw_render.op_fix_vignette(
                 result,
                 opcode['coefficients'],
                 opcode['center_x'],
@@ -1115,7 +1115,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             # C++ implementation matching SDK RefBaselineMapPoly32
             coefficients = opcode['coefficients'].astype(np.float32)
             area = opcode['area']
-            result = _dng_color.op_map_polynomial(
+            result = _raw_render.op_map_polynomial(
                 result,
                 coefficients,
                 area['top'], area['left'], area['bottom'], area['right'],
@@ -1132,7 +1132,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
                         f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
                         f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
                         f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
-            result = _dng_color.op_gain_map(
+            result = _raw_render.op_gain_map(
                 result,
                 opcode['gain_values'],
                 area['top'], area['left'], area['bottom'], area['right'],
@@ -1186,7 +1186,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
                         f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
                         f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
                         f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
-            result = _dng_color.op_gain_map_cfa(
+            result = _raw_render.op_gain_map_cfa(
                 result,
                 opcode['gain_values'],
                 area['top'], area['left'], area['bottom'], area['right'],
@@ -1199,7 +1199,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
             area = opcode['area']
             coefficients = np.asarray(opcode['coefficients'], dtype=np.float64)
             logger.debug(f"MapPolynomial CFA: area={area}, degree={opcode['degree']}, coeffs={coefficients}")
-            result = _dng_color.op_map_polynomial_cfa(
+            result = _raw_render.op_map_polynomial_cfa(
                 result,
                 coefficients,
                 area['top'], area['left'], area['bottom'], area['right'],
@@ -1370,7 +1370,7 @@ def demosaic(
     # DNGSDK_BILINEAR: float32 kernel, outputs float32
     if algorithm == "DNGSDK_BILINEAR":
         cfa_codes = get_cfa_pattern_codes(cfa_pattern)
-        rgb = _dng_color.bilinear_demosaic(
+        rgb = _raw_render.bilinear_demosaic(
             image_data.astype(np.float32), np.array(cfa_codes, dtype=np.int32)
         )
         # Convert back to input dtype
@@ -1438,7 +1438,7 @@ def demosaic(
 # DNG SDK Port (Python + C++ Extension)
 # =============================================================================
 # Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
-# C++ implementation in src/dng_color/dng_color_standalone.cpp
+# C++ implementation in src/raw_render/raw_render_ops.cpp
 #
 # Key SDK source files referenced:
 #   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()
@@ -1596,7 +1596,7 @@ def compute_bradford_adaptation(
 ) -> np.ndarray:
     """Compute Bradford chromatic adaptation matrix between two white points.
 
-    This is a pure Python replacement for _dng_color.bradford_adapt().
+    This is a pure Python replacement for _raw_render.bradford_adapt().
 
     Args:
         src_x, src_y: Source white point xy chromaticity
@@ -1984,7 +1984,7 @@ def render_dng(
             # Normalize using C++ implementation per DNG spec Chapter 5
             # LinearizationTable is applied inside normalize_raw before black/white
             t0 = time.perf_counter()
-            rgb_camera = _dng_color.normalize_raw(
+            rgb_camera = _raw_render.normalize_raw(
                 data=rgb_data.astype(np.float32),
                 black_level=black_level,
                 black_repeat_rows=black_repeat_rows,
@@ -2029,7 +2029,7 @@ def render_dng(
             # LinearizationTable is applied inside normalize_raw before black/white
             # SDK demosaics on float32 throughout
             t0 = time.perf_counter()
-            cfa_normalized = _dng_color.normalize_raw(
+            cfa_normalized = _raw_render.normalize_raw(
                 data=cfa_data.astype(np.float32),
                 black_level=black_level,
                 black_repeat_rows=black_repeat_rows,
@@ -2254,7 +2254,7 @@ def render_dng(
         # =====================================================================
         t0 = time.perf_counter()
         rgb_clipped = np.minimum(rgb_camera, camera_white.astype(np.float32))
-        rgb_prophoto = _dng_color.matrix_transform(rgb_clipped, camera_to_prophoto.astype(np.float32))
+        rgb_prophoto = _raw_render.matrix_transform(rgb_clipped, camera_to_prophoto.astype(np.float32))
         timings['matrix_camera_to_prophoto'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -2264,7 +2264,7 @@ def render_dng(
         # =====================================================================
         if hue_sat_map is not None:
             t0 = time.perf_counter()
-            rgb_prophoto = _dng_color.apply_hue_sat_map(
+            rgb_prophoto = _raw_render.apply_hue_sat_map(
                 rgb_prophoto.astype(np.float32),
                 hue_sat_map,
                 hue_divs, sat_divs, val_divs
@@ -2297,26 +2297,29 @@ def render_dng(
             try:
                 # PGTM uses file's byte order (from TIFF header)
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
-                pgtm_byteorder = page.parent.byteorder
-                pgtm = parse_profile_gain_table_map(bytes(pgtm_data), is_version2=is_version2, byteorder=pgtm_byteorder)
-                logger.debug(f"ProfileGainTableMap{'2' if is_version2 else ''}: {pgtm['points_v']}x{pgtm['points_h']}x{pgtm['num_table_points']} "
-                           f"weights={list(pgtm['weights'])} gamma={pgtm['gamma']}")
-                
-                rgb_prophoto = _dng_color.apply_profile_gain_table_map(
+                byteorder = getattr(getattr(page, "parent", None), "byteorder", "<")
+                pgtm = parse_profile_gain_table_map(
+                    bytes(pgtm_data),
+                    is_version2=is_version2,
+                    byteorder=byteorder,
+                )
+                rgb_prophoto = _raw_render.apply_profile_gain_table_map(
                     rgb_prophoto.astype(np.float32),
-                    pgtm['gains'],
-                    pgtm['weights'],
-                    pgtm['points_v'], pgtm['points_h'],
-                    pgtm['spacing_v'], pgtm['spacing_h'],
-                    pgtm['origin_v'], pgtm['origin_h'],
-                    pgtm['num_table_points'],
-                    pgtm['gamma'],
-                    pgtm_baseline_exposure  # SDK uses fBaselineExposure = TotalBaselineExposure
+                    pgtm["gains"],
+                    pgtm["weights"],
+                    int(pgtm["points_v"]),
+                    int(pgtm["points_h"]),
+                    float(pgtm["spacing_v"]),
+                    float(pgtm["spacing_h"]),
+                    float(pgtm["origin_v"]),
+                    float(pgtm["origin_h"]),
+                    int(pgtm["num_table_points"]),
+                    float(pgtm["gamma"]),
+                    float(pgtm_baseline_exposure),
                 )
             except Exception as e:
-                logger.warning(f"Failed to apply ProfileGainTableMap{'2' if is_version2 else ''}: {e}")
-            timings['profile_gain_table_map'] = time.perf_counter() - t0
-        
+                logger.warning(f"Failed to apply ProfileGainTableMap: {e}")
+            timings["profile_gain_table_map"] = time.perf_counter() - t0
         # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
         # SDK ref: dng_render.cpp lines 975-999, 1907-1928
@@ -2369,13 +2372,13 @@ def render_dng(
             exposure_ramp_lut = exposure_ramp(
                 lut_x, exposure_white, exposure_black, exposure_black
             ).astype(np.float32)
-            rgb_exposed = _dng_color.apply_curve(
+            rgb_exposed = _raw_render.apply_curve(
                 rgb_prophoto.astype(np.float32), exposure_ramp_lut
             )
             timings['exposure_ramp'] = time.perf_counter() - t0
             
             t0 = time.perf_counter()
-            rgb_exposed = _dng_color.apply_hue_sat_map(
+            rgb_exposed = _raw_render.apply_hue_sat_map(
                 rgb_exposed.astype(np.float32),
                 look_table,
                 look_hue_divs, look_sat_divs, look_val_divs
@@ -2431,7 +2434,7 @@ def render_dng(
                 lambda x: exposure_ramp(x, exposure_white, exposure_black, exposure_black)
             )
         
-        rgb_toned = _dng_color.apply_curve_hue_preserving(
+        rgb_toned = _raw_render.apply_curve_hue_preserving(
             rgb_exposed.astype(np.float32), combined_curve
         )
         
@@ -2443,7 +2446,7 @@ def render_dng(
         # Convert ProPhoto (D50) to sRGB (D65)
         # =====================================================================
         t0 = time.perf_counter()
-        rgb_srgb = _dng_color.matrix_transform(rgb_toned.astype(np.float32), prophoto_to_srgb.astype(np.float32))
+        rgb_srgb = _raw_render.matrix_transform(rgb_toned.astype(np.float32), prophoto_to_srgb.astype(np.float32))
         timings['matrix_prophoto_to_srgb'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -2452,7 +2455,7 @@ def render_dng(
         # Apply sRGB gamma encoding
         # =====================================================================
         t0 = time.perf_counter()
-        rgb_final = _dng_color.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
+        rgb_final = _raw_render.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
         timings['srgb_gamma'] = time.perf_counter() - t0
         
         # Convert to output dtype

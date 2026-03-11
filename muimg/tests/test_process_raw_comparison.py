@@ -11,7 +11,7 @@ import pytest
 import tifffile
 
 import muimg
-from muimg import color
+from muimg import raw_render
 from muimg.dngio import write_dng_from_page
 from muimg.dngio_coreimage import core_image_available, render_dng_coreimage
 from conftest import (
@@ -97,7 +97,7 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
         pytest.skip("dng_validate reference not available")
     
     t0 = time.perf_counter()
-    result = color.render_dng(
+    result = raw_render.render_dng(
         str(dng_path), 
         output_dtype=np.uint16, 
         demosaic_algorithm="DNGSDK_BILINEAR", 

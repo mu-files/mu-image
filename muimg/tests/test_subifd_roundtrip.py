@@ -13,7 +13,7 @@ import pytest
 import tifffile
 
 import muimg
-from muimg import color
+from muimg import raw_render
 from muimg.dngio import write_dng_from_page, MetadataTags
 from conftest import (
     TEST_FILES_DIR,
@@ -94,7 +94,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 1. muimg render_dng -> {stem}_ifd{n}_muimg.tif
             try:
-                decoded = color.render_dng(page, output_dtype=np.uint16, strict=False)
+                decoded = raw_render.render_dng(page, output_dtype=np.uint16, strict=False)
                 if decoded is None:
                     pytest.fail(f"render_dng returned None for IFD {i}")
                 tifffile.imwrite(str(muimg_tif), decoded)
@@ -127,7 +127,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             # 3. Try muimg decode on the roundtrip DNG
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
             try:
-                roundtrip_decoded = color.render_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
+                roundtrip_decoded = raw_render.render_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
                 if roundtrip_decoded is not None:
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")

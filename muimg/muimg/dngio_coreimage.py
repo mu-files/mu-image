@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 from typing import IO, Optional, Union
-from .color import SplineCurve
+from .raw_render import SplineCurve
 
 logger = logging.getLogger(__name__)
 

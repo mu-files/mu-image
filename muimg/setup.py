@@ -42,9 +42,9 @@ if os.path.exists(rcd_source):
 
 # DNG color processing C++ extension
 # Standalone implementation of DNG SDK color algorithms (no SDK dependencies)
-dng_color_extension = Extension(
-    'muimg._dng_color',
-    sources=['src/dng_color/dng_color_standalone.cpp'],
+raw_render_extension = Extension(
+    'muimg._raw_render',
+    sources=['src/raw_render/raw_render_ops.cpp'],
     include_dirs=[np.get_include()],
     extra_compile_args=common_compile_args + ['-std=c++17'],
     extra_link_args=common_link_args,
@@ -52,7 +52,7 @@ dng_color_extension = Extension(
 )
 
 # Build list of extensions
-ext_modules = [vng_extension, dng_color_extension]
+ext_modules = [vng_extension, raw_render_extension]
 if rcd_extension:
     ext_modules.append(rcd_extension)
 

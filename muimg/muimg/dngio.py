@@ -504,7 +504,7 @@ def linear_raw_from_dng(
         ValueError: If the DNG file format is invalid or missing required
             data.
     """
-    from .color import demosaic, apply_tiff_orientation
+    from .raw_render import demosaic
     
     # Extract CFA data and pattern from DNG
     cfa, cfa_pattern = cfa_from_dng(dng_file)
@@ -1109,7 +1109,7 @@ def decode_dng(
             )
     
     # Python SDK pipeline
-    from .color import render_dng
+    from .raw_render import render_dng
     
     # Create or use DngFile
     dng_file = file if isinstance(file, DngFile) else DngFile(file)

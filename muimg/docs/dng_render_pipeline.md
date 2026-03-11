@@ -1,6 +1,6 @@
 # DNG RAW Development Pipeline
 
-This document describes the rendering pipeline implemented in `muimg.color.py`,
+This document describes the rendering pipeline implemented in `muimg.raw_render.py`,
 which is a port of the Adobe DNG SDK (`dng_render.cpp`). It converts RAW CFA
 data to a final display-referred RGB image, mapping how each DNG tag is
 interpreted and applied during processing.
@@ -242,7 +242,7 @@ interpreted and applied during processing.
 
 ## muimg Implementation Status
 
-Current implementation in `muimg.color.render_dng()`:
+Current implementation in `muimg.raw_render.render_dng()`:
 
 | Stage | muimg Status | Notes |
 |-------|--------------|-------|

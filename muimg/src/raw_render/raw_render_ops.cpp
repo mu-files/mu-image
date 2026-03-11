@@ -3045,9 +3045,9 @@ static PyMethodDef DngColorMethods[] = {
 };
 
 // Module definition
-static struct PyModuleDef dng_color_module = {
+static struct PyModuleDef raw_render_module = {
     PyModuleDef_HEAD_INIT,
-    "_dng_color",
+    "_raw_render",
     "DNG SDK color processing (standalone implementation).\n\n"
     "This module provides access to Adobe DNG SDK's color processing algorithms,\n"
     "including color temperature conversion, camera color space transforms,\n"
@@ -3058,7 +3058,7 @@ static struct PyModuleDef dng_color_module = {
 };
 
 // Module initialization
-PyMODINIT_FUNC PyInit__dng_color(void) {
+PyMODINIT_FUNC PyInit__raw_render(void) {
     import_array();
-    return PyModule_Create(&dng_color_module);
+    return PyModule_Create(&raw_render_module);
 }

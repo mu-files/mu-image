@@ -39,7 +39,7 @@ Built via setuptools with C++17. No external dependencies beyond NumPy.
 ## Usage
 
 ```python
-import muimg._dng_color as dng
+import muimg._raw_render as dng
 
 # Convert temperature to white point
 x, y = dng.temp_to_xy(5500, 0)

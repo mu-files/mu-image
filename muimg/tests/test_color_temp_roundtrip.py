@@ -1,7 +1,7 @@
 import math
 import pytest
 
-from muimg.color import (
+from muimg.raw_render import (
     colortemp_to_uv,
     uvUCS_to_xy,
     xy_to_uvUCS,
@@ -65,7 +65,7 @@ def test_temp_tint_to_xy_roundtrip(temp: int, tint: int):
 
 def test_acr3_curve_basic():
     """Verify get_acr3_curve produces valid tone curve."""
-    from muimg.color import get_acr3_curve
+    from muimg.raw_render import get_acr3_curve
     import numpy as np
     
     for num_points in [256, 512, 1024, 4096]:
@@ -80,7 +80,7 @@ def test_acr3_curve_basic():
 
 def test_bradford_adaptation_basic():
     """Verify compute_bradford_adaptation produces valid adaptation matrices."""
-    from muimg.color import compute_bradford_adaptation, D50_xy, D65_xy
+    from muimg.raw_render import compute_bradford_adaptation, D50_xy, D65_xy
     import numpy as np
     
     # D50 -> D65 should produce a non-identity matrix
