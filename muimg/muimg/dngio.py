@@ -515,14 +515,12 @@ def linear_raw_from_dng(
 ) -> np.ndarray:
     """Demosaic DNG file to RGB with optional hot pixel correction.
     
-    Convenience wrapper that extracts CFA from DNG file and calls
-    linear_raw_from_cfa.
+    Convenience wrapper that extracts CFA from DNG file and calls demosaic.
     
     Args:
         dng_file: DngFile object
-        orientation: Optional EXIF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR",
-            "DCB", "AHD", or "OPENCV_EA"
+        orientation: Optional TIFF orientation code (1, 3, 6, or 8)
+        algorithm: Demosaic algorithm - "RCD" (default), "VNG", or "OPENCV_EA"
         hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
             hot pixel candidates (H/2, W/2)
         hot_pixel_threshold: Multiplier threshold for hot pixel detection
@@ -537,21 +535,26 @@ def linear_raw_from_dng(
         ValueError: If the DNG file format is invalid or missing required
             data.
     """
-    from .color import linear_raw_from_cfa
+    from .color import demosaic, apply_tiff_orientation
     
     # Extract CFA data and pattern from DNG
     cfa, cfa_pattern = cfa_from_dng(dng_file)
     
-    # Call linear_raw_from_cfa with all parameters
-    return linear_raw_from_cfa(
+    # Demosaic
+    rgb = demosaic(
         cfa,
         cfa_pattern,
-        orientation=orientation,
         algorithm=algorithm,
         hot_candidates=hot_candidates,
         hot_pixel_threshold=hot_pixel_threshold,
         hot_pixel_min_brightness=hot_pixel_min_brightness
     )
+    
+    # Apply orientation if requested
+    if orientation is not None:
+        rgb = apply_tiff_orientation(rgb, orientation)
+    
+    return rgb
 
 
 def _ensure_float_tags_be(tags: MetadataTags) -> MetadataTags:

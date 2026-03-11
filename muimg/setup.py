@@ -1,6 +1,7 @@
 from setuptools import setup, Extension
 import numpy as np
 import platform
+import os
 
 # Common optimization flags
 common_compile_args = [
@@ -27,13 +28,17 @@ vng_extension = Extension(
     extra_link_args=common_link_args,
 )
 
-rcd_extension = Extension(
-    'muimg._rcd',
-    sources=['src/demosaic/rcd.c'],
-    include_dirs=[np.get_include()],
-    extra_compile_args=common_compile_args,
-    extra_link_args=common_link_args,
-)
+# RCD extension - only built if user has renamed rcd.txt to rcd.c (GPL code)
+rcd_source = 'src/demosaic/rcd.c'
+rcd_extension = None
+if os.path.exists(rcd_source):
+    rcd_extension = Extension(
+        'muimg._rcd',
+        sources=[rcd_source],
+        include_dirs=[np.get_include()],
+        extra_compile_args=common_compile_args,
+        extra_link_args=common_link_args,
+    )
 
 # DNG color processing C++ extension
 # Standalone implementation of DNG SDK color algorithms (no SDK dependencies)
@@ -46,6 +51,11 @@ dng_color_extension = Extension(
     language='c++',
 )
 
+# Build list of extensions
+ext_modules = [vng_extension, dng_color_extension]
+if rcd_extension:
+    ext_modules.append(rcd_extension)
+
 setup(
-    ext_modules=[vng_extension, rcd_extension, dng_color_extension],
+    ext_modules=ext_modules,
 )

@@ -238,7 +238,7 @@ static void rcd_interpolate(float *cfa, float (*rgb)[3], int width, int height, 
 
 }
 
-/* Python wrapper */
+/* Python wrapper - accepts uint16 or float32 input, outputs same type */
 static PyObject* py_rcd_demosaic(PyObject* self, PyObject* args, PyObject* kwargs)
 {
     PyArrayObject *cfa_array, *output_array;
@@ -246,6 +246,7 @@ static PyObject* py_rcd_demosaic(PyObject* self, PyObject* args, PyObject* kwarg
     float *cfa, (*rgb)[3];
     int width, height;
     unsigned filters;
+    int is_float_input;
     
     static char *kwlist[] = {"cfa", "pattern", NULL};
     
@@ -254,8 +255,14 @@ static PyObject* py_rcd_demosaic(PyObject* self, PyObject* args, PyObject* kwarg
         return NULL;
     }
     
-    if (PyArray_NDIM(cfa_array) != 2 || PyArray_TYPE(cfa_array) != NPY_UINT16) {
-        PyErr_SetString(PyExc_ValueError, "CFA must be 2D uint16 array");
+    if (PyArray_NDIM(cfa_array) != 2) {
+        PyErr_SetString(PyExc_ValueError, "CFA must be 2D array");
+        return NULL;
+    }
+    
+    is_float_input = (PyArray_TYPE(cfa_array) == NPY_FLOAT32);
+    if (!is_float_input && PyArray_TYPE(cfa_array) != NPY_UINT16) {
+        PyErr_SetString(PyExc_ValueError, "CFA must be uint16 or float32 array");
         return NULL;
     }
     
@@ -282,11 +289,21 @@ static PyObject* py_rcd_demosaic(PyObject* self, PyObject* args, PyObject* kwarg
     }
     
     /* Convert input to float */
-    ushort *cfa_data = (ushort *)PyArray_DATA(cfa_array);
-    for (int row = 0; row < height; row++) {
-        for (int col = 0, indx = row * width + col; col < width; col++, indx++) {
-            int c = fcol(row, col, filters);
-            cfa[indx] = rgb[indx][c] = (float)cfa_data[indx] / 65535.f;
+    if (is_float_input) {
+        float *cfa_data = (float *)PyArray_DATA(cfa_array);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0, indx = row * width + col; col < width; col++, indx++) {
+                int c = fcol(row, col, filters);
+                cfa[indx] = rgb[indx][c] = cfa_data[indx];
+            }
+        }
+    } else {
+        ushort *cfa_data = (ushort *)PyArray_DATA(cfa_array);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0, indx = row * width + col; col < width; col++, indx++) {
+                int c = fcol(row, col, filters);
+                cfa[indx] = rgb[indx][c] = (float)cfa_data[indx] / 65535.f;
+            }
         }
     }
     
@@ -295,24 +312,41 @@ static PyObject* py_rcd_demosaic(PyObject* self, PyObject* args, PyObject* kwarg
     rcd_interpolate(cfa, rgb, width, height, filters);
     Py_END_ALLOW_THREADS
     
-    /* Create output */
+    /* Create output matching input type */
     npy_intp dims[3] = {height, width, 3};
-    output_array = (PyArrayObject *)PyArray_SimpleNew(3, dims, NPY_UINT16);
-    if (!output_array) {
-        free(cfa);
-        free(rgb);
-        return NULL;
-    }
-    
-    /* Convert back to uint16 */
-    ushort *out_data = (ushort *)PyArray_DATA(output_array);
-    for (int row = 0; row < height; row++) {
-        for (int col = 0; col < width; col++) {
-            int idx = (row * width + col) * 3;
-            int indx = row * width + col;
-            out_data[idx + 0] = CLIP(65535.f * rgb[indx][0]);
-            out_data[idx + 1] = CLIP(65535.f * rgb[indx][1]);
-            out_data[idx + 2] = CLIP(65535.f * rgb[indx][2]);
+    if (is_float_input) {
+        output_array = (PyArrayObject *)PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+        if (!output_array) {
+            free(cfa);
+            free(rgb);
+            return NULL;
+        }
+        float *out_data = (float *)PyArray_DATA(output_array);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                int idx = (row * width + col) * 3;
+                int indx = row * width + col;
+                out_data[idx + 0] = rgb[indx][0];
+                out_data[idx + 1] = rgb[indx][1];
+                out_data[idx + 2] = rgb[indx][2];
+            }
+        }
+    } else {
+        output_array = (PyArrayObject *)PyArray_SimpleNew(3, dims, NPY_UINT16);
+        if (!output_array) {
+            free(cfa);
+            free(rgb);
+            return NULL;
+        }
+        ushort *out_data = (ushort *)PyArray_DATA(output_array);
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                int idx = (row * width + col) * 3;
+                int indx = row * width + col;
+                out_data[idx + 0] = CLIP(65535.f * rgb[indx][0]);
+                out_data[idx + 1] = CLIP(65535.f * rgb[indx][1]);
+                out_data[idx + 2] = CLIP(65535.f * rgb[indx][2]);
+            }
         }
     }
     
@@ -323,7 +357,7 @@ static PyObject* py_rcd_demosaic(PyObject* self, PyObject* args, PyObject* kwarg
 
 static PyMethodDef RcdMethods[] = {
     {"rcd_demosaic", (PyCFunction)py_rcd_demosaic, METH_VARARGS | METH_KEYWORDS,
-     "RCD demosaicing\n\nArgs:\n    cfa: 2D uint16 CFA array\n    pattern: Bayer pattern\n\nReturns:\n    RGB image (height, width, 3) uint16\n"},
+     "RCD demosaicing\n\nArgs:\n    cfa: 2D uint16 or float32 CFA array\n    pattern: Bayer pattern\n\nReturns:\n    RGB image (height, width, 3) matching input dtype\n"},
     {NULL, NULL, 0, NULL}
 };
 

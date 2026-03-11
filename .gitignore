@@ -122,3 +122,6 @@ muimg/tests/output_subifd/
 
 # Test fixtures (cloned on demand from mu-test-fixtures repo)
 muimg/tests/fixtures/
+
+# GPL-licensed RCD demosaic (user-enabled, not distributed)
+muimg/src/demosaic/rcd.c

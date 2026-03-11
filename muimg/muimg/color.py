@@ -3,8 +3,16 @@ import numpy as np
 import logging
 
 from typing import Dict
-from . import _vng, _rcd
+from . import _vng
 from .tiff_metadata import get_cfa_pattern_codes
+
+# RCD is optional (GPL-licensed) - only available if user has enabled it
+try:
+    from . import _rcd
+    RCD_AVAILABLE = True
+except ImportError:
+    _rcd = None
+    RCD_AVAILABLE = False
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
 from . import _dng_color
@@ -1659,10 +1667,37 @@ def fix_hot_pixels(
     # Recompose CFA
     return cfa_from_rgb_planes(fixed_channels, cfa_pattern, cfa.shape)
 
-def linear_raw_from_cfa(
+
+def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
+    """Apply TIFF/EXIF orientation rotation to an image.
+    
+    Args:
+        image: Input image array (any shape with H, W as first two dims)
+        orientation: TIFF orientation code (1, 3, 6, or 8)
+            - 1: Normal (no rotation)
+            - 3: 180° rotation
+            - 6: 90° clockwise rotation
+            - 8: 90° counter-clockwise rotation (270° CW)
+        
+    Returns:
+        Rotated image array
+    """
+    if orientation == 6:
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    elif orientation == 3:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    elif orientation == 8:
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif orientation != 1:
+        logger.warning(
+            f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
+        )
+    return image
+
+
+def demosaic(
     image_data: np.ndarray, 
-    cfa_pattern: str, 
-    orientation: int | None = None,
+    cfa_pattern: str,
     algorithm: str = "RCD",
     hot_candidates: tuple[
         np.ndarray | None,
@@ -1675,34 +1710,29 @@ def linear_raw_from_cfa(
 ) -> np.ndarray:
     """Demosaic CFA data to RGB with optional hot pixel correction.
     
+    Accepts uint8, uint16, or float32 input. Output dtype matches input dtype.
+    Algorithms that don't support the input dtype will convert internally
+    (with a warning logged).
+    
     Args:
-        image_data: 2D raw CFA data array (uint16)
+        image_data: 2D raw CFA data array (uint8, uint16, or float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
-        orientation: Optional EXIF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "RCD" (default), "VNG", "LINEAR",
-            "DCB", "AHD", or "OPENCV_EA"
+        algorithm: Demosaic algorithm:
+            - "RCD" (default): Best quality/speed, supports float32 natively
+            - "VNG": Variable Number of Gradients, uint16 only
+            - "OPENCV_EA": Fastest, uint8/uint16 only
+            - "DNGSDK_BILINEAR": DNG SDK bilinear, float32 only
         hot_candidates: Optional tuple of (r, g1, g2, b) binary masks of
-            hot pixel candidates (H/2, W/2)
+            hot pixel candidates (H/2, W/2). Only used with uint16 input.
         hot_pixel_threshold: Multiplier threshold for hot pixel detection
             (default: 2.5)
         hot_pixel_min_brightness: Minimum brightness to consider for hot
             pixels (default: 32768)
         
     Returns:
-        RGB array (uint16)
+        RGB array with same dtype as input
     """
-    import io
-    from . import dngio
-    
-    # Fix hot pixels before demosaicing if candidate maps provided
-    if any(c is not None for c in hot_candidates):
-        image_data = fix_hot_pixels(
-            image_data,
-            cfa_pattern,
-            hot_candidates=hot_candidates,
-            threshold=hot_pixel_threshold,
-            min_brightness=hot_pixel_min_brightness
-        )
+    import time
     
     # Validate inputs
     if image_data.ndim != 2:
@@ -1726,101 +1756,100 @@ def linear_raw_from_cfa(
         )
     
     # Validate algorithm
-    valid_algorithms = ["VNG", "RCD", "LINEAR", "DCB", "AHD", "OPENCV_EA"]
+    valid_algorithms = ["VNG", "RCD", "OPENCV_EA", "DNGSDK_BILINEAR"]
     if algorithm not in valid_algorithms:
         raise ValueError(
             f"Invalid algorithm: '{algorithm}'. "
             f"Supported algorithms are: {valid_algorithms}."
         )
     
-    # Demosaic using selected algorithm
-    import time
+    # Track input dtype for output conversion
+    input_dtype = image_data.dtype
+    is_float_input = input_dtype in (np.float32, np.float64)
+    
+    # Fix hot pixels before demosaicing if candidate maps provided (uint16 only)
+    if any(c is not None for c in hot_candidates):
+        if input_dtype == np.uint16:
+            image_data = fix_hot_pixels(
+                image_data,
+                cfa_pattern,
+                hot_candidates=hot_candidates,
+                threshold=hot_pixel_threshold,
+                min_brightness=hot_pixel_min_brightness
+            )
+        else:
+            logger.warning(
+                f"Hot pixel correction skipped: requires uint16 input, got {input_dtype}"
+            )
+    
     start_time = time.perf_counter()
     
-    if algorithm == "OPENCV_EA":
-        # OpenCV demosaic
-        bayer_pattern_map = {
+    # DNGSDK_BILINEAR: float32 kernel, outputs float32
+    if algorithm == "DNGSDK_BILINEAR":
+        cfa_codes = get_cfa_pattern_codes(cfa_pattern)
+        rgb = _dng_color.bilinear_demosaic(
+            image_data.astype(np.float32), np.array(cfa_codes, dtype=np.int32)
+        )
+        # Convert back to input dtype
+        if input_dtype == np.uint8:
+            rgb = rgb.astype(np.uint8)
+        elif input_dtype == np.uint16:
+            rgb = rgb.astype(np.uint16)
+    
+    # RCD: float32 kernel (expects 0-1 normalized data)
+    # RCD is GPL-licensed and optional - see README for setup instructions
+    elif algorithm == "RCD":
+        if not RCD_AVAILABLE:
+            raise ImportError(
+                "RCD demosaicing is not available. RCD is GPL-licensed and must be "
+                "enabled separately. See README.md for instructions to enable RCD, "
+                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
+            )
+        if is_float_input:
+            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32), cfa_pattern)
+        elif input_dtype == np.uint8:
+            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 255.0, cfa_pattern)
+            rgb = (rgb * 255).astype(np.uint8)
+        else:  # uint16
+            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 65535.0, cfa_pattern)
+            rgb = (rgb * 65535).astype(np.uint16)
+    
+    # VNG: uint16 only kernel
+    elif algorithm == "VNG":
+        if is_float_input:
+            logger.warning(f"VNG requires uint16; converting from {input_dtype}")
+            rgb = _vng.vng_demosaic((image_data * 65535).astype(np.uint16), cfa_pattern)
+            rgb = rgb.astype(np.float32) / 65535.0
+        elif input_dtype == np.uint8:
+            rgb = _vng.vng_demosaic(image_data.astype(np.uint16) << 8, cfa_pattern)
+            rgb = (rgb >> 8).astype(np.uint8)
+        else:
+            rgb = _vng.vng_demosaic(image_data, cfa_pattern)
+    
+    # OPENCV_EA: uint8 or uint16 kernel
+    elif algorithm == "OPENCV_EA":
+        bayer_map = {
             "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
             "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
             "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
             "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
         }
-        rgb = cv2.demosaicing(image_data, bayer_pattern_map[cfa_pattern])
-        # OpenCV outputs BGR, swap to RGB
-        rgb = rgb[..., [2, 1, 0]]
-    elif algorithm == "VNG":
-        # Native VNG implementation (thread-safe, ARM-optimized)
-        rgb = _vng.vng_demosaic(image_data, cfa_pattern)
-    elif algorithm == "RCD":
-        # Native RCD implementation (Ratio Corrected Demosaicing)
-        rgb = _rcd.rcd_demosaic(image_data, cfa_pattern)
-    else:
-        # Fallback to rawpy for other algorithms (LINEAR, DCB, AHD)
-        # Note: rawpy is no longer a required dependency
-        try:
-            import rawpy
-        except ImportError:
-            raise ImportError(
-                f"Algorithm '{algorithm}' requires rawpy. "
-                "Install with: pip install rawpy\n"
-                "Or use 'RCD', 'VNG' or 'OPENCV_EA' which are built-in."
-            )
-        
-        algorithm_map = {
-            "VNG": rawpy.DemosaicAlgorithm.VNG,
-            "LINEAR": rawpy.DemosaicAlgorithm.LINEAR,
-            "DCB": rawpy.DemosaicAlgorithm.DCB,
-            "AHD": rawpy.DemosaicAlgorithm.AHD,
-        }
-        
-        # Create minimal DNG in memory for rawpy
-        dng_buffer = io.BytesIO()
-        dngio.write_dng(
-            raw_data=image_data,
-            cfa_pattern=cfa_pattern,
-            destination_file=dng_buffer,
-            bits_per_pixel=16,
-            metadata=None,  # Minimal DNG, no profile needed
-            jxl_distance=None,  # No compression for rawpy compatibility
-            jxl_effort=None,
-        )
-        dng_buffer.seek(0)
-        
-        raw = rawpy.RawPy()
-        try:
-            raw.open_buffer(dng_buffer)
-            raw.unpack()
-            
-            rgb = raw.postprocess(
-                demosaic_algorithm=algorithm_map[algorithm],
-                output_color=rawpy.ColorSpace.raw,  # Camera RGB space
-                gamma=(1, 1),  # Linear
-                no_auto_bright=True,
-                use_camera_wb=False,
-                use_auto_wb=False,
-                user_wb=[1, 1, 1, 1],  # Unity multipliers
-                output_bps=16
-            )
-        finally:
-            raw.close()
-        # rawpy already outputs RGB (not BGR like OpenCV)
+        if is_float_input:
+            logger.warning(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
+            rgb = cv2.demosaicing((image_data * 65535).astype(np.uint16), bayer_map[cfa_pattern])
+            rgb = rgb[..., [2, 1, 0]].astype(np.float32) / 65535.0
+        else:
+            rgb = cv2.demosaicing(image_data, bayer_map[cfa_pattern])
+            rgb = rgb[..., [2, 1, 0]]
     
     elapsed_time = time.perf_counter() - start_time
-    logger.info(f"Demosaic ({algorithm}): {elapsed_time*1000:.1f}ms for {image_data.shape[1]}x{image_data.shape[0]}")
-
-    # Apply orientation if provided: ONLY accept EXIF codes (1,3,6,8).
-    if isinstance(orientation, (int, np.integer)):
-        exif_code = int(orientation)
-        if exif_code == 6:       # 90° CW
-            rgb = cv2.rotate(rgb, cv2.ROTATE_90_CLOCKWISE)
-        elif exif_code == 3:     # 180°
-            rgb = cv2.rotate(rgb, cv2.ROTATE_180)
-        elif exif_code == 8:     # 270° CW (90° CCW)
-            rgb = cv2.rotate(rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        elif exif_code not in (1, 3, 6, 8):
-            logger.warning(f"Unsupported EXIF orientation code: {exif_code}; no rotation applied")
-
+    logger.info(
+        f"Demosaic ({algorithm}): {elapsed_time*1000:.1f}ms for "
+        f"{image_data.shape[1]}x{image_data.shape[0]}"
+    )
+    
     return rgb
+
 
 # =============================================================================
 # DNG SDK Port (Python + C++ Extension)
@@ -2447,27 +2476,8 @@ def render_dng(
             
             # Demosaic without rotation - rotation applied after crop below
             t0 = time.perf_counter()
-            if demosaic_algorithm == "DNGSDK_BILINEAR":
-                cfa_pattern_codes = page.get_tag("CFAPattern", list)
-                if cfa_pattern_codes is None:
-                    cfa_pattern_codes = [0, 1, 1, 2]  # Default RGGB
-                cfa_pattern_array = np.array(cfa_pattern_codes, dtype=np.int32)
-
-                # DNG SDK bilinear demosaic - uses raw CFAPattern codes directly
-                # SDK ref: dng_mosaic_info::fCFAPattern[row][col]
-                rgb_camera = _dng_color.bilinear_demosaic(cfa_normalized, cfa_pattern_array)
-            else:
-                cfa_pattern = page.get_tag("CFAPattern", str) or "RGGB"
-
-                # Other algorithms require uint16 input
-                cfa_uint16 = (cfa_normalized * 65535).astype(np.uint16)
-                rgb_linear = linear_raw_from_cfa(
-                    cfa_uint16, cfa_pattern,
-                    orientation=None,
-                    algorithm=demosaic_algorithm
-                )
-                rgb_camera = rgb_linear.astype(np.float32) / 65535.0
-            
+            cfa_pattern = page.get_tag("CFAPattern", str) or "RGGB"
+            rgb_camera = demosaic(cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm)
             timings['demosaic'] = time.perf_counter() - t0
         
         # =====================================================================
@@ -2880,12 +2890,8 @@ def render_dng(
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
         t0 = time.perf_counter()
-        if orientation == 6:
-            result = cv2.rotate(result, cv2.ROTATE_90_CLOCKWISE)
-        elif orientation == 3:
-            result = cv2.rotate(result, cv2.ROTATE_180)
-        elif orientation == 8:
-            result = cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if orientation is not None:
+            result = apply_tiff_orientation(result, orientation)
         timings['orientation'] = time.perf_counter() - t0
         
         # Print timing breakdown
