@@ -30,7 +30,6 @@ from .tiff_metadata import (
     TIFF_DTYPE_TO_STR,
     TIFF_TAG_TYPE_REGISTRY,
     XmpMetadata,
-    get_cfa_pattern_codes,
     get_native_type,
     decode_tag_value,
     resolve_tag
@@ -415,10 +414,10 @@ class DngPage(TiffPage):
             logger.warning(f"Failed to apply OpcodeList2: {e}")
             return stage2
 
-    def get_raw_cfa(
+    def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[tuple[np.ndarray, str]]:
-        """Extract raw CFA data and pattern from this page.
+        """Extract CFA data and pattern from this page.
 
         Args:
             stage: Which stage of the raw pipeline to return.
@@ -451,10 +450,10 @@ class DngPage(TiffPage):
 
         return stage_out.data, stage_out.cfa_pattern
     
-    def get_raw_linear(
+    def get_linear_raw(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[np.ndarray]:
-        """Extract raw LINEAR_RAW data from this page.
+        """Extract LINEAR_RAW data from this page.
 
         Args:
             stage: Which stage of the raw pipeline to return.
@@ -637,13 +636,13 @@ class DngFile(TiffFile):
         
         return None
 
-    def get_raw_cfa(
+    def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[tuple[np.ndarray, str]]:
-        """Get CFA raw data from the main page.
+        """Get CFA data from the main page.
 
         This is a convenience wrapper around `get_main_page()` +
-        `DngPage.get_raw_cfa(stage=...)`.
+        `DngPage.get_cfa(stage=...)`.
 
         Args:
             stage: Which stage of the raw pipeline to return.
@@ -655,15 +654,15 @@ class DngFile(TiffFile):
         page = self.get_main_page()
         if page is None or not page.is_cfa:
             return None
-        return page.get_raw_cfa(stage=stage)
+        return page.get_cfa(stage=stage)
 
-    def get_raw_linear(
+    def get_linear_raw(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[np.ndarray]:
         """Get linear raw data from the main page.
 
         This is a convenience wrapper around `get_main_page()` +
-        `DngPage.get_raw_linear(stage=...)`.
+        `DngPage.get_linear_raw(stage=...)`.
 
         Args:
             stage: Which stage of the raw pipeline to return.
@@ -674,7 +673,7 @@ class DngFile(TiffFile):
         page = self.get_main_page()
         if page is None or not page.is_linear_raw:
             return None
-        return page.get_raw_linear(stage=stage)
+        return page.get_linear_raw(stage=stage)
 
     def get_camera_rgb(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
         """Get the camera-RGB intermediate from the main page.
@@ -1184,13 +1183,13 @@ def write_dng_from_page(
         bits_per_pixel = page.bitspersample
         
         if page.is_cfa:
-            cfa_result = page.get_raw_cfa()
+            cfa_result = page.get_cfa()
             if cfa_result is None:
                 raise ValueError("Failed to extract CFA data from page")
             raw_data, cfa_pattern = cfa_result
             photometric = "cfa"
         elif page.is_linear_raw:
-            raw_data = page.get_raw_linear()
+            raw_data = page.get_linear_raw()
             if raw_data is None:
                 raise ValueError("Failed to extract LINEAR_RAW data from page")
             cfa_pattern = None

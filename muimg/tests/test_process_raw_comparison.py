@@ -1,4 +1,4 @@
-"""Tests for render_dng() and render_dng_coreimage().
+"""Tests for DngFile.render() and render_dng_coreimage().
 
 Compares MUIMG (our Python port) and Core Image against C++ DNG SDK reference (dng_validate).
 """
@@ -11,7 +11,6 @@ import pytest
 import tifffile
 
 import muimg
-from muimg import raw_render
 from muimg.dngio import write_dng_from_page
 from muimg.dngio_coreimage import core_image_available, render_dng_coreimage
 from conftest import (
@@ -90,19 +89,19 @@ def output_dir():
 
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
 def test_muimg_vs_dngvalidate(dng_path, output_dir):
-    """Test MUIMG render_dng() against C++ DNG SDK reference."""
+    """Test MUIMG rendering against C++ DNG SDK reference."""
     output_base = output_dir / f"{dng_path.stem}_dngvalidate"
     ref = run_dng_validate(dng_path, output_base, timeout=60)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     
     t0 = time.perf_counter()
-    result = raw_render.render_dng(
-        str(dng_path), 
-        output_dtype=np.uint16, 
-        demosaic_algorithm="DNGSDK_BILINEAR", 
-        strict=False
-    )
+    with muimg.DngFile(dng_path) as dng:
+        result = dng.render(
+            output_dtype=np.uint16,
+            demosaic_algorithm="DNGSDK_BILINEAR",
+            strict=False,
+        )
     elapsed_ms = (time.perf_counter() - t0) * 1000
     
     assert result is not None, "MUIMG returned None"
@@ -199,7 +198,7 @@ def test_stripped_dng_comparison(dng_path, output_dir):
     
     # Create stripped DNG and track which tags were actually stripped
     tags_stripped = set()
-    with muimg.DngFile(str(dng_path)) as dng:
+    with muimg.DngFile(dng_path) as dng:
         page = dng.get_main_page()
         if page is None:
             pytest.skip(f"No main page found in {dng_path.name}")
@@ -227,12 +226,12 @@ def test_stripped_dng_comparison(dng_path, output_dir):
     
     # Run muimg on stripped DNG
     t0 = time.perf_counter()
-    result = color.render_dng(
-        str(stripped_dng),
-        output_dtype=np.uint16,
-        demosaic_algorithm="DNGSDK_BILINEAR",
-        strict=False
-    )
+    with muimg.DngFile(stripped_dng) as dng:
+        result = dng.render(
+            output_dtype=np.uint16,
+            demosaic_algorithm="DNGSDK_BILINEAR",
+            strict=False,
+        )
     elapsed_ms = (time.perf_counter() - t0) * 1000
     
     assert result is not None, "MUIMG returned None on stripped DNG"
@@ -251,12 +250,12 @@ def test_stripped_dng_comparison(dng_path, output_dir):
     # If no tags were stripped, also compare to original file decode
     # This catches data corruption during copy (e.g., byte order issues)
     if not tags_stripped:
-        original_result = color.render_dng(
-            str(dng_path),
-            output_dtype=np.uint16,
-            demosaic_algorithm="DNGSDK_BILINEAR",
-            strict=False
-        )
+        with muimg.DngFile(dng_path) as dng:
+            original_result = dng.render(
+                output_dtype=np.uint16,
+                demosaic_algorithm="DNGSDK_BILINEAR",
+                strict=False,
+            )
         assert original_result is not None, "MUIMG returned None on original DNG"
         
         if result.shape == original_result.shape:

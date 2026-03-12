@@ -64,7 +64,7 @@ def test_raw_stage_outputs_match_dng_validate(filename: str, output_dir: Path):
 
     stem = dng_path.stem
 
-    with muimg.DngFile(str(dng_path)) as dng:
+    with muimg.DngFile(dng_path) as dng:
         pages = dng.get_flattened_pages()
 
         for ifd_index, page in enumerate(pages):
@@ -108,15 +108,15 @@ def test_raw_stage_outputs_match_dng_validate(filename: str, output_dir: Path):
                 assert roundtrip_page is not None
 
                 if roundtrip_page.is_cfa:
-                    cfa_stage1 = roundtrip_page.get_raw_cfa(stage=RawStageSelector.RAW)
-                    cfa_stage2 = roundtrip_page.get_raw_cfa(stage=RawStageSelector.LINEARIZED_PLUS_OPS)
+                    cfa_stage1 = roundtrip_page.get_cfa(stage=RawStageSelector.RAW)
+                    cfa_stage2 = roundtrip_page.get_cfa(stage=RawStageSelector.LINEARIZED_PLUS_OPS)
                     assert cfa_stage1 is not None
                     assert cfa_stage2 is not None
                     mu_stage1, _ = cfa_stage1
                     mu_stage2, _ = cfa_stage2
                 else:
-                    mu_stage1 = roundtrip_page.get_raw_linear(stage=RawStageSelector.RAW)
-                    mu_stage2 = roundtrip_page.get_raw_linear(stage=RawStageSelector.LINEARIZED_PLUS_OPS)
+                    mu_stage1 = roundtrip_page.get_linear_raw(stage=RawStageSelector.RAW)
+                    mu_stage2 = roundtrip_page.get_linear_raw(stage=RawStageSelector.LINEARIZED_PLUS_OPS)
 
                 assert mu_stage1 is not None
                 assert mu_stage2 is not None

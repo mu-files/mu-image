@@ -20,22 +20,6 @@ from . import _raw_render
 logger = logging.getLogger(__name__)
 
 
-def render_dng(
-    file,
-    output_dtype=np.uint16,
-    demosaic_algorithm: str = "RCD",
-    strict: bool = True,
-):
-    from .dngio import DngFile
-
-    with DngFile(file) as dng:
-        return dng.render(
-            output_dtype=output_dtype,
-            demosaic_algorithm=demosaic_algorithm,
-            strict=strict,
-        )
-
-
 class SplineCurve:
     """
     Represents a spline curve with control points in normalized 0-1 range.
@@ -154,6 +138,242 @@ class SplineCurve:
     def __repr__(self):
         return f"SplineCurve(points={self.points})"
 
+def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
+    """Apply TIFF/EXIF orientation rotation to an image.
+    
+    Args:
+        image: Input image array (any shape with H, W as first two dims)
+        orientation: TIFF orientation code (1, 3, 6, or 8)
+            - 1: Normal (no rotation)
+            - 3: 180° rotation
+            - 6: 90° clockwise rotation
+            - 8: 90° counter-clockwise rotation (270° CW)
+        
+    Returns:
+        Rotated image array
+    """
+    if orientation == 6:
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    elif orientation == 3:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    elif orientation == 8:
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif orientation != 1:
+        logger.warning(
+            f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
+        )
+    return image
+
+
+def demosaic(
+    image_data: np.ndarray, 
+    cfa_pattern: str,
+    algorithm: str = "RCD",
+) -> np.ndarray:
+    """Demosaic CFA data to RGB.
+    
+    Accepts uint8, uint16, or float32 input. Output dtype matches input dtype.
+    Algorithms that don't support the input dtype will convert internally
+    (with a warning logged).
+     
+    Args:
+        image_data: 2D raw CFA data array (uint8, uint16, or float32)
+        cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
+        algorithm: Demosaic algorithm:
+            - "RCD" (default): Best quality/speed, supports float32 natively
+            - "VNG": Variable Number of Gradients, uint16 only
+            - "OPENCV_EA": Fastest, uint8/uint16 only
+            - "DNGSDK_BILINEAR": DNG SDK bilinear, float32 only
+    Returns:
+        RGB array with same dtype as input
+    """
+    import time
+    
+    # Validate inputs
+    if image_data.ndim != 2:
+        raise ValueError(
+            f"image_data must be a 2D array, but got {image_data.ndim} dimensions."
+        )
+    if image_data.size == 0:
+        raise ValueError("image_data must not be empty.")
+    
+    if not isinstance(cfa_pattern, str):
+        raise TypeError(
+            f"cfa_pattern must be a string, but got {type(cfa_pattern).__name__}."
+        )
+    
+    # Validate CFA pattern
+    valid_patterns = ["RGGB", "BGGR", "GRBG", "GBRG"]
+    if cfa_pattern not in valid_patterns:
+        raise ValueError(
+            f"Invalid CFA pattern: '{cfa_pattern}'. "
+            f"Supported patterns are: {valid_patterns}."
+        )
+    
+    # Validate algorithm
+    valid_algorithms = ["VNG", "RCD", "OPENCV_EA", "DNGSDK_BILINEAR"]
+    if algorithm not in valid_algorithms:
+        raise ValueError(
+            f"Invalid algorithm: '{algorithm}'. "
+            f"Supported algorithms are: {valid_algorithms}."
+        )
+    
+    # Track input dtype for output conversion
+    input_dtype = image_data.dtype
+    is_float_input = input_dtype in (np.float32, np.float64)
+    
+    start_time = time.perf_counter()
+    
+    # DNGSDK_BILINEAR: float32 kernel, outputs float32
+    if algorithm == "DNGSDK_BILINEAR":
+        cfa_codes = get_cfa_pattern_codes(cfa_pattern)
+        rgb = _raw_render.bilinear_demosaic(
+            image_data.astype(np.float32), np.array(cfa_codes, dtype=np.int32)
+        )
+        # Convert back to input dtype
+        if input_dtype == np.uint8:
+            rgb = rgb.astype(np.uint8)
+        elif input_dtype == np.uint16:
+            rgb = rgb.astype(np.uint16)
+    
+    # RCD: float32 kernel (expects 0-1 normalized data)
+    # RCD is GPL-licensed and optional - see README for setup instructions
+    elif algorithm == "RCD":
+        if not RCD_AVAILABLE:
+            raise ImportError(
+                "RCD demosaicing is not available. RCD is GPL-licensed and must be "
+                "enabled separately. See README.md for instructions to enable RCD, "
+                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
+            )
+        if is_float_input:
+            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32), cfa_pattern)
+        elif input_dtype == np.uint8:
+            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 255.0, cfa_pattern)
+            rgb = (rgb * 255).astype(np.uint8)
+        else:  # uint16
+            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 65535.0, cfa_pattern)
+            rgb = (rgb * 65535).astype(np.uint16)
+    
+    # VNG: uint16 only kernel
+    elif algorithm == "VNG":
+        if is_float_input:
+            logger.warning(f"VNG requires uint16; converting from {input_dtype}")
+            rgb = _vng.vng_demosaic((image_data * 65535).astype(np.uint16), cfa_pattern)
+            rgb = rgb.astype(np.float32) / 65535.0
+        elif input_dtype == np.uint8:
+            rgb = _vng.vng_demosaic(image_data.astype(np.uint16) << 8, cfa_pattern)
+            rgb = (rgb >> 8).astype(np.uint8)
+        else:
+            rgb = _vng.vng_demosaic(image_data, cfa_pattern)
+    
+    # OPENCV_EA: uint8 or uint16 kernel
+    elif algorithm == "OPENCV_EA":
+        bayer_map = {
+            "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
+            "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
+            "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
+            "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
+        }
+        if is_float_input:
+            logger.warning(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
+            rgb = cv2.demosaicing((image_data * 65535).astype(np.uint16), bayer_map[cfa_pattern])
+            rgb = rgb[..., [2, 1, 0]].astype(np.float32) / 65535.0
+        else:
+            rgb = cv2.demosaicing(image_data, bayer_map[cfa_pattern])
+            rgb = rgb[..., [2, 1, 0]]
+    
+    elapsed_time = time.perf_counter() - start_time
+    logger.info(
+        f"Demosaic ({algorithm}): {elapsed_time*1000:.1f}ms for "
+        f"{image_data.shape[1]}x{image_data.shape[0]}"
+    )
+    
+    return rgb
+
+# =============================================================================
+# DNG SDK Port (Python + C++ Extension)
+# =============================================================================
+# Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
+# C++ implementation in src/raw_render/raw_render_ops.cpp
+#
+# Key SDK source files referenced:
+#   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()
+#   - dng_render.cpp: dng_render_task::Start() for fCameraToRGB computation
+#   - dng_color_spec.cpp: MapWhiteMatrix() for Bradford chromatic adaptation
+#   - dng_reference.cpp: RefBaselineRGBTone() for hue-preserving tone mapping
+#   - dng_ifd.cpp: Black/white level defaults and parsing
+#   - dng_linearization_info.cpp: normalize_black_white implementation
+# =============================================================================
+
+class UnsupportedDNGTagError(Exception):
+    """Raised when a DNG file contains tags that the rendering pipeline cannot handle."""
+    pass
+
+def validate_dng_tags(page: "DngPage", strict: bool = True) -> list[str]:
+    """Check for DNG tags that we don't currently support in our rendering pipeline.
+    
+    Args:
+        page: DngPage to validate
+        strict: If True, raise UnsupportedDNGTagError on finding unsupported tags.
+                If False, return list of unsupported tag names.
+    
+    Returns:
+        List of unsupported tag names found (empty if none)
+        
+    Raises:
+        UnsupportedDNGTagError: If strict=True and unsupported tags are found
+    """
+    # DNG tags that affect rendering but are NOT implemented in our rendering pipeline
+    # Based on Adobe DNG SDK 1.7.1 - COMPREHENSIVE LIST
+    # These tags would cause our output to differ from the SDK reference
+    # Tag names match tifffile's tag name mapping
+    unsupported_rendering_tags = {
+        # Triple illuminant support (DNG 1.6+) - we only support dual illuminant
+        "ColorMatrix3",
+        "CalibrationIlluminant3",
+        "CameraCalibration3",
+        "ForwardMatrix3",
+        "ProfileHueSatMapData3",
+        "IlluminantData3",
+        # Reduction matrices (for >3 color channels)
+        "ReductionMatrix1",
+        "ReductionMatrix2",
+        "ReductionMatrix3",
+        # Opcode lists (lens corrections, gain maps, warp, etc.)
+        # OpcodeList2/3 supported opcodes: WarpRectilinear, FixVignetteRadial,
+        # MapPolynomial, GainMap
+        "OpcodeList1",  # Pre-demosaic opcodes
+        # RGB Tables (DNG 1.6+)
+        "RGBTables",
+        # Semantic masks and depth maps (DNG 1.6+)
+        "SemanticName",
+        "SemanticInstanceID",
+        "MaskSubArea",
+        "DepthFormat",
+        "DepthNear",
+        "DepthFar",
+        "DepthUnits",
+        "DepthMeasureType",
+        # HDR / overrange support
+        "ProfileDynamicRange",  # HDR profile indicator
+        # Image enhancement flags that may affect rendering interpretation
+        "EnhanceParams",  # Enhanced image parameters
+    }
+    
+    found_unsupported = []
+    
+    for tag_name in unsupported_rendering_tags:
+        if page.get_tag(tag_name) is not None:
+            found_unsupported.append(tag_name)
+    
+    if found_unsupported and strict:
+        raise UnsupportedDNGTagError(
+            f"DNG contains unsupported rendering tags: {', '.join(found_unsupported)}. "
+            f"Output will differ from SDK reference. "
+            f"Use strict=False to process anyway."
+        )
+    
+    return found_unsupported
 
 # Adobe DNG temperature/tint conversion (exact port of dng_temperature.cpp)
 # Source: /3dparty/dng_sdk_1_7_1/dng_sdk/source/dng_temperature.cpp
@@ -541,27 +761,6 @@ def xy_to_temp_tint(x: float, y: float) -> tuple[float, float]:
     u, v = xy_to_uvUCS(x, y)
     return uv_to_colortemp(u, v)
 
-
-# TODO: move this to muallsky_train which is the only client
-def color_xfrm_image(image: np.ndarray, xfrm: np.ndarray) -> np.ndarray:
-    """Apply a color transformation matrix to an image.
-    """
-    if image is None or xfrm is None:
-        raise ValueError("image and xfrm must be non-None numpy arrays")
-    if image.ndim < 1 or image.shape[-1] != 3:
-        raise ValueError(f"image must have last dimension 3 (bands), got shape {image.shape}")
-    xfrm = np.asarray(xfrm)
-    if xfrm.shape != (3, 3):
-        raise ValueError(f"xfrm must be a 3x3 matrix, got shape {xfrm.shape}")
-
-    # Compute with float precision then cast back to original dtype
-    in_dtype = image.dtype
-    img_f = image.astype(np.float32, copy=False)
-    # Apply transform with matrix multiplication on the last axis
-    # result[..., c_out] = sum_c_in img[..., c_in] * xfrm[c_out, c_in]
-    result = img_f @ xfrm.T
-    return result.astype(in_dtype, copy=False)
-
 def XYZ_to_YuvUCS(image: np.ndarray) -> np.ndarray:
     """Convert packed XYZ image/array to packed Y,u,v (CIE 1960 UCS).
 
@@ -770,12 +969,6 @@ def interpolate_hue_sat_map(
         return map_data2
     else:
         return g * map_data1 + (1.0 - g) * map_data2
-
-
-class UnsupportedDNGTagError(Exception):
-    """Raised when a DNG file contains tags that render_dng() cannot handle."""
-    pass
-
 
 def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteorder: str = '<') -> dict:
     """Parse ProfileGainTableMap binary blob.
@@ -1228,242 +1421,6 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
             logger.warning(f"Skipping unsupported CFA opcode: {name}")
     
     return result
-
-
-def validate_dng_tags(page: "DngPage", strict: bool = True) -> list[str]:
-    """Check for DNG tags that we don't currently support in our rendering pipeline.
-    
-    Args:
-        page: DngPage to validate
-        strict: If True, raise UnsupportedDNGTagError on finding unsupported tags.
-                If False, return list of unsupported tag names.
-    
-    Returns:
-        List of unsupported tag names found (empty if none)
-        
-    Raises:
-        UnsupportedDNGTagError: If strict=True and unsupported tags are found
-    """
-    # DNG tags that affect rendering but are NOT implemented in render_dng()
-    # Based on Adobe DNG SDK 1.7.1 - COMPREHENSIVE LIST
-    # These tags would cause our output to differ from the SDK reference
-    # Tag names match tifffile's tag name mapping
-    unsupported_rendering_tags = {
-        # Triple illuminant support (DNG 1.6+) - we only support dual illuminant
-        "ColorMatrix3",
-        "CalibrationIlluminant3",
-        "CameraCalibration3",
-        "ForwardMatrix3",
-        "ProfileHueSatMapData3",
-        "IlluminantData3",
-        # Reduction matrices (for >3 color channels)
-        "ReductionMatrix1",
-        "ReductionMatrix2",
-        "ReductionMatrix3",
-        # Opcode lists (lens corrections, gain maps, warp, etc.)
-        # OpcodeList2/3 supported opcodes: WarpRectilinear, FixVignetteRadial,
-        # MapPolynomial, GainMap
-        "OpcodeList1",  # Pre-demosaic opcodes
-        # RGB Tables (DNG 1.6+)
-        "RGBTables",
-        # Semantic masks and depth maps (DNG 1.6+)
-        "SemanticName",
-        "SemanticInstanceID",
-        "MaskSubArea",
-        "DepthFormat",
-        "DepthNear",
-        "DepthFar",
-        "DepthUnits",
-        "DepthMeasureType",
-        # HDR / overrange support
-        "ProfileDynamicRange",  # HDR profile indicator
-        # Image enhancement flags that may affect rendering interpretation
-        "EnhanceParams",  # Enhanced image parameters
-    }
-    
-    found_unsupported = []
-    
-    for tag_name in unsupported_rendering_tags:
-        if page.get_tag(tag_name) is not None:
-            found_unsupported.append(tag_name)
-    
-    if found_unsupported and strict:
-        raise UnsupportedDNGTagError(
-            f"DNG contains unsupported rendering tags: {', '.join(found_unsupported)}. "
-            f"render_dng() output will differ from SDK reference. "
-            f"Use strict=False to process anyway."
-        )
-    
-    return found_unsupported
-
-
-def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
-    """Apply TIFF/EXIF orientation rotation to an image.
-    
-    Args:
-        image: Input image array (any shape with H, W as first two dims)
-        orientation: TIFF orientation code (1, 3, 6, or 8)
-            - 1: Normal (no rotation)
-            - 3: 180° rotation
-            - 6: 90° clockwise rotation
-            - 8: 90° counter-clockwise rotation (270° CW)
-        
-    Returns:
-        Rotated image array
-    """
-    if orientation == 6:
-        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    elif orientation == 3:
-        return cv2.rotate(image, cv2.ROTATE_180)
-    elif orientation == 8:
-        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif orientation != 1:
-        logger.warning(
-            f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
-        )
-    return image
-
-
-def demosaic(
-    image_data: np.ndarray, 
-    cfa_pattern: str,
-    algorithm: str = "RCD",
-) -> np.ndarray:
-    """Demosaic CFA data to RGB.
-    
-    Accepts uint8, uint16, or float32 input. Output dtype matches input dtype.
-    Algorithms that don't support the input dtype will convert internally
-    (with a warning logged).
-     
-    Args:
-        image_data: 2D raw CFA data array (uint8, uint16, or float32)
-        cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
-        algorithm: Demosaic algorithm:
-            - "RCD" (default): Best quality/speed, supports float32 natively
-            - "VNG": Variable Number of Gradients, uint16 only
-            - "OPENCV_EA": Fastest, uint8/uint16 only
-            - "DNGSDK_BILINEAR": DNG SDK bilinear, float32 only
-    Returns:
-        RGB array with same dtype as input
-    """
-    import time
-    
-    # Validate inputs
-    if image_data.ndim != 2:
-        raise ValueError(
-            f"image_data must be a 2D array, but got {image_data.ndim} dimensions."
-        )
-    if image_data.size == 0:
-        raise ValueError("image_data must not be empty.")
-    
-    if not isinstance(cfa_pattern, str):
-        raise TypeError(
-            f"cfa_pattern must be a string, but got {type(cfa_pattern).__name__}."
-        )
-    
-    # Validate CFA pattern
-    valid_patterns = ["RGGB", "BGGR", "GRBG", "GBRG"]
-    if cfa_pattern not in valid_patterns:
-        raise ValueError(
-            f"Invalid CFA pattern: '{cfa_pattern}'. "
-            f"Supported patterns are: {valid_patterns}."
-        )
-    
-    # Validate algorithm
-    valid_algorithms = ["VNG", "RCD", "OPENCV_EA", "DNGSDK_BILINEAR"]
-    if algorithm not in valid_algorithms:
-        raise ValueError(
-            f"Invalid algorithm: '{algorithm}'. "
-            f"Supported algorithms are: {valid_algorithms}."
-        )
-    
-    # Track input dtype for output conversion
-    input_dtype = image_data.dtype
-    is_float_input = input_dtype in (np.float32, np.float64)
-    
-    start_time = time.perf_counter()
-    
-    # DNGSDK_BILINEAR: float32 kernel, outputs float32
-    if algorithm == "DNGSDK_BILINEAR":
-        cfa_codes = get_cfa_pattern_codes(cfa_pattern)
-        rgb = _raw_render.bilinear_demosaic(
-            image_data.astype(np.float32), np.array(cfa_codes, dtype=np.int32)
-        )
-        # Convert back to input dtype
-        if input_dtype == np.uint8:
-            rgb = rgb.astype(np.uint8)
-        elif input_dtype == np.uint16:
-            rgb = rgb.astype(np.uint16)
-    
-    # RCD: float32 kernel (expects 0-1 normalized data)
-    # RCD is GPL-licensed and optional - see README for setup instructions
-    elif algorithm == "RCD":
-        if not RCD_AVAILABLE:
-            raise ImportError(
-                "RCD demosaicing is not available. RCD is GPL-licensed and must be "
-                "enabled separately. See README.md for instructions to enable RCD, "
-                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
-            )
-        if is_float_input:
-            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32), cfa_pattern)
-        elif input_dtype == np.uint8:
-            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 255.0, cfa_pattern)
-            rgb = (rgb * 255).astype(np.uint8)
-        else:  # uint16
-            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 65535.0, cfa_pattern)
-            rgb = (rgb * 65535).astype(np.uint16)
-    
-    # VNG: uint16 only kernel
-    elif algorithm == "VNG":
-        if is_float_input:
-            logger.warning(f"VNG requires uint16; converting from {input_dtype}")
-            rgb = _vng.vng_demosaic((image_data * 65535).astype(np.uint16), cfa_pattern)
-            rgb = rgb.astype(np.float32) / 65535.0
-        elif input_dtype == np.uint8:
-            rgb = _vng.vng_demosaic(image_data.astype(np.uint16) << 8, cfa_pattern)
-            rgb = (rgb >> 8).astype(np.uint8)
-        else:
-            rgb = _vng.vng_demosaic(image_data, cfa_pattern)
-    
-    # OPENCV_EA: uint8 or uint16 kernel
-    elif algorithm == "OPENCV_EA":
-        bayer_map = {
-            "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
-            "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
-            "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
-            "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
-        }
-        if is_float_input:
-            logger.warning(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
-            rgb = cv2.demosaicing((image_data * 65535).astype(np.uint16), bayer_map[cfa_pattern])
-            rgb = rgb[..., [2, 1, 0]].astype(np.float32) / 65535.0
-        else:
-            rgb = cv2.demosaicing(image_data, bayer_map[cfa_pattern])
-            rgb = rgb[..., [2, 1, 0]]
-    
-    elapsed_time = time.perf_counter() - start_time
-    logger.info(
-        f"Demosaic ({algorithm}): {elapsed_time*1000:.1f}ms for "
-        f"{image_data.shape[1]}x{image_data.shape[0]}"
-    )
-    
-    return rgb
-
-
-# =============================================================================
-# DNG SDK Port (Python + C++ Extension)
-# =============================================================================
-# Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
-# C++ implementation in src/raw_render/raw_render_ops.cpp
-#
-# Key SDK source files referenced:
-#   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()
-#   - dng_render.cpp: dng_render_task::Start() for fCameraToRGB computation
-#   - dng_color_spec.cpp: MapWhiteMatrix() for Bradford chromatic adaptation
-#   - dng_reference.cpp: RefBaselineRGBTone() for hue-preserving tone mapping
-#   - dng_ifd.cpp: Black/white level defaults and parsing
-#   - dng_linearization_info.cpp: normalize_black_white implementation
-# =============================================================================
 
 def exposure_tone(x: np.ndarray, exposure: float) -> np.ndarray:
     """Apply the DNG SDK exposure tone function.

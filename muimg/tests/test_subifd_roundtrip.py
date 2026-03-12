@@ -34,7 +34,7 @@ def get_multi_ifd_dng_files():
     if TEST_FILES_DIR.exists():
         for path in sorted(TEST_FILES_DIR.glob("*.dng")):
             try:
-                with muimg.DngFile(str(path)) as dng:
+                with muimg.DngFile(path) as dng:
                     ifd_count = len(dng.get_flattened_pages())
                     if ifd_count > 2:
                         files.append(path)
@@ -64,7 +64,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
     
     stem = dng_path.stem
     
-    with muimg.DngFile(str(dng_path)) as dng:
+    with muimg.DngFile(dng_path) as dng:
         pages = dng.get_flattened_pages()
         print(f"\n{dng_path.name}: {len(pages)} IFDs")
         
