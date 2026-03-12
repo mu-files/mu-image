@@ -8,11 +8,20 @@ import imagecodecs
 import numpy as np
 from datetime import datetime
 
+from enum import Enum
+import os
+import subprocess
 from pathlib import Path
 from tifffile import COMPRESSION, PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
 from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+class RawStageSelector(str, Enum):
+    RAW = "raw"
+    LINEARIZED = "linearized"
+    LINEARIZED_PLUS_OPS = "linearized_plus_ops"
 
 # Import metadata classes from tiff_metadata module
 from .tiff_metadata import (
@@ -26,7 +35,6 @@ from .tiff_metadata import (
     decode_tag_value,
     resolve_tag
 )
-
 
 # =============================================================================
 # Core DNG Classes
@@ -48,6 +56,11 @@ class DngPage(TiffPage):
     SF_TRANSPARENCY_MASK = 2
     SF_PREVIEW_MASK = 8
     SF_ALT_PREVIEW_IMAGE = 65537
+
+    @dataclass(frozen=True)
+    class _RawStage:
+        data: np.ndarray
+        cfa_pattern: Optional[str] = None
     
     def __new__(cls, *args, **kwargs):
         """Create DngPage instance without calling TiffPage.__init__."""
@@ -265,49 +278,286 @@ class DngPage(TiffPage):
             
             return output
 
-    def get_raw_cfa(self) -> Optional[tuple[np.ndarray, str]]:
+    def _stage1(self) -> Optional["DngPage._RawStage"]:
+        if self.is_cfa:
+            if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+                raw_cfa = self._decode_jpegxl()
+            else:
+                raw_cfa = self.asarray()
+
+            col_interleave = self.get_tag("ColumnInterleaveFactor")
+            row_interleave = self.get_tag("RowInterleaveFactor")
+            if col_interleave == 2 and row_interleave == 2:
+                raw_cfa = deswizzle_cfa_data(raw_cfa)
+
+            cfa_str = self.get_tag("CFAPattern", str)
+            return self._RawStage(data=raw_cfa, cfa_pattern=cfa_str)
+
+        if self.is_linear_raw:
+            if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+                raw_linear = self._decode_jpegxl()
+            else:
+                raw_linear = self.asarray()
+            return self._RawStage(data=raw_linear)
+
+        return None
+
+    def _stage2(
+        self, stage1: "DngPage._RawStage", apply_ops: bool = True
+    ) -> "DngPage._RawStage":
+        # Local import to avoid a module-level circular import between dngio/raw_render.
+        from . import raw_render
+
+        photometric = self.photometric_name
+        if photometric == "CFA":
+            samples_per_pixel = 1
+        else:
+            samples_per_pixel = int(self.get_tag("SamplesPerPixel") or 1)
+
+        black_repeat_dim = self.get_tag("BlackLevelRepeatDim")
+        if black_repeat_dim is None:
+            black_repeat_dim = (1, 1)
+        black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, "__len__") else 1
+        black_repeat_cols = (
+            int(black_repeat_dim[1])
+            if hasattr(black_repeat_dim, "__len__") and len(black_repeat_dim) > 1
+            else 1
+        )
+        expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
+
+        black_level_raw = self.get_tag("BlackLevel")
+        if black_level_raw is None:
+            black_level = np.zeros(expected_black_size, dtype=np.float32)
+        else:
+            black_level = np.atleast_1d(black_level_raw).astype(np.float32).ravel()
+            if len(black_level) != expected_black_size:
+                black_level = np.zeros(expected_black_size, dtype=np.float32)
+
+        bits_per_sample_raw = self.get_tag("BitsPerSample")
+        if bits_per_sample_raw is None:
+            bits_per_sample = 16
+        elif isinstance(bits_per_sample_raw, np.ndarray):
+            bits_per_sample = int(bits_per_sample_raw.flat[0])
+        elif isinstance(bits_per_sample_raw, (list, tuple)):
+            bits_per_sample = int(bits_per_sample_raw[0])
+        else:
+            bits_per_sample = int(bits_per_sample_raw)
+        default_white = float((1 << bits_per_sample) - 1)
+
+        white_level_raw = self.get_tag("WhiteLevel")
+        if white_level_raw is None:
+            white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
+        else:
+            white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
+            white_level = np.where(white_level < 0, default_white, white_level)
+            if len(white_level) < samples_per_pixel:
+                white_level = np.concatenate(
+                    [
+                        white_level,
+                        np.full(samples_per_pixel - len(white_level), default_white, dtype=np.float32),
+                    ]
+                )
+
+        black_delta_h = self.get_tag("BlackLevelDeltaH")
+        black_delta_v = self.get_tag("BlackLevelDeltaV")
+        if black_delta_h is not None:
+            black_delta_h = np.atleast_1d(black_delta_h).astype(np.float32)
+        if black_delta_v is not None:
+            black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
+
+        linearization_table = self.get_tag("LinearizationTable")
+        if linearization_table is not None:
+            linearization_table = np.asarray(linearization_table, dtype=np.uint16)
+
+        active_area = self.get_tag("ActiveArea")
+        data = stage1.data
+        if active_area is not None:
+            aa_top, aa_left, aa_bottom, aa_right = active_area
+            data = data[aa_top:aa_bottom, aa_left:aa_right]
+
+        normalized = raw_render._raw_render.normalize_raw(
+            data=data.astype(np.float32),
+            black_level=black_level,
+            black_repeat_rows=black_repeat_rows,
+            black_repeat_cols=black_repeat_cols,
+            samples_per_pixel=samples_per_pixel,
+            white_level=white_level,
+            black_delta_h=black_delta_h,
+            black_delta_v=black_delta_v,
+            linearization_table=linearization_table,
+        )
+
+        stage2 = self._RawStage(data=normalized, cfa_pattern=stage1.cfa_pattern)
+
+        if not apply_ops:
+            return stage2
+
+        opcode_list2 = self.get_tag("OpcodeList2")
+        if opcode_list2 is None:
+            return stage2
+
+        try:
+            opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList2: {e}")
+            return stage2
+
+        try:
+            if self.photometric_name == "LINEAR_RAW":
+                data_ops = raw_render.apply_opcodes(stage2.data, opcodes, use_bicubic=False)
+                data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
+                return self._RawStage(data=data_ops)
+            else:
+                data_ops = raw_render.apply_opcodes_cfa(stage2.data, opcodes)
+                data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
+                return self._RawStage(data=data_ops, cfa_pattern=stage2.cfa_pattern)
+        except Exception as e:
+            logger.warning(f"Failed to apply OpcodeList2: {e}")
+            return stage2
+
+    def get_raw_cfa(
+        self, stage: RawStageSelector = RawStageSelector.RAW
+    ) -> Optional[tuple[np.ndarray, str]]:
         """Extract raw CFA data and pattern from this page.
-        
+
+        Args:
+            stage: Which stage of the raw pipeline to return.
+
+                - RawStageSelector.RAW: Stored samples (decoded).
+                - RawStageSelector.LINEARIZED: Raw + linearize + range map
+                  (ActiveArea-cropped, float32 in [0, 1]).
+                - RawStageSelector.LINEARIZED_PLUS_OPS: LINEARIZED + OpcodeList2 (if present)
+                  (float32 in [0, 1]).
+
         Returns:
             Tuple of (cfa_array, cfa_pattern_str) or None if not a CFA page.
             cfa_pattern_str is e.g., 'RGGB', 'BGGR'.
         """
-        if not self.is_cfa:
+        stage1 = self._stage1()
+        if stage1 is None:
             return None
-        
-        # Decode image data
-        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            raw_cfa = self._decode_jpegxl()
+
+        if stage == RawStageSelector.RAW:
+            stage_out = stage1
+        elif stage == RawStageSelector.LINEARIZED:
+            stage_out = self._stage2(stage1, apply_ops=False)
+        elif stage == RawStageSelector.LINEARIZED_PLUS_OPS:
+            stage_out = self._stage2(stage1, apply_ops=True)
         else:
-            raw_cfa = self.asarray()
-        
-        # Handle interleaved data that needs deswizzling
-        col_interleave = self.get_tag("ColumnInterleaveFactor")
-        row_interleave = self.get_tag("RowInterleaveFactor")
-        if col_interleave == 2 and row_interleave == 2:
-            raw_cfa = deswizzle_cfa_data(raw_cfa)
-        
-        # Get CFA pattern string
-        cfa_str = self.get_tag("CFAPattern", str)
-        
-        return raw_cfa, cfa_str
+            raise ValueError(f"Unknown stage selector: {stage}")
+
+        if stage_out.cfa_pattern is None:
+            return None
+
+        return stage_out.data, stage_out.cfa_pattern
     
-    def get_raw_linear(self) -> Optional[np.ndarray]:
+    def get_raw_linear(
+        self, stage: RawStageSelector = RawStageSelector.RAW
+    ) -> Optional[np.ndarray]:
         """Extract raw LINEAR_RAW data from this page.
-        
-        For JPEG XL compressed images, handles tile assembly and chroma subsampling.
+
+        Args:
+            stage: Which stage of the raw pipeline to return.
+
+                - RawStageSelector.RAW: Stored samples (decoded).
+                - RawStageSelector.LINEARIZED: Raw + linearize + range map
+                  (ActiveArea-cropped, float32 in [0, 1]).
+                - RawStageSelector.LINEARIZED_PLUS_OPS: LINEARIZED + OpcodeList2 (if present)
+                  (float32 in [0, 1]).
         
         Returns:
             Raw linear data array or None if not a LINEAR_RAW page.
         """
         if not self.is_linear_raw:
             return None
-        
-        if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            return self._decode_jpegxl()
-        else:
-            return self.asarray()
 
+        stage1 = self._stage1()
+        if stage1 is None:
+            return None
+
+        if stage == RawStageSelector.RAW:
+            return stage1.data
+        if stage == RawStageSelector.LINEARIZED:
+            return self._stage2(stage1, apply_ops=False).data
+        if stage == RawStageSelector.LINEARIZED_PLUS_OPS:
+            return self._stage2(stage1, apply_ops=True).data
+        raise ValueError(f"Unknown stage selector: {stage}")
+
+    def get_camera_rgb(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
+        """Extract the camera-RGB intermediate used for the final color pipeline.
+
+        This corresponds to the `rgb_camera` input passed into
+        `raw_render._render_camera_rgb(...)` during `render()`.
+
+        Returns stage2 (normalized + ActiveArea-cropped), applies OpcodeList2 (if
+        present), and then:
+
+        - If photometric == LINEAR_RAW: returns the stage2 linear RGB.
+        - Else: demosaics the stage2 CFA to camera RGB.
+
+        Args:
+            demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
+
+        Returns:
+            Camera RGB array (H, W, 3) float32 in [0, 1], or None if extraction fails.
+        """
+        stage1 = self._stage1()
+        if stage1 is None:
+            return None
+        stage2 = self._stage2(stage1)
+
+        photometric = self.photometric_name
+
+        if photometric == "LINEAR_RAW":
+            rgb_camera = stage2.data
+            rgb_camera = np.clip(rgb_camera, 0.0, 1.0).astype(np.float32, copy=False)
+            return rgb_camera
+
+        cfa_normalized = stage2.data
+        cfa_pattern = stage2.cfa_pattern
+        if cfa_pattern is None:
+            cfa_pattern = "RGGB"
+
+        from . import raw_render
+
+        rgb_camera = raw_render.demosaic(
+            cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm
+        )
+        rgb_camera = np.clip(rgb_camera, 0.0, 1.0).astype(np.float32, copy=False)
+        return rgb_camera
+    
+    def render(
+        self,
+        output_dtype: type = np.uint16,
+        demosaic_algorithm: str = "RCD",
+        strict: bool = True,
+    ) -> "np.ndarray | None":
+        from . import raw_render
+
+        try:
+            unsupported = raw_render.validate_dng_tags(self, strict=strict)
+            if unsupported and not strict:
+                logger.warning(
+                    f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
+                )
+
+            rgb_camera = self.get_camera_rgb(demosaic_algorithm=demosaic_algorithm)
+            if rgb_camera is None:
+                logger.error("Failed to extract camera RGB from DNG")
+                return None
+
+            result = raw_render._render_camera_rgb(
+                page=self,
+                rgb_camera=rgb_camera,
+                output_dtype=output_dtype,
+            )
+            return result
+
+        except raw_render.UnsupportedDNGTagError:
+            raise
+        except Exception as e:
+            logger.error(f"Error rendering DNG: {e}", exc_info=True)
+            return None
 
 class DngFile(TiffFile):
 
@@ -387,6 +637,81 @@ class DngFile(TiffFile):
         
         return None
 
+    def get_raw_cfa(
+        self, stage: RawStageSelector = RawStageSelector.RAW
+    ) -> Optional[tuple[np.ndarray, str]]:
+        """Get CFA raw data from the main page.
+
+        This is a convenience wrapper around `get_main_page()` +
+        `DngPage.get_raw_cfa(stage=...)`.
+
+        Args:
+            stage: Which stage of the raw pipeline to return.
+
+        Returns:
+            Tuple of (raw_cfa_array, cfa_pattern_string), or None if no suitable
+            page is found.
+        """
+        page = self.get_main_page()
+        if page is None or not page.is_cfa:
+            return None
+        return page.get_raw_cfa(stage=stage)
+
+    def get_raw_linear(
+        self, stage: RawStageSelector = RawStageSelector.RAW
+    ) -> Optional[np.ndarray]:
+        """Get linear raw data from the main page.
+
+        This is a convenience wrapper around `get_main_page()` +
+        `DngPage.get_raw_linear(stage=...)`.
+
+        Args:
+            stage: Which stage of the raw pipeline to return.
+
+        Returns:
+            Linear raw array, or None if no suitable page is found.
+        """
+        page = self.get_main_page()
+        if page is None or not page.is_linear_raw:
+            return None
+        return page.get_raw_linear(stage=stage)
+
+    def get_camera_rgb(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
+        """Get the camera-RGB intermediate from the main page.
+
+        Convenience wrapper around `get_main_page()` + `DngPage.get_camera_rgb(...)`.
+
+        Args:
+            demosaic_algorithm: Demosaic algorithm to use when the main page is CFA.
+
+        Returns:
+            Camera RGB array (H, W, 3) float32 in [0, 1], or None if no suitable
+            main page is found.
+        """
+        page = self.get_main_page()
+        if page is None:
+            return None
+        return page.get_camera_rgb(demosaic_algorithm=demosaic_algorithm)
+
+    def render(
+        self,
+        output_dtype: type = np.uint16,
+        demosaic_algorithm: str = "RCD",
+        strict: bool = True,
+    ) -> "np.ndarray | None":
+        """Render the main page to RGB.
+
+        Convenience wrapper around `get_main_page()` + `DngPage.render(...)`.
+        """
+        page = self.get_main_page()
+        if page is None:
+            return None
+        return page.render(
+            output_dtype=output_dtype,
+            demosaic_algorithm=demosaic_algorithm,
+            strict=strict,
+        )
+
 
 # =============================================================================
 # Helper Functions
@@ -445,78 +770,6 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
     original_data[1::2, 1::2] = b_channel  # B pixels
 
     return original_data
-
-
-def cfa_from_dng(
-    dng_file: "DngFile",
-) -> tuple[np.ndarray, str]:
-    """
-    Loads a DNG file and extracts the raw CFA data and pattern.
-
-    Returns:
-        Tuple of (raw_cfa_array, cfa_pattern_string)
-        
-    Raises:
-        ValueError: If the DNG file format is invalid or missing required data.
-        RuntimeError: If DNG processing fails.
-    """
-    try:
-        # Get the main image page (should be CFA)
-        cfa_page = dng_file.get_main_page()
-        if cfa_page is None or not cfa_page.is_cfa:
-            raise ValueError("No CFA main page found in DNG")
-
-        # Get the CFA data array and pattern
-        result = cfa_page.get_raw_cfa()
-        if result is None:
-            raise RuntimeError("Failed to retrieve raw CFA data")
-        raw_cfa, cfa_pattern_value = result
-
-        if cfa_pattern_value is None:
-            raise ValueError("Missing CFAPattern tag")
-
-    except (ValueError, RuntimeError):
-        raise
-    except Exception as e:
-        raise RuntimeError(f"Error processing DNG file: {e}") from e
-
-    return raw_cfa, cfa_pattern_value
-
-
-def linear_raw_from_dng(
-    dng_file: "DngFile",
-    orientation: int | None = None,
-    algorithm: str = "RCD",
-) -> np.ndarray:
-    """Demosaic DNG file to RGB.
-    
-    Convenience wrapper that extracts CFA from DNG file and calls demosaic.
-    
-    Args:
-        dng_file: DngFile object
-        orientation: Optional TIFF orientation code (1, 3, 6, or 8)
-        algorithm: Demosaic algorithm - "RCD" (default), "VNG", or "OPENCV_EA"
-        
-    Returns:
-        RGB array (uint16)
-        
-    Raises:
-        ValueError: If the DNG file format is invalid or missing required
-            data.
-    """
-    from .raw_render import demosaic
-    
-    # Extract CFA data and pattern from DNG
-    cfa, cfa_pattern = cfa_from_dng(dng_file)
-    
-    # Demosaic
-    rgb = demosaic(
-        cfa,
-        cfa_pattern,
-        algorithm=algorithm,
-    )
-    
-    return rgb
 
 
 def _ensure_float_tags_be(tags: MetadataTags) -> MetadataTags:
@@ -1063,7 +1316,6 @@ def write_dng_from_page(
             logger.error(f"Error writing DNG from DngPage: {e}")
             raise
 
-
 def decode_dng(
     file: Union[str, Path, IO[bytes], DngFile],
     output_dtype: type = np.uint16,
@@ -1109,19 +1361,15 @@ def decode_dng(
             )
     
     # Python SDK pipeline
-    from .raw_render import render_dng
-    
     # Create or use DngFile
     dng_file = file if isinstance(file, DngFile) else DngFile(file)
-    
-    result = render_dng(
-        dng_input=dng_file,
+
+    result = dng_file.render(
         output_dtype=output_dtype,
         demosaic_algorithm=demosaic_algorithm,
         strict=strict,
     )
-    
     if result is None:
-        raise RuntimeError(f"Failed to decode DNG file: {file}")
+        raise RuntimeError(f"No main image page found in DNG file: {file}")
     
     return result

@@ -23,7 +23,7 @@ from conftest import (
 )
 
 # Output directory for comparison files
-OUTPUT_DIR = Path(__file__).parent / "output_comparison"
+OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_process_raw_comparison"
 
 # Per-file thresholds for MUIMG (1.1x above measured values)
 MUIMG_THRESHOLDS = {
@@ -84,7 +84,7 @@ def get_dng_files():
 @pytest.fixture(scope="module")
 def output_dir():
     """Create output directory for comparison files."""
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     return OUTPUT_DIR
 
 

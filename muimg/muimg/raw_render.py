@@ -20,6 +20,22 @@ from . import _raw_render
 logger = logging.getLogger(__name__)
 
 
+def render_dng(
+    file,
+    output_dtype=np.uint16,
+    demosaic_algorithm: str = "RCD",
+    strict: bool = True,
+):
+    from .dngio import DngFile
+
+    with DngFile(file) as dng:
+        return dng.render(
+            output_dtype=output_dtype,
+            demosaic_algorithm=demosaic_algorithm,
+            strict=strict,
+        )
+
+
 class SplineCurve:
     """
     Represents a spline curve with control points in normalized 0-1 range.
@@ -1810,285 +1826,35 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
     
     return camera_white
 
-
-def render_dng(
-    dng_input: "str | Path | IO | dngio.DngFile | dngio.DngPage",
-    output_dtype: type = np.uint16,
-    demosaic_algorithm: str = "RCD",
-    strict: bool = True,
-) -> "np.ndarray | None":
-    """Process a DNG file to RGB using the DNG SDK color pipeline.
-    
-    Port of Adobe DNG SDK 1.7.1 rendering pipeline.
-    See docs/dng_render_pipeline.md for full pipeline documentation.
-    
-    Args:
-        dng_input: Path to DNG file, file-like object, DngFile, or DngPage
-        output_dtype: Output dtype (np.uint8, np.uint16, np.float16, np.float32)
-        demosaic_algorithm: Demosaic algorithm for CFA data
-        strict: If True, raise UnsupportedDNGTagError if the DNG contains tags
-                that this function cannot handle. If False, process anyway.
-    
-    Returns:
-        RGB image array or None on failure
-        
-    Raises:
-        UnsupportedDNGTagError: If strict=True and unsupported DNG tags are found
-    """
-    from . import dngio
+def _render_camera_rgb(
+    page: "dngio.DngPage",
+    rgb_camera: np.ndarray,
+    output_dtype: type,
+) -> np.ndarray:
     import time
-    
+
     timings = {}
-    
+
     try:
-        t0 = time.perf_counter()
-        
-        # Handle different input types
-        if isinstance(dng_input, dngio.DngPage):
-            page = dng_input
-        else:
-            if not isinstance(dng_input, dngio.DngFile):
-                dng_input = dngio.DngFile(dng_input)
-            page = dng_input.get_main_page()
-            if page is None:
-                logger.error("No main image page found in DNG file")
-                return None
-        
-        timings['dng_open'] = time.perf_counter() - t0
-        
-        # Validate that we support all rendering-related tags in this DNG
-        unsupported = validate_dng_tags(page, strict=strict)
-        if unsupported and not strict:
-            logger.warning(f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}")
-        
-        photometric = page.photometric_name
-        
-        # =================================================================
-        # Black/White level handling per SDK dng_ifd.cpp
-        # =================================================================
-        # SDK ref: dng_ifd.cpp:242-252 (constructor)
-        #   for (j = 0; j < kMaxBlackPattern; j++)
-        #       for (k = 0; k < kMaxBlackPattern; k++)
-        #           for (n = 0; n < kMaxColorPlanes; n++)
-        #               fBlackLevel [j] [k] [n] = 0.0;
-        #   for (j = 0; j < kMaxColorPlanes; j++)
-        #       fWhiteLevel [j] = -1.0;  // sentinel
-        #
-        # SDK ref: dng_ifd.cpp:3247-3259 (PostParse)
-        #   uint32 defaultWhite = (fSampleFormat[0] == sfFloatingPoint) ?
-        #                         1 : (uint32)((((uint64)1) << fBitsPerSample[0]) - 1);
-        #   for (j = 0; j < kMaxColorPlanes; j++)
-        #       if (fWhiteLevel[j] < 0.0)
-        #           fWhiteLevel[j] = (real64) defaultWhite;
-        # =================================================================
-        
-        samples_per_pixel = page.get_tag("SamplesPerPixel") or 1
-        black_repeat_dim = page.get_tag("BlackLevelRepeatDim")
-        if black_repeat_dim is None:
-            black_repeat_dim = (1, 1)
-        black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, '__len__') else 1
-        black_repeat_cols = int(black_repeat_dim[1]) if hasattr(black_repeat_dim, '__len__') and len(black_repeat_dim) > 1 else 1
-        expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
-        
-        # BlackLevel: SDK initializes to 0.0 for all [row][col][plane]
-        black_level_raw = page.get_tag("BlackLevel")
-        if black_level_raw is None:
-            # No tag: all zeros (SDK constructor behavior)
-            black_level = np.zeros(expected_black_size, dtype=np.float32)
-        else:
-            black_level = np.atleast_1d(black_level_raw).astype(np.float32).ravel()
-            if len(black_level) != expected_black_size:
-                # SDK would fail (CheckTagCount), use zeros as fallback
-                black_level = np.zeros(expected_black_size, dtype=np.float32)
-        
-        # WhiteLevel: SDK initializes to -1.0 (sentinel), then PostParse sets default
-        # Default: (1 << BitsPerSample) - 1, or 1 for floating point
-        bits_per_sample_raw = page.get_tag("BitsPerSample")
-        if bits_per_sample_raw is None:
-            bits_per_sample = 16
-        elif isinstance(bits_per_sample_raw, np.ndarray):
-            bits_per_sample = int(bits_per_sample_raw.flat[0])
-        elif isinstance(bits_per_sample_raw, (list, tuple)):
-            bits_per_sample = int(bits_per_sample_raw[0])
-        else:
-            bits_per_sample = int(bits_per_sample_raw)
-        default_white = float((1 << bits_per_sample) - 1)
-        
-        white_level_raw = page.get_tag("WhiteLevel")
-        if white_level_raw is None:
-            # No tag: use default for all planes (SDK PostParse behavior)
-            white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
-        else:
-            white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
-            # SDK sets default for any plane where value < 0
-            white_level = np.where(white_level < 0, default_white, white_level)
-            if len(white_level) < samples_per_pixel:
-                # Extend with default if not enough values
-                white_level = np.concatenate([
-                    white_level,
-                    np.full(samples_per_pixel - len(white_level), default_white, dtype=np.float32)
-                ])
-        
-        black_delta_h = page.get_tag("BlackLevelDeltaH")
-        black_delta_v = page.get_tag("BlackLevelDeltaV")
-        
-        # Convert delta arrays if present
-        if black_delta_h is not None:
-            black_delta_h = np.atleast_1d(black_delta_h).astype(np.float32)
-        if black_delta_v is not None:
-            black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
-        
-        orientation = page.get_tag("Orientation") or 1
-        
-        # =====================================================================
-        # Pre-processing: Demosaic / extract linear camera RGB
-        # SDK applies crop BEFORE rotation, so we demosaic without rotation,
-        # apply crop in sensor coords, then rotate.
-        # =====================================================================
-        t0 = time.perf_counter()
-        
-        # Get ActiveArea - defines valid pixel region (top, left, bottom, right)
-        # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea
-        # DefaultCrop coordinates are relative to ActiveArea, not raw sensor
-        active_area = page.get_tag("ActiveArea")
-        
-        # Get crop parameters (relative to ActiveArea, not raw sensor)
-        crop_origin = page.get_tag("DefaultCropOrigin")
-        crop_size = page.get_tag("DefaultCropSize")
-        
-        # Get LinearizationTable if present
-        # SDK ref: dng_linearization_info.cpp lines 1233-1250
-        # Applied BEFORE black/white level normalization (inside C++ normalize_raw)
-        linearization_table = page.get_tag("LinearizationTable")
-        if linearization_table is not None:
-            linearization_table = np.asarray(linearization_table, dtype=np.uint16)
-            logger.debug(f"LinearizationTable: {len(linearization_table)} entries")
-        
-        # Get OpcodeList2 for post-linearization processing
-        opcode_list2 = page.get_tag("OpcodeList2")
-        
-        if photometric == "LINEAR_RAW":
-            rgb_data = page.get_raw_linear()
-            if rgb_data is None:
-                logger.error("Failed to extract LINEAR_RAW data from DNG")
-                return None
-            
-            # Apply ActiveArea crop BEFORE normalization
-            # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea first
-            # ActiveArea = (top, left, bottom, right) in raw sensor coordinates
-            if active_area is not None:
-                aa_top, aa_left, aa_bottom, aa_right = active_area
-                rgb_data = rgb_data[aa_top:aa_bottom, aa_left:aa_right]
-                logger.debug(f"ActiveArea crop: ({aa_top}, {aa_left}) to ({aa_bottom}, {aa_right})")
-            
-            # Normalize using C++ implementation per DNG spec Chapter 5
-            # LinearizationTable is applied inside normalize_raw before black/white
-            t0 = time.perf_counter()
-            rgb_camera = _raw_render.normalize_raw(
-                data=rgb_data.astype(np.float32),
-                black_level=black_level,
-                black_repeat_rows=black_repeat_rows,
-                black_repeat_cols=black_repeat_cols,
-                samples_per_pixel=samples_per_pixel,
-                white_level=white_level,
-                black_delta_h=black_delta_h,
-                black_delta_v=black_delta_v,
-                linearization_table=linearization_table,
-            )
-            timings['normalize_raw'] = time.perf_counter() - t0
-            
-            # =================================================================
-            # OpcodeList2: Post-linearization (LINEAR_RAW is already RGB)
-            # =================================================================
-            if opcode_list2 is not None:
-                t0_op = time.perf_counter()
-                try:
-                    opcodes = parse_opcode_list(bytes(opcode_list2))
-                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes (applying to LINEAR_RAW RGB)")
-                    rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
-                except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList2: {e}")
-                timings['opcode_list2'] = time.perf_counter() - t0_op
-        else:
-            cfa_result = page.get_raw_cfa()
-            if cfa_result is None:
-                logger.error("Failed to extract CFA data from DNG")
-                return None
-            
-            cfa_data, _ = cfa_result
-            
-            # Apply ActiveArea crop BEFORE normalization
-            # SDK ref: dng_negative.cpp Stage1Image() crops to ActiveArea first
-            # ActiveArea = (top, left, bottom, right) in raw sensor coordinates
-            if active_area is not None:
-                aa_top, aa_left, aa_bottom, aa_right = active_area
-                cfa_data = cfa_data[aa_top:aa_bottom, aa_left:aa_right]
-                logger.debug(f"ActiveArea crop: ({aa_top}, {aa_left}) to ({aa_bottom}, {aa_right})")
-            
-            # Normalize CFA data using C++ implementation per DNG spec Chapter 5
-            # LinearizationTable is applied inside normalize_raw before black/white
-            # SDK demosaics on float32 throughout
-            t0 = time.perf_counter()
-            cfa_normalized = _raw_render.normalize_raw(
-                data=cfa_data.astype(np.float32),
-                black_level=black_level,
-                black_repeat_rows=black_repeat_rows,
-                black_repeat_cols=black_repeat_cols,
-                samples_per_pixel=1,  # CFA is always 1 sample per pixel
-                white_level=white_level,
-                black_delta_h=black_delta_h,
-                black_delta_v=black_delta_v,
-                linearization_table=linearization_table,
-            )
-            timings['normalize_raw'] = time.perf_counter() - t0
-            
-            # =================================================================
-            # OpcodeList2: Post-linearization, Pre-demosaic
-            # DNG Spec: "applied to the raw image, just after it has been
-            #            mapped to linear reference values"
-            # =================================================================
-            if opcode_list2 is not None:
-                t0 = time.perf_counter()
-                try:
-                    opcodes = parse_opcode_list(bytes(opcode_list2))
-                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes (applying to CFA)")
-                    cfa_normalized = apply_opcodes_cfa(cfa_normalized, opcodes)
-                except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList2: {e}")
-                timings['opcode_list2'] = time.perf_counter() - t0
-            
-            # Demosaic without rotation - rotation applied after crop below
-            t0 = time.perf_counter()
-            cfa_pattern = page.get_tag("CFAPattern", str) or "RGGB"
-            rgb_camera = demosaic(cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm)
-            timings['demosaic'] = time.perf_counter() - t0
-        
-        # =====================================================================
-        # OpcodeList3: Post-demosaic opcodes (BEFORE crop)
-        # DNG Spec: "applied to the raw image, just after it has been demosaiced"
-        # SDK ref: dng_negative.cpp BuildStage3Image() applies OpcodeList3 at 5232
-        # SDK ref: dng_negative.cpp Trim(defaultCropArea) happens later at 6885
-        # =====================================================================
         opcode_list3 = page.get_tag("OpcodeList3")
         if opcode_list3 is not None:
-            t0 = time.perf_counter()
             try:
                 opcodes = parse_opcode_list(bytes(opcode_list3))
                 logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
                 rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList3: {e}")
-            timings['opcode_list3'] = time.perf_counter() - t0
-        
-        # Apply DefaultCrop AFTER OpcodeList3, BEFORE color transforms
-        # SDK ref: dng_negative.cpp:6885 Trim(defaultCropArea)
+
+        crop_origin = page.get_tag("DefaultCropOrigin")
+        crop_size = page.get_tag("DefaultCropSize")
+
         if crop_origin is not None and crop_size is not None:
             crop_x = int(crop_origin[0])
             crop_y = int(crop_origin[1])
             crop_w = int(crop_size[0])
             crop_h = int(crop_size[1])
-            rgb_camera = rgb_camera[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
-        
+            rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)
         # SDK ref: dng_render.cpp lines 869-1070
@@ -2476,20 +2242,13 @@ def render_dng(
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
         t0 = time.perf_counter()
+        orientation = page.get_tag("Orientation") or 1
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
         timings['orientation'] = time.perf_counter() - t0
         
-        # Print timing breakdown
-        total = sum(timings.values())
-        logger.info(f"render_dng timing breakdown (total: {total*1000:.1f}ms):")
-        for name, t in timings.items():
-            logger.info(f"  {name}: {t*1000:.1f}ms ({t/total*100:.1f}%)")
-        
         return result
-    
+
     except Exception as e:
-        logger.error(f"Error processing DNG: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        logger.error(f"Error rendering DNG: {e}", exc_info=True)
+        raise

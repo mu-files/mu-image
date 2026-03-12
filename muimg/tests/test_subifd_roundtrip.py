@@ -13,7 +13,6 @@ import pytest
 import tifffile
 
 import muimg
-from muimg import raw_render
 from muimg.dngio import write_dng_from_page, MetadataTags
 from conftest import (
     TEST_FILES_DIR,
@@ -23,7 +22,7 @@ from conftest import (
 )
 
 # Output directory for this test
-OUTPUT_DIR = Path(__file__).parent / "output_subifd"
+OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_subifd_roundtrip"
 
 # Threshold for comparison (percentage of full range)
 ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
@@ -47,7 +46,7 @@ def get_multi_ifd_dng_files():
 @pytest.fixture(scope="module")
 def output_dir():
     """Create output directory for test files."""
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     return OUTPUT_DIR
 
 
@@ -94,13 +93,13 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 1. muimg render_dng -> {stem}_ifd{n}_muimg.tif
             try:
-                decoded = raw_render.render_dng(page, output_dtype=np.uint16, strict=False)
+                decoded = page.render(output_dtype=np.uint16, strict=False)
                 if decoded is None:
-                    pytest.fail(f"render_dng returned None for IFD {i}")
+                    pytest.fail(f"page.render returned None for IFD {i}")
                 tifffile.imwrite(str(muimg_tif), decoded)
                 print(f"    -> {muimg_tif.name} ({decoded.shape})")
             except Exception as e:
-                pytest.fail(f"render_dng failed for IFD {i}: {e}")
+                pytest.fail(f"page.render failed for IFD {i}: {e}")
             
             # 2. write_dng_from_page -> {stem}_ifd{n}.dng
             # Use decoded fallback if tile dimensions not supported by tifffile
@@ -127,7 +126,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             # 3. Try muimg decode on the roundtrip DNG
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
             try:
-                roundtrip_decoded = raw_render.render_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
+                roundtrip_decoded = muimg.decode_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
                 if roundtrip_decoded is not None:
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")
