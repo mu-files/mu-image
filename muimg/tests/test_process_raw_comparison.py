@@ -11,7 +11,7 @@ import pytest
 import tifffile
 
 import muimg
-from muimg.dngio import write_dng_from_page
+from muimg.dngio import IfdSpec
 from conftest import (
     TEST_FILES_DIR,
     LOCAL_TEST_FILES_DIR,
@@ -244,9 +244,9 @@ def test_stripped_dng_comparison(dng_path, output_dir):
                 if tag.name in STRIPPED_TAGS:
                     tags_stripped.add(tag.name)
         
-        write_dng_from_page(
-            page=page,
+        muimg.write_dng(
             destination_file=stripped_dng,
+            subifds=[IfdSpec(data=page)],
             skip_tags=STRIPPED_TAGS,
         )
     

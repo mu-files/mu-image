@@ -9,7 +9,7 @@ import tifffile
 
 import muimg
 from muimg.dngio import RawStageSelector
-from muimg.dngio import write_dng_from_page
+from muimg.dngio import IfdSpec
 from conftest import DNG_VALIDATE_PATH, TEST_FILES_DIR, load_tiff, compute_diff_stats
 
 
@@ -75,23 +75,10 @@ def test_raw_stage_outputs_match_dng_validate(filename: str, output_dir: Path):
             # unambiguously to this page.
             roundtrip_dng = output_dir / f"{stem}_ifd{ifd_index}.dng"
 
-            # Use decoded fallback if tile dimensions not supported by tifffile.
-            use_decoded_fallback = False
-            if page.is_tiled:
-                tile_h, tile_w = page.tilelength, page.tilewidth
-                tile_valid = (
-                    tile_h <= page.shape[0]
-                    and tile_w <= page.shape[1]
-                    and tile_h % 16 == 0
-                    and tile_w % 16 == 0
-                )
-                if not tile_valid:
-                    use_decoded_fallback = True
-
-            if use_decoded_fallback:
-                write_dng_from_page(page, roundtrip_dng, decompress=True)
-            else:
-                write_dng_from_page(page, roundtrip_dng)
+            muimg.write_dng(
+                destination_file=roundtrip_dng,
+                subifds=[IfdSpec(data=page)],
+            )
 
             stage1_base = output_dir / f"{stem}_ifd{ifd_index}_stage1"
             stage2_base = output_dir / f"{stem}_ifd{ifd_index}_stage2"

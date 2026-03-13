@@ -13,7 +13,7 @@ import pytest
 import tifffile
 
 import muimg
-from muimg.dngio import write_dng_from_page, MetadataTags
+from muimg.dngio import IfdSpec, MetadataTags
 from conftest import (
     TEST_FILES_DIR,
     DNG_VALIDATE_PATH,
@@ -102,26 +102,14 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                 pytest.fail(f"page.render failed for IFD {i}: {e}")
             
             # 2. write_dng_from_page -> {stem}_ifd{n}.dng
-            # Use decoded fallback if tile dimensions not supported by tifffile
-            use_decoded_fallback = False
-            if page.is_tiled:
-                tile_h, tile_w = page.tilelength, page.tilewidth
-                tile_valid = (
-                    tile_h <= page.shape[0] and tile_w <= page.shape[1] and
-                    tile_h % 16 == 0 and tile_w % 16 == 0
-                )
-                if not tile_valid:
-                    use_decoded_fallback = True
-            
             try:
-                if use_decoded_fallback:
-                    write_dng_from_page(page, roundtrip_dng, decompress=True)
-                    print(f"    -> {roundtrip_dng.name} (decoded)")
-                else:
-                    write_dng_from_page(page, roundtrip_dng)
-                    print(f"    -> {roundtrip_dng.name}")
+                muimg.write_dng(
+                    destination_file=roundtrip_dng,
+                    subifds=[IfdSpec(data=page)],
+                )
+                print(f"    -> {roundtrip_dng.name}")
             except Exception as e:
-                pytest.fail(f"write_dng_from_page failed for IFD {i}: {e}")
+                pytest.fail(f"write_dng failed for IFD {i}: {e}")
             
             # 3. Try muimg decode on the roundtrip DNG
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"

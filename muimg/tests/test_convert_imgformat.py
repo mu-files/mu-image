@@ -15,7 +15,6 @@ import pytest
 from muimg.imgio import convert_imgformat, convert_imgformat_to_stream
 from conftest import (
     TEST_FILES_DIR,
-    OUTPUT_COMPARISON_DIR,
     compute_diff_stats,
     core_image_available_for_tests,
 )
@@ -25,7 +24,7 @@ from conftest import (
 MUIMG_CLI = [sys.executable, "-m", "muimg.cli"]
 
 # Output directory for comparison files
-OUTPUT_DIR = OUTPUT_COMPARISON_DIR / "convert_imgformat"
+OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_convert_imgformat"
 
 # Test file
 TEST_DNG = TEST_FILES_DIR / "asi676mc.cfa.jxl_lossy.2ifds.dng"

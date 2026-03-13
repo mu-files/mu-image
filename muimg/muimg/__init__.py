@@ -13,8 +13,9 @@ from .tiff_metadata import (
 from .dngio import (
     DngFile,
     DngPage,
+    IfdSpec,
     write_dng,
-    write_dng_from_page,
+    write_dng_from_array,
     decode_dng,
 )
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
@@ -58,8 +59,9 @@ __all__ = [
     'temp_tint_to_xy',
     'uv_to_colortemp',
     'uvUCS_to_xy',
+    'IfdSpec',
     'write_dng',
-    'write_dng_from_page',
+    'write_dng_from_array',
     'xy_to_temp_tint',
     'xy_to_uvUCS',
 ]
