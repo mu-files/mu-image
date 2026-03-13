@@ -59,6 +59,15 @@ def pytest_configure(config):
         print("\n[conftest] WARNING: Test data unavailable. Some tests will be skipped.\n")
 
 
+def core_image_available_for_tests() -> bool:
+    try:
+        from muimg._dngio_coreimage import core_image_available
+
+        return bool(core_image_available)
+    except ImportError:
+        return False
+
+
 # =============================================================================
 # Shared Test Utilities
 # =============================================================================

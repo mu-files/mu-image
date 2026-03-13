@@ -17,7 +17,6 @@ from .dngio import (
     write_dng_from_page,
     decode_dng,
 )
-from .dngio_coreimage import render_dng_coreimage, decode_dng_coreimage
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
 from .processing import ProcessingPipeline
 from .imgio import convert_imgformat, convert_imgformat_to_stream, decode_image
@@ -50,11 +49,9 @@ __all__ = [
     'convert_imgformat',
     'convert_imgformat_to_stream',
     'decode_dng',
-    'decode_dng_coreimage',
     'decode_image',
     'apply_tiff_orientation',
     'demosaic',
-    'render_dng_coreimage',
     'ProcessingPipeline',
     'SequenceEncodePipeline',
     'SplineCurve',

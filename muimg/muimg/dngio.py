@@ -1350,13 +1350,24 @@ def decode_dng(
     """
     # Try Core Image path if requested
     if use_coreimage_if_available:
-        from .dngio_coreimage import core_image_available, decode_dng_coreimage
-        if core_image_available:
-            return decode_dng_coreimage(
-                file=file,
-                use_xmp=use_xmp,
-                output_dtype=output_dtype,
-                **processing_params,
+        try:
+            from ._dngio_coreimage import core_image_available, decode_dng_coreimage
+
+            if core_image_available:
+                return decode_dng_coreimage(
+                    file=file,
+                    use_xmp=use_xmp,
+                    output_dtype=output_dtype,
+                    **processing_params,
+                )
+
+            logger.warning(
+                "Core Image requested but not available; falling back to Python pipeline."
+            )
+        except ImportError:
+            logger.warning(
+                "Core Image requested but PyObjC/Core Image dependencies are not installed; "
+                "falling back to Python pipeline."
             )
     
     # Python SDK pipeline

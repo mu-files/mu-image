@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260312.1213"
+version = "0.1.20260312.1938"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
@@ -18,8 +18,6 @@ dependencies = [
     "imagecodecs[all]",
     "numpy",
     "opencv-python-headless",
-    "pyobjc-framework-Cocoa",
-    "pyobjc-framework-Quartz",
     "requests>=2.25.0",
     "scipy>=1.9.0",
     "setproctitle",
@@ -27,6 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+coreimage = [
+    "pyobjc-framework-Cocoa",
+    "pyobjc-framework-Quartz",
+]
 test = [
     "pytest",
 ]

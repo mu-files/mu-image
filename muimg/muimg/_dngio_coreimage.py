@@ -335,12 +335,18 @@ def render_dng_coreimage(
 
                 output_ci_image = raw_filter.outputImage()
 
+                if output_ci_image is None:
+                    raise RuntimeError("CIRAWFilter.outputImage() returned None")
+
                 # --- Apply Tone Curve for Contrast ---
                 if tone_curve is not None:
                     post_tone_filter = _create_tone_curve_filter(tone_curve)
                     if post_tone_filter is not None:
                         post_tone_filter.setValue_forKey_(output_ci_image, "inputImage")
                         output_ci_image = post_tone_filter.outputImage()
+
+                        if output_ci_image is None:
+                            raise RuntimeError("Tone curve filter outputImage() returned None")
 
                 extent = output_ci_image.extent()
                 width = int(extent.size.width)
@@ -503,5 +509,6 @@ def decode_dng_coreimage(
         return preview_image
                 
     except Exception as e:
-        logger.error(f"Error decoding {file}: {e}", exc_info=True)
+        logger.warning(f"Error decoding {file}: {e}")
+        logger.debug(f"Error decoding {file}: {e}", exc_info=True)
         raise

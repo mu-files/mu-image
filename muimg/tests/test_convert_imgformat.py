@@ -13,8 +13,12 @@ import numpy as np
 import pytest
 
 from muimg.imgio import convert_imgformat, convert_imgformat_to_stream
-from muimg.dngio_coreimage import core_image_available
-from conftest import TEST_FILES_DIR, OUTPUT_COMPARISON_DIR, compute_diff_stats
+from conftest import (
+    TEST_FILES_DIR,
+    OUTPUT_COMPARISON_DIR,
+    compute_diff_stats,
+    core_image_available_for_tests,
+)
 
 
 # Path to the muimg CLI module
@@ -33,7 +37,9 @@ P99_DIFF_THRESHOLD = 4.0   # P99 difference as percentage (0-100 scale)
 
 
 @pytest.mark.skipif(not TEST_DNG.exists(), reason="Test DNG file not found")
-@pytest.mark.skipif(not core_image_available, reason="Core Image not available")
+@pytest.mark.skipif(
+    not core_image_available_for_tests(), reason="Core Image not available"
+)
 def test_convert_imgformat_sdk_vs_coreimage():
     """Test that SDK and Core Image pipelines produce similar results.
     
