@@ -124,14 +124,11 @@ class DngPage(TiffPage):
         if tag is None:
             return False
         return tag.value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
-    
-    @property
-    def xmp(self) -> XmpMetadata:
-        """XMP metadata from this page (or parent if not found locally)."""
-        xmp_string = self.get_tag('XMP', str)
-        if xmp_string is None:
-            xmp_string = ''
-        return XmpMetadata(xmp_string)
+
+    def get_xmp(self) -> Optional[XmpMetadata]:
+        """Return XMP metadata as an `XmpMetadata` object."""
+        xmp = self.get_tag("XMP")
+        return xmp
     
     def get_tag(
         self, 
@@ -174,12 +171,18 @@ class DngPage(TiffPage):
         
         if raw_tag is None:
             return None
-        
-        effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
+
+        if tag_name == "XMP" and return_type is None:
+            xmp_string = decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, None, str)
+            if xmp_string is None:
+                xmp_string = ""
+            return XmpMetadata(xmp_string)
+
         shape_spec = None
         if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
             shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
-        
+
+        effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
         return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
 
     def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
@@ -649,6 +652,15 @@ class DngFile(TiffFile):
         
         return None
 
+    def _forward_main_page(self, method_name: str, *args, require=None, **kwargs):
+        page = self.get_main_page()
+        if page is None:
+            return None
+        if require is not None and not require(page):
+            return None
+        method = getattr(page, method_name)
+        return method(*args, **kwargs)
+
     def get_ifd0_tags(self) -> MetadataTags:
         """Return a copy of IFD0 tags as a MetadataTags object."""
         if not self.pages:
@@ -658,61 +670,55 @@ class DngFile(TiffFile):
             tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
         return tags
 
+    def get_tag(
+        self,
+        tag: Union[str, int],
+        return_type: Optional[type] = None,
+    ) -> Optional[Any]:
+        """See `DngPage.get_tag`."""
+        return self._forward_main_page(
+            "get_tag",
+            tag,
+            return_type=return_type,
+        )
+
+    def get_xmp(self) -> Optional[XmpMetadata]:
+        """See `DngPage.get_xmp`."""
+        return self._forward_main_page("get_xmp")
+
+    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+        """See `DngPage.get_time_from_tags`."""
+        return self._forward_main_page(
+            "get_time_from_tags",
+            time_type=time_type,
+        )
+
     def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[tuple[np.ndarray, str]]:
-        """Get CFA data from the main page.
-
-        This is a convenience wrapper around `get_main_page()` +
-        `DngPage.get_cfa(stage=...)`.
-
-        Args:
-            stage: Which stage of the raw pipeline to return.
-
-        Returns:
-            Tuple of (raw_cfa_array, cfa_pattern_string), or None if no suitable
-            page is found.
-        """
-        page = self.get_main_page()
-        if page is None or not page.is_cfa:
-            return None
-        return page.get_cfa(stage=stage)
+        """See `DngPage.get_cfa`."""
+        return self._forward_main_page(
+            "get_cfa",
+            stage=stage,
+            require=lambda p: p.is_cfa,
+        )
 
     def get_linear_raw(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[np.ndarray]:
-        """Get linear raw data from the main page.
-
-        This is a convenience wrapper around `get_main_page()` +
-        `DngPage.get_linear_raw(stage=...)`.
-
-        Args:
-            stage: Which stage of the raw pipeline to return.
-
-        Returns:
-            Linear raw array, or None if no suitable page is found.
-        """
-        page = self.get_main_page()
-        if page is None or not page.is_linear_raw:
-            return None
-        return page.get_linear_raw(stage=stage)
+        """See `DngPage.get_linear_raw`."""
+        return self._forward_main_page(
+            "get_linear_raw",
+            stage=stage,
+            require=lambda p: p.is_linear_raw,
+        )
 
     def get_camera_rgb(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
-        """Get the camera-RGB intermediate from the main page.
-
-        Convenience wrapper around `get_main_page()` + `DngPage.get_camera_rgb(...)`.
-
-        Args:
-            demosaic_algorithm: Demosaic algorithm to use when the main page is CFA.
-
-        Returns:
-            Camera RGB array (H, W, 3) float32 in [0, 1], or None if no suitable
-            main page is found.
-        """
-        page = self.get_main_page()
-        if page is None:
-            return None
-        return page.get_camera_rgb(demosaic_algorithm=demosaic_algorithm)
+        """See `DngPage.get_camera_rgb`."""
+        return self._forward_main_page(
+            "get_camera_rgb",
+            demosaic_algorithm=demosaic_algorithm,
+        )
 
     def render(
         self,
@@ -720,14 +726,9 @@ class DngFile(TiffFile):
         demosaic_algorithm: str = "RCD",
         strict: bool = True,
     ) -> "np.ndarray | None":
-        """Render the main page to RGB.
-
-        Convenience wrapper around `get_main_page()` + `DngPage.render(...)`.
-        """
-        page = self.get_main_page()
-        if page is None:
-            return None
-        return page.render(
+        """See `DngPage.render`."""
+        return self._forward_main_page(
+            "render",
             output_dtype=output_dtype,
             demosaic_algorithm=demosaic_algorithm,
             strict=strict,
@@ -909,6 +910,9 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
     
     if "CalibrationIlluminant1" not in dng_tags:
         dng_tags.add_tag("CalibrationIlluminant1", 0)  # 0 = Unknown
+    
+    if "AsShotNeutral" not in dng_tags:
+        dng_tags.add_tag("AsShotNeutral", [1.0, 1.0, 1.0])
 
     def _as_version_tuple(value) -> Optional[tuple[int, int, int, int]]:
         if value is None:

@@ -9,6 +9,8 @@ from .tiff_metadata import (
     XmpMetadata,
     decode_tag_value,
     get_cfa_pattern_codes,
+    xmp_packet_to_metadata,
+    xmp_metadata_to_packet,
 )
 from .dngio import (
     DngFile,
@@ -33,6 +35,9 @@ from .raw_render import (
     uvUCS_to_xy,
     xy_to_temp_tint,
     xy_to_uvUCS,
+    supported_xmp_from_dict,
+    supported_xmp_to_dict,
+    add_supported_xmp_from_dict,
 )
 
 __all__ = [
@@ -45,6 +50,8 @@ __all__ = [
     'XmpMetadata',
     'decode_tag_value',
     'get_cfa_pattern_codes',
+    'xmp_packet_to_metadata',
+    'xmp_metadata_to_packet',
     'UnsupportedDNGTagError',
     'colortemp_to_uv',
     'convert_imgformat',
@@ -56,6 +63,9 @@ __all__ = [
     'ProcessingPipeline',
     'SequenceEncodePipeline',
     'SplineCurve',
+    'add_supported_xmp_from_dict',
+    'supported_xmp_from_dict',
+    'supported_xmp_to_dict',
     'temp_tint_to_xy',
     'uv_to_colortemp',
     'uvUCS_to_xy',

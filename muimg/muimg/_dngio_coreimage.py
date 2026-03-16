@@ -446,8 +446,10 @@ def decode_dng_coreimage(
                 # Otherwise use XMP default if available, requested, and xmp_name is specified
                 elif xmp_name is not None and use_xmp:
                     main_page = dng_file.get_main_page()
-                    if main_page is not None and main_page.xmp.has_prop(xmp_name):
-                        options[option_name] = main_page.xmp.get_prop(xmp_name, value_type)
+                    if main_page is not None:
+                        xmp = main_page.get_xmp()
+                        if xmp is not None and xmp.has_prop(xmp_name):
+                            options[option_name] = xmp.get_prop(xmp_name, value_type)
 
             # Add noise reduction to both luminance and color (convention)
             if ("noise_reduction" in processing_params and 

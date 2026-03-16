@@ -958,7 +958,6 @@ class MetadataTags:
     
     def __init__(self):
         self._tags: Dict[int, MetadataTags.StoredTag] = {}
-        self._xmp_data = None  # Store XMP dict for retrieval
 
     def __iter__(self):
         """Iterate over tags, sorted by tag code.
@@ -999,15 +998,12 @@ class MetadataTags:
         """Create a deep copy of this MetadataTags instance.
         
         Returns:
-            New MetadataTags instance with copied tags and XMP data.
+            New MetadataTags instance with copied tags.
         """
         import copy
         new_instance = MetadataTags()
         # Deep copy the tags dict to avoid shared mutable objects
         new_instance._tags = copy.deepcopy(self._tags)
-        # Copy XMP data if present
-        if self._xmp_data is not None:
-            new_instance._xmp_data = self._xmp_data.copy()
         return new_instance
 
     def add_tag(self, tag_name: str, value: Any) -> None:
@@ -1200,6 +1196,25 @@ class MetadataTags:
             if offset_str:
                 self.add_tag(offset_tag, offset_str)
 
+    def add_xmp(self, xmp: 'XmpMetadata') -> None:
+        """Add XMP metadata to the DNG file.
+        
+        Args:
+            xmp: XmpMetadata instance to serialize and write to XMP tag.
+        
+        Example:
+            xmp = XmpMetadata.from_attributes({
+                'crs:Temperature': '3900',
+                'crs:Tint': '0',
+                'crs:Exposure2012': '-0.5',
+                'tiff:Orientation': '1'
+            })
+            tags.add_xmp(xmp)
+        """
+        xmp_bytes = xmp_metadata_to_packet(xmp)
+        self.add_tag("XMP", xmp_bytes)
+        logger.debug(f"Added XMP metadata with {len(xmp._attributes)} properties")
+
     def extend(self, other: Optional[MetadataTags]) -> None:
         """Add all tags from another MetadataTags instance."""
         if other is None:
@@ -1209,6 +1224,11 @@ class MetadataTags:
         # Dict update - other's tags override existing
         for code, tag in other._tags.items():
             self.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+
+    def get_xmp(self) -> Optional['XmpMetadata']:
+        """Return XMP metadata as an `XmpMetadata` object."""
+        xmp = self.get_tag("XMP")
+        return xmp
 
     def get_tag(
         self, 
@@ -1244,6 +1264,14 @@ class MetadataTags:
         # Dict lookup
         if tag_id in self._tags:
             t = self._tags[tag_id]
+            
+            # Special handling for XMP tag: return XmpMetadata when no explicit return_type
+            if tag_name == "XMP" and return_type is None:
+                xmp_string = decode_tag_value(tag_name, t.value, t.dtype, None, str)
+                if xmp_string is None:
+                    xmp_string = ""
+                return XmpMetadata(xmp_string)
+            
             effective_type = return_type or get_native_type(t.dtype, t.count)
             
             # Use registry spec shape only if count matches tag
@@ -1305,253 +1333,166 @@ class MetadataTags:
                 print(f"Captured at {capture_time}")
         """
         return _get_time_impl(self, time_type)
-    
-    def get_xmp(self) -> Optional[Dict[str, Union[str, int, float]]]:
-        """Get a copy of the XMP data dictionary that was added via add_xmp().
-        
-        Returns:
-            Copy of XMP properties dictionary, or None if add_xmp() was never called.
-            Returns a copy to prevent inadvertent modification of internal state.
-        """
-        return self._xmp_data.copy() if self._xmp_data is not None else None
-
-    def add_xmp(self, xmp_data: Dict[str, Union[str, int, float]]) -> None:
-        """
-        Add XMP metadata to this MetadataTags instance.
-        
-        Args:
-            xmp_data: Dictionary of XMP properties to add. Keys can include namespace 
-                     prefixes (e.g., 'crs:Temperature', 'tiff:Orientation') or will 
-                     default to 'crs:' namespace if no prefix is provided.
-                     
-        Example:
-            camera_metadata.add_xmp({
-                'Temperature': 5500,
-                'Tint': 0,
-                'Exposure2012': -0.5,
-                'tiff:Orientation': 1
-            })
-        """
-        from datetime import datetime
-        
-        # Generate timestamp in ISO format with timezone
-        now = datetime.now()
-        iso_date = now.strftime('%Y-%m-%dT%H:%M:%S')
-        
-        # Try to format timezone as -07:00 instead of -0700
-        try:
-            iso_date_tz = now.astimezone().strftime('%Y-%m-%dT%H:%M:%S%z')
-            # Insert colon in timezone offset: -0700 -> -07:00
-            if len(iso_date_tz) >= 5 and iso_date_tz[-5] in '+-':
-                iso_date_tz = iso_date_tz[:-2] + ':' + iso_date_tz[-2:]
-        except:
-            iso_date_tz = None
-        
-        # Build XMP properties with namespace handling
-        xmp_props = []
-        
-        # Add standard metadata - minimal required set
-        standard_props = {
-            'tiff:Orientation': '1',
-            'dc:format': 'image/dng',
-            'xmp:CreatorTool': 'muimg',
-            'xmp:ModifyDate': iso_date,
-            'crs:Version': '17.4',
-            'crs:ProcessVersion': '15.4',
-        }
-        
-        # Add user-provided data
-        sequence_props = {}
-        bag_props = {}  # New: for dc:subject style bags
-        for key, value in xmp_data.items():
-            # Auto-prepend 'crs:' if no namespace specified
-            if ':' not in key:
-                key = f'crs:{key}'
-            
-            # Check for bag structure (dc:subject with list of strings)
-            if key == 'dc:subject' and isinstance(value, list):
-                bag_props[key] = value
-            # Check if value has coordinate pairs (list of 2-tuples) - needs <rdf:Seq> structure
-            elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
-                # SplineCurve object with points attribute (normalized 0-1)
-                # Convert to 8-bit for XMP compatibility
-                points = getattr(value, 'points')
-                sequence_props[key] = [(int(x * 255), int(y * 255)) for x, y in points]
-            elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
-                # Direct list of 2-tuples
-                sequence_props[key] = value
-            else:
-                standard_props[key] = str(value)
-        
-        # Format as XMP attributes
-        for prop, value in standard_props.items():
-            xmp_props.append(f'    {prop}="{value}"')
-        
-        # Build sequence structures for coordinate pairs
-        sequence_xml = ""
-        if sequence_props:
-            sequence_elements = []
-            for prop_name, points in sequence_props.items():
-                # Extract namespace and property name for XML element
-                if ':' in prop_name:
-                    namespace, prop = prop_name.split(':', 1)
-                    element_name = f'{namespace}:{prop}'
-                else:
-                    element_name = prop_name
-                
-                # Build rdf:li items from coordinate pairs
-                sequence_items = []
-                for x, y in points:
-                    sequence_items.append(f'      <rdf:li>{x}, {y}</rdf:li>')
-                
-                sequence_elements.append(f'''    <{element_name}>
-     <rdf:Seq>
-{chr(10).join(sequence_items)}
-     </rdf:Seq>
-    </{element_name}>''')
-            
-            sequence_xml = chr(10).join(sequence_elements)
-
-        # Build bag structures for dc:subject style keywords
-        bag_xml = ""
-        if bag_props:
-            bag_elements = []
-            for prop_name, items in bag_props.items():
-                # Extract namespace and property name for XML element
-                if ':' in prop_name:
-                    namespace, prop = prop_name.split(':', 1)
-                    element_name = f'{namespace}:{prop}'
-                else:
-                    element_name = prop_name
-                
-                # Build rdf:li items from list of strings
-                bag_items = []
-                for item in items:
-                    bag_items.append(f'      <rdf:li>{item}</rdf:li>')
-                
-                bag_elements.append(f'''    <{element_name}>
-     <rdf:Bag>
-{chr(10).join(bag_items)}
-     </rdf:Bag>
-    </{element_name}>''')
-            
-            bag_xml = chr(10).join(bag_elements)
-
-        # Create minimal XMP structure based on Lightroom format
-        xmp_content = f'''<?xpacket begin="\\357\\273\\277" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="muimg XMP Core">
- <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about=""
-    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
-    xmlns:dc="http://purl.org/dc/elements/1.1/"
-    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-{chr(10).join(xmp_props)}>{sequence_xml}{bag_xml}
-  </rdf:Description>
- </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>'''
-        
-        xmp_bytes = xmp_content.encode('utf-8')
-        self.add_tag("XMP", xmp_bytes)
-        
-        # Store the XMP data for later retrieval
-        self._xmp_data = xmp_data.copy()
-        
-        logger.debug(f"Added XMP metadata with {len(xmp_data)} user properties")
-
 
 
 class XmpMetadata:
-    """Encapsulates XMP metadata parsing and querying for DNG files."""
+    """Encapsulates XMP metadata parsing and querying for DNG files.
     
-    def __init__(self, xmp_string: str):
+    Read-only by convention: use factory methods to create new instances.
+    """
+    
+    def __init__(self, xmp_string: str = ""):
         """Initialize XmpMetadata from an XMP string.
         
         Args:
-            xmp_string: Raw XMP metadata string from DNG file
+            xmp_string: Raw XMP metadata string from DNG file (default: empty)
         """
         self._attributes = self._parse(xmp_string)
     
-    def _parse(self, xmp_data: str) -> Dict[str, str]:
+    @classmethod
+    def from_attributes(cls, attributes: Dict[str, Any]) -> 'XmpMetadata':
+        """Create XmpMetadata from a dict of fully-qualified XMP attributes.
+        
+        Args:
+            attributes: Dict mapping XMP property names to values.
+                       Keys should be fully qualified (e.g., 'crs:Temperature', 'dc:subject').
+                       Values can be:
+                       - str for scalar properties
+                       - list[str] for rdf:Bag properties (e.g., dc:subject)
+                       - list[tuple[float, float]] for tone curves
+        
+        Returns:
+            New XmpMetadata instance
+        """
+        instance = cls.__new__(cls)
+        instance._attributes = dict(attributes)
+        return instance
+    
+    def merged(self, other: Union['XmpMetadata', Dict[str, Any]]) -> 'XmpMetadata':
+        """Create a new XmpMetadata with attributes from this instance and other.
+        
+        Args:
+            other: XmpMetadata instance or dict of attributes to merge.
+                  Attributes in 'other' override attributes in 'self'.
+        
+        Returns:
+            New XmpMetadata instance with merged attributes
+        """
+        merged_attrs = dict(self._attributes)
+        if isinstance(other, XmpMetadata):
+            merged_attrs.update(other._attributes)
+        else:
+            merged_attrs.update(other)
+        return XmpMetadata.from_attributes(merged_attrs)
+    
+    def _parse(self, xmp_data: str) -> Dict[str, Any]:
         """Parse all XMP attributes and sequences from the XMP metadata into a dictionary.
         
         Returns:
-            Dictionary mapping attribute names to values. Simple attributes map to strings
-            (e.g., 'crs:Temperature': '3900'), while sequences map to comma-separated values
-            (e.g., 'crs:ToneCurvePV2012': '0,0,56,30,124,125,188,212,255,255')
+            Dictionary mapping attribute names to values.
+
+            - Scalar attributes map to strings (e.g., 'crs:Temperature': '3900').
+            - rdf:Bag maps to list[str] (e.g., 'dc:subject': ['key=val', ...]).
+            - rdf:Seq maps to structured lists.
+              - For ToneCurve* sequences: list[tuple[float, float]] normalized to 0..1.
+              - For other sequences: list[str] of raw rdf:li text.
         """
         if not xmp_data:
             return {}
-        
-        import re
-        
-        # Dictionary to store all XMP attributes
-        attributes = {}
-        
-        # Pattern to match XML attributes in the format namespace:attribute="value"
-        # This captures attributes like crs:Temperature="3900", tiff:Orientation="1", etc.
-        attribute_pattern = r'([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*)="([^"]*?)"'
-        
-        # Find all attribute matches
-        matches = re.findall(attribute_pattern, xmp_data)
-        
-        for attr_name, attr_value in matches:
-            attributes[attr_name] = attr_value
-        
 
-        # Pattern to match rdf:Seq structures like ToneCurvePV2012
-        # Use flexible matching that handles any whitespace/newlines between tags
-        # Matches: <crs:PropertyName>...<rdf:Seq>...<rdf:li>...</rdf:li>...</rdf:Seq>...</crs:PropertyName>
-        # - exclude rdf: namespace
-        seq_pattern = r'<((?!rdf:)[a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Seq>(.*?)</rdf:Seq>.*?</\1>'
-        seq_matches = re.findall(seq_pattern, xmp_data, re.DOTALL)
-        
-        logger.debug(f"Found {len(seq_matches)} XMP sequences")
-        for seq_name, seq_content in seq_matches:
-            # Extract all rdf:li values from the sequence
-            li_pattern = r'<rdf:li>([^<]*?)</rdf:li>'
-            li_values = re.findall(li_pattern, seq_content)
-            
-            # Handle different sequence types based on content structure
-            processed_values = []
-            for li_value in li_values:
-                # Split by comma and clean up values
-                coords = [coord.strip() for coord in li_value.split(',')]
-                
-                if len(coords) == 1:
-                    # Single value (e.g., ColorVariance: "-50.000000")
-                    processed_values.append(coords[0])
-                elif len(coords) == 2:
-                    # Coordinate pair (e.g., ToneCurve: "0, 0")
-                    # Normalize 8-bit values to 0-1 for tone curve properties
-                    if 'ToneCurve' in seq_name:
+        import re
+        from defusedxml import ElementTree as DET
+
+        attributes: Dict[str, Any] = {}
+
+        rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+
+        uri_to_prefix = {
+            rdf_uri: "rdf",
+            "http://ns.adobe.com/camera-raw-settings/1.0/": "crs",
+            "http://purl.org/dc/elements/1.1/": "dc",
+            "http://ns.adobe.com/tiff/1.0/": "tiff",
+            "http://ns.adobe.com/xap/1.0/": "xmp",
+            "adobe:ns:meta/": "x",
+        }
+
+        def _qname_to_prefixed_name(qname: str) -> Optional[str]:
+            if not qname:
+                return None
+            if qname[0] != "{":
+                return qname
+            try:
+                uri, local = qname[1:].split("}", 1)
+            except ValueError:
+                return None
+
+            prefix = uri_to_prefix.get(uri)
+            if prefix is None:
+                return None
+            return f"{prefix}:{local}"
+
+        def _parse_seq_li_values(prop_name: str, li_values: list[str]) -> Any:
+            if "ToneCurve" in prop_name:
+                points: list[tuple[float, float]] = []
+                for li_value in li_values:
+                    coords = [coord.strip() for coord in li_value.split(",")]
+                    if len(coords) != 2:
+                        continue
+                    try:
                         x_norm = float(coords[0]) / 255.0
                         y_norm = float(coords[1]) / 255.0
-                        processed_values.append(f"({x_norm},{y_norm})")
-                    else:
-                        processed_values.append(f"({coords[0]},{coords[1]})")
+                    except ValueError:
+                        continue
+                    points.append((x_norm, y_norm))
+                return points
+
+            # Default: keep raw rdf:li text as a list
+            return li_values
+
+        try:
+            xmp_text = xmp_data
+            if isinstance(xmp_text, bytes):
+                xmp_text = xmp_text.decode("utf-8", errors="replace")
+            xmp_text = xmp_text.lstrip("\ufeff")
+            xmp_text = re.sub(r"<\?xpacket[^>]*\?>", "", xmp_text)
+            root = DET.fromstring(xmp_text)
+        except Exception as e:
+            logger.debug(f"Failed to parse XMP XML: {e}")
+            return {}
+
+        descriptions = root.findall(f".//{{{rdf_uri}}}Description")
+        for desc in descriptions:
+            for attr_qname, attr_value in desc.attrib.items():
+                if attr_qname.startswith("{http://www.w3.org/2000/xmlns/}"):
+                    continue
+
+                attr_name = _qname_to_prefixed_name(attr_qname)
+                if attr_name is None:
+                    continue
+                attributes[attr_name] = str(attr_value)
+
+            for prop_elem in list(desc):
+                prop_name = _qname_to_prefixed_name(prop_elem.tag)
+                if prop_name is None:
+                    continue
+
+                seq = prop_elem.find(f".//{{{rdf_uri}}}Seq")
+                bag = prop_elem.find(f".//{{{rdf_uri}}}Bag")
+
+                container = seq if seq is not None else bag
+                if container is None:
+                    continue
+
+                li_elems = container.findall(f"{{{rdf_uri}}}li")
+                li_values = [li.text.strip() for li in li_elems if li.text and li.text.strip()]
+                if not li_values:
+                    continue
+
+                if seq is not None:
+                    attributes[prop_name] = _parse_seq_li_values(prop_name, li_values)
                 else:
-                    # Multiple values (e.g., PointColors with 19 values)
-                    # Store as bracketed list for clarity
-                    processed_values.append(f"[{','.join(coords)}]")
-            
-            attributes[seq_name] = ','.join(processed_values)
-        
-        # Pattern to match rdf:Bag structures like dc:subject
-        # Matches: <dc:subject>...<rdf:Bag>...<rdf:li>...</rdf:li>...</rdf:Bag>...</dc:subject>
-        bag_pattern = r'<([a-zA-Z][a-zA-Z0-9]*:[a-zA-Z][a-zA-Z0-9]*?)>.*?<rdf:Bag>(.*?)</rdf:Bag>.*?</\1>'
-        bag_matches = re.findall(bag_pattern, xmp_data, re.DOTALL)
-        
-        logger.debug(f"Found {len(bag_matches)} XMP bags")
-        for bag_name, bag_content in bag_matches:
-            # Extract all rdf:li values from the bag
-            li_pattern = r'<rdf:li>([^<]*?)</rdf:li>'
-            li_values = re.findall(li_pattern, bag_content)
-            
-            # Store as comma-separated values (same as sequences)
-            attributes[bag_name] = ','.join(li_values)
-        
+                    attributes[prop_name] = li_values
+
         logger.debug(f"Parsed {len(attributes)} XMP attributes")
         return attributes
     
@@ -1591,6 +1532,11 @@ class XmpMetadata:
         
         if return_type is None:
             return value
+
+        if return_type is list:
+            if isinstance(value, list):
+                return value
+            return [value]
         
         # Try to convert using the type's constructor
         try:
@@ -1598,3 +1544,106 @@ class XmpMetadata:
         except (ValueError, TypeError) as e:
             logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type}: {e}")
             return None
+
+
+# =============================================================================
+# XMP Codec Functions
+# =============================================================================
+
+def xmp_packet_to_metadata(packet: Union[bytes, str]) -> XmpMetadata:
+    """Parse an XMP packet (bytes or string) into XmpMetadata.
+    
+    Args:
+        packet: Raw XMP packet from TIFF XMP tag (bytes or string)
+    
+    Returns:
+        XmpMetadata instance
+    """
+    if isinstance(packet, bytes):
+        packet = packet.decode('utf-8', errors='replace')
+    return XmpMetadata(packet)
+
+
+def xmp_metadata_to_packet(xmp: XmpMetadata) -> bytes:
+    """Serialize XmpMetadata to an XMP packet (bytes).
+    
+    Args:
+        xmp: XmpMetadata instance to serialize
+    
+    Returns:
+        XMP packet as UTF-8 encoded bytes
+    """
+    # Build XMP XML structure
+    xmp_lines = [
+        '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>',
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 5.4.0">',
+        '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+        '    <rdf:Description rdf:about=""',
+    ]
+    
+    # Namespace declarations
+    namespaces = {
+        'crs': 'http://ns.adobe.com/camera-raw-settings/1.0/',
+        'dc': 'http://purl.org/dc/elements/1.1/',
+        'tiff': 'http://ns.adobe.com/tiff/1.0/',
+        'xmp': 'http://ns.adobe.com/xap/1.0/',
+    }
+    
+    for prefix, uri in namespaces.items():
+        xmp_lines.append(f'        xmlns:{prefix}="{uri}"')
+    
+    # Separate scalar attributes from structured (Bag/Seq)
+    scalar_attrs = {}
+    structured_props = {}
+    
+    for key, value in xmp._attributes.items():
+        if isinstance(value, list):
+            structured_props[key] = value
+        else:
+            scalar_attrs[key] = value
+    
+    # Add scalar attributes to Description element
+    if scalar_attrs:
+        for key, value in scalar_attrs.items():
+            # Escape XML special characters
+            escaped_value = str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+            xmp_lines.append(f'        {key}="{escaped_value}"')
+    
+    xmp_lines.append('    >')
+    
+    # Add structured properties (Bag/Seq)
+    for key, value in structured_props.items():
+        if not value:
+            continue
+        
+        # Determine if this is a Seq or Bag
+        # ToneCurve properties use Seq, dc:subject uses Bag
+        is_seq = 'ToneCurve' in key or isinstance(value[0], tuple)
+        container_type = 'Seq' if is_seq else 'Bag'
+        
+        xmp_lines.append(f'      <{key}>')
+        xmp_lines.append(f'        <rdf:{container_type}>')
+        
+        for item in value:
+            if isinstance(item, tuple) and len(item) == 2:
+                # Tone curve point: convert normalized 0-1 floats back to 0-255 integers
+                x_int = int(round(item[0] * 255.0))
+                y_int = int(round(item[1] * 255.0))
+                xmp_lines.append(f'          <rdf:li>{x_int}, {y_int}</rdf:li>')
+            else:
+                # String item
+                escaped_item = str(item).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                xmp_lines.append(f'          <rdf:li>{escaped_item}</rdf:li>')
+        
+        xmp_lines.append(f'        </rdf:{container_type}>')
+        xmp_lines.append(f'      </{key}>')
+    
+    xmp_lines.extend([
+        '    </rdf:Description>',
+        '  </rdf:RDF>',
+        '</x:xmpmeta>',
+        '<?xpacket end="w"?>',
+    ])
+    
+    xmp_string = '\n'.join(xmp_lines)
+    return xmp_string.encode('utf-8')

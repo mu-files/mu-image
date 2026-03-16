@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import logging
 
-from typing import Dict
+from typing import Dict, Union
 from . import _vng
 from .tiff_metadata import get_cfa_pattern_codes
 
@@ -2209,3 +2209,155 @@ def _render_camera_rgb(
     except Exception as e:
         logger.error(f"Error rendering DNG: {e}", exc_info=True)
         raise
+
+
+# =============================================================================
+# Pipeline-Specific XMP Conversion Helpers
+# =============================================================================
+
+def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
+    """Convert pipeline-supported dict to XmpMetadata.
+    
+    This handles the limited subset of XMP properties used by the rendering pipeline.
+    
+    Args:
+        props: Dict with pipeline-supported keys:
+               - Unqualified names (auto-prepended with 'crs:'): 'Temperature', 'Tint', etc.
+               - Fully qualified names: 'tiff:Orientation', 'dc:subject', etc.
+               Values can be:
+               - Scalar: str, int, float
+               - SplineCurve objects (for tone curves)
+               - List of 2-tuples (for tone curves)
+               - List of strings (for dc:subject bags)
+    
+    Returns:
+        XmpMetadata instance
+    """
+    from datetime import datetime
+    from .tiff_metadata import XmpMetadata
+    
+    # Build attributes dict with proper namespacing and type conversion
+    attributes = {}
+    
+    # Add standard metadata
+    now = datetime.now()
+    iso_date = now.strftime('%Y-%m-%dT%H:%M:%S')
+    
+    attributes['tiff:Orientation'] = '1'
+    attributes['dc:format'] = 'image/dng'
+    attributes['xmp:CreatorTool'] = 'muimg'
+    attributes['xmp:ModifyDate'] = iso_date
+    attributes['crs:Version'] = '17.4'
+    attributes['crs:ProcessVersion'] = '15.4'
+    
+    # Process user-provided properties
+    for key, value in props.items():
+        # Auto-prepend 'crs:' if no namespace specified
+        if ':' not in key:
+            key = f'crs:{key}'
+        
+        # Handle different value types
+        if key == 'dc:subject' and isinstance(value, list):
+            # List of strings for dc:subject bag
+            attributes[key] = value
+        elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
+            # SplineCurve object with points attribute (normalized 0-1)
+            attributes[key] = getattr(value, 'points')
+        elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
+            # Direct list of 2-tuples (tone curve points)
+            attributes[key] = [(float(x), float(y)) for x, y in value]
+        else:
+            # Scalar value
+            attributes[key] = str(value)
+    
+    return XmpMetadata.from_attributes(attributes)
+
+
+def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile', 'DngPage']) -> dict:
+    """Convert XMP metadata to pipeline-supported dict.
+    
+    Extracts only the properties used by the rendering pipeline.
+    Accepts multiple source types and handles XMP extraction internally.
+    
+    Args:
+        source: One of:
+               - XmpMetadata instance
+               - MetadataTags instance (calls get_xmp())
+               - DngFile instance (calls get_xmp())
+               - DngPage instance (calls get_xmp())
+    
+    Returns:
+        Dict with pipeline-supported properties (unqualified names for crs: namespace).
+        Returns empty dict if source has no XMP metadata.
+    """
+    from .tiff_metadata import XmpMetadata
+    
+    # Handle None early
+    if source is None:
+        return {}
+    
+    # Extract XmpMetadata from various source types
+    if isinstance(source, XmpMetadata):
+        xmp = source
+    elif hasattr(source, 'get_xmp'):
+        # MetadataTags, DngFile, or DngPage with get_xmp() method
+        xmp = source.get_xmp()
+        if xmp is None:
+            return {}
+    else:
+        raise TypeError(f"Unsupported source type: {type(source).__name__}")
+    
+    result = {}
+    
+    # List of supported properties (crs: namespace, unqualified in output)
+    # Currently supported properties with pixel processing implementations:
+    supported_crs_props = [
+        'Temperature', 'Tint', 'Exposure2012',
+        'ToneCurvePV2012', 'ToneCurvePV2012Red', 'ToneCurvePV2012Green', 'ToneCurvePV2012Blue'
+    ]
+    
+    # TODO: Add pixel processing implementations for these additional properties:
+    # 'Contrast2012', 'Highlights2012', 'Shadows2012', 'Whites2012', 'Blacks2012',
+    # 'Texture', 'Clarity2012', 'Dehaze', 'Vibrance', 'Saturation'
+    
+    for prop in supported_crs_props:
+        if xmp.has_prop(prop):
+            value = xmp.get_prop(prop)
+            if value is not None:
+                result[prop] = value
+    
+    # Handle dc:subject (keep qualified name)
+    if xmp.has_prop('dc:subject'):
+        dc_subject = xmp.get_prop('dc:subject', list)
+        if dc_subject:
+            result['dc:subject'] = dc_subject
+    
+    # Handle tiff:Orientation (keep qualified name)
+    if xmp.has_prop('tiff:Orientation'):
+        orientation = xmp.get_prop('tiff:Orientation')
+        if orientation is not None:
+            result['tiff:Orientation'] = orientation
+    
+    return result
+
+
+def add_supported_xmp_from_dict(metadata_tags: 'MetadataTags', props: dict) -> None:
+    """Add pipeline-supported XMP properties to MetadataTags.
+    
+    Convenience helper that combines supported_xmp_from_dict() and add_xmp().
+    
+    Args:
+        metadata_tags: MetadataTags instance to add XMP to
+        props: Dict with pipeline-supported keys (see supported_xmp_from_dict for format)
+    
+    Example:
+        muimg.add_supported_xmp_from_dict(camera_metadata, {
+            'Temperature': 5800,
+            'Tint': 0,
+            'Exposure2012': -0.5,
+            'ToneCurvePV2012': tone_curve,
+            'dc:subject': ['key_in=0.18']
+        })
+    """
+    xmp_metadata = supported_xmp_from_dict(props)
+    metadata_tags.add_xmp(xmp_metadata)
