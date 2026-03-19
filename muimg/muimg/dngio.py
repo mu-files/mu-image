@@ -1321,15 +1321,25 @@ def write_dng(
         include_ifd0_tags: bool,
         subifds_count: int,
         subfiletype: int,
+        page_tags: Optional[MetadataTags] = None,
+        inherit_page_tags_from_source: bool = True,
     ) -> None:
         # Get allowlist of tags to copy from source files (bounded to registry)
         allowed_tags_local = _get_dng_copy_tags(exclude_compression=False)
         if skip_tags:
             allowed_tags_local -= skip_tags
 
-        # Get page tags and filter to allowed tags
+        # Get page tags with inheritance logic
+        if inherit_page_tags_from_source:
+            page_tags_unfiltered = page.get_page_tags()
+            if page_tags is not None:
+                page_tags_unfiltered.extend(page_tags)
+        else:
+            page_tags_unfiltered = page_tags if page_tags is not None else MetadataTags()
+        
+        # Filter to allowed tags
         raw_ifd_tags_local = _filter_metadata_tags(
-            page.get_page_tags(),
+            page_tags_unfiltered,
             allowed_names=allowed_tags_local,
         )
         _ensure_float_tags_be(raw_ifd_tags_local)
@@ -1443,6 +1453,8 @@ def write_dng(
                 include_ifd0_tags=include_ifd0_tags,
                 subifds_count=subifds_count,
                 subfiletype=subfiletype,
+                page_tags=spec.page_tags,
+                inherit_page_tags_from_source=spec.inherit_page_tags_from_source,
             )
             return
 
@@ -1723,11 +1735,37 @@ def _generate_preview(
     return downscaled
 
 
+# Tags applied during stage1 and stage2 processing that must be stripped
+# when extracting processed data via get_camera_rgb()
+STAGE1_STAGE2_TAGS = {
+    # Stage1 tags (CFA-specific)
+    "ColumnInterleaveFactor",
+    "RowInterleaveFactor",
+    "CFAPattern",
+    "CFARepeatPatternDim",
+    "CFAPlaneColor",
+    "CFALayout",
+    "BayerGreenSplit",
+    # Stage2 tags
+    "BlackLevel",
+    "BlackLevelRepeatDim",
+    "BlackLevelDeltaH",
+    "BlackLevelDeltaV",
+    "WhiteLevel",
+    "LinearizationTable",
+    "ActiveArea",
+    "OpcodeList2",
+    # Digest tags (invalid after transformation)
+    "NewRawImageDigest",
+    "RawDataUniqueID",
+}
+
+
 def copy_dng(
     source_file: Union[str, Path],
     destination_file: Union[str, Path],
     *,
-    crop: Optional[Tuple[int, int, int, int]] = None,
+    scale: float = 1.0,
     demosaic: bool = False,
     demosaic_algorithm: str = "RCD",
     strip_tags: Optional[set[str]] = None,
@@ -1739,15 +1777,15 @@ def copy_dng(
     Args:
         source_file: Path to source DNG file
         destination_file: Path to destination DNG file
-        crop: Optional crop rectangle as (top, left, bottom, right) in pixels
-        demosaic: If True, convert CFA to LINEAR_RAW (errors if already LINEAR_RAW)
+        scale: Scale factor for image (default: 1.0). If != 1.0, forces conversion to LINEAR_RAW
+        demosaic: If True, convert CFA to LINEAR_RAW
         demosaic_algorithm: Demosaic algorithm to use (default: RCD)
         strip_tags: Optional set of tag names to strip from output
         generate_preview: If True, generate preview/thumbnail
         preview_max_dimension: Maximum dimension for preview (default: 1024)
     
     Raises:
-        ValueError: If input is invalid or crop coordinates are out of bounds
+        ValueError: If input is invalid
         RuntimeError: If DNG processing fails
     """
     source_path = Path(source_file)
@@ -1764,100 +1802,112 @@ def copy_dng(
     if page is None:
         raise RuntimeError(f"No main page found in DNG file: {source_path}")
     
-    is_cfa = page.is_cfa
-    is_linear_raw = page.is_linear_raw
-    
-    if not (is_cfa or is_linear_raw):
+    if not (page.is_cfa or page.is_linear_raw):
         raise ValueError(
             f"Main page must be CFA or LINEAR_RAW, got photometric={page.photometric_name}"
         )
     
-    if demosaic:
-        if is_linear_raw:
-            logger.info("Image already demosaiced (LINEAR_RAW), skipping demosaic step")
-            raw_data = page.get_linear_raw()
-            if raw_data is None:
-                raise RuntimeError("Failed to extract LINEAR_RAW data")
-            photometric = "linear_raw"
-        else:
-            logger.info(f"Demosaicing CFA to LINEAR_RAW using {demosaic_algorithm}")
-            cfa_result = page.get_cfa()
-            if cfa_result is None:
-                raise RuntimeError("Failed to extract CFA data")
-            cfa_data, cfa_pattern_str = cfa_result
-            
-            demosaiced_rgb = raw_render.demosaic(
-                cfa_data, cfa_pattern_str, algorithm=demosaic_algorithm
-            )
-            raw_data = demosaiced_rgb
-            photometric = "linear_raw"
-
-        cfa_pattern = None
-    else:
-        if is_cfa:
-            cfa_result = page.get_cfa()
-            if cfa_result is None:
-                raise RuntimeError("Failed to extract CFA data")
-            raw_data, cfa_pattern = cfa_result
-            photometric = "cfa"
-        else:
-            raw_data = page.get_linear_raw()
-            if raw_data is None:
-                raise RuntimeError("Failed to extract LINEAR_RAW data")
-            photometric = "linear_raw"
-            cfa_pattern = None
+    # Determine if we need to transform the image
+    # Only demosaic if the input is actually CFA
+    needs_demosaic = demosaic and page.is_cfa
+    needs_transform = needs_demosaic or scale != 1.0
     
-    if crop is not None:
-        logger.info(f"Applying crop: {crop}")
+    if needs_transform:
+        # Extract processed camera RGB data
+        logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
+        raw_data = page.get_camera_rgb(demosaic_algorithm)
+        if raw_data is None:
+            raise RuntimeError("Failed to extract camera RGB")
         
-        # For CFA data, enforce even pixel boundaries to preserve Bayer pattern
-        if photometric == "cfa":
-            top, left, bottom, right = crop
-            if top % 2 != 0 or left % 2 != 0:
-                raise ValueError(
-                    f"CFA crop top and left must be even to preserve Bayer pattern, "
-                    f"got top={top}, left={left}"
-                )
-            height = bottom - top
-            width = right - left
-            if height % 2 != 0 or width % 2 != 0:
-                raise ValueError(
-                    f"CFA crop dimensions (height={height}, width={width}) must be even "
-                    f"to preserve Bayer pattern"
-                )
+        # Strip all stage1/stage2 tags since they've been applied
+        strip_tags = (strip_tags or set()) | STAGE1_STAGE2_TAGS
+
+        # Apply scaling if needed
+        if scale != 1.0:
+            # When scaling, apply crop first, then scale
+            crop_origin = page.get_tag("DefaultCropOrigin")
+            crop_size = page.get_tag("DefaultCropSize")
+            
+            if crop_origin is not None and crop_size is not None:
+                logger.info(f"Applying crop: origin={crop_origin}, size={crop_size}")
+                crop_x = int(crop_origin[0])
+                crop_y = int(crop_origin[1])
+                crop_w = int(crop_size[0])
+                crop_h = int(crop_size[1])
+                raw_data = raw_data[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+            
+            logger.info(f"Applying scale: {scale}")
+            import cv2
+            h, w = raw_data.shape[:2]
+            new_h, new_w = int(h * scale), int(w * scale)
+            raw_data = cv2.resize(raw_data, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+            # If scaling, also strip crop tags since we've applied the crop
+            strip_tags = strip_tags | {"DefaultCropOrigin", "DefaultCropSize"}
         
-        raw_data = _crop_raw_data(raw_data, crop)
+        # Convert float32 [0, 1] to uint16 for DNG storage
+        raw_data = (raw_data * 65535.0).clip(0, 65535).astype(np.uint16)
+        
+        # Create IfdSpec with numpy array
+        ifd_spec = IfdSpec(
+            data=raw_data,
+            bits_per_pixel=16,
+            photometric="linear_raw",
+            cfa_pattern=None,
+            page_tags=page.get_page_tags(),
+        )
+    else:
+        # No transformation - use page copy API to preserve everything
+        logger.info("Using page copy (no transformation)")
+        ifd_spec = IfdSpec(
+            data=page,
+            inherit_ifd0_tags_from_source=True,
+            inherit_page_tags_from_source=True,
+        )
+    
+    # Extract IFD0 and page tags once - same tags used for all writes
+    ifd0_tags = page.get_ifd0_tags()
     
     preview_image = None
     if generate_preview:
-        logger.info(
-            f"Generating preview (max dimension: {preview_max_dimension})"
+        # Two-pass approach: write to memory first, generate preview from that,
+        # then write final DNG with preview
+        logger.info("Generating preview from transformed image (two-pass)")
+        
+        # First pass: write transformed DNG to memory
+        temp_buffer = io.BytesIO()
+        write_dng(
+            destination_file=temp_buffer,
+            ifd0_tags=ifd0_tags,
+            subifds=[ifd_spec],
+            preview_image=None,
+            skip_tags=strip_tags,
         )
+        
+        # Load the in-memory DNG and generate preview from it
+        temp_buffer.seek(0)
+        temp_dng = DngFile(temp_buffer)
+        temp_page = temp_dng.get_main_page()
+        if temp_page is None:
+            raise RuntimeError("Failed to load temporary DNG for preview generation")
+        
+        logger.info(f"Generating preview (max dimension: {preview_max_dimension})")
         preview_image = _generate_preview(
-            page, preview_max_dimension, demosaic_algorithm
+            temp_page, preview_max_dimension, demosaic_algorithm
         )
-    
-    bits_per_pixel = int(page.bitspersample)
-    
-    # When cropping, skip dimension-dependent tags that are no longer valid
-    if crop is not None:
-        crop_invalid_tags = {"ActiveArea", "DefaultCropOrigin", "DefaultCropSize"}
-        if strip_tags is None:
-            strip_tags = crop_invalid_tags
-        else:
-            strip_tags = strip_tags | crop_invalid_tags
-    
-    ifd_spec = IfdSpec(
-        data=raw_data,
-        bits_per_pixel=bits_per_pixel,
-        photometric=photometric,
-        cfa_pattern=cfa_pattern,
-        page_tags=page.get_page_tags(),
-    )
+        
+        # Second pass: use temp_page for image data (efficiency), but cached metadata
+        # to avoid flattened SubIFD tags from temp DNG's IFD0
+        ifd_spec = IfdSpec(
+            data=temp_page,
+            page_tags=page.get_page_tags(),
+            inherit_ifd0_tags_from_source=False,
+            inherit_page_tags_from_source=False,
+        )
     
     write_dng(
         destination_file=dest_path,
-        ifd0_tags=page.get_ifd0_tags(),
+        ifd0_tags=ifd0_tags,
         subifds=[ifd_spec],
         preview_image=preview_image,
         skip_tags=strip_tags,

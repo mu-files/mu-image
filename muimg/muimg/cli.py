@@ -67,7 +67,7 @@ def convert_dng(
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
 @click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
-def convert_image_cmd(input_file, output_file, bit_depth):
+def convert_image(input_file, output_file, bit_depth):
     """Convert image file to another format."""
     import numpy as np
     
@@ -81,6 +81,72 @@ def convert_image_cmd(input_file, output_file, bit_depth):
     )
 
     sys.exit(0 if success else 1)
+
+
+@cli.command(name="copy-dng")
+@click.argument("input_dng", type=click.Path(exists=True))
+@click.argument("output_dng", type=click.Path())
+@click.option(
+    "--scale",
+    type=float,
+    default=1.0,
+    help="Scale factor for image (default: 1.0). If != 1.0, forces conversion to LINEAR_RAW",
+)
+@click.option(
+    "--demosaic", is_flag=True, help="Convert CFA to LINEAR_RAW (demosaic)"
+)
+@click.option(
+    "--demosaic-algorithm",
+    type=str,
+    default="RCD",
+    help="Demosaic algorithm (RCD, VNG, OPENCV_EA)",
+)
+@click.option(
+    "--strip-tag",
+    multiple=True,
+    help="Tag name to strip (can be specified multiple times)",
+)
+@click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
+@click.option(
+    "--preview-max-dim",
+    type=int,
+    default=1024,
+    help="Maximum preview dimension (default: 1024)",
+)
+def copy_dng(
+    input_dng,
+    output_dng,
+    scale,
+    demosaic,
+    demosaic_algorithm,
+    strip_tag,
+    preview,
+    preview_max_dim,
+):
+    """Copy DNG file with optional transformations.
+    
+    Apply scale, demosaic (CFA to LINEAR_RAW), strip tags, and/or generate preview.
+    """
+    from . import dngio
+    
+    strip_tags_set = set(strip_tag) if strip_tag else None
+    
+    try:
+        dngio.copy_dng(
+            source_file=input_dng,
+            destination_file=output_dng,
+            scale=scale,
+            demosaic=demosaic,
+            demosaic_algorithm=demosaic_algorithm,
+            strip_tags=strip_tags_set,
+            generate_preview=preview,
+            preview_max_dimension=preview_max_dim,
+        )
+        click.echo(f"Successfully copied DNG to {output_dng}")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        logger.exception("Failed to copy DNG")
+        sys.exit(1)
 
 
 @cli.group(name="google-photos")
