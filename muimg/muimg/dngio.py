@@ -600,34 +600,12 @@ class DngPage(TiffPage):
                 logger.error("Failed to extract camera RGB from DNG")
                 return None
 
-            # Build rendering parameters dict from XMP and overrides
-            extracted_params = {}
-            
-            # Extract supported XMP properties if use_xmp is True
-            if use_xmp:
-                xmp = self.get_xmp()
-                if xmp is not None:
-                    # Temperature/Tint: only if WhiteBalance is NOT "As Shot"
-                    # "As Shot" means use DNG tags (AsShotNeutral/AsShotWhiteXY)
-                    # Any other value means use custom XMP Temperature/Tint
-                    wb = xmp.get_prop('WhiteBalance', str)
-                    if wb != "As Shot":
-                        if xmp.has_prop('Temperature'):
-                            extracted_params['temperature'] = xmp.get_prop('Temperature', float)
-                        if xmp.has_prop('Tint'):
-                            extracted_params['tint'] = xmp.get_prop('Tint', float)
-                    
-                    # Exposure2012
-                    if xmp.has_prop('Exposure2012'):
-                        extracted_params['exposure'] = xmp.get_prop('Exposure2012', float)
-                    
-                    # ToneCurvePV2012
-                    if xmp.has_prop('ToneCurvePV2012'):
-                        extracted_params['tone_curve'] = xmp.get_prop('ToneCurvePV2012', list)
+            # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
+            extracted_params = raw_render.supported_xmp_to_dict(self) if use_xmp else {}
             
             # Merge rendering_params overrides (with validation)
             if rendering_params is not None:
-                supported_params = {'temperature', 'tint', 'exposure', 'tone_curve'}
+                supported_params = {'Temperature', 'Tint', 'Exposure2012', 'ToneCurvePV2012'}
                 for key, value in rendering_params.items():
                     if key not in supported_params:
                         raise ValueError(f"Unsupported rendering parameter: {key}. Supported: {supported_params}")

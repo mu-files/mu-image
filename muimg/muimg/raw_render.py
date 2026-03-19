@@ -1922,10 +1922,10 @@ def _render_camera_rgb(
         camera_neutral = None
         white_xy_override = None
         
-        if rendering_params and 'temperature' in rendering_params:
+        if rendering_params and 'Temperature' in rendering_params:
             # Use temperature/tint from rendering_params
-            temp = rendering_params['temperature']
-            tint = rendering_params.get('tint', 0.0)
+            temp = rendering_params['Temperature']
+            tint = rendering_params.get('Tint', 0.0)
             white_xy_override = temp_tint_to_xy(temp, tint)
         else:
             # Use DNG tags
@@ -2118,8 +2118,8 @@ def _render_camera_rgb(
         
         # Add user exposure from rendering_params if provided
         user_exposure = 0.0
-        if rendering_params and 'exposure' in rendering_params:
-            user_exposure = rendering_params['exposure']
+        if rendering_params and 'Exposure2012' in rendering_params:
+            user_exposure = rendering_params['Exposure2012']
         
         exposure = total_baseline_exposure + user_exposure
         exposure_white = 1.0 / (2.0 ** max(0.0, exposure))
@@ -2205,8 +2205,8 @@ def _render_camera_rgb(
         custom_curve = None
         
         # Priority 1: rendering_params tone_curve
-        if rendering_params and 'tone_curve' in rendering_params:
-            tone_curve_param = rendering_params['tone_curve']
+        if rendering_params and 'ToneCurvePV2012' in rendering_params:
+            tone_curve_param = rendering_params['ToneCurvePV2012']
             # tone_curve_param can be SplineCurve or list of points
             if isinstance(tone_curve_param, SplineCurve):
                 spline = tone_curve_param
@@ -2372,11 +2372,67 @@ def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
     return XmpMetadata.from_attributes(attributes)
 
 
+def _is_tone_curve_linear(curve: list) -> bool:
+    """Check if a tone curve is linear (identity curve).
+    
+    Args:
+        curve: List of (x, y) tuples representing the tone curve
+    
+    Returns:
+        True if the curve is linear [(0,0), (1,1)], False otherwise
+    """
+    return (len(curve) == 2 and 
+            curve[0] == (0.0, 0.0) and 
+            curve[1] == (1.0, 1.0))
+
+
+def _is_noop_xmp_value(prop_name: str, value, xmp: 'XmpMetadata') -> bool:
+    """Check if an XMP property value is a NOOP (no-operation/default).
+    
+    NOOP values should not be copied to rendering params as they have no effect:
+    - Exposure2012 = 0 (no exposure adjustment)
+    - WhiteBalance = "As Shot" (use DNG tags, not XMP temp/tint)
+    - ToneCurvePV2012* = [(0,0), (1,1)] (linear/identity curve)
+    
+    Note: get_prop() without return_type returns raw strings from XMP,
+    so this function handles string-to-numeric conversion.
+    
+    Args:
+        prop_name: Property name (Temperature, Tint, Exposure2012, etc.)
+        value: Property value to check (string from XMP)
+        xmp: XmpMetadata object (needed for WhiteBalance gating)
+    
+    Returns:
+        True if value is a NOOP and should be skipped
+    """
+    if prop_name in ("Temperature", "Tint"):
+        # Temperature/Tint are NOOP if WhiteBalance is "As Shot"
+        wb = xmp.get_prop("WhiteBalance", str)
+        if wb == "As Shot":
+            return True
+        return False
+    
+    elif prop_name == "Exposure2012":
+        # Exposure is NOOP if zero (value is string from XMP)
+        return abs(float(value)) <= 0.0001
+    
+    elif prop_name.startswith("ToneCurvePV2012"):
+        # Tone curves are NOOP if linear [(0,0), (1,1)]
+        return _is_tone_curve_linear(value)
+    
+    return False
+
+
 def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile', 'DngPage']) -> dict:
     """Convert XMP metadata to pipeline-supported dict.
     
     Extracts only the properties used by the rendering pipeline.
     Accepts multiple source types and handles XMP extraction internally.
+    
+    NOOP values are filtered out:
+    - Exposure2012 = 0 (no exposure adjustment)
+    - WhiteBalance = "As Shot" (use DNG tags, not XMP temp/tint)
+    - ToneCurvePV2012* = [(0,0), (1,1)] (linear/identity curve)
     
     Args:
         source: One of:
@@ -2422,8 +2478,12 @@ def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile'
     for prop in supported_crs_props:
         if xmp.has_prop(prop):
             value = xmp.get_prop(prop)
-            if value is not None:
-                result[prop] = value
+            if value is not None and not _is_noop_xmp_value(prop, value, xmp):
+                # Convert to proper type: float for numeric properties, keep list for tone curves
+                if prop in ('Temperature', 'Tint', 'Exposure2012'):
+                    result[prop] = float(value)
+                else:
+                    result[prop] = value  # ToneCurve* already parsed as list[tuple]
     
     # Handle dc:subject (keep qualified name)
     if xmp.has_prop('dc:subject'):
