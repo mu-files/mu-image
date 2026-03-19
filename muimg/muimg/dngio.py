@@ -1887,7 +1887,7 @@ def decode_dng(
         demosaic_algorithm: Demosaic algorithm for Python pipeline - "RCD" (default), "VNG", etc.
         strict: If True, raise error on unsupported DNG tags (Python pipeline only)
         use_coreimage_if_available: If True, use Core Image pipeline when available on macOS
-        use_xmp: Whether to read XMP metadata for processing defaults (Core Image only)
+        use_xmp: Whether to read XMP metadata for processing defaults (both pipelines)
         **processing_params: Core Image processing parameters:
             - temperature: Color temperature in Kelvin
             - tint: Tint adjustment
@@ -1929,6 +1929,7 @@ def decode_dng(
         output_dtype=output_dtype,
         demosaic_algorithm=demosaic_algorithm,
         strict=strict,
+        use_xmp=use_xmp,
     )
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")

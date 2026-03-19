@@ -93,7 +93,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 1. muimg render_dng -> {stem}_ifd{n}_muimg.tif
             try:
-                decoded = page.render(output_dtype=np.uint16, strict=False)
+                decoded = page.render(output_dtype=np.uint16, strict=False, use_xmp=False)
                 if decoded is None:
                     pytest.fail(f"page.render returned None for IFD {i}")
                 tifffile.imwrite(str(muimg_tif), decoded)
@@ -115,7 +115,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
             roundtrip_decoded = None
             try:
-                roundtrip_decoded = muimg.decode_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
+                roundtrip_decoded = muimg.decode_dng(roundtrip_dng, output_dtype=np.uint16, strict=False, use_xmp=False)
                 if roundtrip_decoded is not None:
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")
