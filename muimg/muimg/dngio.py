@@ -546,7 +546,46 @@ class DngPage(TiffPage):
         output_dtype: type = np.uint16,
         demosaic_algorithm: str = "RCD",
         strict: bool = True,
+        use_xmp: bool = True,
+        rendering_params: dict = None,
     ) -> "np.ndarray | None":
+        """Render DNG page to RGB image with optional XMP-based adjustments.
+        
+        Demosaics CFA data (if needed), applies color matrices, tone curves, and
+        converts to output color space. Supports XMP metadata for white balance,
+        exposure, and tone curve adjustments.
+        
+        Args:
+            output_dtype: Output data type (np.uint8 or np.uint16)
+            demosaic_algorithm: Algorithm for CFA demosaicing ("RCD", "VNG", "AHD")
+            strict: If True, raise error on unsupported DNG tags. If False, warn and continue.
+            use_xmp: If True, extract rendering parameters from XMP metadata (Temperature,
+                    Tint, Exposure2012, ToneCurvePV2012). Default True.
+            rendering_params: Optional dict to override rendering parameters. Supported keys:
+                - 'temperature': White balance temperature in Kelvin (float)
+                - 'tint': White balance tint adjustment (float)
+                - 'exposure': Exposure compensation in stops (float)
+                - 'tone_curve': Tone curve as SplineCurve or list of (x,y) points
+                Values in rendering_params override XMP metadata.
+        
+        Returns:
+            Rendered RGB image as numpy array with shape (H, W, 3) and specified dtype,
+            or None if rendering fails.
+        
+        Raises:
+            UnsupportedDNGTagError: If strict=True and unsupported tags are encountered
+            ValueError: If rendering_params contains unsupported parameter names
+        
+        Example:
+            # Use XMP metadata from DNG file
+            rgb = page.render()
+            
+            # Override white balance
+            rgb = page.render(rendering_params={'temperature': 6500, 'tint': 10})
+            
+            # Disable XMP, use only DNG tags
+            rgb = page.render(use_xmp=False)
+        """
         from . import raw_render
 
         try:
@@ -561,10 +600,44 @@ class DngPage(TiffPage):
                 logger.error("Failed to extract camera RGB from DNG")
                 return None
 
+            # Build rendering parameters dict from XMP and overrides
+            extracted_params = {}
+            
+            # Extract supported XMP properties if use_xmp is True
+            if use_xmp:
+                xmp = self.get_xmp()
+                if xmp is not None:
+                    # Temperature/Tint: only if WhiteBalance is NOT "As Shot"
+                    # "As Shot" means use DNG tags (AsShotNeutral/AsShotWhiteXY)
+                    # Any other value means use custom XMP Temperature/Tint
+                    wb = xmp.get_prop('WhiteBalance', str)
+                    if wb != "As Shot":
+                        if xmp.has_prop('Temperature'):
+                            extracted_params['temperature'] = xmp.get_prop('Temperature', float)
+                        if xmp.has_prop('Tint'):
+                            extracted_params['tint'] = xmp.get_prop('Tint', float)
+                    
+                    # Exposure2012
+                    if xmp.has_prop('Exposure2012'):
+                        extracted_params['exposure'] = xmp.get_prop('Exposure2012', float)
+                    
+                    # ToneCurvePV2012
+                    if xmp.has_prop('ToneCurvePV2012'):
+                        extracted_params['tone_curve'] = xmp.get_prop('ToneCurvePV2012', list)
+            
+            # Merge rendering_params overrides (with validation)
+            if rendering_params is not None:
+                supported_params = {'temperature', 'tint', 'exposure', 'tone_curve'}
+                for key, value in rendering_params.items():
+                    if key not in supported_params:
+                        raise ValueError(f"Unsupported rendering parameter: {key}. Supported: {supported_params}")
+                    extracted_params[key] = value
+
             result = raw_render._render_camera_rgb(
                 page=self,
                 rgb_camera=rgb_camera,
                 output_dtype=output_dtype,
+                rendering_params=extracted_params if extracted_params else None,
             )
             return result
 
@@ -725,6 +798,8 @@ class DngFile(TiffFile):
         output_dtype: type = np.uint16,
         demosaic_algorithm: str = "RCD",
         strict: bool = True,
+        use_xmp: bool = True,
+        rendering_params: dict = None,
     ) -> "np.ndarray | None":
         """See `DngPage.render`."""
         return self._forward_main_page(
@@ -732,6 +807,8 @@ class DngFile(TiffFile):
             output_dtype=output_dtype,
             demosaic_algorithm=demosaic_algorithm,
             strict=strict,
+            use_xmp=use_xmp,
+            rendering_params=rendering_params,
         )
 
 

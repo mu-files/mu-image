@@ -1460,7 +1460,14 @@ class XmpMetadata:
             logger.debug(f"Failed to parse XMP XML: {e}")
             return {}
 
-        descriptions = root.findall(f".//{{{rdf_uri}}}Description")
+        # Only parse top-level Description elements, not nested ones (e.g., inside crs:Look)
+        # Use ./ instead of .// to avoid recursive search
+        rdf_root = root.find(f".//{{{rdf_uri}}}RDF")
+        if rdf_root is None:
+            logger.debug("No rdf:RDF element found in XMP")
+            return {}
+        
+        descriptions = rdf_root.findall(f"./{{{rdf_uri}}}Description")
         for desc in descriptions:
             for attr_qname, attr_value in desc.attrib.items():
                 if attr_qname.startswith("{http://www.w3.org/2000/xmlns/}"):

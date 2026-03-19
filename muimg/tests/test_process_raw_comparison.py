@@ -116,6 +116,7 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
             output_dtype=np.uint16,
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
+            use_xmp=False,  # Match dng_validate behavior (no XMP processing)
         )
     elapsed_ms = (time.perf_counter() - t0) * 1000
     
@@ -263,6 +264,7 @@ def test_stripped_dng_comparison(dng_path, output_dir):
             output_dtype=np.uint16,
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
+            use_xmp=False,  # Match dng_validate behavior (no XMP processing)
         )
     elapsed_ms = (time.perf_counter() - t0) * 1000
     
@@ -287,6 +289,7 @@ def test_stripped_dng_comparison(dng_path, output_dir):
                 output_dtype=np.uint16,
                 demosaic_algorithm="DNGSDK_BILINEAR",
                 strict=False,
+                use_xmp=False,  # Match dng_validate behavior (no XMP processing)
             )
         assert original_result is not None, "MUIMG returned None on original DNG"
         
