@@ -113,6 +113,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 3. Try muimg decode on the roundtrip DNG
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
+            roundtrip_decoded = None
             try:
                 roundtrip_decoded = muimg.decode_dng(roundtrip_dng, output_dtype=np.uint16, strict=False)
                 if roundtrip_decoded is not None:
@@ -123,16 +124,35 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             except Exception as e:
                 print(f"    -> muimg roundtrip decode failed: {e}")
             
+            # 3a. Compare original muimg decode vs roundtrip muimg decode
+            if roundtrip_decoded is not None and decoded.shape == roundtrip_decoded.shape:
+                stats = compute_diff_stats(decoded, roundtrip_decoded)
+                print(f"    original vs roundtrip (muimg): mean={stats['mean']:.4f}%, max={stats['max']:.4f}%")
+                # Fail if roundtrip through muimg produces significantly different results
+                if stats['mean'] > 1.0:
+                    pytest.fail(
+                        f"Roundtrip through muimg produced different results: "
+                        f"mean={stats['mean']:.2f}%, max={stats['max']:.2f}%"
+                    )
+            elif roundtrip_decoded is not None:
+                print(f"    Shape mismatch: original {decoded.shape} vs roundtrip {roundtrip_decoded.shape}")
+            
             # 4. dng_validate on roundtrip DNG -> {stem}_ifd{n}_dngvalidate.tif
             dngvalidate_out = run_dng_validate(roundtrip_dng, dngvalidate_base)
             if dngvalidate_out is None:
                 pytest.fail(f"dng_validate failed on {roundtrip_dng.name}")
             print(f"    -> {dngvalidate_base.name}.tif ({dngvalidate_out.shape})")
             
-            # 4. Compare muimg vs dng_validate (same source - roundtrip DNG)
+            # 5. Compare original muimg vs dng_validate (both decoding roundtrip DNG)
             if decoded.shape == dngvalidate_out.shape:
                 stats = compute_diff_stats(decoded, dngvalidate_out)
                 print(f"    muimg vs dng_validate: mean={stats['mean']:.4f}%, max={stats['max']:.4f}%")
+                # Fail if muimg and dng_validate produce very different results
+                if stats['mean'] > 1.0:
+                    pytest.fail(
+                        f"muimg and dng_validate produced very different results: "
+                        f"mean={stats['mean']:.2f}%, max={stats['max']:.2f}%"
+                    )
             else:
                 print(f"    Shape mismatch: muimg {decoded.shape} vs dng_validate {dngvalidate_out.shape}")
         

@@ -2239,7 +2239,7 @@ def _render_camera_rgb(
         # dng_1d_concatenate(exposureTone, ToneCurve) - bake exposure into LUT
         base_curve = custom_curve if custom_curve is not None else get_acr3_curve(4096)
         
-        # Remap 1: bake exposure_tone into curve (always)
+        # Remap 1: bake exposure_tone into curve
         combined_curve = remap_curve_input(
             base_curve, lambda x: exposure_tone(x, exposure)
         )

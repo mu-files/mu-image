@@ -16,6 +16,8 @@ from tifffile import COMPRESSION, PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, T
 from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
 from dataclasses import dataclass
 
+from . import raw_render
+
 logger = logging.getLogger(__name__)
 
 # tifffile followups:
@@ -89,6 +91,13 @@ class DngPage(TiffPage):
         src = self.ifd0 or self
         tags = MetadataTags()
         for tag in src.tags.values():
+            tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+        return tags
+    
+    def get_page_tags(self) -> MetadataTags:
+        """Return a copy of all page-level tags as a MetadataTags object."""
+        tags = MetadataTags()
+        for tag in self.tags.values():
             tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
         return tags
     
@@ -320,9 +329,6 @@ class DngPage(TiffPage):
     def _stage2(
         self, stage1: "DngPage._RawStage", apply_ops: bool = True
     ) -> "DngPage._RawStage":
-        # Local import to avoid a module-level circular import between dngio/raw_render.
-        from . import raw_render
-
         photometric = self.photometric_name
         if photometric == "CFA":
             samples_per_pixel = 1
@@ -533,8 +539,6 @@ class DngPage(TiffPage):
         if cfa_pattern is None:
             cfa_pattern = "RGGB"
 
-        from . import raw_render
-
         rgb_camera = raw_render.demosaic(
             cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm
         )
@@ -586,8 +590,6 @@ class DngPage(TiffPage):
             # Disable XMP, use only DNG tags
             rgb = page.render(use_xmp=False)
         """
-        from . import raw_render
-
         try:
             unsupported = raw_render.validate_dng_tags(self, strict=strict)
             if unsupported and not strict:
@@ -1091,6 +1093,9 @@ class IfdSpec:
     jxl_distance: Optional[float] = None
     jxl_effort: Optional[int] = None
     decompress: bool = False
+    page_tags: Optional[MetadataTags] = None  # Page-level tags (ActiveArea, BlackLevel, etc.)
+    inherit_ifd0_tags_from_source: bool = True  # Copy IFD0 tags from source DngPage
+    inherit_page_tags_from_source: bool = True  # Copy page tags from source DngPage
 
 
 def write_dng(
@@ -1100,7 +1105,6 @@ def write_dng(
     subifds: List[IfdSpec],
     preview_image: Optional[np.ndarray] = None,
     skip_tags: Optional[set[str]] = None,
-    inherit_ifd0_tags_from_source: bool = True,
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -1111,14 +1115,12 @@ def write_dng(
         subifds: Ordered list of images to write. If preview_image is provided,
             all entries are written as SubIFDs under IFD0. If preview_image is
             not provided, the first entry becomes IFD0 and the rest become
-            SubIFDs.
+            SubIFDs. Each IfdSpec can specify inherit_ifd0_tags_from_source
+            and inherit_page_tags_from_source to control tag inheritance.
         preview_image: Optional preview/thumbnail image
         skip_tags: Optional set of tag names to skip when copying from source
             DNG pages (advanced; used to strip problematic or invalid tags when
             `subifds` contain `DngPage` objects).
-        inherit_ifd0_tags_from_source: When `subifds` contain `DngPage` objects,
-            copy IFD0-level tags from the source file's IFD0 and then apply
-            `ifd0_tags` as overrides.
     """
 
     if not subifds:
@@ -1181,13 +1183,12 @@ def write_dng(
 
     source_ifd0_tags = MetadataTags()
 
-    # Convenience: if caller passes DngPage(s), copy IFD0-level tags from the
-    # source file's IFD0 by default and apply ifd0_tags as overrides.
-    if inherit_ifd0_tags_from_source:
-        for spec in subifds:
-            if isinstance(spec.data, DngPage):
-                source_ifd0_tags = spec.data.get_ifd0_tags()
-                break
+    # Convenience: if caller passes DngPage(s) with inherit_ifd0_tags_from_source=True,
+    # copy IFD0-level tags from the source file's IFD0 and apply ifd0_tags as overrides.
+    for spec in subifds:
+        if isinstance(spec.data, DngPage) and spec.inherit_ifd0_tags_from_source:
+            source_ifd0_tags = spec.data.get_ifd0_tags()
+            break
 
     merged_ifd0_tags = source_ifd0_tags
     if ifd0_tags is not None:
@@ -1222,6 +1223,7 @@ def write_dng(
         jxl_distance_local: Optional[float],
         jxl_effort_local: Optional[int],
         *,
+        page_tags: Optional[MetadataTags],
         include_ifd0_tags: bool,
         subifds_count: int,
         subfiletype: int,
@@ -1250,8 +1252,11 @@ def write_dng(
         else:
             processed_raw_data_local = raw_data
 
-        # Build tag set
-        raw_ifd_tags_local = MetadataTags()
+        # Build tag set - start with page tags if provided
+        if page_tags is not None:
+            raw_ifd_tags_local = page_tags.copy()
+        else:
+            raw_ifd_tags_local = MetadataTags()
 
         if include_ifd0_tags:
             raw_ifd_tags_local.extend(prepared_ifd0_tags.copy())
@@ -1322,10 +1327,11 @@ def write_dng(
         if skip_tags:
             allowed_tags_local -= skip_tags
 
-        raw_ifd_tags_local = MetadataTags()
-        for tag in page.tags.values():
-            if tag.name in allowed_tags_local:
-                raw_ifd_tags_local.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+        # Get page tags and filter to allowed tags
+        raw_ifd_tags_local = _filter_metadata_tags(
+            page.get_page_tags(),
+            allowed_names=allowed_tags_local,
+        )
         _ensure_float_tags_be(raw_ifd_tags_local)
 
         if include_ifd0_tags:
@@ -1450,6 +1456,15 @@ def write_dng(
                 )
             page = spec.data
             bits_per_pixel_local = int(page.bitspersample)
+            
+            # Extract page tags with inheritance logic
+            if spec.inherit_page_tags_from_source:
+                page_tags_unfiltered = page.get_page_tags()
+                if spec.page_tags is not None:
+                    page_tags_unfiltered.extend(spec.page_tags)
+            else:
+                page_tags_unfiltered = spec.page_tags
+            
             if page.is_cfa:
                 cfa_result = page.get_cfa()
                 if cfa_result is None:
@@ -1470,6 +1485,19 @@ def write_dng(
             jxl_effort_local = None
         else:
             raw_data_local, bits_per_pixel_local, photometric_local, cfa_pattern_local, jxl_distance_local, jxl_effort_local = _decode_array_spec(spec)
+            page_tags_unfiltered = spec.page_tags
+
+        # Filter page tags once before preparing IFD
+        if page_tags_unfiltered is not None:
+            allowed_tags_local = _get_dng_copy_tags(exclude_compression=True)
+            if skip_tags:
+                allowed_tags_local -= skip_tags
+            page_tags_local = _filter_metadata_tags(
+                page_tags_unfiltered,
+                allowed_names=allowed_tags_local,
+            )
+        else:
+            page_tags_local = None
 
         processed, write_args = _prepare_image_ifd(
             raw_data_local,
@@ -1478,6 +1506,7 @@ def write_dng(
             cfa_pattern_local,
             jxl_distance_local,
             jxl_effort_local,
+            page_tags=page_tags_local,
             include_ifd0_tags=include_ifd0_tags,
             subifds_count=subifds_count,
             subfiletype=subfiletype,
@@ -1605,8 +1634,237 @@ def write_dng_from_page(
         subifds=[IfdSpec(data=page, decompress=decompress)],
         preview_image=preview_image,
         skip_tags=skip_tags,
-        inherit_ifd0_tags_from_source=True,
     )
+
+
+def _crop_raw_data(
+    data: np.ndarray, crop_rect: Tuple[int, int, int, int]
+) -> np.ndarray:
+    """Crop raw data array.
+    
+    Args:
+        data: Raw data array (2D for CFA, 3D for LINEAR_RAW)
+        crop_rect: Crop rectangle as (top, left, bottom, right) in pixels
+    
+    Returns:
+        Cropped array
+    
+    Raises:
+        ValueError: If crop coordinates are invalid
+    """
+    top, left, bottom, right = crop_rect
+    
+    if top < 0 or left < 0:
+        raise ValueError(f"Crop coordinates must be non-negative: top={top}, left={left}")
+    
+    if bottom <= top or right <= left:
+        raise ValueError(
+            f"Invalid crop rectangle: bottom ({bottom}) must be > top ({top}), "
+            f"right ({right}) must be > left ({left})"
+        )
+    
+    if data.ndim == 2:
+        height, width = data.shape
+    elif data.ndim == 3:
+        height, width, _ = data.shape
+    else:
+        raise ValueError(f"Unsupported data shape: {data.shape}")
+    
+    if bottom > height or right > width:
+        raise ValueError(
+            f"Crop rectangle ({top}, {left}, {bottom}, {right}) exceeds "
+            f"image dimensions ({height}, {width})"
+        )
+    
+    if data.ndim == 2:
+        return data[top:bottom, left:right]
+    else:
+        return data[top:bottom, left:right, :]
+
+
+def _generate_preview(
+    page: DngPage, max_dimension: int, demosaic_algorithm: str = "RCD"
+) -> np.ndarray:
+    """Generate preview image from DNG page.
+    
+    Args:
+        page: DNG page to render
+        max_dimension: Maximum dimension for preview (downscale by powers of 2)
+        demosaic_algorithm: Algorithm to use for demosaicing
+    
+    Returns:
+        RGB uint8 array suitable for JPEG thumbnail
+    """
+    import cv2
+    
+    rendered = page.render(
+        output_dtype=np.uint8, demosaic_algorithm=demosaic_algorithm
+    )
+    if rendered is None:
+        raise RuntimeError("Failed to render page for preview generation")
+    
+    height, width = rendered.shape[:2]
+    max_dim = max(height, width)
+    
+    if max_dim <= max_dimension:
+        return rendered
+    
+    scale = 1
+    while max_dim / (scale * 2) > max_dimension:
+        scale *= 2
+    
+    new_width = width // scale
+    new_height = height // scale
+    
+    downscaled = cv2.resize(
+        rendered, (new_width, new_height), interpolation=cv2.INTER_AREA
+    )
+    
+    return downscaled
+
+
+def copy_dng(
+    source_file: Union[str, Path],
+    destination_file: Union[str, Path],
+    *,
+    crop: Optional[Tuple[int, int, int, int]] = None,
+    demosaic: bool = False,
+    demosaic_algorithm: str = "RCD",
+    strip_tags: Optional[set[str]] = None,
+    generate_preview: bool = False,
+    preview_max_dimension: int = 1024,
+) -> None:
+    """Copy a DNG file with optional transformations.
+    
+    Args:
+        source_file: Path to source DNG file
+        destination_file: Path to destination DNG file
+        crop: Optional crop rectangle as (top, left, bottom, right) in pixels
+        demosaic: If True, convert CFA to LINEAR_RAW (errors if already LINEAR_RAW)
+        demosaic_algorithm: Demosaic algorithm to use (default: RCD)
+        strip_tags: Optional set of tag names to strip from output
+        generate_preview: If True, generate preview/thumbnail
+        preview_max_dimension: Maximum dimension for preview (default: 1024)
+    
+    Raises:
+        ValueError: If input is invalid or crop coordinates are out of bounds
+        RuntimeError: If DNG processing fails
+    """
+    source_path = Path(source_file)
+    dest_path = Path(destination_file)
+    
+    if not source_path.exists():
+        raise ValueError(f"Source file does not exist: {source_path}")
+    
+    logger.info(f"Copying DNG: {source_path} -> {dest_path}")
+    
+    dng_file = DngFile(source_path)
+    page = dng_file.get_main_page()
+    
+    if page is None:
+        raise RuntimeError(f"No main page found in DNG file: {source_path}")
+    
+    is_cfa = page.is_cfa
+    is_linear_raw = page.is_linear_raw
+    
+    if not (is_cfa or is_linear_raw):
+        raise ValueError(
+            f"Main page must be CFA or LINEAR_RAW, got photometric={page.photometric_name}"
+        )
+    
+    if demosaic:
+        if is_linear_raw:
+            logger.info("Image already demosaiced (LINEAR_RAW), skipping demosaic step")
+            raw_data = page.get_linear_raw()
+            if raw_data is None:
+                raise RuntimeError("Failed to extract LINEAR_RAW data")
+            photometric = "linear_raw"
+        else:
+            logger.info(f"Demosaicing CFA to LINEAR_RAW using {demosaic_algorithm}")
+            cfa_result = page.get_cfa()
+            if cfa_result is None:
+                raise RuntimeError("Failed to extract CFA data")
+            cfa_data, cfa_pattern_str = cfa_result
+            
+            demosaiced_rgb = raw_render.demosaic(
+                cfa_data, cfa_pattern_str, algorithm=demosaic_algorithm
+            )
+            raw_data = demosaiced_rgb
+            photometric = "linear_raw"
+
+        cfa_pattern = None
+    else:
+        if is_cfa:
+            cfa_result = page.get_cfa()
+            if cfa_result is None:
+                raise RuntimeError("Failed to extract CFA data")
+            raw_data, cfa_pattern = cfa_result
+            photometric = "cfa"
+        else:
+            raw_data = page.get_linear_raw()
+            if raw_data is None:
+                raise RuntimeError("Failed to extract LINEAR_RAW data")
+            photometric = "linear_raw"
+            cfa_pattern = None
+    
+    if crop is not None:
+        logger.info(f"Applying crop: {crop}")
+        
+        # For CFA data, enforce even pixel boundaries to preserve Bayer pattern
+        if photometric == "cfa":
+            top, left, bottom, right = crop
+            if top % 2 != 0 or left % 2 != 0:
+                raise ValueError(
+                    f"CFA crop top and left must be even to preserve Bayer pattern, "
+                    f"got top={top}, left={left}"
+                )
+            height = bottom - top
+            width = right - left
+            if height % 2 != 0 or width % 2 != 0:
+                raise ValueError(
+                    f"CFA crop dimensions (height={height}, width={width}) must be even "
+                    f"to preserve Bayer pattern"
+                )
+        
+        raw_data = _crop_raw_data(raw_data, crop)
+    
+    preview_image = None
+    if generate_preview:
+        logger.info(
+            f"Generating preview (max dimension: {preview_max_dimension})"
+        )
+        preview_image = _generate_preview(
+            page, preview_max_dimension, demosaic_algorithm
+        )
+    
+    bits_per_pixel = int(page.bitspersample)
+    
+    # When cropping, skip dimension-dependent tags that are no longer valid
+    if crop is not None:
+        crop_invalid_tags = {"ActiveArea", "DefaultCropOrigin", "DefaultCropSize"}
+        if strip_tags is None:
+            strip_tags = crop_invalid_tags
+        else:
+            strip_tags = strip_tags | crop_invalid_tags
+    
+    ifd_spec = IfdSpec(
+        data=raw_data,
+        bits_per_pixel=bits_per_pixel,
+        photometric=photometric,
+        cfa_pattern=cfa_pattern,
+        page_tags=page.get_page_tags(),
+    )
+    
+    write_dng(
+        destination_file=dest_path,
+        ifd0_tags=page.get_ifd0_tags(),
+        subifds=[ifd_spec],
+        preview_image=preview_image,
+        skip_tags=strip_tags,
+    )
+    
+    logger.info(f"Successfully wrote DNG to {dest_path}")
+
 
 def decode_dng(
     file: Union[str, Path, IO[bytes], DngFile],

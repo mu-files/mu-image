@@ -211,6 +211,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
                 data=level,
                 bits_per_pixel=16,
                 photometric="linear_raw",
+                inherit_ifd0_tags_from_source=False,
             )
             for level in pyramid_levels
         ]
@@ -220,7 +221,6 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
             ifd0_tags=ifd0_tags,
             subifds=subifds,
             preview_image=None,
-            inherit_ifd0_tags_from_source=False,
         )
 
     with muimg.DngFile(out_path) as out_dng:
