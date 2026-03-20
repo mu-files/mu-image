@@ -1629,21 +1629,21 @@ def _xy_to_XYZ(x: float, y: float) -> np.ndarray:
 
 
 def compute_bradford_adaptation(
-    src_x: float, src_y: float, dst_x: float, dst_y: float
+    src_xy: tuple[float, float], dst_xy: tuple[float, float]
 ) -> np.ndarray:
     """Compute Bradford chromatic adaptation matrix between two white points.
 
     This is a pure Python replacement for _raw_render.bradford_adapt().
 
     Args:
-        src_x, src_y: Source white point xy chromaticity
-        dst_x, dst_y: Destination white point xy chromaticity
+        src_xy: Source white point xy chromaticity (x, y)
+        dst_xy: Destination white point xy chromaticity (x, y)
 
     Returns:
         3x3 chromatic adaptation matrix (numpy array, float64)
     """
-    src_XYZ = _xy_to_XYZ(src_x, src_y)
-    dst_XYZ = _xy_to_XYZ(dst_x, dst_y)
+    src_XYZ = _xy_to_XYZ(src_xy[0], src_xy[1])
+    dst_XYZ = _xy_to_XYZ(dst_xy[0], dst_xy[1])
 
     # Transform to cone response domain
     src_cone = _BRADFORD_MATRIX @ src_XYZ
@@ -1801,7 +1801,7 @@ def _compute_camera_to_pcs(color_matrix: np.ndarray, white_xy: tuple) -> np.ndar
     """
     # Bradford adaptation from PCS (D50) to the white point
     # Port of dng_color_spec.cpp: MapWhiteMatrix() (lines 22-57)
-    adaptation = compute_bradford_adaptation(D50_xy[0], D50_xy[1], white_xy[0], white_xy[1])
+    adaptation = compute_bradford_adaptation(D50_xy, white_xy)
     
     # PCS to Camera = ColorMatrix * adaptation
     pcs_to_camera = color_matrix @ adaptation
@@ -2200,25 +2200,10 @@ def _render_camera_rgb(
         # =====================================================================
         t0 = time.perf_counter()
         
-        # Check for tone curve from rendering_params or ProfileToneCurve
+        # Get ProfileToneCurve from DNG tags, or use ACR3 default
         # SDK ref: dng_render.cpp lines 2153-2162
-        custom_curve = None
-        
-        # Priority 1: rendering_params tone_curve
-        if rendering_params and 'ToneCurvePV2012' in rendering_params:
-            tone_curve_param = rendering_params['ToneCurvePV2012']
-            # tone_curve_param can be SplineCurve or list of points
-            if isinstance(tone_curve_param, SplineCurve):
-                spline = tone_curve_param
-            else:
-                # Assume it's a list of (x, y) tuples
-                spline = SplineCurve(tone_curve_param)
-            
-            lut_x = np.linspace(0.0, 1.0, 4096)
-            custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
-            logger.debug(f"Using tone curve from rendering_params")
-        # Priority 2: ProfileToneCurve from DNG tags
-        elif page.get_tag("ProfileToneCurve") is not None:
+        profile_curve = None
+        if page.get_tag("ProfileToneCurve") is not None:
             profile_tone_curve = page.get_tag("ProfileToneCurve")
             if len(profile_tone_curve) >= 4:
                 # ProfileToneCurve is array of 2N values: [x0, y0, x1, y1, ...]
@@ -2229,17 +2214,16 @@ def _render_camera_rgb(
                 try:
                     spline = SplineCurve(points)
                     lut_x = np.linspace(0.0, 1.0, 4096)
-                    custom_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
+                    profile_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
                     logger.debug(f"Using ProfileToneCurve with {n_points} control points")
                 except ValueError as e:
                     # Fallback to ACR3 if curve is invalid (e.g., non-monotonic x)
                     logger.warning(f"ProfileToneCurve invalid ({e}), using ACR3")
         
+        base_curve = profile_curve if profile_curve is not None else get_acr3_curve(4096)
+        
         # SDK ref: dng_render.cpp lines 1009-1012
         # dng_1d_concatenate(exposureTone, ToneCurve) - bake exposure into LUT
-        base_curve = custom_curve if custom_curve is not None else get_acr3_curve(4096)
-        
-        # Remap 1: bake exposure_tone into curve
         combined_curve = remap_curve_input(
             base_curve, lambda x: exposure_tone(x, exposure)
         )
@@ -2264,7 +2248,7 @@ def _render_camera_rgb(
         # =====================================================================
         # SDK ref: dng_render.cpp lines 1042-1043
         # fRGBtoFinal = sRGB.MatrixFromPCS() * ProPhoto.MatrixToPCS()
-        d50_to_d65 = compute_bradford_adaptation(D50_xy[0], D50_xy[1], D65_xy[0], D65_xy[1])
+        d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
         prophoto_to_srgb = XYZ_D65_TO_SRGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
 
         t0 = time.perf_counter()
@@ -2279,6 +2263,48 @@ def _render_camera_rgb(
         t0 = time.perf_counter()
         rgb_final = _raw_render.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
         timings['srgb_gamma'] = time.perf_counter() - t0
+        
+        # Apply per-channel tone curves (if present)
+        # Applied before main ToneCurvePV2012, in gamma-corrected sRGB space
+        for channel_idx, channel_name in enumerate(['Red', 'Green', 'Blue']):
+            curve_key = f'ToneCurvePV2012{channel_name}'
+            if rendering_params and curve_key in rendering_params:
+                channel_curve_param = rendering_params[curve_key]
+                if isinstance(channel_curve_param, SplineCurve):
+                    channel_curve = channel_curve_param
+                else:
+                    channel_curve = SplineCurve(channel_curve_param)
+                
+                # Build LUT
+                lut_x = np.linspace(0.0, 1.0, 4096)
+                channel_curve_lut = np.clip(channel_curve(lut_x), 0.0, 1.0).astype(np.float32)
+                
+                # Apply curve to target channel only (simple per-channel application)
+                channel_data = rgb_final[:, :, channel_idx:channel_idx+1].astype(np.float32)
+                # Broadcast to (H, W, 3) by repeating the channel
+                channel_3d = np.repeat(channel_data, 3, axis=2)
+                # Apply curve using C extension
+                result_3d = _raw_render.apply_curve(channel_3d, channel_curve_lut)
+                # Extract the first channel (all 3 should be identical)
+                rgb_final[:, :, channel_idx] = result_3d[:, :, 0]
+                logger.debug(f"Applied {curve_key} from XMP")
+        
+        # Apply ToneCurvePV2012 from XMP (if present)
+        # Applied in gamma-corrected sRGB space (empirically matches Photoshop output)
+        # Applied after per-channel curves
+        if rendering_params and 'ToneCurvePV2012' in rendering_params:
+            tone_curve_param = rendering_params['ToneCurvePV2012']
+            if isinstance(tone_curve_param, SplineCurve):
+                xmp_curve = tone_curve_param
+            else:
+                xmp_curve = SplineCurve(tone_curve_param)
+            
+            lut_x = np.linspace(0.0, 1.0, 4096)
+            xmp_curve_lut = np.clip(xmp_curve(lut_x), 0.0, 1.0).astype(np.float32)
+            rgb_final = _raw_render.apply_curve(
+                rgb_final.astype(np.float32), xmp_curve_lut
+            )
+            logger.debug(f"Applied ToneCurvePV2012 from XMP")
         
         # Convert to output dtype
         t0 = time.perf_counter()

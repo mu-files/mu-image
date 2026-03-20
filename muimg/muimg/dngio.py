@@ -566,10 +566,13 @@ class DngPage(TiffPage):
             use_xmp: If True, extract rendering parameters from XMP metadata (Temperature,
                     Tint, Exposure2012, ToneCurvePV2012). Default True.
             rendering_params: Optional dict to override rendering parameters. Supported keys:
-                - 'temperature': White balance temperature in Kelvin (float)
-                - 'tint': White balance tint adjustment (float)
-                - 'exposure': Exposure compensation in stops (float)
-                - 'tone_curve': Tone curve as SplineCurve or list of (x,y) points
+                - 'Temperature': White balance temperature in Kelvin (float)
+                - 'Tint': White balance tint adjustment (float)
+                - 'Exposure2012': Exposure compensation in stops (float)
+                - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
+                - 'ToneCurvePV2012Red': Red channel tone curve as SplineCurve or list of (x,y) points
+                - 'ToneCurvePV2012Green': Green channel tone curve as SplineCurve or list of (x,y) points
+                - 'ToneCurvePV2012Blue': Blue channel tone curve as SplineCurve or list of (x,y) points
                 Values in rendering_params override XMP metadata.
         
         Returns:
@@ -961,15 +964,51 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
         
         dng_tags.add_tag("Orientation", _ORIENTATION_HORIZONTAL)
     
+    # Default to sRGB color space with proper matrices for passthrough
     if "ColorMatrix1" not in dng_tags:
-        identity_matrix = np.identity(3, dtype=np.float64)
-        dng_tags.add_tag("ColorMatrix1", identity_matrix)
+        # ColorMatrix1: XYZ D50 → Camera (sRGB)
+        # Needed for correct camera_white computation
+        # Computed as: ProPhoto→sRGB @ XYZ_D50→ProPhoto
+        # ProPhoto→sRGB is computed in raw_render.py as: XYZ_D65→sRGB @ D50→D65 @ ProPhoto→XYZ_D50
+        d50_to_d65 = raw_render.compute_bradford_adaptation(raw_render.D50_xy, raw_render.D65_xy)
+        prophoto_to_srgb = raw_render.XYZ_D65_TO_SRGB @ d50_to_d65 @ raw_render.PROPHOTO_RGB_TO_XYZ_D50
+        xyz_d50_to_srgb = prophoto_to_srgb @ raw_render.XYZ_D50_TO_PROPHOTO_RGB
+        dng_tags.add_tag("ColorMatrix1", xyz_d50_to_srgb)
+    
+    if "ForwardMatrix1" not in dng_tags:
+        # ForwardMatrix1: Camera (sRGB) → PCS (XYZ D50)
+        # Provides direct mapping and bypasses ColorMatrix1 scaling
+        # Computed as: D65→D50 @ sRGB→XYZ_D65
+        d65_to_d50 = raw_render.compute_bradford_adaptation(raw_render.D65_xy, raw_render.D50_xy)
+        forward_matrix1 = d65_to_d50 @ raw_render.SRGB_TO_XYZ_D65
+        dng_tags.add_tag("ForwardMatrix1", forward_matrix1)
     
     if "CalibrationIlluminant1" not in dng_tags:
-        dng_tags.add_tag("CalibrationIlluminant1", 0)  # 0 = Unknown
+        dng_tags.add_tag("CalibrationIlluminant1", 23)  # 23 = D50
     
-    if "AsShotNeutral" not in dng_tags:
-        dng_tags.add_tag("AsShotNeutral", [1.0, 1.0, 1.0])
+    if "AsShotWhiteXY" not in dng_tags and "AsShotNeutral" not in dng_tags:
+        # D50 white point in xy chromaticity coordinates
+        dng_tags.add_tag("AsShotWhiteXY", [0.34567, 0.35850])
+    
+    if "AnalogBalance" not in dng_tags:
+        # Neutral analog balance
+        dng_tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
+    
+    if "ProfileToneCurve" not in dng_tags:
+        # Linear tone curve (no adjustment)
+        dng_tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
+    
+    if "DefaultBlackRender" not in dng_tags:
+        # Disable black point adjustment (1 = None mode, shadows=0.0)
+        dng_tags.add_tag("DefaultBlackRender", 1)
+    
+    if "BlackLevel" not in dng_tags:
+        # No black offset for linear data
+        dng_tags.add_tag("BlackLevel", [0.0, 0.0, 0.0])
+    
+    if "WhiteLevel" not in dng_tags:
+        # Full uint16 range
+        dng_tags.add_tag("WhiteLevel", [65535, 65535, 65535])
 
     def _as_version_tuple(value) -> Optional[tuple[int, int, int, int]]:
         if value is None:
