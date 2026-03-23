@@ -19,7 +19,6 @@ from . import _raw_render
 
 logger = logging.getLogger(__name__)
 
-
 class SplineCurve:
     """
     Represents a spline curve with control points in normalized 0-1 range.
@@ -57,7 +56,7 @@ class SplineCurve:
                 f"got {type(points_or_string)}"
             )
         
-        # Ensure (0,0) and (1,1) endpoints exist (Photoshop/Lightroom behavior)
+        # Ensure (0,0) and (1,1) endpoints exist
         # Add (0,0) if not present
         if not any(abs(p[0] - 0.0) < 1e-6 for p in self.points):
             self.points.insert(0, (0.0, 0.0))
@@ -1505,43 +1504,39 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
     
     return result
 
-def exposure_tone(x: np.ndarray, exposure: float, use_dng_sdk: bool = False) -> np.ndarray:
-    """Apply exposure tone function matching Photoshop's Exposure2012 behavior.
+def exposure_tone(x: np.ndarray, exposure: float, highlight_compressing_exposure: bool = True) -> np.ndarray:
+    """Apply exposure tone function.
     
     For negative exposure: uses a piecewise curve with linear segment from 0 to 0.25
-    (y = slope * x) and cubic spline from 0.25 to 1.0 with control points from a
-    lookup table fitted to match Photoshop's output. For non-negative exposure:
-    returns input unchanged.
+    and a cubic spline from 0.25 to 1.0 (when highlight compression is enabled).
     
-    The lookup table + spline approach provides excellent matching to Photoshop
-    (avg difference ~0.07%) by using control points at x=[0.25, 0.5, 0.75, 0.875, 1.0]
-    with y-values linearly interpolated from a 15-point lookup table covering
-    exposures from 0.0 to -2.3 stops.
+    SDK ref: dng_render.cpp lines 1005-1012
     
     Args:
         x: Input values in [0, 1]
         exposure: Exposure compensation in stops
-        use_dng_sdk: If True, use DNG SDK quadratic approximation instead of cubic spline.
-                     Default False (use scipy CubicSpline for Photoshop matching).
+        highlight_compressing_exposure: If True, use cubic spline for negative exposure with highlight compression.
+                          If False, use DNG SDK quadratic approximation.
+                          Default True.
     
     Returns:
-        Transformed values
+        Tone-mapped values in [0, 1]
     """
     if exposure >= 0.0:
         return x.copy()
-    
+
     slope = 2.0 ** exposure
     
-    if use_dng_sdk:
-        # DNG SDK quadratic approximation (less accurate)
-        # Uses k=1.0 (highlight preservation parameter, kept for documentation)
+    if not highlight_compressing_exposure:        
+        # Uses k=1.0 (highlight preservation parameter, 
+        # kept in case we want to surface this param in future)
         k = 1.0
         a = 16.0 / 9.0 * k * 0.25 * (1.0 - slope)
         b = slope - 0.5 * a
         c = 0.0625 * a
         return np.where(x <= 0.25, x * slope, (a * x + b) * x + c)
     else:
-        # Photoshop-matching cubic spline (default)
+        # Cubic spline causes max white to stay white until negative exposure becomes large 
         
         # For very deep exposures (< -2.5), use simple linear darkening
         # The curve is nearly linear at this point, so the spline adds no benefit
@@ -1594,7 +1589,6 @@ def exposure_tone(x: np.ndarray, exposure: float, use_dng_sdk: bool = False) -> 
         
         # Apply piecewise curve
         return np.where(x <= 0.25, x * slope, spline(x))
-
 
 def exposure_ramp(
     x: np.ndarray,
@@ -1653,6 +1647,67 @@ def exposure_ramp(
     # Region 1 stays at 0 (already initialized)
     return result
 
+def compute_exposure_ramp_lut(
+    exposure: float,
+    shadow_scale: float,
+    default_black_render: int,
+    highlight_compressing_exposure: bool = True,
+    num_points: int = 4096
+) -> np.ndarray:
+    """Compute exposure_ramp LUT from exposure and DNG tag values.
+    
+    Args:
+        exposure: Total exposure in stops (baseline + user)
+        shadow_scale: ShadowScale tag value (default 1.0 if None)
+        default_black_render: DefaultBlackRender tag (0=Auto, 1=None)
+        highlight_compressing_exposure: If True, use highlight compression 
+        (white=1.0, complementary power). If False, use DNG SDK behavior 
+        (standard exposure_ramp).
+        Default True.
+        
+        num_points: Number of LUT points
+    
+    Returns:
+        Exposure ramp LUT as float32 array
+    """
+    # Compute LUT
+    lut_x = np.linspace(0.0, 1.0, num_points, dtype=np.float64)
+    
+    # Compute exposure_white based on path
+    # For highlight compression: always use white=1.0 (no linear scaling in exposure_ramp)
+    # Exposure adjustment is handled via complementary power (positive) or cubic spline (negative)
+    # For DNG SDK: use standard white point
+    if highlight_compressing_exposure:
+        exposure_white = 1.0
+    else:
+        exposure_white = 1.0 / (2.0 ** max(0.0, exposure))
+    
+    # SDK ref: dng_render.cpp lines 986-991, 2164-2171
+    # black = shadows * ShadowScale * Stage3Gain * 0.001
+    # Stage3Gain = 1.0 for normal images (only set for multi-channel CFA merging)
+    # DefaultBlackRender: 0 = Auto (shadows=5.0), 1 = None (shadows=0.0)
+    if default_black_render == 1:  # defaultBlackRender_None
+        shadows = 0.0
+    else:
+        shadows = 5.0  # SDK default (defaultBlackRender_Auto)
+    exposure_black = shadows * shadow_scale * 0.001
+    exposure_black = min(exposure_black, 0.99 * exposure_white)
+    
+    # Apply exposure_ramp (handles shadow processing)
+    ramp_lut = exposure_ramp(
+        lut_x, exposure_white, exposure_black, exposure_black
+    )
+    
+    # For highlight compression with positive exposure: apply complementary power on top of ramp
+    # This must be done in the exposure_ramp LUT so it's applied before look table
+    if highlight_compressing_exposure and exposure > 0.0:
+        # Complementary power function for positive exposure
+        # f(x) = 1 - (1-x)^slope where slope = 2^exposure
+        slope = 2.0 ** exposure
+        ramp_lut = 1.0 - (1.0 - ramp_lut) ** slope
+    
+    return ramp_lut.astype(np.float32)
+
 
 def remap_curve_input(
     tone_curve: np.ndarray,
@@ -1684,6 +1739,48 @@ def remap_curve_input(
     combined = np.interp(remap_x, tone_x, tone_curve)
     
     return np.clip(combined, 0.0, 1.0).astype(np.float32)
+
+
+def remap_curve_output(
+    tone_curve: np.ndarray,
+    remap_fn=None,
+    num_points: int = 4096
+) -> np.ndarray:
+    """Remap the output values of a tone curve, baking into a single LUT.
+    
+    Complementary to remap_curve_input.
+    result(x) = remap(curve(x))
+    
+    Args:
+        tone_curve: Tone curve LUT
+        remap_fn: Function(y) -> y that remaps output values after the curve.
+                  Can also be a LUT array. If None, no remapping is applied.
+        num_points: Number of input sample points. Output LUT has same size.
+    
+    Returns:
+        Combined LUT as float32 array with num_points elements
+    """
+    if remap_fn is None:
+        return tone_curve.astype(np.float32)
+    
+    # If curve is already the right size, just remap its values directly
+    if len(tone_curve) == num_points:
+        intermediate = tone_curve
+    else:
+        # Resample curve to desired number of points
+        lut_x = np.linspace(0.0, 1.0, num_points, dtype=np.float64)
+        curve_x = np.linspace(0.0, 1.0, len(tone_curve), dtype=np.float64)
+        intermediate = np.interp(lut_x, curve_x, tone_curve)
+    
+    # Apply remap function to output
+    if callable(remap_fn):
+        result = remap_fn(intermediate)
+    else:
+        # remap_fn is a LUT array
+        remap_x = np.linspace(0.0, 1.0, len(remap_fn), dtype=np.float64)
+        result = np.interp(intermediate, remap_x, remap_fn)
+    
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
 # Standard illuminant xy chromaticities (from DNG SDK)
@@ -2209,14 +2306,16 @@ def _render_camera_rgb(
         # =====================================================================
         # SDK ref: dng_render.cpp line 1882: exposureWeightGain = pow(2.0, fBaselineExposure)
         # fBaselineExposure = TotalBaselineExposure (Stage3Gain = 1.0 for normal images)
-        baseline_exposure = page.get_tag("BaselineExposure")
-        if baseline_exposure is None:
-            baseline_exposure = 0.0
-        baseline_exposure_offset = page.get_tag("BaselineExposureOffset")
-        if baseline_exposure_offset is None:
-            baseline_exposure_offset = 0.0
-        pgtm_baseline_exposure = baseline_exposure + baseline_exposure_offset
+        # Note: PGTM uses only baseline exposure, NOT user exposure
+        baseline_exposure = page.get_tag("BaselineExposure") or 0.0
+        baseline_exposure_offset = page.get_tag("BaselineExposureOffset") or 0.0
+        total_baseline_exposure = baseline_exposure + baseline_exposure_offset
         
+        # Add user exposure from rendering_params if provided
+        # SDK ref: User exposure is applied in exposure ramp, not in PGTM
+        user_exposure = rendering_params.get('Exposure2012', 0.0) if rendering_params else 0.0
+        exposure = total_baseline_exposure + user_exposure
+
         # Check for PGTM2 first (takes precedence), then fall back to PGTM1
         pgtm_data = page.get_tag("ProfileGainTableMap2")
         is_version2 = pgtm_data is not None
@@ -2246,7 +2345,7 @@ def _render_camera_rgb(
                     float(pgtm["origin_h"]),
                     int(pgtm["num_table_points"]),
                     float(pgtm["gamma"]),
-                    float(pgtm_baseline_exposure),
+                    float(total_baseline_exposure),
                 )
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap: {e}")
@@ -2257,43 +2356,25 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp lines 975-999, 1907-1928
         # Maps [black, white] to [0, 1]
         # =====================================================================
-        # SDK ref: dng_render.cpp lines 977-984
-        # TotalBaselineExposure = BaselineExposure + BaselineExposureOffset
-        # exposure = params.Exposure() + TotalBaselineExposure
-        # white = 1.0 / pow(2.0, max(0.0, exposure))
-        baseline_exposure = page.get_tag("BaselineExposure")
-        if baseline_exposure is None:
-            baseline_exposure = 0.0
-        baseline_exposure_offset = page.get_tag("BaselineExposureOffset")
-        if baseline_exposure_offset is None:
-            baseline_exposure_offset = 0.0
+        # Note: exposure = total_baseline_exposure + user_exposure (computed above)
         
-        total_baseline_exposure = baseline_exposure + baseline_exposure_offset
-        
-        # Add user exposure from rendering_params if provided
-        user_exposure = 0.0
-        if rendering_params and 'Exposure2012' in rendering_params:
-            user_exposure = rendering_params['Exposure2012']
-        
-        exposure = total_baseline_exposure + user_exposure
-        exposure_white = 1.0 / (2.0 ** max(0.0, exposure))
-        
-        # SDK ref: dng_render.cpp lines 986-991
-        # black = shadows * ShadowScale * Stage3Gain * 0.001
-        # Stage3Gain = 1.0 for normal images (only set for multi-channel CFA merging)
-        shadow_scale = page.get_tag("ShadowScale")
-        if shadow_scale is None:
-            shadow_scale = 1.0
-        # SDK ref: dng_render.cpp lines 2164-2171
-        # DefaultBlackRender: 0 = Auto (shadows=5.0), 1 = None (shadows=0.0)
+        # Extract DNG tags for exposure_ramp
+        shadow_scale = page.get_tag("ShadowScale") or 1
         default_black_render = page.get_tag("DefaultBlackRender") or 0
-        if default_black_render == 1:  # defaultBlackRender_None
-            shadows = 0.0
-        else:
-            shadows = 5.0  # SDK default (defaultBlackRender_Auto)
-        exposure_black = shadows * shadow_scale * 0.001
-        exposure_black = min(exposure_black, 0.99 * exposure_white)
         
+        # Determine if using highlight compression or DNG SDK behavior
+        # Default to True (highlight compression)
+        highlight_compressing_exposure = True
+        if rendering_params:
+            highlight_compressing_exposure = rendering_params.get(
+                'highlight_compressing_exposure', True
+            )
+
+        # Compute exposure_ramp LUT
+        exposure_ramp_lut = compute_exposure_ramp_lut(
+            exposure, shadow_scale, default_black_render, highlight_compressing_exposure
+        )
+
         # =====================================================================
         # Step 2.5: DoBaselineHueSatMap (ProfileLookTable)
         # SDK ref: dng_render.cpp lines 1930-1947
@@ -2307,41 +2388,25 @@ def _render_camera_rgb(
             look_hue_divs, look_sat_divs, look_val_divs = int(look_table_dims[0]), int(look_table_dims[1]), int(look_table_dims[2])
             look_table = np.asarray(look_table_data, dtype=np.float32)
             logger.debug(f"ProfileLookTable: {look_hue_divs}x{look_sat_divs}x{look_val_divs}")
-
-        # DEBUG: Apply exposure_ramp directly instead of merging into curve
-        _DEBUG_APPLY_EXPOSURE_RAMP_DIRECTLY = False
         
         # Optimization: if no look_table, combine exposure_ramp into tone curve LUT
-        if look_table is not None or _DEBUG_APPLY_EXPOSURE_RAMP_DIRECTLY:
+        if look_table is not None:
             # Must apply exposure_ramp separately when look_table exists
             # (If no look_table, exposure_ramp is baked into tone curve below)
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             t0 = time.perf_counter()
-            if _DEBUG_APPLY_EXPOSURE_RAMP_DIRECTLY:
-                # Apply exposure_ramp directly to pixels (not via LUT)
-                rgb_exposed = _raw_render.apply_exposure_ramp(
-                    rgb_prophoto.astype(np.float32),
-                    exposure_white, exposure_black, exposure_black
-                )
-            else:
-                # Apply via LUT (normal path when look_table exists)
-                lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
-                exposure_ramp_lut = exposure_ramp(
-                    lut_x, exposure_white, exposure_black, exposure_black
-                ).astype(np.float32)
-                rgb_exposed = _raw_render.apply_curve(
-                    rgb_prophoto.astype(np.float32), exposure_ramp_lut
-                )
+            rgb_exposed = _raw_render.apply_curve(
+                rgb_prophoto.astype(np.float32), exposure_ramp_lut
+            )
             timings['exposure_ramp'] = time.perf_counter() - t0
             
-            if look_table is not None:
-                t0 = time.perf_counter()
-                rgb_exposed = _raw_render.apply_hue_sat_map(
-                    rgb_exposed.astype(np.float32),
-                    look_table,
-                    look_hue_divs, look_sat_divs, look_val_divs
-                )
-                timings['look_table'] = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            rgb_exposed = _raw_render.apply_hue_sat_map(
+                rgb_exposed.astype(np.float32),
+                look_table,
+                look_hue_divs, look_sat_divs, look_val_divs
+            )
+            timings['look_table'] = time.perf_counter() - t0
         else:
             # No look_table: exposure_ramp will be baked into tone curve below
             rgb_exposed = rgb_prophoto
@@ -2356,7 +2421,7 @@ def _render_camera_rgb(
         
         # Get ProfileToneCurve from DNG tags, or use ACR3 default
         # SDK ref: dng_render.cpp lines 2153-2162
-        profile_curve = None
+        tag_profile_curve = None
         if page.get_tag("ProfileToneCurve") is not None:
             profile_tone_curve = page.get_tag("ProfileToneCurve")
             if len(profile_tone_curve) >= 4:
@@ -2368,26 +2433,34 @@ def _render_camera_rgb(
                 try:
                     spline = SplineCurve(points)
                     lut_x = np.linspace(0.0, 1.0, 4096)
-                    profile_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
+                    tag_profile_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
                     logger.debug(f"Using ProfileToneCurve with {n_points} control points")
                 except ValueError as e:
                     # Fallback to ACR3 if curve is invalid (e.g., non-monotonic x)
                     logger.warning(f"ProfileToneCurve invalid ({e}), using ACR3")
         
-        base_curve = profile_curve if profile_curve is not None else get_acr3_curve(4096)
+        profile_curve = tag_profile_curve if tag_profile_curve is not None else get_acr3_curve(4096)
         
-        # SDK ref: dng_render.cpp lines 1009-1012
-        # dng_1d_concatenate(exposureTone, ToneCurve) - bake exposure into LUT
-        combined_curve = remap_curve_input(
-            base_curve, lambda x: exposure_tone(x, exposure)
+        # Build combined curve by chaining in forward order:
+        # If no look_table: exposure_ramp -> exposure_tone -> profile_curve
+        # If look_table: exposure_tone -> profile_curve (exposure_ramp already applied to pixels)
+        
+        # Start with identity or exposure_ramp
+        if look_table is None:
+            # Chain starts with exposure_ramp
+            combined_curve = exposure_ramp_lut
+        else:
+            # Chain starts with identity (exposure_ramp already applied to pixels)
+            lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
+            combined_curve = lut_x.astype(np.float32)
+        
+        # Chain: apply exposure_tone to output
+        combined_curve = remap_curve_output(
+            combined_curve, lambda y: exposure_tone(y, exposure, highlight_compressing_exposure)
         )
         
-        # Remap 2: if no look_table, also bake exposure_ramp into curve
-        if look_table is None and not _DEBUG_APPLY_EXPOSURE_RAMP_DIRECTLY:
-            combined_curve = remap_curve_input(
-                combined_curve,
-                lambda x: exposure_ramp(x, exposure_white, exposure_black, exposure_black)
-            )
+        # Chain: apply profile tone curve to output
+        combined_curve = remap_curve_output(combined_curve, profile_curve)
         
         rgb_toned = _raw_render.apply_curve_hue_preserving(
             rgb_exposed.astype(np.float32), combined_curve
@@ -2565,6 +2638,20 @@ def _is_noop_xmp_value(prop_name: str, value, xmp: 'XmpMetadata') -> bool:
     
     return False
 
+# Supported XMP rendering parameters extracted from DNG metadata
+SUPPORTED_XMP_PARAMS = {
+    'Temperature',           # White balance temperature in Kelvin (float)
+    'Tint',                  # White balance tint adjustment (float)
+    'Exposure2012',          # Exposure compensation in stops (float)
+    'ToneCurvePV2012',       # Main tone curve (SplineCurve or list of (x,y) points)
+    'ToneCurvePV2012Red',    # Red channel tone curve (SplineCurve or list of (x,y) points)
+    'ToneCurvePV2012Green',  # Green channel tone curve (SplineCurve or list of (x,y) points)
+    'ToneCurvePV2012Blue',   # Blue channel tone curve (SplineCurve or list of (x,y) points)
+    
+    # TODO: Add pixel processing implementations for these additional properties:
+    # 'Contrast2012', 'Highlights2012', 'Shadows2012', 'Whites2012', 'Blacks2012',
+    # 'Texture', 'Clarity2012', 'Dehaze', 'Vibrance', 'Saturation'
+}
 
 def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile', 'DngPage']) -> dict:
     """Convert XMP metadata to pipeline-supported dict.
@@ -2607,18 +2694,7 @@ def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile'
     
     result = {}
     
-    # List of supported properties (crs: namespace, unqualified in output)
-    # Currently supported properties with pixel processing implementations:
-    supported_crs_props = [
-        'Temperature', 'Tint', 'Exposure2012',
-        'ToneCurvePV2012', 'ToneCurvePV2012Red', 'ToneCurvePV2012Green', 'ToneCurvePV2012Blue'
-    ]
-    
-    # TODO: Add pixel processing implementations for these additional properties:
-    # 'Contrast2012', 'Highlights2012', 'Shadows2012', 'Whites2012', 'Blacks2012',
-    # 'Texture', 'Clarity2012', 'Dehaze', 'Vibrance', 'Saturation'
-    
-    for prop in supported_crs_props:
+    for prop in SUPPORTED_XMP_PARAMS:
         if xmp.has_prop(prop):
             value = xmp.get_prop(prop)
             if value is not None and not _is_noop_xmp_value(prop, value, xmp):

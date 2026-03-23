@@ -31,45 +31,52 @@ def output_dir():
     return OUTPUT_DIR
 
 # Test files with Photoshop reference images
-# Format: (dng_filename, tiff_filename, threshold)
+# Format: (dng_filename, tiff_filename, threshold, highlight_compressing_exposure)
 # Thresholds are 1.1x above measured values
 # Using LINEAR_RAW DNGs with DefaultBlackRender=1 to match Photoshop baseline
+# highlight_compressing_exposure: True (default) = highlight compression, False = DNG SDK behavior
 TEST_CASES = [
     # Color pattern tests (300x200, 6x4 patches)
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.none.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.none.tif", 1.07),  # measured 0.97%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.tif", 0.93),  # measured 0.84%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.tif", 1.17),  # measured 1.06%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.tif", 1.03),  # measured 0.94%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.tif", 1.05),  # measured 0.95%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.tif", 0.89),  # measured 0.81%
-    ("asi676mc.linearraw.uncomp.1ifds.rgbcurve.dng", "asi676mc.linearraw.uncomp.1ifds.rgbcurve.tif", 1.25),  # measured 1.14%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.none.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.none.tif", 1.07, True),  # measured 0.97%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.tif", 0.93, True),  # measured 0.84%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.tif", 1.17, True),  # measured 1.06%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.tif", 1.03, True),  # measured 0.94%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.tif", 1.05, True),  # measured 0.95%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.tif", 0.89, True),  # measured 0.81%
+    ("asi676mc.linearraw.uncomp.1ifds.rgbcurve.dng", "asi676mc.linearraw.uncomp.1ifds.rgbcurve.tif", 1.25, True),  # measured 1.14%
     # synthetic color patterns
-    ("rgb_ramp_test.rcurve.dng", "rgb_ramp_test.rcurve.tif", 0.69),  # measured 0.63%
-    ("rgb_ramp_test.gcurve.dng", "rgb_ramp_test.gcurve.tif", 0.74),  # measured 0.67%
-    ("rgb_ramp_test.bcurve.dng", "rgb_ramp_test.bcurve.tif", 0.77),  # measured 0.70%
-    ("rgb_ramp_test.bcurve2.dng", "rgb_ramp_test.bcurve2.tif", 1.05),  # measured 0.95%
-    ("rgb_ramp_test.multi-curve.dng", "rgb_ramp_test.multi-curve.tif", 1.05),  # measured 0.95%
-    ("rgb_ramp_test.maincurve.dng", "rgb_ramp_test.maincurve.tif", 1.05),  # measured 0.95%
-    ("rgb_ramp_test.mainrgbcurve.dng", "rgb_ramp_test.mainrgbcurve.tif", 1.05),  # measured 0.95%
+    ("linear_gradient_test.exp-curve.dng", "linear_gradient_test.exp-curve.tif", None, True),
+    ("rgb_ramp_test.rcurve.dng", "rgb_ramp_test.rcurve.tif", 0.69, True),  # measured 0.63%
+    ("rgb_ramp_test.gcurve.dng", "rgb_ramp_test.gcurve.tif", 0.74, True),  # measured 0.67%
+    ("rgb_ramp_test.bcurve.dng", "rgb_ramp_test.bcurve.tif", 0.77, True),  # measured 0.70%
+    ("rgb_ramp_test.bcurve2.dng", "rgb_ramp_test.bcurve2.tif", 1.05, True),  # measured 0.95%
+    ("rgb_ramp_test.multi-curve.dng", "rgb_ramp_test.multi-curve.tif", 1.05, True),  # measured 0.95%
+    ("rgb_ramp_test.maincurve.dng", "rgb_ramp_test.maincurve.tif", 1.05, True),  # measured 0.95%
+    ("rgb_ramp_test.mainrgbcurve.dng", "rgb_ramp_test.mainrgbcurve.tif", 1.05, True),  # measured 0.95%
 
     # Full-size ASI676MC tests (4144x2822)
-    ("asi676mc.linearraw.uncomp.1ifds.none.dng", "asi676mc.linearraw.uncomp.1ifds.none.tif", 1.19),  # measured 1.08%
-    ("asi676mc.linearraw.uncomp.1ifds.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.exposure.tif", 0.73),  # measured 0.66%
-    ("asi676mc.linearraw.uncomp.1ifds.curve.dng", "asi676mc.linearraw.uncomp.1ifds.curve.tif", 1.32), 
-    # Canon EOS R5 tests (2056x1366)
-    ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.53),  # measured 1.39%
-    ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", None),  # measured 3.64% (notably higher than ASI676MC)
-    ("canon_eos_r5.temp-tint.dng", "canon_eos_r5.temp-tint.tif", 1.51),  # measured 1.37%
+    ("asi676mc.linearraw.uncomp.1ifds.none.dng", "asi676mc.linearraw.uncomp.1ifds.none.tif", 1.19, True),  # measured 1.08%
+    ("asi676mc.linearraw.uncomp.1ifds.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.exposure.tif", 0.73, True),  # measured 0.66%
+    ("asi676mc.linearraw.uncomp.1ifds.curve.dng", "asi676mc.linearraw.uncomp.1ifds.curve.tif", 1.32, True), 
+    # Canon EOS R5 tests (2056x1366) - use DNG SDK behavior for better match
+    ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.53, False),  # measured 1.39% with DNG SDK
+    ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", None, True),  # use DNG SDK for exposure
+    ("canon_eos_r5.exposure.nolooktable.noprofile.baseline.dng", "canon_eos_r5.exposure.nolooktable.noprofile.baseline.tif", None, False),  # test if profile tags cause the issue
+    ("canon_eos_r5.temp-tint.dng", "canon_eos_r5.temp-tint.tif", 1.51, True),  # measured 1.37% with DNG SDK
 ]
 
 
-@pytest.mark.parametrize("dng_name,tif_name,threshold", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
-def test_xmp_rendering(dng_name, tif_name, threshold, output_dir):
+@pytest.mark.parametrize("dng_name,tif_name,threshold,highlight_compressing_exposure", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
+def test_xmp_rendering(dng_name, tif_name, threshold, highlight_compressing_exposure, output_dir):
     """Test XMP-based rendering against Photoshop reference.
     
     Validates that rendered output matches Photoshop reference within threshold.
     XMP NOOP filtering (Exposure2012=0, WhiteBalance="As Shot", linear tone curves)
     is handled automatically by the rendering pipeline.
+    
+    Args:
+        highlight_compressing_exposure: If True, use highlight compression (cubic spline for negative exposure).
+                         If False, use DNG SDK exposure behavior (quadratic approximation).
     """
     dng_path = XMP_TEST_DIR / dng_name
     tif_path = XMP_TEST_DIR / tif_name
@@ -86,6 +93,7 @@ def test_xmp_rendering(dng_name, tif_name, threshold, output_dir):
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
             use_xmp=True,
+            rendering_params={'highlight_compressing_exposure': highlight_compressing_exposure},
         )
         
         assert result is not None, f"Rendering failed for {dng_name}"

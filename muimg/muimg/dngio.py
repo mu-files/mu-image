@@ -569,6 +569,11 @@ class DngPage(TiffPage):
                 - 'Temperature': White balance temperature in Kelvin (float)
                 - 'Tint': White balance tint adjustment (float)
                 - 'Exposure2012': Exposure compensation in stops (float)
+                - 'highlight_compressing_exposure': Use highlight compression for exposure 
+                                      (bool, default True). If True, uses a curve that keeps
+                                      highlights in the output range for positive exposures
+                                      instead of a linear exposure which would clip highlights.
+                                      If False, uses DNG SDK standard linear exposure behavior.
                 - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
                 - 'ToneCurvePV2012Red': Red channel tone curve as SplineCurve or list of (x,y) points
                 - 'ToneCurvePV2012Green': Green channel tone curve as SplineCurve or list of (x,y) points
@@ -610,10 +615,17 @@ class DngPage(TiffPage):
             
             # Merge rendering_params overrides (with validation)
             if rendering_params is not None:
-                supported_params = {'Temperature', 'Tint', 'Exposure2012', 'ToneCurvePV2012'}
+                # Render-method specific parameters (not from XMP)
+                render_specific_params = {'highlight_compressing_exposure'}
+                # Combine XMP params and render-specific params
+                supported_params = raw_render.SUPPORTED_XMP_PARAMS | render_specific_params
+                
                 for key, value in rendering_params.items():
                     if key not in supported_params:
-                        raise ValueError(f"Unsupported rendering parameter: {key}. Supported: {supported_params}")
+                        raise ValueError(
+                            f"Unsupported rendering parameter: {key}. "
+                            f"Supported: {supported_params}"
+                        )
                     extracted_params[key] = value
 
             result = raw_render._render_camera_rgb(
