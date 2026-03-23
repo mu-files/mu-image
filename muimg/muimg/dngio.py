@@ -965,7 +965,7 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
         dng_tags.add_tag("Orientation", _ORIENTATION_HORIZONTAL)
     
     # Default to sRGB color space with proper matrices for passthrough
-    if "ColorMatrix1" not in dng_tags:
+    if "ColorMatrix1" not in dng_tags and  "ForwardMatrix1" not in dng_tags:
         # ColorMatrix1: XYZ D50 → Camera (sRGB)
         # Needed for correct camera_white computation
         # Computed as: ProPhoto→sRGB @ XYZ_D50→ProPhoto
@@ -974,8 +974,7 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
         prophoto_to_srgb = raw_render.XYZ_D65_TO_SRGB @ d50_to_d65 @ raw_render.PROPHOTO_RGB_TO_XYZ_D50
         xyz_d50_to_srgb = prophoto_to_srgb @ raw_render.XYZ_D50_TO_PROPHOTO_RGB
         dng_tags.add_tag("ColorMatrix1", xyz_d50_to_srgb)
-    
-    if "ForwardMatrix1" not in dng_tags:
+
         # ForwardMatrix1: Camera (sRGB) → PCS (XYZ D50)
         # Provides direct mapping and bypasses ColorMatrix1 scaling
         # Computed as: D65→D50 @ sRGB→XYZ_D65

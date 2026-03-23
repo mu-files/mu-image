@@ -739,12 +739,14 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
     return result;
 }
 
-// Apply sRGB gamma encoding (linear to sRGB)
-// sRGB spec: if x <= 0.0031308: 12.92 * x, else: 1.055 * x^(1/2.4) - 0.055
+// Apply sRGB gamma encoding/decoding (linear to sRGB or sRGB to linear)
+// Forward: if x <= 0.0031308: 12.92 * x, else: 1.055 * x^(1/2.4) - 0.055
+// Inverse: if x <= 0.04045: x / 12.92, else: ((x + 0.055) / 1.055)^2.4
 static PyObject* dng_color_srgb_gamma(PyObject* self, PyObject* args) {
     PyArrayObject* rgb_array = NULL;
+    int inverse = 0;
     
-    if (!PyArg_ParseTuple(args, "O!", &PyArray_Type, &rgb_array)) {
+    if (!PyArg_ParseTuple(args, "O!|i", &PyArray_Type, &rgb_array, &inverse)) {
         return NULL;
     }
     
@@ -775,18 +777,37 @@ static PyObject* dng_color_srgb_gamma(PyObject* self, PyObject* args) {
     float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
     
     npy_intp total = height * width * 3;
-    const float threshold = 0.0031308f;
-    const float inv_gamma = 1.0f / 2.4f;
     
-    for (npy_intp i = 0; i < total; i++) {
-        float x = src_data[i];
-        float y;
-        if (x <= threshold) {
-            y = 12.92f * x;
-        } else {
-            y = 1.055f * std::pow(x, inv_gamma) - 0.055f;
+    if (inverse) {
+        // Inverse sRGB gamma (sRGB to linear)
+        const float threshold = 0.04045f;
+        const float gamma = 2.4f;
+        
+        for (npy_intp i = 0; i < total; i++) {
+            float x = src_data[i];
+            float y;
+            if (x <= threshold) {
+                y = x / 12.92f;
+            } else {
+                y = std::pow((x + 0.055f) / 1.055f, gamma);
+            }
+            dst_data[i] = std::max(0.0f, std::min(1.0f, y));
         }
-        dst_data[i] = std::max(0.0f, std::min(1.0f, y));
+    } else {
+        // Forward sRGB gamma (linear to sRGB)
+        const float threshold = 0.0031308f;
+        const float inv_gamma = 1.0f / 2.4f;
+        
+        for (npy_intp i = 0; i < total; i++) {
+            float x = src_data[i];
+            float y;
+            if (x <= threshold) {
+                y = 12.92f * x;
+            } else {
+                y = 1.055f * std::pow(x, inv_gamma) - 0.055f;
+            }
+            dst_data[i] = std::max(0.0f, std::min(1.0f, y));
+        }
     }
     
     Py_DECREF(rgb_cont);
@@ -2885,11 +2906,13 @@ static PyMethodDef DngColorMethods[] = {
      "    ndarray: Exposure-adjusted RGB image"},
     
     {"srgb_gamma", dng_color_srgb_gamma, METH_VARARGS,
-     "Apply sRGB gamma encoding (linear to sRGB).\n\n"
+     "Apply sRGB gamma encoding or decoding.\n\n"
      "Args:\n"
-     "    rgb (ndarray): Input linear RGB image, float32, shape (H, W, 3)\n\n"
+     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
+     "    inverse (int, optional): If 0 (default), apply forward gamma (linear to sRGB).\n"
+     "                             If 1, apply inverse gamma (sRGB to linear).\n\n"
      "Returns:\n"
-     "    ndarray: sRGB gamma-encoded image"},
+     "    ndarray: Gamma-encoded or decoded image"},
     
     {"matrix_transform", (PyCFunction)dng_color_matrix_transform, METH_VARARGS | METH_KEYWORDS,
      "Apply 3x3 color matrix transform to RGB image.\n\n"

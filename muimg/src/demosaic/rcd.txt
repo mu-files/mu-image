@@ -3,6 +3,15 @@
  * 
  * Based on the implementation by Luis Sanz Rodríguez
  * Original source: https://github.com/LuisSR/RCD-Demosaicing
+ * Algorithm: Release 2.3 @ 171125
+ * 
+ * Modifications from original:
+ * - Added Python/NumPy C API bindings for use as Python extension
+ * - Removed dcraw dependencies (CLASS macro, merror(), FC(), etc.)
+ * - Implemented standalone fcol() function for Bayer pattern handling
+ * - Changed from dcraw's global image array to direct buffer parameters
+ * - Added configurable filters parameter for Bayer pattern
+ * - Converted memory management from dcraw-specific to standard C calloc()
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

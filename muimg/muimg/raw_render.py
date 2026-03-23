@@ -27,7 +27,7 @@ class SplineCurve:
     Uses scipy CubicSpline for interpolation. Points are stored as float tuples.
     """
     
-    def __init__(self, points_or_string=None, bc_type='natural'):
+    def __init__(self, points_or_string: Union[None, str, list] = None, bc_type: str = 'natural'):
         """
         Initialize SplineCurve.
         
@@ -56,6 +56,15 @@ class SplineCurve:
                 f"SplineCurve constructor expects None, str, or list, "
                 f"got {type(points_or_string)}"
             )
+        
+        # Ensure (0,0) and (1,1) endpoints exist (Photoshop/Lightroom behavior)
+        # Add (0,0) if not present
+        if not any(abs(p[0] - 0.0) < 1e-6 for p in self.points):
+            self.points.insert(0, (0.0, 0.0))
+        
+        # Add (1,1) if not present
+        if not any(abs(p[0] - 1.0) < 1e-6 for p in self.points):
+            self.points.append((1.0, 1.0))
         
         # Create the spline immediately
         self._create_spline()
@@ -142,6 +151,75 @@ class SplineCurve:
     
     def __repr__(self):
         return f"SplineCurve(points={self.points})"
+
+
+
+
+def _srgb_inverse_gamma_1d(values: np.ndarray) -> np.ndarray:
+    """Convert 1D array from sRGB gamma to linear using C extension.
+    
+    Args:
+        values: 1D array of sRGB gamma-encoded values
+        
+    Returns:
+        1D array of linear values
+    """
+    # Reshape to (N, 1, 3) for C function
+    values_3d = values[:, np.newaxis, np.newaxis].repeat(3, axis=2).astype(np.float32)
+    result_3d = _raw_render.srgb_gamma(values_3d, 1)
+    return result_3d[:, 0, 0]
+
+
+def build_lut_from_spline(
+    curve_param: Union[SplineCurve, str, list],
+    lut_size: int = 4096,
+    convert_srgb_gamma_to_linear: bool = False
+) -> np.ndarray:
+    """Build a lookup table from spline curve control points or SplineCurve object.
+    
+    Args:
+        curve_param: Either a SplineCurve object, string format, or list of control points
+        lut_size: Number of points in the LUT (default 4096)
+        convert_srgb_gamma_to_linear: If True, convert curve from sRGB gamma 2.2 encoding
+            (also known as Melissa RGB in Adobe tools) to linear encoding. Adobe tools
+            display curves in sRGB gamma space but processing happens in linear space.
+        
+    Returns:
+        numpy array of float32 values clipped to [0.0, 1.0] range
+    """
+    if isinstance(curve_param, SplineCurve):
+        curve = curve_param
+    else:
+        curve = SplineCurve(curve_param)
+    
+    # Build LUT in sRGB gamma space (0-1 range)
+    lut_x = np.linspace(0.0, 1.0, lut_size, dtype=np.float32)
+    srgb_gamma_lut_output = np.clip(curve(lut_x), 0.0, 1.0).astype(np.float32)
+    
+    if convert_srgb_gamma_to_linear:
+        # Convert LUT from sRGB gamma 2.2 encoding to linear encoding
+        # This allows applying the curve to linear pixels while preserving
+        # the curve shape as displayed in Adobe tools
+        
+        # The LUT is built with uniform spacing in sRGB gamma space (lut_x).
+        # When we convert to linear, the spacing becomes non-uniform.
+        # We need to return a LUT that can be applied to uniformly-spaced linear pixels.
+        
+        # sRGB gamma decode: input values (sRGB gamma -> linear)
+        linear_lut_input = _srgb_inverse_gamma_1d(lut_x)
+        
+        # sRGB gamma decode: output values (sRGB gamma -> linear)
+        linear_lut_output = _srgb_inverse_gamma_1d(srgb_gamma_lut_output)
+        
+        # Resample to uniform spacing in linear space
+        # LUTs are required to have uniform steps of 1/lut_size for direct indexing
+        uniform_linear_x = np.linspace(0.0, 1.0, lut_size, dtype=np.float32)
+        resampled_output = np.interp(uniform_linear_x, linear_lut_input, linear_lut_output)
+        
+        return resampled_output.astype(np.float32)
+    else:
+        return srgb_gamma_lut_output
+
 
 def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     """Apply TIFF/EXIF orientation rotation to an image.
@@ -1622,7 +1700,6 @@ _BRADFORD_MATRIX = np.array([
 
 _BRADFORD_MATRIX_INV = np.linalg.inv(_BRADFORD_MATRIX)
 
-
 def _xy_to_XYZ(x: float, y: float) -> np.ndarray:
     """Convert xy chromaticity to XYZ with Y=1."""
     return np.array([x / y, 1.0, (1.0 - x - y) / y], dtype=np.float64)
@@ -1846,6 +1923,83 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
     camera_white = np.clip(camera_white, 0.001, 1.0)
     
     return camera_white
+
+
+def apply_post_rendering_operations(
+    rgb_prophoto_linear: np.ndarray,
+    rendering_params: dict = None,
+) -> np.ndarray:
+    """Apply XMP post-rendering operations in ProPhoto RGB linear space.
+    
+    Doing all processing in ProPhoto linear space, like Lightroom and Photoshop.
+    Histogram and curves in Adobe tools are displayed with sRGB gamma 2.2 applied
+    (also known as Melissa RGB), so we convert those curves to linear space before applying them.
+    
+    Applies per-channel tone curves (ToneCurvePV2012Red/Green/Blue) and main
+    tone curve (ToneCurvePV2012) by:
+    1. Building curves in sRGB gamma 2.2 space
+    2. Converting the curve LUTs from sRGB gamma to linear encoding
+    3. Applying the linear LUTs to linear ProPhoto RGB pixels
+    
+    Args:
+        rgb_prophoto_linear: Input image in ProPhoto RGB linear space
+        rendering_params: Dictionary containing XMP rendering parameters
+        
+    Returns:
+        Output image in ProPhoto RGB linear space (same as input)
+    """
+    
+    # Early return if no XMP curves present
+    if not rendering_params:
+        return rgb_prophoto_linear
+    
+    has_per_channel = any(
+        f'ToneCurvePV2012{ch}' in rendering_params 
+        for ch in ['Red', 'Green', 'Blue']
+    )
+    has_main_curve = 'ToneCurvePV2012' in rendering_params
+    
+    if not has_per_channel and not has_main_curve:
+        return rgb_prophoto_linear
+    
+    # Work directly in linear space
+    rgb_output = rgb_prophoto_linear.copy()
+    
+    # Step 1: Apply main curve with hue preservation (if present and no per-channel curves)
+    if has_main_curve:
+        main_curve_lut = build_lut_from_spline(
+            rendering_params['ToneCurvePV2012'],
+            convert_srgb_gamma_to_linear=True
+        )
+        
+        rgb_output = _raw_render.apply_curve_hue_preserving(
+            rgb_output.astype(np.float32),
+            main_curve_lut
+        )
+        logger.debug("Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)")
+    
+    # Step 2: Apply per-channel curves (if present)
+    for channel_idx, channel_name in enumerate(['Red', 'Green', 'Blue']):
+        curve_key = f'ToneCurvePV2012{channel_name}'
+        
+        if curve_key in rendering_params:
+            # Build per-channel curve LUT in linear space
+            channel_curve_lut = build_lut_from_spline(
+                rendering_params[curve_key],
+                convert_srgb_gamma_to_linear=True
+            )
+            
+            # Apply per-channel curve
+            channel_data = rgb_output[:, :, channel_idx].astype(np.float32)
+            rgb_output[:, :, channel_idx] = np.interp(
+                channel_data,
+                np.linspace(0.0, 1.0, len(channel_curve_lut), dtype=np.float32),
+                channel_curve_lut
+            )
+            logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
+    
+    return rgb_output
+
 
 def _render_camera_rgb(
     page: "dngio.DngPage",
@@ -2241,6 +2395,11 @@ def _render_camera_rgb(
         
         timings['tone_curve'] = time.perf_counter() - t0
         
+        # Apply XMP per-channel and main tone curves in ProPhoto gamma space
+        t0 = time.perf_counter()
+        rgb_toned = apply_post_rendering_operations(rgb_toned, rendering_params)
+        timings['xmp_post_rendering'] = time.perf_counter() - t0
+        
         # =====================================================================
         # Step 4: DoBaselineRGBtoRGB
         # SDK ref: dng_render.cpp lines 2040-2048
@@ -2263,48 +2422,6 @@ def _render_camera_rgb(
         t0 = time.perf_counter()
         rgb_final = _raw_render.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
         timings['srgb_gamma'] = time.perf_counter() - t0
-        
-        # Apply per-channel tone curves (if present)
-        # Applied before main ToneCurvePV2012, in gamma-corrected sRGB space
-        for channel_idx, channel_name in enumerate(['Red', 'Green', 'Blue']):
-            curve_key = f'ToneCurvePV2012{channel_name}'
-            if rendering_params and curve_key in rendering_params:
-                channel_curve_param = rendering_params[curve_key]
-                if isinstance(channel_curve_param, SplineCurve):
-                    channel_curve = channel_curve_param
-                else:
-                    channel_curve = SplineCurve(channel_curve_param)
-                
-                # Build LUT
-                lut_x = np.linspace(0.0, 1.0, 4096)
-                channel_curve_lut = np.clip(channel_curve(lut_x), 0.0, 1.0).astype(np.float32)
-                
-                # Apply curve to target channel only (simple per-channel application)
-                channel_data = rgb_final[:, :, channel_idx:channel_idx+1].astype(np.float32)
-                # Broadcast to (H, W, 3) by repeating the channel
-                channel_3d = np.repeat(channel_data, 3, axis=2)
-                # Apply curve using C extension
-                result_3d = _raw_render.apply_curve(channel_3d, channel_curve_lut)
-                # Extract the first channel (all 3 should be identical)
-                rgb_final[:, :, channel_idx] = result_3d[:, :, 0]
-                logger.debug(f"Applied {curve_key} from XMP")
-        
-        # Apply ToneCurvePV2012 from XMP (if present)
-        # Applied in gamma-corrected sRGB space (empirically matches Photoshop output)
-        # Applied after per-channel curves
-        if rendering_params and 'ToneCurvePV2012' in rendering_params:
-            tone_curve_param = rendering_params['ToneCurvePV2012']
-            if isinstance(tone_curve_param, SplineCurve):
-                xmp_curve = tone_curve_param
-            else:
-                xmp_curve = SplineCurve(tone_curve_param)
-            
-            lut_x = np.linspace(0.0, 1.0, 4096)
-            xmp_curve_lut = np.clip(xmp_curve(lut_x), 0.0, 1.0).astype(np.float32)
-            rgb_final = _raw_render.apply_curve(
-                rgb_final.astype(np.float32), xmp_curve_lut
-            )
-            logger.debug(f"Applied ToneCurvePV2012 from XMP")
         
         # Convert to output dtype
         t0 = time.perf_counter()

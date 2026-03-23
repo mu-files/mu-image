@@ -88,11 +88,21 @@ def normalize_image(img: np.ndarray) -> np.ndarray:
 def compute_diff_stats(img1: np.ndarray, img2: np.ndarray) -> dict:
     """Compute difference statistics between two images."""
     diff = np.abs(normalize_image(img1) - normalize_image(img2))
-    return {
+    stats = {
         "mean": np.mean(diff) * 100,
         "p99": np.percentile(diff, 99) * 100,
         "max": np.max(diff) * 100,
     }
+    
+    # Add per-channel stats if RGB image
+    if img1.ndim == 3 and img1.shape[2] == 3:
+        for ch_idx, ch_name in enumerate(['R', 'G', 'B']):
+            ch_diff = diff[:, :, ch_idx]
+            stats[f"mean_{ch_name}"] = np.mean(ch_diff) * 100
+            stats[f"p99_{ch_name}"] = np.percentile(ch_diff, 99) * 100
+            stats[f"max_{ch_name}"] = np.max(ch_diff) * 100
+    
+    return stats
 
 
 def load_tiff(path: Path) -> np.ndarray | None:

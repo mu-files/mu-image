@@ -38,9 +38,28 @@ TEST_CASES = [
     # Color pattern tests (300x200, 6x4 patches)
     ("asi676mc.linearraw.uncomp.1ifds.colorpattern.none.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.none.tif", 1.07),  # measured 0.97%
     ("asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.tif", 0.93),  # measured 0.84%
-    # Full-size tests (4144x2822)
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.tif", 1.17),  # measured 1.06%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.tif", 1.03),  # measured 0.94%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.tif", 1.05),  # measured 0.95%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.tif", 0.89),  # measured 0.81%
+    ("asi676mc.linearraw.uncomp.1ifds.rgbcurve.dng", "asi676mc.linearraw.uncomp.1ifds.rgbcurve.tif", 1.25),  # measured 1.14%
+    # synthetic color patterns
+    ("rgb_ramp_test.rcurve.dng", "rgb_ramp_test.rcurve.tif", 0.69),  # measured 0.63%
+    ("rgb_ramp_test.gcurve.dng", "rgb_ramp_test.gcurve.tif", 0.74),  # measured 0.67%
+    ("rgb_ramp_test.bcurve.dng", "rgb_ramp_test.bcurve.tif", 0.77),  # measured 0.70%
+    ("rgb_ramp_test.bcurve2.dng", "rgb_ramp_test.bcurve2.tif", 1.05),  # measured 0.95%
+    ("rgb_ramp_test.multi-curve.dng", "rgb_ramp_test.multi-curve.tif", 1.05),  # measured 0.95%
+    ("rgb_ramp_test.maincurve.dng", "rgb_ramp_test.maincurve.tif", 1.05),  # measured 0.95%
+    ("rgb_ramp_test.mainrgbcurve.dng", "rgb_ramp_test.mainrgbcurve.tif", 1.05),  # measured 0.95%
+
+    # Full-size ASI676MC tests (4144x2822)
     ("asi676mc.linearraw.uncomp.1ifds.none.dng", "asi676mc.linearraw.uncomp.1ifds.none.tif", 1.19),  # measured 1.08%
     ("asi676mc.linearraw.uncomp.1ifds.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.exposure.tif", 0.73),  # measured 0.66%
+    ("asi676mc.linearraw.uncomp.1ifds.curve.dng", "asi676mc.linearraw.uncomp.1ifds.curve.tif", 1.32), 
+    # Canon EOS R5 tests (2056x1366)
+    ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.53),  # measured 1.39%
+    ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", None),  # measured 3.64% (notably higher than ASI676MC)
+    ("canon_eos_r5.temp-tint.dng", "canon_eos_r5.temp-tint.tif", 1.51),  # measured 1.37%
 ]
 
 
@@ -89,9 +108,16 @@ def test_xmp_rendering(dng_name, tif_name, threshold, output_dir):
     # Compare against reference
     stats = compute_diff_stats(result, ref)
     
-    print(f"\n  [XMP] {dng_name}: diff={stats['mean']:.2f}% (threshold={threshold}%)")
+    # Use default threshold of 1.5% if not specified
+    effective_threshold = threshold if threshold is not None else 1.5
+    threshold_label = f"{effective_threshold}%" if threshold is not None else f"{effective_threshold}% (default)"
     
-    assert stats["mean"] < threshold, (
-        f"XMP rendering diff {stats['mean']:.2f}% > {threshold}% for {dng_name}"
+    # Print overall and per-channel diffs
+    print(f"\n  [XMP] {dng_name}: diff={stats['mean']:.2f}% (threshold={threshold_label})")
+    if 'mean_R' in stats:
+        print(f"        Per-channel: R={stats['mean_R']:.2f}% G={stats['mean_G']:.2f}% B={stats['mean_B']:.2f}%")
+    
+    assert stats["mean"] < effective_threshold, (
+        f"XMP rendering diff {stats['mean']:.2f}% > {effective_threshold}% for {dng_name}"
     )
 

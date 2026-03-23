@@ -10,7 +10,11 @@
  * Licensed under LGPL v2.1 and CDDL v1.0 (dual license)
  * See: https://github.com/LibRaw/LibRaw/blob/master/LICENSE.LGPL
  * 
- * Thread-safety fix: Made 'cp' pointer local instead of static.
+ * Modifications from original:
+ * - Added Python/NumPy C API bindings for use as Python extension
+ * - Thread-safety fix: Made 'cp' pointer local instead of static
+ * - Added string-based Bayer pattern parsing ("RGGB", "BGGR", "GRBG", "GBRG")
+ * - Removed LibRaw-specific dependencies and made standalone
  */
 
 #define PY_SSIZE_T_CLEAN
