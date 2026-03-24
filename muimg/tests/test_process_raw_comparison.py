@@ -119,7 +119,7 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
             use_xmp=False,  # Match dng_validate behavior (no XMP processing)
-            rendering_params={'highlight_compressing_exposure': False},  # Use DNG SDK exposure behavior
+            rendering_params={'highlight_preserving_exposure': False},  # Use DNG SDK exposure behavior
         )
     elapsed_ms = (time.perf_counter() - t0) * 1000
     
@@ -268,7 +268,7 @@ def test_stripped_dng_comparison(dng_path, output_dir):
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
             use_xmp=False,  # Match dng_validate behavior (no XMP processing)
-            rendering_params={'highlight_compressing_exposure': False},  # Use DNG SDK exposure behavior
+            rendering_params={'highlight_preserving_exposure': False},  # Use DNG SDK exposure behavior
         )
     elapsed_ms = (time.perf_counter() - t0) * 1000
     
@@ -294,7 +294,7 @@ def test_stripped_dng_comparison(dng_path, output_dir):
                 demosaic_algorithm="DNGSDK_BILINEAR",
                 strict=False,
                 use_xmp=False,  # Match dng_validate behavior (no XMP processing)
-                rendering_params={'highlight_compressing_exposure': False},  # Use DNG SDK exposure behavior
+                rendering_params={'highlight_preserving_exposure': False},  # Use DNG SDK exposure behavior
             )
         assert original_result is not None, "MUIMG returned None on original DNG"
         

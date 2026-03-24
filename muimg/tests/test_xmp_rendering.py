@@ -31,10 +31,10 @@ def output_dir():
     return OUTPUT_DIR
 
 # Test files with Photoshop reference images
-# Format: (dng_filename, tiff_filename, threshold, highlight_compressing_exposure)
+# Format: (dng_filename, tiff_filename, threshold, highlight_preserving_exposure)
 # Thresholds are 1.1x above measured values
 # Using LINEAR_RAW DNGs with DefaultBlackRender=1 to match Photoshop baseline
-# highlight_compressing_exposure: True (default) = highlight compression, False = DNG SDK behavior
+# highlight_preserving_exposure: True (default) = highlight compression, False = DNG SDK behavior
 TEST_CASES = [
     # Color pattern tests (300x200, 6x4 patches)
     ("asi676mc.linearraw.uncomp.1ifds.colorpattern.none.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.none.tif", 1.07, True),  # measured 0.97%
@@ -59,15 +59,15 @@ TEST_CASES = [
     ("asi676mc.linearraw.uncomp.1ifds.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.exposure.tif", 0.73, True),  # measured 0.66%
     ("asi676mc.linearraw.uncomp.1ifds.curve.dng", "asi676mc.linearraw.uncomp.1ifds.curve.tif", 1.32, True), 
     # Canon EOS R5 tests (2056x1366)
-    ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.27, True),  # measured 1.15%
-    ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", 2.32, True),  # measured 2.11% - TODO: revisit large difference
+    ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.25, True),  # measured 1.14%
+    ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", 2.28, True),  # measured 2.07% - TODO: revisit large difference
     ("canon_eos_r5.baselineexposure-bl1.dng", "canon_eos_r5.baselineexposure-bl1.tif", 2.43, True),  # measured 2.21% - TODO: revisit large difference
     ("canon_eos_r5.temp-tint.dng", "canon_eos_r5.temp-tint.tif", 1.25, True),  # measured 1.14%
 ]
 
 
-@pytest.mark.parametrize("dng_name,tif_name,threshold,highlight_compressing_exposure", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
-def test_xmp_rendering(dng_name, tif_name, threshold, highlight_compressing_exposure, output_dir):
+@pytest.mark.parametrize("dng_name,tif_name,threshold,highlight_preserving_exposure", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
+def test_xmp_rendering(dng_name, tif_name, threshold, highlight_preserving_exposure, output_dir):
     """Test XMP-based rendering against Photoshop reference.
     
     Validates that rendered output matches Photoshop reference within threshold.
@@ -75,7 +75,7 @@ def test_xmp_rendering(dng_name, tif_name, threshold, highlight_compressing_expo
     is handled automatically by the rendering pipeline.
     
     Args:
-        highlight_compressing_exposure: If True, use highlight compression (cubic spline for negative exposure).
+        highlight_preserving_exposure: If True, use highlight compression (cubic spline for negative exposure).
                          If False, use DNG SDK exposure behavior (quadratic approximation).
     """
     dng_path = XMP_TEST_DIR / dng_name
@@ -93,14 +93,14 @@ def test_xmp_rendering(dng_name, tif_name, threshold, highlight_compressing_expo
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
             use_xmp=True,
-            rendering_params={'highlight_compressing_exposure': highlight_compressing_exposure},
+            rendering_params={'highlight_preserving_exposure': highlight_preserving_exposure},
         )
         
         assert result is not None, f"Rendering failed for {dng_name}"
     
     # Save rendered output for manual inspection
     output_name = dng_path.stem + "_muimg.tif"
-    tifffile.imwrite(str(output_dir / output_name), result, photometric='rgb', metadata={'ColorSpace': 1})
+    tifffile.imwrite(str(output_dir / output_name), result)
     
     # Load Photoshop reference
     ref = tifffile.imread(str(tif_path))

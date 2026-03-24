@@ -1504,7 +1504,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
     
     return result
 
-def exposure_tone(x: np.ndarray, exposure: float, highlight_compressing_exposure: bool = True) -> np.ndarray:
+def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure: bool = True) -> np.ndarray:
     """Apply exposure tone function.
     
     For negative exposure: uses a piecewise curve with linear segment from 0 to 0.25
@@ -1515,7 +1515,7 @@ def exposure_tone(x: np.ndarray, exposure: float, highlight_compressing_exposure
     Args:
         x: Input values in [0, 1]
         exposure: Exposure compensation in stops
-        highlight_compressing_exposure: If True, use cubic spline for negative exposure with highlight compression.
+        highlight_preserving_exposure: If True, use cubic spline for negative exposure with highlight compression.
                           If False, use DNG SDK quadratic approximation.
                           Default True.
     
@@ -1527,7 +1527,7 @@ def exposure_tone(x: np.ndarray, exposure: float, highlight_compressing_exposure
 
     slope = 2.0 ** exposure
     
-    if not highlight_compressing_exposure:        
+    if not highlight_preserving_exposure:        
         # Uses k=1.0 (highlight preservation parameter, 
         # kept in case we want to surface this param in future)
         k = 1.0
@@ -1651,7 +1651,7 @@ def compute_exposure_ramp_lut(
     exposure: float,
     shadow_scale: float,
     default_black_render: int,
-    highlight_compressing_exposure: bool = True,
+    highlight_preserving_exposure: bool = True,
     num_points: int = 4096,
     rgb_prophoto: Optional[np.ndarray] = None
 ) -> np.ndarray:
@@ -1661,7 +1661,7 @@ def compute_exposure_ramp_lut(
         exposure: Total exposure in stops (baseline + user)
         shadow_scale: ShadowScale tag value (default 1.0 if None)
         default_black_render: DefaultBlackRender tag (0=Auto, 1=None)
-        highlight_compressing_exposure: If True, use highlight compression 
+        highlight_preserving_exposure: If True, use highlight compression 
         (white=1.0, complementary power). If False, use DNG SDK behavior 
         (standard exposure_ramp).
         Default True.
@@ -1680,7 +1680,7 @@ def compute_exposure_ramp_lut(
     # For highlight compression: always use white=1.0 (no linear scaling in exposure_ramp)
     # Exposure adjustment is handled via complementary power (positive) or cubic spline (negative)
     # For DNG SDK: use standard white point
-    if highlight_compressing_exposure:
+    if highlight_preserving_exposure:
         exposure_white = 1.0
     else:
         exposure_white = 1.0 / (2.0 ** max(0.0, exposure))
@@ -1692,21 +1692,12 @@ def compute_exposure_ramp_lut(
     if default_black_render == 1:  # defaultBlackRender_None
         shadows = 0.0
     else:
-        if highlight_compressing_exposure:
-            # Scale shadows inversely with exposure
-            shadows = 5.0 / (2.0 ** exposure)
-        else:
-            shadows = 5.0  # DNG SDK default
+        shadows = 5.0  # DNG SDK default
     exposure_black = shadows * shadow_scale * 0.001
     exposure_black = min(exposure_black, 0.99 * exposure_white)
     
-    # Apply exposure_ramp (handles shadow processing)
-    ramp_lut = exposure_ramp(
-        lut_x, exposure_white, exposure_black, exposure_black
-    )
-    
-    # For highlight compression with positive exposure: apply complementary power on top of ramp
-    if highlight_compressing_exposure and exposure > 0.0:
+    # For highlight compression with positive exposure: compute exposure curves first, then apply shadow processing
+    if highlight_preserving_exposure and exposure > 0.0:
         # Adaptive exposure: blend between linear and complementary power based on content
         # the intent is that we don't do compressive curve if content does not need it
 
@@ -1749,17 +1740,27 @@ def compute_exposure_ramp_lut(
             
             logger.debug(f"  Selected p98: mx={mx:.5f}, smx={smx:.5f}, w={blend_weight:.5f}")
         
-        # Compute both curves
+        # Compute both exposure curves from input
         
         # Linear exposure: multiply by gain
-        linear_lut = ramp_lut * slope
+        linear_lut = lut_x * slope
         
         # Complementary power function for positive exposure
         # f(x) = 1 - (1-x)^slope where slope = 2^exposure
-        comp_power_lut = 1.0 - (1.0 - ramp_lut) ** slope
+        comp_power_lut = 1.0 - (1.0 - lut_x) ** slope
         
         # Blend between linear and complementary power
-        ramp_lut = linear_lut * (1.0 - blend_weight) + comp_power_lut * blend_weight
+        exposure_lut = linear_lut * (1.0 - blend_weight) + comp_power_lut * blend_weight
+        
+        # Apply exposure_ramp (shadow processing) to the blended exposure curve
+        ramp_lut = exposure_ramp(
+            exposure_lut, exposure_white, exposure_black, exposure_black
+        )
+    else:
+        # Default: apply exposure_ramp (handles shadow processing)
+        ramp_lut = exposure_ramp(
+            lut_x, exposure_white, exposure_black, exposure_black
+        )
     
     return ramp_lut.astype(np.float32)
 
@@ -2422,20 +2423,18 @@ def _render_camera_rgb(
         
         logger.debug(f"Shadow params: shadow_scale={shadow_scale:.4f}, default_black_render={default_black_render}")
         
-        # Determine if using highlight compression or DNG SDK behavior
-        # Default to True (highlight compression)
-        highlight_compressing_exposure = True
+        # Determine if using highlight prservation or DNG SDK behavior
+        # Default to True (highlight preservation)
+        highlight_preserving_exposure = True
         if rendering_params:
-            highlight_compressing_exposure = rendering_params.get(
-                'highlight_compressing_exposure', True
+            highlight_preserving_exposure = rendering_params.get(
+                'highlight_preserving_exposure', True
             )
 
         # Compute exposure_ramp LUT
         # Pass rgb_prophoto for adaptive exposure blending
-        logger.debug(f"Computing exposure_ramp: exposure={exposure:.4f}, shadow_scale={shadow_scale:.4f}, "
-                    f"default_black_render={default_black_render}, highlight_compressing={highlight_compressing_exposure}")
         exposure_ramp_lut = compute_exposure_ramp_lut(
-            exposure, shadow_scale, default_black_render, highlight_compressing_exposure,
+            exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
             rgb_prophoto=rgb_prophoto
         )
         logger.debug(f"Exposure_ramp LUT: first={exposure_ramp_lut[0]:.6f}, last={exposure_ramp_lut[-1]:.6f}, "
@@ -2455,10 +2454,11 @@ def _render_camera_rgb(
             look_table = np.asarray(look_table_data, dtype=np.float32)
             logger.debug(f"ProfileLookTable: {look_hue_divs}x{look_sat_divs}x{look_val_divs}")
         
-        # Optimization: if no look_table, combine exposure_ramp into tone curve LUT
+        # Build combined tone curve based on whether look_table exists
+        # If no look_table: exposure_ramp -> exposure_tone -> profile_curve (all baked into one LUT)
+        # If look_table: exposure_tone -> profile_curve (exposure_ramp applied to pixels separately)
         if look_table is not None:
             # Must apply exposure_ramp separately when look_table exists
-            # (If no look_table, exposure_ramp is baked into tone curve below)
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             t0 = time.perf_counter()
             rgb_exposed = _raw_render.apply_curve(
@@ -2473,10 +2473,22 @@ def _render_camera_rgb(
                 look_hue_divs, look_sat_divs, look_val_divs
             )
             timings['look_table'] = time.perf_counter() - t0
+            
+            # Start combined curve with identity (exposure_ramp already applied to pixels)
+            lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
+            combined_curve = lut_x.astype(np.float32)
         else:
-            # No look_table: exposure_ramp will be baked into tone curve below
+            # No look_table: exposure_ramp will be baked into tone curve
             rgb_exposed = rgb_prophoto
             timings['exposure_ramp'] = 0.0
+            
+            # Start combined curve with exposure_ramp
+            combined_curve = exposure_ramp_lut
+        
+        # Chain: apply exposure_tone to output
+        combined_curve = remap_curve_output(
+            combined_curve, lambda y: exposure_tone(y, exposure, highlight_preserving_exposure)
+        )
         
         # =====================================================================
         # Step 3: DoBaselineRGBTone (ALWAYS applied)
@@ -2507,25 +2519,7 @@ def _render_camera_rgb(
         
         profile_curve = get_acr3_curve(4096) if tag_profile_curve is None else tag_profile_curve
         
-        # Build combined curve by chaining in forward order:
-        # If no look_table: exposure_ramp -> exposure_tone -> profile_curve
-        # If look_table: exposure_tone -> profile_curve (exposure_ramp already applied to pixels)
-        
-        # Start with identity or exposure_ramp
-        if look_table is None:
-            # Chain starts with exposure_ramp
-            combined_curve = exposure_ramp_lut
-        else:
-            # Chain starts with identity (exposure_ramp already applied to pixels)
-            lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
-            combined_curve = lut_x.astype(np.float32)
-        
-        # Chain: apply exposure_tone to output
-        combined_curve = remap_curve_output(
-            combined_curve, lambda y: exposure_tone(y, exposure, highlight_compressing_exposure)
-        )
-        
-        # Chain: apply profile tone curve to output
+        # Chain: apply profile tone curve to output (combined_curve already has exposure_ramp and exposure_tone)
         combined_curve = remap_curve_output(combined_curve, profile_curve)
         
         rgb_toned = _raw_render.apply_curve_hue_preserving(

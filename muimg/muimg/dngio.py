@@ -569,7 +569,7 @@ class DngPage(TiffPage):
                 - 'Temperature': White balance temperature in Kelvin (float)
                 - 'Tint': White balance tint adjustment (float)
                 - 'Exposure2012': Exposure compensation in stops (float)
-                - 'highlight_compressing_exposure': Use highlight compression for exposure 
+                - 'highlight_preserving_exposure': Use highlight preservation for exposure 
                                       (bool, default True). If True, uses a curve that keeps
                                       highlights in the output range for positive exposures
                                       instead of a linear exposure which would clip highlights.
@@ -616,7 +616,7 @@ class DngPage(TiffPage):
             # Merge rendering_params overrides (with validation)
             if rendering_params is not None:
                 # Render-method specific parameters (not from XMP)
-                render_specific_params = {'highlight_compressing_exposure'}
+                render_specific_params = {'highlight_preserving_exposure'}
                 # Combine XMP params and render-specific params
                 supported_params = raw_render.SUPPORTED_XMP_PARAMS | render_specific_params
                 

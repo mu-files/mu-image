@@ -114,7 +114,7 @@ def test_exposure_comprehensive(exposure, dng_file, photoshop_tif, output_dir):
             output_dtype=np.uint16,
             demosaic_algorithm="DNGSDK_BILINEAR",
             use_xmp=True,
-            rendering_params={'highlight_compressing_exposure': True},
+            rendering_params={'highlight_preserving_exposure': True},
         )
     
     # Save MUIMG XMP output
