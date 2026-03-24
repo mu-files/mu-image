@@ -53,8 +53,8 @@ POSITIVE_TEST_CASES = [
 # Baseline exposure test cases (Exposure2012 moved to BaselineExposure tag, XMP stripped)
 # These test whether Photoshop treats BaselineExposure differently than user Exposure2012
 BASELINE_EXPOSURE_TEST_CASES = [
-    (-1.0, "linear_gradient_test.baselineexp-1.0.dng", None),
-    (1.0, "linear_gradient_test.baselineexp_1.0.dng", None),
+    (-1.0, "linear_gradient_test.baselineexp-1.0.dng", "linear_gradient_test.baselineexp-1.0.tif"),
+    (1.0, "linear_gradient_test.baselineexp_1.0.dng", "linear_gradient_test.baselineexp_1.0.tif"),
 ]
 
 # Combined test cases

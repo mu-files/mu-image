@@ -977,7 +977,7 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
         dng_tags.add_tag("Orientation", _ORIENTATION_HORIZONTAL)
     
     # Default to sRGB color space with proper matrices for passthrough
-    if "ColorMatrix1" not in dng_tags and  "ForwardMatrix1" not in dng_tags:
+    if "ColorMatrix1" not in dng_tags and "ForwardMatrix1" not in dng_tags:
         # ColorMatrix1: XYZ D50 → Camera (sRGB)
         # Needed for correct camera_white computation
         # Computed as: ProPhoto→sRGB @ XYZ_D50→ProPhoto
@@ -1004,10 +1004,6 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
     if "AnalogBalance" not in dng_tags:
         # Neutral analog balance
         dng_tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
-    
-    if "ProfileToneCurve" not in dng_tags:
-        # Linear tone curve (no adjustment)
-        dng_tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
     
     if "DefaultBlackRender" not in dng_tags:
         # Disable black point adjustment (1 = None mode, shadows=0.0)

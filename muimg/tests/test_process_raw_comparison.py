@@ -42,6 +42,8 @@ MUIMG_THRESHOLDS = {
     # Canon
     "canon_eos_r5.cfa.ljpeg.6ifds.dng": 0.02,  # measured 0.02%
     "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": 0.02,  # measured 0.02%
+    "canon_eos_r5.baselineexposure-bl0.dng": 0.1,
+    "canon_eos_r5.baselineexposure-bl1.dng": 0.1,
     # Insta360
     "insta360_oners.cfa.uncomp.1ifds.dng": 0.02,  # measured 0.01%
     # Nikon

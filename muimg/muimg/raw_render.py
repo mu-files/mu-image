@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import logging
 
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 from . import _vng
 from .tiff_metadata import get_cfa_pattern_codes
 
@@ -26,7 +26,7 @@ class SplineCurve:
     Uses scipy CubicSpline for interpolation. Points are stored as float tuples.
     """
     
-    def __init__(self, points_or_string: Union[None, str, list] = None, bc_type: str = 'natural'):
+    def __init__(self, points_or_string: Optional[Union[str, list]] = None, bc_type: str = 'natural'):
         """
         Initialize SplineCurve.
         
@@ -1652,7 +1652,8 @@ def compute_exposure_ramp_lut(
     shadow_scale: float,
     default_black_render: int,
     highlight_compressing_exposure: bool = True,
-    num_points: int = 4096
+    num_points: int = 4096,
+    rgb_prophoto: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """Compute exposure_ramp LUT from exposure and DNG tag values.
     
@@ -1666,6 +1667,8 @@ def compute_exposure_ramp_lut(
         Default True.
         
         num_points: Number of LUT points
+        rgb_prophoto: Optional ProPhoto linear RGB image for adaptive exposure.
+        If provided, blend weight is computed from content luminance histogram.
     
     Returns:
         Exposure ramp LUT as float32 array
@@ -1685,11 +1688,15 @@ def compute_exposure_ramp_lut(
     # SDK ref: dng_render.cpp lines 986-991, 2164-2171
     # black = shadows * ShadowScale * Stage3Gain * 0.001
     # Stage3Gain = 1.0 for normal images (only set for multi-channel CFA merging)
-    # DefaultBlackRender: 0 = Auto (shadows=5.0), 1 = None (shadows=0.0)
+    # DefaultBlackRender: 0 = Auto, 1 = None (shadows=0.0)
     if default_black_render == 1:  # defaultBlackRender_None
         shadows = 0.0
     else:
-        shadows = 5.0  # SDK default (defaultBlackRender_Auto)
+        if highlight_compressing_exposure:
+            # Scale shadows inversely with exposure
+            shadows = 5.0 / (2.0 ** exposure)
+        else:
+            shadows = 5.0  # DNG SDK default
     exposure_black = shadows * shadow_scale * 0.001
     exposure_black = min(exposure_black, 0.99 * exposure_white)
     
@@ -1699,12 +1706,60 @@ def compute_exposure_ramp_lut(
     )
     
     # For highlight compression with positive exposure: apply complementary power on top of ramp
-    # This must be done in the exposure_ramp LUT so it's applied before look table
     if highlight_compressing_exposure and exposure > 0.0:
+        # Adaptive exposure: blend between linear and complementary power based on content
+        # the intent is that we don't do compressive curve if content does not need it
+
+        # Compute slope (exposure gain) - used for both blend weight and curves
+        slope = 2.0 ** exposure
+        
+        blend_weight = 1.0  # Default to pure complementary power
+        
+        if rgb_prophoto is not None:
+            # Compute luminance from ProPhoto RGB
+            # Y coefficients from PROPHOTO_RGB_TO_XYZ_D50 matrix
+            luminance = (0.2880402 * rgb_prophoto[..., 0] +
+                        0.7118741 * rgb_prophoto[..., 1] +
+                        0.0000857 * rgb_prophoto[..., 2])
+            luminance_flat = luminance.flatten()
+            
+            # Find p98 luminance value using histogram for efficiency
+            # Use 10000 bins for good precision
+            hist, bin_edges = np.histogram(luminance_flat, bins=10000, range=(0.0, 1.0))
+            cdf = np.cumsum(hist).astype(np.float64) / np.sum(hist)
+
+            # Find bin where CDF crosses 0.98(p98)
+            idx = np.searchsorted(cdf, 0.98)
+            mx = bin_edges[idx] if idx < len(bin_edges) else bin_edges[-1]
+
+
+            # Scale by exposure
+            smx = slope * mx
+            
+            # Compute blend weight
+            # w = 0 if smx <= 0.6 (pure linear)
+            # w = (smx - 0.6) / 0.4 if 0.6 < smx < 1.0 (blend)
+            # w = 1 if smx >= 1.0 (pure complementary power)
+            if smx >= 1.0:
+                blend_weight = 1.0
+            elif smx <= 0.6:
+                blend_weight = 0.0
+            else:
+                blend_weight = (smx - 0.6) / (1.0 - 0.6)
+            
+            logger.debug(f"  Selected p98: mx={mx:.5f}, smx={smx:.5f}, w={blend_weight:.5f}")
+        
+        # Compute both curves
+        
+        # Linear exposure: multiply by gain
+        linear_lut = ramp_lut * slope
+        
         # Complementary power function for positive exposure
         # f(x) = 1 - (1-x)^slope where slope = 2^exposure
-        slope = 2.0 ** exposure
-        ramp_lut = 1.0 - (1.0 - ramp_lut) ** slope
+        comp_power_lut = 1.0 - (1.0 - ramp_lut) ** slope
+        
+        # Blend between linear and complementary power
+        ramp_lut = linear_lut * (1.0 - blend_weight) + comp_power_lut * blend_weight
     
     return ramp_lut.astype(np.float32)
 
@@ -2315,6 +2370,9 @@ def _render_camera_rgb(
         # SDK ref: User exposure is applied in exposure ramp, not in PGTM
         user_exposure = rendering_params.get('Exposure2012', 0.0) if rendering_params else 0.0
         exposure = total_baseline_exposure + user_exposure
+        
+        logger.debug(f"Exposure computation: baseline={baseline_exposure:.4f}, offset={baseline_exposure_offset:.4f}, "
+                    f"total_baseline={total_baseline_exposure:.4f}, user={user_exposure:.4f}, final={exposure:.4f}")
 
         # Check for PGTM2 first (takes precedence), then fall back to PGTM1
         pgtm_data = page.get_tag("ProfileGainTableMap2")
@@ -2362,6 +2420,8 @@ def _render_camera_rgb(
         shadow_scale = page.get_tag("ShadowScale") or 1
         default_black_render = page.get_tag("DefaultBlackRender") or 0
         
+        logger.debug(f"Shadow params: shadow_scale={shadow_scale:.4f}, default_black_render={default_black_render}")
+        
         # Determine if using highlight compression or DNG SDK behavior
         # Default to True (highlight compression)
         highlight_compressing_exposure = True
@@ -2371,9 +2431,15 @@ def _render_camera_rgb(
             )
 
         # Compute exposure_ramp LUT
+        # Pass rgb_prophoto for adaptive exposure blending
+        logger.debug(f"Computing exposure_ramp: exposure={exposure:.4f}, shadow_scale={shadow_scale:.4f}, "
+                    f"default_black_render={default_black_render}, highlight_compressing={highlight_compressing_exposure}")
         exposure_ramp_lut = compute_exposure_ramp_lut(
-            exposure, shadow_scale, default_black_render, highlight_compressing_exposure
+            exposure, shadow_scale, default_black_render, highlight_compressing_exposure,
+            rgb_prophoto=rgb_prophoto
         )
+        logger.debug(f"Exposure_ramp LUT: first={exposure_ramp_lut[0]:.6f}, last={exposure_ramp_lut[-1]:.6f}, "
+                    f"mean={np.mean(exposure_ramp_lut):.6f}")
 
         # =====================================================================
         # Step 2.5: DoBaselineHueSatMap (ProfileLookTable)
@@ -2439,7 +2505,7 @@ def _render_camera_rgb(
                     # Fallback to ACR3 if curve is invalid (e.g., non-monotonic x)
                     logger.warning(f"ProfileToneCurve invalid ({e}), using ACR3")
         
-        profile_curve = tag_profile_curve if tag_profile_curve is not None else get_acr3_curve(4096)
+        profile_curve = get_acr3_curve(4096) if tag_profile_curve is None else tag_profile_curve
         
         # Build combined curve by chaining in forward order:
         # If no look_table: exposure_ramp -> exposure_tone -> profile_curve
