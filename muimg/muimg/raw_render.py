@@ -2078,6 +2078,96 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
     return camera_white
 
 
+def apply_radial_distortion_correction(
+    rgb_image: np.ndarray,
+    radial_params: dict,
+    scale_factor: float = 1.0,
+    center_x: float = 0.5,
+    center_y: float = 0.5,
+    focal_length_mm: float = None,
+    sensor_width_mm: float = 35.6
+) -> np.ndarray:
+    """Apply radial distortion correction to an RGB image using Adobe LCP parameters.
+    
+    Adobe LCP uses "ray-space" normalization where coordinates are normalized by:
+        r_ray = (pixel_offset / max_dimension) / (focal_length / sensor_width)
+    
+    The sensor width is calculated from stCamera:SensorFormatFactor in XMP metadata
+    as 36mm / SensorFormatFactor. This gives the actual sensor width for the camera.
+    This ray-angle-based coordinate system makes distortion parameters lens-intrinsic
+    and focal-length-independent, allowing a single set of k1/k2/k3 values to work
+    across the entire zoom range of a lens.
+    
+    This differs from OpenCV's approach where distortion coefficients are applied
+    to normalized pixel coordinates without focal length normalization.
+    
+    For each output pixel, computes the corresponding input pixel coordinates
+    by applying the distortion formula, then uses cv2.remap with bicubic
+    interpolation to sample from the source image.
+    
+    Args:
+        rgb_image: Input image (float32, any color space)
+        radial_params: Dictionary with keys 'k1', 'k2', 'k3' (distortion coefficients in ray-space)
+        scale_factor: Additional zoom multiplier applied during correction (default 1.0)
+        center_x: Normalized X center of distortion (0.0-1.0, default 0.5)
+        center_y: Normalized Y center of distortion (0.0-1.0, default 0.5)
+        focal_length_mm: Focal length in mm for ray-space normalization (required)
+        sensor_width_mm: Sensor width in mm for ray-space normalization (default 35.6mm)
+        
+    Returns:
+        Distortion-corrected image (same shape and dtype as input)
+    """
+    
+    if focal_length_mm is None:
+        raise ValueError("focal_length_mm is required for radial distortion correction")
+
+    height, width = rgb_image.shape[:2]
+    
+    # Distortion center from normalized coordinates
+    cx = center_x * width
+    cy = center_y * height
+
+    # Create meshgrid of output pixel coordinates
+    x_coords, y_coords = np.meshgrid(
+        np.arange(width, dtype=np.float32),
+        np.arange(height, dtype=np.float32)
+    )
+
+    # Convert to ray-space coordinates normalized to actual sensor width
+    # sensor_width_mm is calculated from stCamera:SensorFormatFactor as 36mm / SensorFormatFactor
+    # focal_length_norm converts actual focal length to sensor-relative ratio
+    focal_length_norm = focal_length_mm / sensor_width_mm
+    norm_scale = max(width, height)
+    x_norm = ((x_coords - cx) / norm_scale) / focal_length_norm
+    y_norm = ((y_coords - cy) / norm_scale) / focal_length_norm
+    
+    # Calculate radial distance squared
+    r_squared = x_norm**2 + y_norm**2
+    
+    # Apply radial distortion formula in ray-space
+    # r_distorted = r * (1 + k1*r^2 + k2*r^4 + k3*r^6)
+    k1 = radial_params['k1']
+    k2 = radial_params['k2']
+    k3 = radial_params['k3'] 
+    distortion_factor = (1.0 + k1 * r_squared + k2 * r_squared**2 + k3 * r_squared**3)
+    
+    # Compute source coordinates by applying distortion
+    x_distorted = cx + scale_factor * (x_coords - cx) * distortion_factor
+    y_distorted = cy + scale_factor * (y_coords - cy) * distortion_factor
+    
+    # Use cv2.remap with bicubic interpolation
+    corrected = cv2.remap(
+        rgb_image,
+        x_distorted,
+        y_distorted,
+        interpolation=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+    
+    return corrected
+
+
 def apply_post_rendering_operations(
     rgb_prophoto_linear: np.ndarray,
     rendering_params: dict = None,
@@ -2102,24 +2192,18 @@ def apply_post_rendering_operations(
         Output image in ProPhoto RGB linear space (same as input)
     """
     
-    # Early return if no XMP curves present
+    # Early return if no rendering params
     if not rendering_params:
         return rgb_prophoto_linear
     
-    has_per_channel = any(
-        f'ToneCurvePV2012{ch}' in rendering_params 
-        for ch in ['Red', 'Green', 'Blue']
-    )
-    has_main_curve = 'ToneCurvePV2012' in rendering_params
+    logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
     
-    if not has_per_channel and not has_main_curve:
-        return rgb_prophoto_linear
-    
-    # Work directly in linear space
-    rgb_output = rgb_prophoto_linear.copy()
+    # Only copy if we're going to modify
+    rgb_output = rgb_prophoto_linear
     
     # Step 1: Apply main curve with hue preservation (if present and no per-channel curves)
-    if has_main_curve:
+    if 'ToneCurvePV2012' in rendering_params:
+        rgb_output = rgb_prophoto_linear.copy()
         main_curve_lut = build_lut_from_spline(
             rendering_params['ToneCurvePV2012'],
             convert_srgb_gamma_to_linear=True
@@ -2136,6 +2220,9 @@ def apply_post_rendering_operations(
         curve_key = f'ToneCurvePV2012{channel_name}'
         
         if curve_key in rendering_params:
+            if rgb_output is rgb_prophoto_linear:
+                rgb_output = rgb_prophoto_linear.copy()
+            
             # Build per-channel curve LUT in linear space
             channel_curve_lut = build_lut_from_spline(
                 rendering_params[curve_key],
@@ -2150,6 +2237,53 @@ def apply_post_rendering_operations(
                 channel_curve_lut
             )
             logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
+    
+    # Stage 2 - Apply radial distortion correction (final step after tone curves)
+    if 'crlcp:PerspectiveModel' in rendering_params:
+        perspective_model = rendering_params['crlcp:PerspectiveModel']
+        logger.debug(f"Found crlcp:PerspectiveModel: {perspective_model}")
+        
+        # Check if radial distortion parameters are present
+        has_radial = all(
+            f'stCamera:RadialDistortParam{i}' in perspective_model 
+            for i in [1, 2, 3]
+        )
+        if has_radial:
+            radial_params = {
+                'k1': float(perspective_model['stCamera:RadialDistortParam1']),
+                'k2': float(perspective_model['stCamera:RadialDistortParam2']),
+                'k3': float(perspective_model['stCamera:RadialDistortParam3']),
+            }
+            
+            # Extract scale factor if present (default 1.0)
+            scale_factor = float(perspective_model.get('stCamera:ScaleFactor', 1.0))
+            
+            # Extract distortion center if present (defaults to 0.5, 0.5 = image center)
+            center_x = float(perspective_model.get('stCamera:ImageXCenter', 0.5))
+            center_y = float(perspective_model.get('stCamera:ImageYCenter', 0.5))
+            
+            # Extract focal length (required for ray-space normalization)
+            focal_length_mm = perspective_model.get('stCamera:FocalLength')
+            if focal_length_mm is None:
+                logger.warning("Missing stCamera:FocalLength in perspective model, skipping radial distortion correction")
+            else:
+                focal_length_mm = float(focal_length_mm)
+                
+                # Extract sensor format factor to calculate actual sensor width
+                # SensorFormatFactor is the crop factor relative to full-frame (36mm width)
+                sensor_format_factor = perspective_model.get('stCamera:SensorFormatFactor')
+                if sensor_format_factor is not None:
+                    sensor_format_factor = float(sensor_format_factor)
+                    sensor_width_mm = 36.0 / sensor_format_factor
+                    logger.debug(f"Using sensor width {sensor_width_mm:.3f}mm (SensorFormatFactor={sensor_format_factor})")
+                else:
+                    # Fallback to empirically determined 35.6mm if SensorFormatFactor not available
+                    sensor_width_mm = 35.8
+                    logger.debug(f"SensorFormatFactor not found, using default sensor width {sensor_width_mm}mm")
+                
+                logger.debug(f"Radial distortion params: {radial_params}, scale_factor: {scale_factor}, center: ({center_x}, {center_y}), focal_length: {focal_length_mm}mm")
+                rgb_output = apply_radial_distortion_correction(rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
+                logger.debug("Applied radial distortion correction")
     
     return rgb_output
 
@@ -2707,6 +2841,7 @@ SUPPORTED_XMP_PARAMS = {
     'ToneCurvePV2012Red',    # Red channel tone curve (SplineCurve or list of (x,y) points)
     'ToneCurvePV2012Green',  # Green channel tone curve (SplineCurve or list of (x,y) points)
     'ToneCurvePV2012Blue',   # Blue channel tone curve (SplineCurve or list of (x,y) points)
+    'crlcp:PerspectiveModel', # Lens correction profile (nested dict with RadialDistort params)
     
     # TODO: Add pixel processing implementations for these additional properties:
     # 'Contrast2012', 'Highlights2012', 'Shadows2012', 'Whites2012', 'Blacks2012',
@@ -2733,6 +2868,7 @@ def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile'
     
     Returns:
         Dict with pipeline-supported properties (unqualified names for crs: namespace).
+        Nested dict structures (e.g., crlcp:PerspectiveModel) are preserved as-is.
         Returns empty dict if source has no XMP metadata.
     """
     from .tiff_metadata import XmpMetadata
@@ -2753,6 +2889,10 @@ def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile'
         raise TypeError(f"Unsupported source type: {type(source).__name__}")
     
     result = {}
+    
+    # Debug: Check which SUPPORTED_XMP_PARAMS are present
+    found_params = [prop for prop in SUPPORTED_XMP_PARAMS if xmp.has_prop(prop)]
+    logger.debug(f"Found {len(found_params)} supported XMP params: {found_params}")
     
     for prop in SUPPORTED_XMP_PARAMS:
         if xmp.has_prop(prop):
@@ -2775,6 +2915,26 @@ def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile'
         orientation = xmp.get_prop('tiff:Orientation')
         if orientation is not None:
             result['tiff:Orientation'] = orientation
+    
+    # Extract crlcp:PerspectiveModel using XPath query (nested in photoshop:CameraProfiles)
+    # Also extract parent Description attributes (e.g., FocalLength, SensorFormatFactor) for ray-space normalization
+    pm_result = xmp.xpath_query_with_parent(
+        'PerspectiveModel',
+        'http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/',
+        include_parent=True
+    )
+    if pm_result:
+        perspective_model, parent_attrs = pm_result
+        if perspective_model:
+            # Merge parent attributes (like FocalLength, SensorFormatFactor) into the perspective model dict
+            if parent_attrs:
+                if 'stCamera:FocalLength' in parent_attrs:
+                    perspective_model['stCamera:FocalLength'] = parent_attrs['stCamera:FocalLength']
+                if 'stCamera:SensorFormatFactor' in parent_attrs:
+                    perspective_model['stCamera:SensorFormatFactor'] = parent_attrs['stCamera:SensorFormatFactor']
+            
+            result['crlcp:PerspectiveModel'] = perspective_model
+            logger.debug(f"Extracted crlcp:PerspectiveModel with {len(perspective_model)} params")
     
     return result
 

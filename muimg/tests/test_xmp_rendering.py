@@ -44,6 +44,7 @@ TEST_CASES = [
     ("asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.tif", 1.05, True),  # measured 0.95%
     ("asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.tif", 0.89, True),  # measured 0.81%
     ("asi676mc.linearraw.uncomp.1ifds.rgbcurve.dng", "asi676mc.linearraw.uncomp.1ifds.rgbcurve.tif", 1.25, True),  # measured 1.14%
+
     # synthetic color patterns
     ("linear_gradient_test.exp-curve.dng", "linear_gradient_test.exp-curve.tif", 3.21, True),  # measured 2.92% - TODO: revisit large difference
     ("rgb_ramp_test.rcurve.dng", "rgb_ramp_test.rcurve.tif", 0.69, True),  # measured 0.63%
@@ -58,11 +59,17 @@ TEST_CASES = [
     ("asi676mc.linearraw.uncomp.1ifds.none.dng", "asi676mc.linearraw.uncomp.1ifds.none.tif", 1.19, True),  # measured 1.08%
     ("asi676mc.linearraw.uncomp.1ifds.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.exposure.tif", 0.73, True),  # measured 0.66%
     ("asi676mc.linearraw.uncomp.1ifds.curve.dng", "asi676mc.linearraw.uncomp.1ifds.curve.tif", 1.32, True), 
+
     # Canon EOS R5 tests (2056x1366)
     ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.25, True),  # measured 1.14%
     ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", 2.28, True),  # measured 2.07% - TODO: revisit large difference
     ("canon_eos_r5.baselineexposure-bl1.dng", "canon_eos_r5.baselineexposure-bl1.tif", 2.43, True),  # measured 2.21% - TODO: revisit large difference
     ("canon_eos_r5.temp-tint.dng", "canon_eos_r5.temp-tint.tif", 1.25, True),  # measured 1.14%
+
+    # Lens distrotion tests
+    ("lumixs9.dng", "lumixs9.tif", None, True),
+    ("nikon_z_9.cfa.ljpeg.2ifds.dng", "nikon_z_9.cfa.ljpeg.2ifds.tif", None, True)
+
 ]
 
 

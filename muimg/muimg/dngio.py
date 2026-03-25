@@ -1005,18 +1005,6 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
         # Neutral analog balance
         dng_tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
     
-    if "DefaultBlackRender" not in dng_tags:
-        # Disable black point adjustment (1 = None mode, shadows=0.0)
-        dng_tags.add_tag("DefaultBlackRender", 1)
-    
-    if "BlackLevel" not in dng_tags:
-        # No black offset for linear data
-        dng_tags.add_tag("BlackLevel", [0.0, 0.0, 0.0])
-    
-    if "WhiteLevel" not in dng_tags:
-        # Full uint16 range
-        dng_tags.add_tag("WhiteLevel", [65535, 65535, 65535])
-
     def _as_version_tuple(value) -> Optional[tuple[int, int, int, int]]:
         if value is None:
             return None

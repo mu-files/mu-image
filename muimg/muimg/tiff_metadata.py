@@ -1347,6 +1347,7 @@ class XmpMetadata:
         Args:
             xmp_string: Raw XMP metadata string from DNG file (default: empty)
         """
+        self._xmp_string = xmp_string
         self._attributes = self._parse(xmp_string)
     
     @classmethod
@@ -1410,6 +1411,9 @@ class XmpMetadata:
         uri_to_prefix = {
             rdf_uri: "rdf",
             "http://ns.adobe.com/camera-raw-settings/1.0/": "crs",
+            "http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/": "crlcp",
+            "http://ns.adobe.com/photoshop/1.0/": "photoshop",
+            "http://ns.adobe.com/photoshop/1.0/camera-profile": "stCamera",
             "http://purl.org/dc/elements/1.1/": "dc",
             "http://ns.adobe.com/tiff/1.0/": "tiff",
             "http://ns.adobe.com/xap/1.0/": "xmp",
@@ -1502,6 +1506,130 @@ class XmpMetadata:
 
         logger.debug(f"Parsed {len(attributes)} XMP attributes")
         return attributes
+    
+    def xpath_query(self, element_name: str, namespace_uri: str) -> Optional[Dict[str, str]]:
+        """Query XMP for elements by namespace URI and local name.
+        
+        Searches the entire XMP tree for elements matching the given namespace and name,
+        and returns the first match's attributes as a dict.
+        
+        Args:
+            element_name: Local element name (e.g., 'PerspectiveModel')
+            namespace_uri: Full namespace URI (e.g., 'http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/')
+        
+        Returns:
+            Dict of attribute name -> value for the first matching element, or None if not found.
+            Attribute names are returned with their namespace prefix (e.g., 'stCamera:Version').
+        
+        Example:
+            pm = xmp.xpath_query('PerspectiveModel', 'http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/')
+            if pm:
+                k1 = pm.get('stCamera:RadialDistortParam1')
+        """
+        result = self.xpath_query_with_parent(element_name, namespace_uri, include_parent=False)
+        return result[0] if result else None
+    
+    def xpath_query_with_parent(self, element_name: str, namespace_uri: str, include_parent: bool = True) -> Optional[tuple]:
+        """Query XMP for elements and optionally include direct parent element attributes.
+        
+        General-purpose method that finds an element and optionally returns its parent's attributes.
+        Uses ElementTree's parent map to find the immediate parent element.
+        
+        Args:
+            element_name: Local element name (e.g., 'PerspectiveModel')
+            namespace_uri: Full namespace URI
+            include_parent: If True, includes parent element's attributes in result
+        
+        Returns:
+            Tuple of (element_dict, parent_dict) or None if not found.
+            parent_dict will be None if include_parent is False or parent has no attributes.
+        
+        Example:
+            elem, parent = xmp.xpath_query_with_parent('PerspectiveModel', 'http://...', include_parent=True)
+            if parent:
+                focal_length = parent.get('stCamera:FocalLength')
+        """
+        if not hasattr(self, '_xmp_string') or not self._xmp_string:
+            return None
+        
+        try:
+            import re
+            from defusedxml import ElementTree as DET
+            
+            # Parse XMP
+            xmp_text = self._xmp_string
+            if isinstance(xmp_text, bytes):
+                xmp_text = xmp_text.decode("utf-8", errors="replace")
+            xmp_text = xmp_text.lstrip("\ufeff")
+            xmp_text = re.sub(r"<\?xpacket[^>]*\?>", "", xmp_text)
+            root = DET.fromstring(xmp_text)
+            
+            # Build namespace prefix map
+            uri_to_prefix = {
+                "http://ns.adobe.com/camera-raw-settings/1.0/": "crs",
+                "http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/": "crlcp",
+                "http://ns.adobe.com/photoshop/1.0/": "photoshop",
+                "http://ns.adobe.com/photoshop/1.0/camera-profile": "stCamera",
+                "http://purl.org/dc/elements/1.1/": "dc",
+                "http://ns.adobe.com/tiff/1.0/": "tiff",
+                "http://ns.adobe.com/xap/1.0/": "xmp",
+            }
+            
+            def extract_attributes(elem):
+                """Extract attributes from an element with namespace prefixes."""
+                result = {}
+                for attr_qname, attr_value in elem.attrib.items():
+                    if attr_qname.startswith("{http://www.w3.org/2000/xmlns/}"):
+                        continue
+                    
+                    # Convert qualified name to prefixed name
+                    if attr_qname[0] == "{":
+                        try:
+                            uri, local = attr_qname[1:].split("}", 1)
+                            prefix = uri_to_prefix.get(uri)
+                            attr_name = f"{prefix}:{local}" if prefix else local
+                        except ValueError:
+                            attr_name = attr_qname
+                    else:
+                        attr_name = attr_qname
+                    
+                    result[attr_name] = str(attr_value)
+                return result
+            
+            # Find all matching elements
+            search_path = f".//{{{namespace_uri}}}{element_name}"
+            elements = root.findall(search_path)
+            if not elements:
+                return None
+            
+            # Use first match
+            elem = elements[0]
+            
+            # If element has no direct attributes, check for child rdf:Description
+            if len(elem.attrib) == 0:
+                rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                desc_children = elem.findall(f"{{{rdf_uri}}}Description")
+                if desc_children:
+                    elem = desc_children[0]
+            
+            # Extract element attributes
+            elem_attrs = extract_attributes(elem)
+            
+            # Extract parent attributes if requested
+            parent_attrs = None
+            if include_parent:
+                # Build parent map to find parent element
+                parent_map = {c: p for p in root.iter() for c in p}
+                parent_elem = parent_map.get(elements[0])  # Get parent of original found element
+                
+                if parent_elem is not None and len(parent_elem.attrib) > 0:
+                    parent_attrs = extract_attributes(parent_elem)
+            
+            return (elem_attrs, parent_attrs) if elem_attrs or parent_attrs else None
+            
+        except Exception as e:
+            logger.debug(f"XPath query failed for {element_name}: {e}")
+            return None
     
     def has_prop(self, prop: str) -> bool:
         """Check if an XMP property exists.
