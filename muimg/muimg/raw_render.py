@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import logging
 
+from enum import Enum, auto
 from typing import Dict, Union, Optional
 from . import _vng
 from .tiff_metadata import get_cfa_pattern_codes
@@ -18,6 +19,23 @@ except ImportError:
 from . import _raw_render
 
 logger = logging.getLogger(__name__)
+
+
+class ColorSpace(Enum):
+    """Color space definitions with native gamma encoding.
+    
+    Each color space is defined by:
+    - Primary chromaticities (red, green, blue)
+    - White point (D50 or D65)
+    - Gamma encoding (linear, 1.8, 2.2, or sRGB piecewise)
+    """
+    PROPHOTO_LINEAR = auto()
+    PROPHOTO_GAMMA = auto()      # Gamma 1.8
+    ADOBERGB_LINEAR = auto()
+    ADOBERGB_GAMMA = auto()      # Gamma 2.2
+    SRGB_LINEAR = auto()
+    SRGB_GAMMA = auto()          # sRGB piecewise gamma
+
 
 class SplineCurve:
     """
@@ -152,21 +170,237 @@ class SplineCurve:
         return f"SplineCurve(points={self.points})"
 
 
-
-
-def _srgb_inverse_gamma_1d(values: np.ndarray) -> np.ndarray:
-    """Convert 1D array from sRGB gamma to linear using C extension.
+def _srgb_gamma(linear: np.ndarray) -> np.ndarray:
+    """Apply sRGB gamma encoding (piecewise function).
+    
+    Uses C extension for performance. Accepts both 1D arrays (LUTs) and 
+    3D arrays (images). sRGB uses a piecewise function:
+    - Linear segment for dark values (< 0.0031308)
+    - Power curve (gamma ~2.2) for bright values
     
     Args:
-        values: 1D array of sRGB gamma-encoded values
+        linear: Linear RGB values (1D or 3D array)
         
     Returns:
-        1D array of linear values
+        sRGB gamma-encoded values (same shape as input)
     """
-    # Reshape to (N, 1, 3) for C function
-    values_3d = values[:, np.newaxis, np.newaxis].repeat(3, axis=2).astype(np.float32)
-    result_3d = _raw_render.srgb_gamma(values_3d, 1)
-    return result_3d[:, 0, 0]
+    return _raw_render.srgb_gamma(linear.astype(np.float32), 0)  # 0 = encode
+
+
+def _srgb_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
+    """Apply sRGB gamma decoding (piecewise function).
+    
+    Uses C extension for performance. Accepts both 1D arrays (LUTs) and 
+    3D arrays (images). Inverse of _srgb_gamma.
+    
+    Args:
+        gamma: sRGB gamma-encoded values (1D or 3D array)
+        
+    Returns:
+        Linear RGB values (same shape as input)
+    """
+    return _raw_render.srgb_gamma(gamma.astype(np.float32), 1)  # 1 = decode
+
+
+def _prophoto_gamma(linear: np.ndarray) -> np.ndarray:
+    """Apply ProPhoto RGB gamma 1.8 encoding.
+    
+    Source: DNG SDK 1.7.1 dng_color_space.cpp line 1007
+    dng_function_GammaEncode_1_8
+    
+    Args:
+        linear: Linear RGB values (should be in 0-1 range)
+        
+    Returns:
+        Gamma-encoded values
+    """
+    return np.power(linear, 1.0 / 1.8)
+
+
+def _prophoto_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
+    """Apply ProPhoto RGB gamma 1.8 decoding.
+    
+    Args:
+        gamma: Gamma-encoded values (should be in 0-1 range)
+        
+    Returns:
+        Linear RGB values
+    """
+    return np.power(gamma, 1.8)
+
+
+def _adobergb_gamma(linear: np.ndarray) -> np.ndarray:
+    """Apply Adobe RGB gamma 2.2 encoding (simple power curve).
+    
+    Source: DNG SDK 1.7.1 dng_color_space.cpp line 579
+    dng_function_GammaEncode_2_2
+    
+    Note: Adobe RGB uses a simple power curve, not the piecewise sRGB function.
+    
+    Args:
+        linear: Linear RGB values (should be in 0-1 range)
+        
+    Returns:
+        Gamma-encoded values
+    """
+    return np.power(linear, 1.0 / 2.2)
+
+
+def _adobergb_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
+    """Apply Adobe RGB gamma 2.2 decoding.
+    
+    Args:
+        gamma: Gamma-encoded values (should be in 0-1 range)
+        
+    Returns:
+        Linear RGB values
+    """
+    return np.power(gamma, 2.2)
+
+
+def convert_dtype(
+    image: np.ndarray,
+    dest_dtype: np.dtype
+) -> np.ndarray:
+    """Convert image between data types with proper normalization.
+    
+    Handles conversion between uint8, uint16, and float types with
+    appropriate scaling to preserve value ranges.
+    
+    Args:
+        image: Input image
+        dest_dtype: Destination data type (np.uint8, np.uint16, np.float16, np.float32)
+        
+    Returns:
+        Converted image with dest_dtype
+    """
+    source_dtype = image.dtype
+    
+    if source_dtype == dest_dtype:
+        return image
+    
+    # Determine source and dest max values
+    source_max = 255.0 if source_dtype == np.uint8 else (65535.0 if source_dtype == np.uint16 else 1.0)
+    dest_max = 255.0 if dest_dtype == np.uint8 else (65535.0 if dest_dtype == np.uint16 else 1.0)
+    
+    # Compute direct scale factor
+    scale = dest_max / source_max
+    
+    # Apply conversion in one step
+    if dest_dtype in (np.uint8, np.uint16):
+        # For integer outputs, clip and scale in one operation
+        result = image.astype(np.float32)
+        if source_dtype in (np.uint8, np.uint16):
+            # Integer to integer: direct scale
+            result = (result * scale).astype(dest_dtype)
+        else:
+            # Float to integer: clip then scale
+            result = (np.clip(result, 0.0, 1.0) * dest_max).astype(dest_dtype)
+    else:
+        # For float outputs
+        if source_dtype in (np.uint8, np.uint16):
+            # Integer to float: scale down
+            result = (image.astype(np.float32) * scale).astype(dest_dtype)
+        else:
+            # Float to float: just convert dtype
+            result = image.astype(dest_dtype)
+    
+    return result
+
+
+def convert_colorspace(
+    image: np.ndarray,
+    source_space: ColorSpace,
+    dest_space: ColorSpace,
+    output_dtype: np.dtype = np.float32
+) -> np.ndarray:
+    """Convert image between color spaces with optional dtype conversion.
+    
+    Handles gamma decoding, matrix transforms, chromatic adaptation,
+    gamma encoding, and dtype conversion.
+    
+    Args:
+        image: Input image (H, W, 3) in source color space.
+               Can be uint8 (0-255), uint16 (0-65535), or float (0-1).
+        source_space: Source ColorSpace
+        dest_space: Destination ColorSpace
+        output_dtype: Output data type (np.uint8, np.uint16, np.float16, np.float32)
+        
+    Returns:
+        Converted image (H, W, 3) in destination color space with output_dtype
+    """
+    if source_space == dest_space and image.dtype == output_dtype:
+        return image
+    
+    # Normalize to 0-1 float32 range
+    result = convert_dtype(image, np.float32)
+    
+    # Step 1: Decode source gamma to linear
+    if source_space == ColorSpace.PROPHOTO_GAMMA:
+        result = _prophoto_inverse_gamma(result)
+        source_linear = ColorSpace.PROPHOTO_LINEAR
+    elif source_space == ColorSpace.ADOBERGB_GAMMA:
+        result = _adobergb_inverse_gamma(result)
+        source_linear = ColorSpace.ADOBERGB_LINEAR
+    elif source_space == ColorSpace.SRGB_GAMMA:
+        result = _raw_render.srgb_gamma(result, 1)  # 1 = decode
+        source_linear = ColorSpace.SRGB_LINEAR
+    else:
+        source_linear = source_space
+    
+    # Determine dest linear space
+    if dest_space in (ColorSpace.PROPHOTO_GAMMA, ColorSpace.PROPHOTO_LINEAR):
+        dest_linear = ColorSpace.PROPHOTO_LINEAR
+    elif dest_space in (ColorSpace.ADOBERGB_GAMMA, ColorSpace.ADOBERGB_LINEAR):
+        dest_linear = ColorSpace.ADOBERGB_LINEAR
+    elif dest_space in (ColorSpace.SRGB_GAMMA, ColorSpace.SRGB_LINEAR):
+        dest_linear = ColorSpace.SRGB_LINEAR
+    else:
+        dest_linear = dest_space
+    
+    # Step 2: Convert between linear color spaces if needed
+    if source_linear != dest_linear:
+        # ProPhoto (D50) ↔ sRGB (D65)
+        if source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
+            d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
+            matrix = XYZ_D65_TO_SRGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
+            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+        
+        elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
+            d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
+            matrix = XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ SRGB_TO_XYZ_D65
+            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+        
+        # ProPhoto (D50) ↔ Adobe RGB (D65)
+        elif source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
+            d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
+            matrix = XYZ_D65_TO_ADOBERGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
+            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+        
+        elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
+            d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
+            matrix = XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ ADOBERGB_TO_XYZ_D65
+            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+        
+        # sRGB (D65) ↔ Adobe RGB (D65) - same white point, no adaptation
+        elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
+            matrix = XYZ_D65_TO_ADOBERGB @ SRGB_TO_XYZ_D65
+            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+        
+        elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
+            matrix = XYZ_D65_TO_SRGB @ ADOBERGB_TO_XYZ_D65
+            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+    
+    # Step 3: Encode dest gamma if needed
+    if dest_space == ColorSpace.PROPHOTO_GAMMA:
+        result = _prophoto_gamma(result)
+    elif dest_space == ColorSpace.ADOBERGB_GAMMA:
+        result = _adobergb_gamma(result)
+    elif dest_space == ColorSpace.SRGB_GAMMA:
+        result = _raw_render.srgb_gamma(result, 0)  # 0 = encode
+    
+    # Step 4: Convert to output_dtype
+    return convert_dtype(result, output_dtype)
 
 
 def build_lut_from_spline(
@@ -205,10 +439,10 @@ def build_lut_from_spline(
         # We need to return a LUT that can be applied to uniformly-spaced linear pixels.
         
         # sRGB gamma decode: input values (sRGB gamma -> linear)
-        linear_lut_input = _srgb_inverse_gamma_1d(lut_x)
+        linear_lut_input = _srgb_inverse_gamma(lut_x)
         
         # sRGB gamma decode: output values (sRGB gamma -> linear)
-        linear_lut_output = _srgb_inverse_gamma_1d(srgb_gamma_lut_output)
+        linear_lut_output = _srgb_inverse_gamma(srgb_gamma_lut_output)
         
         # Resample to uniform spacing in linear space
         # LUTs are required to have uniform steps of 1/lut_size for direct indexing
@@ -302,21 +536,19 @@ def demosaic(
     
     # Track input dtype for output conversion
     input_dtype = image_data.dtype
-    is_float_input = input_dtype in (np.float32, np.float64)
     
     start_time = time.perf_counter()
     
     # DNGSDK_BILINEAR: float32 kernel, outputs float32
     if algorithm == "DNGSDK_BILINEAR":
         cfa_codes = get_cfa_pattern_codes(cfa_pattern)
+        # Convert to float32 for processing
+        data_f32 = convert_dtype(image_data, np.float32)
         rgb = _raw_render.bilinear_demosaic(
-            image_data.astype(np.float32), np.array(cfa_codes, dtype=np.int32)
+            data_f32, np.array(cfa_codes, dtype=np.int32)
         )
         # Convert back to input dtype
-        if input_dtype == np.uint8:
-            rgb = rgb.astype(np.uint8)
-        elif input_dtype == np.uint16:
-            rgb = rgb.astype(np.uint16)
+        rgb = convert_dtype(rgb, input_dtype)
     
     # RCD: float32 kernel (expects 0-1 normalized data)
     # RCD is GPL-licensed and optional - see README for setup instructions
@@ -327,26 +559,22 @@ def demosaic(
                 "enabled separately. See README.md for instructions to enable RCD, "
                 "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
             )
-        if is_float_input:
-            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32), cfa_pattern)
-        elif input_dtype == np.uint8:
-            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 255.0, cfa_pattern)
-            rgb = (rgb * 255).astype(np.uint8)
-        else:  # uint16
-            rgb = _rcd.rcd_demosaic(image_data.astype(np.float32) / 65535.0, cfa_pattern)
-            rgb = (rgb * 65535).astype(np.uint16)
+        # Convert to float32 (0-1 range) for RCD
+        data_f32 = convert_dtype(image_data, np.float32)
+        rgb = _rcd.rcd_demosaic(data_f32, cfa_pattern)
+        # Convert back to input dtype
+        rgb = convert_dtype(rgb, input_dtype)
     
     # VNG: uint16 only kernel
     elif algorithm == "VNG":
-        if is_float_input:
+        # Only warn for lossy conversions (float to uint16)
+        if input_dtype in (np.float32, np.float64):
             logger.warning(f"VNG requires uint16; converting from {input_dtype}")
-            rgb = _vng.vng_demosaic((image_data * 65535).astype(np.uint16), cfa_pattern)
-            rgb = rgb.astype(np.float32) / 65535.0
-        elif input_dtype == np.uint8:
-            rgb = _vng.vng_demosaic(image_data.astype(np.uint16) << 8, cfa_pattern)
-            rgb = (rgb >> 8).astype(np.uint8)
-        else:
-            rgb = _vng.vng_demosaic(image_data, cfa_pattern)
+        # Convert to uint16 for VNG
+        data_u16 = convert_dtype(image_data, np.uint16)
+        rgb = _vng.vng_demosaic(data_u16, cfa_pattern)
+        # Convert back to input dtype
+        rgb = convert_dtype(rgb, input_dtype)
     
     # OPENCV_EA: uint8 or uint16 kernel
     elif algorithm == "OPENCV_EA":
@@ -356,13 +584,16 @@ def demosaic(
             "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
             "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
         }
-        if is_float_input:
+        # OpenCV prefers uint16 for better precision
+        if input_dtype in (np.float32, np.float64):
             logger.warning(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
-            rgb = cv2.demosaicing((image_data * 65535).astype(np.uint16), bayer_map[cfa_pattern])
-            rgb = rgb[..., [2, 1, 0]].astype(np.float32) / 65535.0
+            data_u16 = convert_dtype(image_data, np.uint16)
+            rgb = cv2.demosaicing(data_u16, bayer_map[cfa_pattern])
+            rgb = rgb[..., [2, 1, 0]]  # BGR to RGB
+            rgb = convert_dtype(rgb, input_dtype)
         else:
             rgb = cv2.demosaicing(image_data, bayer_map[cfa_pattern])
-            rgb = rgb[..., [2, 1, 0]]
+            rgb = rgb[..., [2, 1, 0]]  # BGR to RGB
     
     elapsed_time = time.perf_counter() - start_time
     logger.info(
@@ -1944,6 +2175,17 @@ XYZ_D65_TO_SRGB = np.array([
     [ 0.0556434, -0.2040259,  1.0572252]
 ], dtype=np.float64)
 
+# Adobe RGB (1998) matrices (D65 white point)
+# Source: DNG SDK 1.7.1 dng_color_space.cpp lines 568-570
+# dng_space_AdobeRGB::SetMatrixToPCS
+ADOBERGB_TO_XYZ_D65 = np.array([
+    [0.6097, 0.2053, 0.1492],
+    [0.3111, 0.6257, 0.0632],
+    [0.0195, 0.0609, 0.7446]
+], dtype=np.float64)
+
+XYZ_D65_TO_ADOBERGB = np.linalg.inv(ADOBERGB_TO_XYZ_D65)
+
 SRGB_TO_XYZ_D65 = np.array([
     [0.4124564, 0.3575761, 0.1804375],
     [0.2126729, 0.7151522, 0.0721750],
@@ -2169,34 +2411,47 @@ def apply_radial_distortion_correction(
 
 
 def apply_post_rendering_operations(
-    rgb_prophoto_linear: np.ndarray,
+    rgb_input: np.ndarray,
     rendering_params: dict = None,
+    source_colorspace: ColorSpace = ColorSpace.PROPHOTO_LINEAR,
+    dest_colorspace: ColorSpace = ColorSpace.PROPHOTO_LINEAR,
+    output_dtype: np.dtype = np.float32
 ) -> np.ndarray:
-    """Apply XMP post-rendering operations in ProPhoto RGB linear space.
+    """Apply XMP post-rendering operations with color space conversion.
     
-    Doing all processing in ProPhoto linear space, like Lightroom and Photoshop.
-    Histogram and curves in Adobe tools are displayed with sRGB gamma 2.2 applied
-    (also known as Melissa RGB), so we convert those curves to linear space before applying them.
+    Processing pipeline:
+    1. Convert input from source_colorspace to ProPhoto linear
+    2. Apply tone curves in ProPhoto linear space (Adobe's approach)
+    3. Apply lens distortion correction
+    4. Convert from ProPhoto linear to dest_colorspace
+    5. Convert to output_dtype
     
-    Applies per-channel tone curves (ToneCurvePV2012Red/Green/Blue) and main
-    tone curve (ToneCurvePV2012) by:
-    1. Building curves in sRGB gamma 2.2 space
-    2. Converting the curve LUTs from sRGB gamma to linear encoding
-    3. Applying the linear LUTs to linear ProPhoto RGB pixels
+    Tone curve processing follows Adobe's approach: curves are displayed in sRGB gamma 2.2
+    space (Melissa RGB) but applied in linear ProPhoto RGB space.
     
     Args:
-        rgb_prophoto_linear: Input image in ProPhoto RGB linear space
+        rgb_input: Input image in source_colorspace
         rendering_params: Dictionary containing XMP rendering parameters
+        source_colorspace: Source color space (default: ProPhoto linear)
+        dest_colorspace: Destination color space (default: ProPhoto linear)
+        output_dtype: Output data type (np.uint8, np.uint16, np.float16, np.float32)
         
     Returns:
-        Output image in ProPhoto RGB linear space (same as input)
+        Output image in dest_colorspace with output_dtype
     """
     
-    # Early return if no rendering params
-    if not rendering_params:
+    # Step 1: Convert input to ProPhoto linear
+    if source_colorspace != ColorSpace.PROPHOTO_LINEAR:
+        rgb_prophoto_linear = convert_colorspace(rgb_input, source_colorspace, ColorSpace.PROPHOTO_LINEAR)
+    else:
+        rgb_prophoto_linear = rgb_input
+    
+    # Early return if no rendering params and no color space conversion needed
+    if not rendering_params and dest_colorspace == ColorSpace.PROPHOTO_LINEAR and output_dtype == np.float32:
         return rgb_prophoto_linear
     
-    logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
+    if rendering_params:
+        logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
     
     # Only copy if we're going to modify
     rgb_output = rgb_prophoto_linear
@@ -2285,7 +2540,15 @@ def apply_post_rendering_operations(
                 rgb_output = apply_radial_distortion_correction(rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
                 logger.debug("Applied radial distortion correction")
     
-    return rgb_output
+    # Step 4: Convert from ProPhoto linear to dest_colorspace and output_dtype
+    result = convert_colorspace(
+        rgb_output,
+        ColorSpace.PROPHOTO_LINEAR,
+        dest_colorspace,
+        output_dtype=output_dtype
+    )
+    
+    return result
 
 
 def _render_camera_rgb(
@@ -2662,53 +2925,25 @@ def _render_camera_rgb(
         
         timings['tone_curve'] = time.perf_counter() - t0
         
-        # Apply XMP per-channel and main tone curves in ProPhoto gamma space
+        # =====================================================================
+        # Step 4-5: Apply XMP post-rendering, color space conversion, and dtype conversion
+        # SDK ref: dng_render.cpp lines 2040-2068
+        # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
+        # =====================================================================
         t0 = time.perf_counter()
-        rgb_toned = apply_post_rendering_operations(rgb_toned, rendering_params)
+        result = apply_post_rendering_operations(
+            rgb_toned,
+            rendering_params,
+            source_colorspace=ColorSpace.PROPHOTO_LINEAR,
+            dest_colorspace=ColorSpace.SRGB_GAMMA,
+            output_dtype=output_dtype
+        )
         timings['xmp_post_rendering'] = time.perf_counter() - t0
-        
-        # =====================================================================
-        # Step 4: DoBaselineRGBtoRGB
-        # SDK ref: dng_render.cpp lines 2040-2048
-        # Convert ProPhoto (D50) to sRGB (D65)
-        # =====================================================================
-        # SDK ref: dng_render.cpp lines 1042-1043
-        # fRGBtoFinal = sRGB.MatrixFromPCS() * ProPhoto.MatrixToPCS()
-        d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
-        prophoto_to_srgb = XYZ_D65_TO_SRGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
-
-        t0 = time.perf_counter()
-        rgb_srgb = _raw_render.matrix_transform(rgb_toned.astype(np.float32), prophoto_to_srgb.astype(np.float32))
-        timings['matrix_prophoto_to_srgb'] = time.perf_counter() - t0
-        
-        # =====================================================================
-        # Step 5: DoBaseline1DTable (EncodeGamma)
-        # SDK ref: dng_render.cpp lines 2050-2068
-        # Apply sRGB gamma encoding
-        # =====================================================================
-        t0 = time.perf_counter()
-        rgb_final = _raw_render.srgb_gamma(rgb_srgb.astype(np.float32))  # includes clipping
-        timings['srgb_gamma'] = time.perf_counter() - t0
-        
-        # Convert to output dtype
-        t0 = time.perf_counter()
-        if output_dtype == np.uint8:
-            result = (rgb_final * 255).astype(np.uint8)
-        elif output_dtype == np.uint16:
-            result = (rgb_final * 65535).astype(np.uint16)
-        elif output_dtype == np.float16:
-            result = rgb_final.astype(np.float16)
-        elif output_dtype == np.float32:
-            result = rgb_final.astype(np.float32)
-        else:
-            logger.warning(f"Unsupported output_dtype {output_dtype}, using float32")
-            result = rgb_final.astype(np.float32)
-        timings['dtype_convert'] = time.perf_counter() - t0
         
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
         t0 = time.perf_counter()
-        orientation = page.get_tag("Orientation") or 1
+        orientation = page.get_tag("Orientation")
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
         timings['orientation'] = time.perf_counter() - t0

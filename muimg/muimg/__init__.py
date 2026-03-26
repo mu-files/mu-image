@@ -25,10 +25,13 @@ from .processing import ProcessingPipeline
 from .imgio import convert_imgformat, convert_imgformat_to_stream, decode_image
 from .videoio import SequenceEncodePipeline
 from .raw_render import (
+    ColorSpace,
     SplineCurve,
     UnsupportedDNGTagError,
     apply_tiff_orientation,
     colortemp_to_uv,
+    convert_colorspace,
+    convert_dtype,
     demosaic,
     temp_tint_to_xy,
     uv_to_colortemp,
@@ -41,6 +44,7 @@ from .raw_render import (
 )
 
 __all__ = [
+    'ColorSpace',
     'CsvOrderedWriter',
     'CsvReader',
     'CsvWriter',
@@ -54,6 +58,8 @@ __all__ = [
     'xmp_metadata_to_packet',
     'UnsupportedDNGTagError',
     'colortemp_to_uv',
+    'convert_colorspace',
+    'convert_dtype',
     'convert_imgformat',
     'convert_imgformat_to_stream',
     'decode_dng',

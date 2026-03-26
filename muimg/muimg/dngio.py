@@ -1880,7 +1880,7 @@ def copy_dng(
             strip_tags = strip_tags | {"DefaultCropOrigin", "DefaultCropSize"}
         
         # Convert float32 [0, 1] to uint16 for DNG storage
-        raw_data = (raw_data * 65535.0).clip(0, 65535).astype(np.uint16)
+        raw_data = raw_render.convert_dtype(raw_data, np.uint16)
         
         # Create IfdSpec with numpy array
         ifd_spec = IfdSpec(

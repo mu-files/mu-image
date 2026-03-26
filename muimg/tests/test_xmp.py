@@ -188,6 +188,31 @@ def test_xmp_roundtrip_dng_file():
         assert retrieved_xmp is not None
         assert isinstance(retrieved_xmp, muimg.XmpMetadata)
         
+        # Validate the raw XMP XML format contains 0-255 integer tone curve points
+        from muimg.tiff_metadata import xmp_metadata_to_packet
+        xml_packet = xmp_metadata_to_packet(retrieved_xmp).decode('utf-8')
+        
+        # Verify tone curve points are stored as 0-255 integers in XML, not 0-1 floats
+        # Expected points from xmp_dict: (0.0, 0.0), (0.25, 0.1), (0.5, 0.5), (0.75, 0.9), (1.0, 1.0)
+        # Should be serialized as: 0, 0 / 64, 26 / 128, 128 / 191, 230 / 255, 255
+        assert '<rdf:li>0, 0</rdf:li>' in xml_packet
+        assert '<rdf:li>64, 26</rdf:li>' in xml_packet or '<rdf:li>64, 25</rdf:li>' in xml_packet  # Allow rounding
+        assert '<rdf:li>128, 128</rdf:li>' in xml_packet or '<rdf:li>127, 127</rdf:li>' in xml_packet
+        assert '<rdf:li>191, 230</rdf:li>' in xml_packet or '<rdf:li>191, 229</rdf:li>' in xml_packet
+        assert '<rdf:li>255, 255</rdf:li>' in xml_packet
+        
+        # Verify NO float values like "0.5" appear in tone curve points
+        # (They might appear elsewhere like Exposure2012, so check within ToneCurvePV2012 section)
+        tone_curve_section_start = xml_packet.find('<crs:ToneCurvePV2012>')
+        tone_curve_section_end = xml_packet.find('</crs:ToneCurvePV2012>')
+        assert tone_curve_section_start != -1 and tone_curve_section_end != -1
+        tone_curve_xml = xml_packet[tone_curve_section_start:tone_curve_section_end]
+        assert '0.0' not in tone_curve_xml
+        assert '0.5' not in tone_curve_xml
+        assert '0.25' not in tone_curve_xml
+        
+        print(f"Verified XMP XML format: tone curve points stored as 0-255 integers")
+        
         # Convert to dict for comparison
         result_dict = muimg.supported_xmp_to_dict(retrieved_xmp)
         

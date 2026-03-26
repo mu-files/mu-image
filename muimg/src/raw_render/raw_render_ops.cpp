@@ -742,6 +742,7 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
 // Apply sRGB gamma encoding/decoding (linear to sRGB or sRGB to linear)
 // Forward: if x <= 0.0031308: 12.92 * x, else: 1.055 * x^(1/2.4) - 0.055
 // Inverse: if x <= 0.04045: x / 12.92, else: ((x + 0.055) / 1.055)^2.4
+// Accepts both 1D arrays (N,) for LUTs and 3D arrays (H, W, 3) for images
 static PyObject* dng_color_srgb_gamma(PyObject* self, PyObject* args) {
     PyArrayObject* rgb_array = NULL;
     int inverse = 0;
@@ -750,24 +751,43 @@ static PyObject* dng_color_srgb_gamma(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
+    int ndim = PyArray_NDIM(rgb_array);
+    
+    // Validate input: must be 1D or 3D with 3 channels
+    if (ndim != 1 && ndim != 3) {
+        PyErr_SetString(PyExc_ValueError, "Input must be 1D (N,) or 3D (H, W, 3)");
+        return NULL;
+    }
+    if (ndim == 3 && PyArray_DIM(rgb_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "3D input must have shape (H, W, 3)");
         return NULL;
     }
     if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
+        PyErr_SetString(PyExc_TypeError, "Input must be float32");
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
+    // Make contiguous copy
     PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+        (PyObject*)rgb_array, NPY_FLOAT32, ndim, ndim);
     if (!rgb_cont) return NULL;
     
-    npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    // Create output array with same shape
+    PyObject* result;
+    npy_intp total;
+    
+    if (ndim == 1) {
+        npy_intp n = PyArray_DIM(rgb_cont, 0);
+        result = PyArray_SimpleNew(1, &n, NPY_FLOAT32);
+        total = n;
+    } else {
+        npy_intp height = PyArray_DIM(rgb_cont, 0);
+        npy_intp width = PyArray_DIM(rgb_cont, 1);
+        npy_intp dims[3] = {height, width, 3};
+        result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+        total = height * width * 3;
+    }
+    
     if (!result) {
         Py_DECREF(rgb_cont);
         return NULL;
@@ -775,8 +795,6 @@ static PyObject* dng_color_srgb_gamma(PyObject* self, PyObject* args) {
     
     float* src_data = (float*)PyArray_DATA(rgb_cont);
     float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    
-    npy_intp total = height * width * 3;
     
     if (inverse) {
         // Inverse sRGB gamma (sRGB to linear)
