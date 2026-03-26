@@ -84,10 +84,10 @@ def test_xmp_roundtrip_metadatatags():
     result_dict = muimg.supported_xmp_to_dict(retrieved_xmp)
     
     # Step 5: Validate values match
-    # Check supported properties
-    assert result_dict['Temperature'] == str(original_dict['Temperature'])
-    assert result_dict['Tint'] == str(original_dict['Tint'])
-    assert result_dict['Exposure2012'] == str(original_dict['Exposure2012'])
+    # Check supported properties (converted to float by supported_xmp_to_dict)
+    assert result_dict['Temperature'] == float(original_dict['Temperature'])
+    assert result_dict['Tint'] == float(original_dict['Tint'])
+    assert result_dict['Exposure2012'] == float(original_dict['Exposure2012'])
     
     # Check tone curve (should be list of tuples)
     assert 'ToneCurvePV2012' in result_dict
@@ -191,10 +191,10 @@ def test_xmp_roundtrip_dng_file():
         # Convert to dict for comparison
         result_dict = muimg.supported_xmp_to_dict(retrieved_xmp)
         
-        # Validate values match (accounting for type conversions)
-        assert result_dict['Temperature'] == str(xmp_dict['Temperature'])
-        assert result_dict['Tint'] == str(xmp_dict['Tint'])
-        assert result_dict['Exposure2012'] == str(xmp_dict['Exposure2012'])
+        # Validate values match (converted to float by supported_xmp_to_dict)
+        assert result_dict['Temperature'] == float(xmp_dict['Temperature'])
+        assert result_dict['Tint'] == float(xmp_dict['Tint'])
+        assert result_dict['Exposure2012'] == float(xmp_dict['Exposure2012'])
         
         # Check tone curve
         assert 'ToneCurvePV2012' in result_dict

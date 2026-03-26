@@ -2817,7 +2817,7 @@ def _is_noop_xmp_value(prop_name: str, value, xmp: 'XmpMetadata') -> bool:
     """
     if prop_name in ("Temperature", "Tint"):
         # Temperature/Tint are NOOP if WhiteBalance is "As Shot"
-        wb = xmp.get_prop("WhiteBalance", str)
+        wb = xmp.get_root_prop("WhiteBalance", str)
         if wb == "As Shot":
             return True
         return False
@@ -2891,32 +2891,32 @@ def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile'
     result = {}
     
     # Debug: Check which SUPPORTED_XMP_PARAMS are present
-    found_params = [prop for prop in SUPPORTED_XMP_PARAMS if xmp.has_prop(prop)]
+    found_params = [prop for prop in SUPPORTED_XMP_PARAMS if xmp.get_root_prop(prop) is not None]
     logger.debug(f"Found {len(found_params)} supported XMP params: {found_params}")
     
+    # Extract root-level properties using get_root_prop()
+    # This method works with properties at the root Description level (crs:, dc:, tiff:)
     for prop in SUPPORTED_XMP_PARAMS:
-        if xmp.has_prop(prop):
-            value = xmp.get_prop(prop)
-            if value is not None and not _is_noop_xmp_value(prop, value, xmp):
-                # Convert to proper type: float for numeric properties, keep list for tone curves
-                if prop in ('Temperature', 'Tint', 'Exposure2012'):
-                    result[prop] = float(value)
-                else:
-                    result[prop] = value  # ToneCurve* already parsed as list[tuple]
+        value = xmp.get_root_prop(prop)
+        if value is not None and not _is_noop_xmp_value(prop, value, xmp):
+            # Convert numeric properties to float for rendering pipeline
+            if prop in ('Temperature', 'Tint', 'Exposure2012'):
+                result[prop] = float(value)
+            else:
+                result[prop] = value  # ToneCurve* already parsed as list[tuple]
     
     # Handle dc:subject (keep qualified name)
-    if xmp.has_prop('dc:subject'):
-        dc_subject = xmp.get_prop('dc:subject', list)
-        if dc_subject:
-            result['dc:subject'] = dc_subject
+    dc_subject = xmp.get_root_prop('dc:subject', list)
+    if dc_subject:
+        result['dc:subject'] = dc_subject
     
     # Handle tiff:Orientation (keep qualified name)
-    if xmp.has_prop('tiff:Orientation'):
-        orientation = xmp.get_prop('tiff:Orientation')
-        if orientation is not None:
-            result['tiff:Orientation'] = orientation
+    orientation = xmp.get_root_prop('tiff:Orientation')
+    if orientation is not None:
+        result['tiff:Orientation'] = orientation
     
-    # Extract crlcp:PerspectiveModel using XPath query (nested in photoshop:CameraProfiles)
+    # Extract deeply nested properties using xpath_query_with_parent()
+    # PerspectiveModel is nested inside photoshop:CameraProfiles and cannot be accessed with get_root_prop()
     # Also extract parent Description attributes (e.g., FocalLength, SensorFormatFactor) for ray-space normalization
     pm_result = xmp.xpath_query_with_parent(
         'PerspectiveModel',

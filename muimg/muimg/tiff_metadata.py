@@ -1631,23 +1631,11 @@ class XmpMetadata:
             logger.debug(f"XPath query failed for {element_name}: {e}")
             return None
     
-    def has_prop(self, prop: str) -> bool:
-        """Check if an XMP property exists.
+    def get_root_prop(self, prop: str, return_type: Optional[Type] = None) -> Optional[Any]:
+        """Get a root-level XMP property value with optional type conversion.
         
-        Args:
-            prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
-                 Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
-        
-        Returns:
-            True if the property exists in XMP metadata
-        """
-        # Auto-prepend 'crs:' if no namespace specified
-        if ':' not in prop:
-            prop = f'crs:{prop}'
-        return prop in self._attributes
-    
-    def get_prop(self, prop: str, return_type: Optional[Type] = None) -> Optional[Any]:
-        """Get an XMP property value with optional type conversion.
+        Only works with properties at the root Description level. For deeply nested
+        properties (e.g., crlcp:PerspectiveModel), use xpath_query() instead.
         
         Args:
             prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
