@@ -412,16 +412,8 @@ def decode_dng_coreimage(
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
         use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
-        rendering_params: Optional dict to override rendering parameters. Supported keys:
-            - 'Temperature': White balance temperature in Kelvin (float)
-            - 'Tint': White balance tint adjustment (float)
-            - 'Exposure2012': Exposure compensation in stops (float)
-            - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
-            - 'ToneCurvePV2012Red': Red channel tone curve
-            - 'ToneCurvePV2012Green': Green channel tone curve
-            - 'ToneCurvePV2012Blue': Blue channel tone curve
-            - 'crlcp:PerspectiveModel': Lens correction profile
-            - 'orientation': EXIF orientation code (int)
+        rendering_params: Optional dict to override rendering parameters.
+            See dngio.decode_dng() for full list of supported keys.
     
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype

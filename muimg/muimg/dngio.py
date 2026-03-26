@@ -565,19 +565,8 @@ class DngPage(TiffPage):
             strict: If True, raise error on unsupported DNG tags. If False, warn and continue.
             use_xmp: If True, extract rendering parameters from XMP metadata (Temperature,
                     Tint, Exposure2012, ToneCurvePV2012). Default True.
-            rendering_params: Optional dict to override rendering parameters. Supported keys:
-                - 'Temperature': White balance temperature in Kelvin (float)
-                - 'Tint': White balance tint adjustment (float)
-                - 'Exposure2012': Exposure compensation in stops (float)
-                - 'highlight_preserving_exposure': Use highlight preservation for exposure 
-                                      (bool, default True). If True, uses a curve that keeps
-                                      highlights in the output range for positive exposures
-                                      instead of a linear exposure which would clip highlights.
-                                      If False, uses DNG SDK standard linear exposure behavior.
-                - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
-                - 'ToneCurvePV2012Red': Red channel tone curve as SplineCurve or list of (x,y) points
-                - 'ToneCurvePV2012Green': Green channel tone curve as SplineCurve or list of (x,y) points
-                - 'ToneCurvePV2012Blue': Blue channel tone curve as SplineCurve or list of (x,y) points
+            rendering_params: Optional dict to override rendering parameters.
+                See decode_dng() for full list of supported keys.
                 Values in rendering_params override XMP metadata.
         
         Returns:
@@ -2014,7 +2003,6 @@ def decode_dng(
     result = dng_file.render(
         output_dtype=output_dtype,
         demosaic_algorithm=demosaic_algorithm,
-        strict=strict,
         use_xmp=use_xmp,
         rendering_params=rendering_params,
     )
