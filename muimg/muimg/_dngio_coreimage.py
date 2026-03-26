@@ -173,6 +173,7 @@ class CoreImageContext:
 
         working_space_ns = None
         output_space_cg = None
+        self.colorspace_name = None  # Track which color space was actually used
 
         if icc_profile_path:
             custom_cg_space = None
@@ -188,16 +189,38 @@ class CoreImageContext:
                     custom_cg_space
                 )
                 output_space_cg = custom_cg_space
+                self.colorspace_name = "custom"
             else:
                 logger.warning(
                     f"Failed to create color space from '{icc_profile_path}'. "
-                    f"Falling back to sRGB."
+                    f"Falling back to ProPhoto RGB."
                 )
 
         if not working_space_ns:
-            srgb_ns_space = NSColorSpace.sRGBColorSpace()
-            working_space_ns = srgb_ns_space
-            output_space_cg = srgb_ns_space.CGColorSpace()
+            # Try to use system ProPhoto RGB profile (ROMM RGB)
+            # This ensures wide-gamut color space for RAW processing
+            prophoto_path = "/System/Library/ColorSync/Profiles/ROMM RGB.icc"
+            try:
+                with open(prophoto_path, "rb") as f:
+                    profile_data = f.read()
+                prophoto_cg_space = CGColorSpaceCreateWithICCProfile(profile_data)
+                if prophoto_cg_space:
+                    working_space_ns = NSColorSpace.alloc().initWithCGColorSpace_(
+                        prophoto_cg_space
+                    )
+                    output_space_cg = prophoto_cg_space
+                    self.colorspace_name = "prophoto"
+                    logger.debug("Using ProPhoto RGB (ROMM RGB) working color space")
+            except Exception as e:
+                logger.warning(f"Failed to load ProPhoto profile: {e}")
+            
+            # Fallback to genericRGB if ProPhoto load fails
+            if not working_space_ns:
+                generic_rgb_space = NSColorSpace.genericRGBColorSpace()
+                working_space_ns = generic_rgb_space
+                output_space_cg = generic_rgb_space.CGColorSpace()
+                self.colorspace_name = "generic_rgb"
+                logger.warning("Using genericRGB working color space (fallback)")
 
         context_options = {kCIContextWorkingColorSpace: working_space_ns}
         if not use_gpu:
@@ -234,7 +257,7 @@ def render_dng_coreimage(
     icc_profile_path: Optional[str] = None,
     output_dtype: type = np.uint16,
     use_system_camera_profiles: bool = True,
-) -> Optional[np.ndarray]:
+) -> tuple[Optional[np.ndarray], str]:
     """
     Processes a DNG file by creating a temporary Core Image context for the operation.
     This ensures no state is carried over between calls.
@@ -249,7 +272,9 @@ def render_dng_coreimage(
             strip UniqueCameraModel tag to force generic DNG processing.
     
     Returns:
-        RGB image array with shape (height, width, 3) and specified dtype, or None on failure
+        Tuple of (RGB image array with shape (height, width, 3) and specified dtype, colorspace name).
+        Colorspace name is one of: "prophoto", "generic_rgb", or "custom".
+        Returns (None, colorspace_name) on failure.
     """
     if not core_image_available:
         raise RuntimeError("Core Image is not available on this system.")
@@ -261,8 +286,6 @@ def render_dng_coreimage(
             try:
                 # --- Prepare Filter Options ---
                 options_copy = dict(raw_filter_options) if raw_filter_options else {}
-                tone_curve = options_copy.pop('toneCurve', None)
-                tone_curve_linear = options_copy.pop('toneCurveLinear', None)
 
                 raw_options = {}
                 for key, value in options_copy.items():
@@ -303,11 +326,6 @@ def render_dng_coreimage(
                     except Exception as e:
                         logger.warning(f"Error processing option {key} with value {value}: {e}. Skipping.")
 
-                # Add linear space filter to raw_options if provided
-                if tone_curve_linear is not None:
-                    from Quartz import kCIInputLinearSpaceFilter
-                    raw_options[kCIInputLinearSpaceFilter] = _create_tone_curve_filter(tone_curve_linear)
-
                 # --- Create CIRAWFilter ---
                 # Always read DNG data and strip UniqueCameraModel to avoid CI camera-specific processing
                 if isinstance(dng_input, (str, os.PathLike)):
@@ -337,16 +355,6 @@ def render_dng_coreimage(
 
                 if output_ci_image is None:
                     raise RuntimeError("CIRAWFilter.outputImage() returned None")
-
-                # --- Apply Tone Curve for Contrast ---
-                if tone_curve is not None:
-                    post_tone_filter = _create_tone_curve_filter(tone_curve)
-                    if post_tone_filter is not None:
-                        post_tone_filter.setValue_forKey_(output_ci_image, "inputImage")
-                        output_ci_image = post_tone_filter.outputImage()
-
-                        if output_ci_image is None:
-                            raise RuntimeError("Tone curve filter outputImage() returned None")
 
                 extent = output_ci_image.extent()
                 width = int(extent.size.width)
@@ -385,7 +393,7 @@ def render_dng_coreimage(
                 rgba_image = np.frombuffer(
                     bitmap_buffer, dtype=output_dtype).reshape((height, width, 4)).copy()
 
-                return rgba_image[:, :, :3]
+                return rgba_image[:, :, :3], context.colorspace_name
 
             except Exception as e:
                 raise RuntimeError(f"An error occurred during Core Image processing: {e}") from e
@@ -395,7 +403,7 @@ def decode_dng_coreimage(
     file: Union[str, os.PathLike, IO[bytes], "DngFile"],
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
-    **processing_params
+    rendering_params: dict = None,
 ) -> np.ndarray:
     """
     Decode a DNG file to a numpy array using Core Image processing.
@@ -404,8 +412,16 @@ def decode_dng_coreimage(
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
         use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
-        **processing_params: Processing parameters (temperature, tint, exposure, 
-                           tone_curve, noise_reduction, orientation, etc.)
+        rendering_params: Optional dict to override rendering parameters. Supported keys:
+            - 'Temperature': White balance temperature in Kelvin (float)
+            - 'Tint': White balance tint adjustment (float)
+            - 'Exposure2012': Exposure compensation in stops (float)
+            - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
+            - 'ToneCurvePV2012Red': Red channel tone curve
+            - 'ToneCurvePV2012Green': Green channel tone curve
+            - 'ToneCurvePV2012Blue': Blue channel tone curve
+            - 'crlcp:PerspectiveModel': Lens correction profile
+            - 'orientation': EXIF orientation code (int)
     
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype
@@ -419,42 +435,39 @@ def decode_dng_coreimage(
         dng_file = file if isinstance(file, DngFile) else DngFile(file)
         dng_input = dng_file.filehandle
         
-        # Build processing options using configuration mapping
-        options = {}
+        # Import raw_render for parameter extraction
+        from . import raw_render
         
-        # Only process parameters if we have XMP to read or explicit parameters to apply
-        if use_xmp or processing_params:
-            SC = SplineCurve
+        # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
+        extracted_params = raw_render.supported_xmp_to_dict(dng_file) if use_xmp else {}
+        
+        # Merge rendering_params overrides (with validation)
+        if rendering_params is not None:
+            # Core Image specific parameters (not from XMP)
+            coreimage_specific_params = {'orientation'}
+            # Combine XMP params and CI-specific params
+            supported_params = raw_render.SUPPORTED_XMP_PARAMS | coreimage_specific_params
             
-            # Define mapping: param_name -> (option_name, xmp_name, value_type)
-            # Use None for xmp_name to indicate CLI-only parameters (no XMP fallback)
-            xmp_mappings = {
-                "temperature": ("neutralTemperature", "Temperature", float),
-                "tint": ("neutralTint", "Tint", float),
-                "exposure": ("exposure", "Exposure2012", float),
-                "tone_curve": ("toneCurve", "ToneCurvePV2012", SC),
-                "orientation": ("imageOrientation", None, int),
-                "noise_reduction": ("luminanceNoiseReductionAmount", None, float),
-            }
-            
-            # Process each mapping: CLI params first, then XMP fallback
-            for param_name, (option_name, xmp_name, value_type) in xmp_mappings.items():
-                param_value = processing_params.get(param_name)
-                # Use CLI parameter if provided (highest priority)
-                if param_value is not None:
-                    options[option_name] = param_value
-                # Otherwise use XMP default if available, requested, and xmp_name is specified
-                elif xmp_name is not None and use_xmp:
-                    xmp = dng_file.get_xmp()
-                    if xmp is not None:
-                        xmp_value = xmp.get_root_prop(xmp_name, value_type)
-                        if xmp_value is not None:
-                            options[option_name] = xmp_value
-
-            # Add noise reduction to both luminance and color (convention)
-            if ("noise_reduction" in processing_params and 
-                processing_params["noise_reduction"] is not None):
-                options["colorNoiseReductionAmount"] = processing_params["noise_reduction"]
+            for key, value in rendering_params.items():
+                if key not in supported_params:
+                    raise ValueError(
+                        f"Unsupported rendering parameter: {key}. "
+                        f"Supported: {supported_params}"
+                    )
+                extracted_params[key] = value
+        
+        # Map parameter names to Core Image option names
+        # Only temperature, tint, exposure, and orientation go to Core Image
+        # All tone curves and lens corrections go to apply_post_rendering_operations
+        ci_options = {}
+        if 'Temperature' in extracted_params:
+            ci_options['neutralTemperature'] = extracted_params['Temperature']
+        if 'Tint' in extracted_params:
+            ci_options['neutralTint'] = extracted_params['Tint']
+        if 'Exposure2012' in extracted_params:
+            ci_options['exposure'] = extracted_params['Exposure2012']
+        if 'orientation' in extracted_params:
+            ci_options['imageOrientation'] = extracted_params['orientation']
         
         # Format file and options for logging
         if isinstance(file, io.BytesIO):
@@ -465,50 +478,54 @@ def decode_dng_coreimage(
             file_desc = type(file).__name__
         
         formatted_opts = {}
-        for key, value in options.items():
+        for key, value in ci_options.items():
             if isinstance(value, (float, np.floating)):
                 formatted_opts[key] = f"{float(value):.3f}"
             else:
                 formatted_opts[key] = value
-        logger.debug(f"Processing {file_desc} with options: {formatted_opts}")
-        
-        # Special case: apply lin2srgb transformation to tone curve points
-        # TODO: since CI is an opaque RAW pipeline it is not possible to sequence tone curve 
-        #       in the same way in Photoshop and CI so we apply the transformation here.
-        if "toneCurve" in options and options["toneCurve"] is not None:
-
-            def lin2srgb(lin):
-                if lin > 0.0031308:
-                    s = 1.055 * (pow(lin, (1.0 / 2.4))) - 0.055
-                else:
-                    s = 12.92 * lin
-                return s
-
-            spline_curve = options["toneCurve"]
-            # Points are already normalized 0-1, apply lin2srgb transformation
-            transformed_points = [
-                (lin2srgb(x), lin2srgb(y)) for x, y in spline_curve.points
-            ]
-            # Create new SplineCurve with transformed points
-            options["toneCurve"] = SC(transformed_points)
+        logger.debug(f"Processing {file_desc} with Core Image options: {formatted_opts}")
 
         # Ensure file pointer is at beginning for Core Image processing
         # (XMP reading above may have moved the pointer)
         dng_input.seek(0) 
 
         # Process with Core Image
-        preview_image = render_dng_coreimage(
+        ci_output, colorspace_name = render_dng_coreimage(
             dng_input=dng_input,
-            raw_filter_options=options,
+            raw_filter_options=ci_options,
             use_gpu=True,
-            output_dtype=output_dtype,
+            output_dtype=np.float32,  # Use float32 for color space conversion
         )
         
-        if preview_image is None:
+        if ci_output is None:
             raise RuntimeError(f"Failed to process DNG file: {file}")
         
-        logger.debug(f"Successfully decoded DNG to array with shape {preview_image.shape} and dtype {preview_image.dtype}")
-        return preview_image
+        logger.debug(f"Core Image output shape: {ci_output.shape}, dtype: {ci_output.dtype}, colorspace: {colorspace_name}")
+        
+        # Map colorspace name to ColorSpace enum for apply_post_rendering_operations
+        if colorspace_name == "prophoto":
+            # ProPhoto with gamma 1.8
+            source_colorspace = raw_render.ColorSpace.PROPHOTO_GAMMA
+        elif colorspace_name == "generic_rgb":
+            # GenericRGB - treat as ProPhoto gamma for now (best approximation)
+            # TODO: Determine exact GenericRGB primaries for accurate conversion
+            source_colorspace = raw_render.ColorSpace.PROPHOTO_GAMMA
+            logger.warning("Treating genericRGB as ProPhoto gamma - colors may be slightly inaccurate")
+        else:
+            raise ValueError(f"Unknown colorspace: {colorspace_name}")
+        
+        # Apply all tone curves and lens corrections via common pipeline
+        # apply_post_rendering_operations will handle gamma decoding to linear internally
+        result = raw_render.apply_post_rendering_operations(
+            ci_output,
+            rendering_params=extracted_params,
+            source_colorspace=source_colorspace,
+            dest_colorspace=raw_render.ColorSpace.SRGB_GAMMA,
+            output_dtype=output_dtype
+        )
+        
+        logger.debug(f"Successfully decoded DNG to array with shape {result.shape} and dtype {result.dtype}")
+        return result
                 
     except Exception as e:
         logger.warning(f"Error decoding {file}: {e}")

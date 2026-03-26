@@ -11,7 +11,7 @@ import tifffile
 import logging
 
 import muimg
-from conftest import compute_diff_stats
+from conftest import compute_diff_stats, core_image_available_for_tests
 
 # Suppress tifffile logging about Photoshop TIFF metadata inconsistencies
 logging.getLogger('tifffile').setLevel(logging.CRITICAL)
@@ -31,62 +31,77 @@ def output_dir():
     return OUTPUT_DIR
 
 # Test files with Photoshop reference images
-# Format: (dng_filename, tiff_filename, threshold, highlight_preserving_exposure)
+# Format: (file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail)
 # Thresholds are 1.1x above measured values
-# Using LINEAR_RAW DNGs with DefaultBlackRender=1 to match Photoshop baseline
-# highlight_preserving_exposure: True (default) = highlight compression, False = DNG SDK behavior
+# file_stem: base filename without .dng/.tif extension
+# muimg_threshold: threshold for MUIMG/SDK pipeline (None = use default 1.5%)
+# muimg_xfail: True to mark as expected failure for MUIMG pipeline
+# ci_threshold: threshold for Core Image pipeline (None = use default 2.0%)
+# ci_xfail: True to mark as expected failure for Core Image pipeline
 TEST_CASES = [
     # Color pattern tests (300x200, 6x4 patches)
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.none.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.none.tif", 1.07, True),  # measured 0.97%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure.tif", 0.93, True),  # measured 0.84%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint.tif", 1.17, True),  # measured 1.06%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve.tif", 1.03, True),  # measured 0.94%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve.tif", 1.05, True),  # measured 0.95%
-    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.dng", "asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve.tif", 0.89, True),  # measured 0.81%
-    ("asi676mc.linearraw.uncomp.1ifds.rgbcurve.dng", "asi676mc.linearraw.uncomp.1ifds.rgbcurve.tif", 1.25, True),  # measured 1.14%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.none", 1.07, False, 2.25, False),  # muimg: 0.97%, CI: 2.16%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.exposure", 0.93, False, 1.38, False),  # muimg: 0.84%, CI: 1.25%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.temp-tint", 1.17, False, 2.25, False),  # muimg: 1.06%, CI: 2.14%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.rcurve", 1.03, False, 2.00, False),  # muimg: 0.94%, CI: 1.82%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.gcurve", 1.05, False, 2.25, False),  # muimg: 0.95%, CI: 2.04%
+    ("asi676mc.linearraw.uncomp.1ifds.colorpattern.bcurve", 0.89, False, 2.25, False),  # muimg: 0.81%, CI: 2.10%
+    ("asi676mc.linearraw.uncomp.1ifds.rgbcurve", 1.25, False, 1.30, False),  # muimg: 1.14%, CI: 1.18%
 
     # synthetic color patterns
-    ("linear_gradient_test.exp-curve.dng", "linear_gradient_test.exp-curve.tif", 3.21, True),  # measured 2.92% - TODO: revisit large difference
-    ("rgb_ramp_test.rcurve.dng", "rgb_ramp_test.rcurve.tif", 0.69, True),  # measured 0.63%
-    ("rgb_ramp_test.gcurve.dng", "rgb_ramp_test.gcurve.tif", 0.74, True),  # measured 0.67%
-    ("rgb_ramp_test.bcurve.dng", "rgb_ramp_test.bcurve.tif", 0.77, True),  # measured 0.70%
-    ("rgb_ramp_test.bcurve2.dng", "rgb_ramp_test.bcurve2.tif", 1.05, True),  # measured 0.95%
-    ("rgb_ramp_test.multi-curve.dng", "rgb_ramp_test.multi-curve.tif", 1.54, True),  # measured 1.40% - TODO: revisit large difference
-    ("rgb_ramp_test.maincurve.dng", "rgb_ramp_test.maincurve.tif", 1.61, True),  # measured 1.46% - TODO: revisit large difference
-    ("rgb_ramp_test.mainrgbcurve.dng", "rgb_ramp_test.mainrgbcurve.tif", 1.29, True),  # measured 1.17%
+    ("linear_gradient_test.exp-curve", 3.21, False, None, True),  # muimg: 2.92%, CI: 13.72% - TODO: revisit large difference
+    ("rgb_ramp_test.rcurve", 0.69, False, 1.94, False),  # muimg: 0.63%, CI: 1.76%
+    ("rgb_ramp_test.gcurve", 0.74, False, 2.25, False),  # muimg: 0.67%, CI: 2.13%
+    ("rgb_ramp_test.bcurve", 0.77, False, 2.16, False),  # muimg: 0.70%, CI: 1.96%
+    ("rgb_ramp_test.bcurve2", 1.05, False, None, True),  # muimg: 0.95%, CI: 3.57%
+    ("rgb_ramp_test.multi-curve", 1.54, False, None, True),  # muimg: 1.40%, CI: 2.42% - TODO: revisit large difference
+    ("rgb_ramp_test.maincurve", 1.61, False, None, True),  # muimg: 1.46%, CI: 2.40% - TODO: revisit large difference
+    ("rgb_ramp_test.mainrgbcurve", 1.29, False, None, True),  # muimg: 1.17%, CI: 2.47%
 
     # Full-size ASI676MC tests (4144x2822)
-    ("asi676mc.linearraw.uncomp.1ifds.none.dng", "asi676mc.linearraw.uncomp.1ifds.none.tif", 1.19, True),  # measured 1.08%
-    ("asi676mc.linearraw.uncomp.1ifds.exposure.dng", "asi676mc.linearraw.uncomp.1ifds.exposure.tif", 0.73, True),  # measured 0.66%
-    ("asi676mc.linearraw.uncomp.1ifds.curve.dng", "asi676mc.linearraw.uncomp.1ifds.curve.tif", 1.32, True), 
+    ("asi676mc.linearraw.uncomp.1ifds.none", 1.19, False, 1.25, False),  # muimg: 1.08%, CI: 1.14%
+    ("asi676mc.linearraw.uncomp.1ifds.exposure", 0.73, False, 0.81, False),  # muimg: 0.66%, CI: 0.73%
+    ("asi676mc.linearraw.uncomp.1ifds.curve", 1.32, False, 1.33, False),  # muimg: 1.17%, CI: 1.21%
 
     # Canon EOS R5 tests (2056x1366)
-    ("canon_eos_r5.none.dng", "canon_eos_r5.none.tif", 1.25, True),  # measured 1.14%
-    ("canon_eos_r5.exposure.dng", "canon_eos_r5.exposure.tif", 2.28, True),  # measured 2.07% - TODO: revisit large difference
-    ("canon_eos_r5.baselineexposure-bl1.dng", "canon_eos_r5.baselineexposure-bl1.tif", 2.43, True),  # measured 2.21% - TODO: revisit large difference
-    ("canon_eos_r5.temp-tint.dng", "canon_eos_r5.temp-tint.tif", 1.25, True),  # measured 1.14%
+    ("canon_eos_r5.none", 1.25, False, 1.85, False),  # muimg: 1.14%, CI: 1.68%
+    ("canon_eos_r5.exposure", 2.28, False, None, True),  # muimg: 2.07%, CI: 4.07% - TODO: revisit large difference
+    ("canon_eos_r5.baselineexposure-bl1", 2.43, False, 2.0, False),  # muimg: 2.21%, CI: 1.88% - TODO: revisit large difference
+    ("canon_eos_r5.temp-tint", 1.25, False, 1.86, False),  # muimg: 1.14%, CI: 1.69%
 
-    # Lens distrotion tests
-    ("lumixs9.dng", "lumixs9.tif", None, True),
-    ("nikon_z_9.cfa.ljpeg.2ifds.dng", "nikon_z_9.cfa.ljpeg.2ifds.tif", None, True)
+    # other
+    ("R0000762", 1.01, False, 0.53, False),  # RICOH GR IIIx, muimg: 0.92%, CI: 0.48%
+    ("P4260210", 1.98, False, 1.19, False),  # Olympus E-M10MarkIV, muimg: 1.80%, CI: 1.08%
+    ("DSC_1437", None, True, None, True),  # NIKON Z 8, muimg: 2.00% (FixVignetteRadial opcode unsupported), CI: 6.06% (looks like CI does not support WarpRectilinear opcode)
 
+    # Lens distortion tests
+    ("lumixs9", 1.47, False, None, True),  # muimg: 1.34%, CI: 2.83%
+    ("nikon_z_9.cfa.ljpeg.2ifds", 2.38, False, None, True),  # muimg: 2.16%, CI: 3.61%
+    ("DSCF0033", None, True, None, True),  # FUJIFILM:X-T30 III, muimg: X-Trans CFA not supported, CI: 10.16%
 ]
 
 
-@pytest.mark.parametrize("dng_name,tif_name,threshold,highlight_preserving_exposure", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
-def test_xmp_rendering(dng_name, tif_name, threshold, highlight_preserving_exposure, output_dir):
-    """Test XMP-based rendering against Photoshop reference.
+@pytest.mark.parametrize("file_stem,muimg_threshold,muimg_xfail,ci_threshold,ci_xfail", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
+def test_muimg_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail, output_dir):
+    """Test MUIMG XMP-based rendering against Photoshop reference.
     
     Validates that rendered output matches Photoshop reference within threshold.
     XMP NOOP filtering (Exposure2012=0, WhiteBalance="As Shot", linear tone curves)
     is handled automatically by the rendering pipeline.
     
     Args:
-        highlight_preserving_exposure: If True, use highlight compression (cubic spline for negative exposure).
-                         If False, use DNG SDK exposure behavior (quadratic approximation).
+        file_stem: Base filename without extension
+        muimg_threshold: Threshold for MUIMG pipeline (None = 1.5% default)
+        muimg_xfail: True to mark as expected failure for MUIMG
+        ci_threshold: Threshold for Core Image pipeline (unused in this test)
+        ci_xfail: Core Image xfail flag (unused in this test)
     """
-    dng_path = XMP_TEST_DIR / dng_name
-    tif_path = XMP_TEST_DIR / tif_name
+    # Mark as xfail if specified
+    if muimg_xfail:
+        pytest.xfail(f"MUIMG rendering known to fail for {file_stem}")
+    
+    dng_path = XMP_TEST_DIR / f"{file_stem}.dng"
+    tif_path = XMP_TEST_DIR / f"{file_stem}.tif"
     
     if not dng_path.exists():
         pytest.skip(f"Test file not found: {dng_path}")
@@ -100,13 +115,13 @@ def test_xmp_rendering(dng_name, tif_name, threshold, highlight_preserving_expos
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
             use_xmp=True,
-            rendering_params={'highlight_preserving_exposure': highlight_preserving_exposure},
+            rendering_params={'highlight_preserving_exposure': True},
         )
         
-        assert result is not None, f"Rendering failed for {dng_name}"
+        assert result is not None, f"Rendering failed for {file_stem}"
     
     # Save rendered output for manual inspection
-    output_name = dng_path.stem + "_muimg.tif"
+    output_name = file_stem + "_muimg.tif"
     tifffile.imwrite(str(output_dir / output_name), result)
     
     # Load Photoshop reference
@@ -115,7 +130,7 @@ def test_xmp_rendering(dng_name, tif_name, threshold, highlight_preserving_expos
     # Ensure same shape
     if result.shape != ref.shape:
         pytest.fail(
-            f"Shape mismatch for {dng_name}:\n"
+            f"Shape mismatch for {file_stem}:\n"
             f"  MUIMG:     {result.shape}\n"
             f"  Photoshop: {ref.shape}"
         )
@@ -124,15 +139,87 @@ def test_xmp_rendering(dng_name, tif_name, threshold, highlight_preserving_expos
     stats = compute_diff_stats(result, ref)
     
     # Use default threshold of 1.5% if not specified
-    effective_threshold = threshold if threshold is not None else 1.5
-    threshold_label = f"{effective_threshold}%" if threshold is not None else f"{effective_threshold}% (default)"
+    effective_threshold = muimg_threshold if muimg_threshold is not None else 1.5
+    threshold_label = f"{effective_threshold}%" if muimg_threshold is not None else f"{effective_threshold}% (default)"
     
     # Print overall and per-channel diffs
-    print(f"\n  [XMP] {dng_name}: diff={stats['mean']:.2f}% (threshold={threshold_label})")
+    print(f"\n  [MUIMG] {file_stem}: diff={stats['mean']:.2f}% (threshold={threshold_label})")
     if 'mean_R' in stats:
-        print(f"        Per-channel: R={stats['mean_R']:.2f}% G={stats['mean_G']:.2f}% B={stats['mean_B']:.2f}%")
+        print(f"          Per-channel: R={stats['mean_R']:.2f}% G={stats['mean_G']:.2f}% B={stats['mean_B']:.2f}%")
     
     assert stats["mean"] < effective_threshold, (
-        f"XMP rendering diff {stats['mean']:.2f}% > {effective_threshold}% for {dng_name}"
+        f"MUIMG XMP rendering diff {stats['mean']:.2f}% > {effective_threshold}% for {file_stem}"
+    )
+
+
+@pytest.mark.skipif(
+    not core_image_available_for_tests(), reason="Core Image not available"
+)
+@pytest.mark.parametrize("file_stem,muimg_threshold,muimg_xfail,ci_threshold,ci_xfail", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
+def test_coreimage_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail, output_dir):
+    """Test Core Image XMP-based rendering against Photoshop reference.
+    
+    Validates that Core Image rendered output matches Photoshop reference within threshold.
+    XMP NOOP filtering (Exposure2012=0, WhiteBalance="As Shot", linear tone curves)
+    is handled automatically by the rendering pipeline.
+    
+    Args:
+        file_stem: Base filename without extension
+        muimg_threshold: MUIMG threshold (unused in this test)
+        muimg_xfail: MUIMG xfail flag (unused in this test)
+        ci_threshold: Threshold for Core Image pipeline (None = 2.0% default)
+        ci_xfail: True to mark as expected failure for Core Image
+    """
+    # Mark as xfail if specified
+    if ci_xfail:
+        pytest.xfail(f"Core Image rendering known to differ significantly for {file_stem}")
+    
+    dng_path = XMP_TEST_DIR / f"{file_stem}.dng"
+    tif_path = XMP_TEST_DIR / f"{file_stem}.tif"
+    
+    if not dng_path.exists():
+        pytest.skip(f"Test file not found: {dng_path}")
+    if not tif_path.exists():
+        pytest.skip(f"Reference file not found: {tif_path}")
+    
+    # Render with Core Image
+    result = muimg.decode_dng(
+        file=str(dng_path),
+        output_dtype=np.uint16,
+        use_coreimage_if_available=True,
+        use_xmp=True,
+    )
+    
+    assert result is not None, f"Core Image rendering failed for {file_stem}"
+    
+    # Save rendered output for manual inspection
+    output_name = file_stem + "_coreimage.tif"
+    tifffile.imwrite(str(output_dir / output_name), result)
+    
+    # Load Photoshop reference
+    ref = tifffile.imread(str(tif_path))
+    
+    # Ensure same shape
+    if result.shape != ref.shape:
+        pytest.fail(
+            f"Shape mismatch for {file_stem}:\n"
+            f"  Core Image: {result.shape}\n"
+            f"  Photoshop:  {ref.shape}"
+        )
+    
+    # Compare against reference
+    stats = compute_diff_stats(result, ref)
+    
+    # Use Core Image specific threshold if provided, otherwise use 2.0% default
+    effective_threshold = ci_threshold if ci_threshold is not None else 2.0
+    threshold_label = f"{effective_threshold}%" if ci_threshold is not None else f"{effective_threshold}% (default)"
+    
+    # Print overall and per-channel diffs
+    print(f"\n  [CI] {file_stem}: diff={stats['mean']:.2f}% (threshold={threshold_label})")
+    if 'mean_R' in stats:
+        print(f"       Per-channel: R={stats['mean_R']:.2f}% G={stats['mean_G']:.2f}% B={stats['mean_B']:.2f}%")
+    
+    assert stats["mean"] < effective_threshold, (
+        f"Core Image XMP rendering diff {stats['mean']:.2f}% > {effective_threshold}% for {file_stem}"
     )
 

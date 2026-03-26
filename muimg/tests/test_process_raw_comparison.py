@@ -24,67 +24,74 @@ from conftest import (
 # Output directory for comparison files
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_process_raw_comparison"
 
-# Per-file thresholds for MUIMG (1.1x above measured values)
-MUIMG_THRESHOLDS = {
-    # Sony
-    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": 0.05,  # measured 0.04%
-    "sony_ilce-7c.cfa.jxl_lossy.1ifds.dng": 0.05,  # measured 0.04%
-    "sony_dsc-rx100m7.linearraw.jxl_lossy.2ifds.dng": 0.02,  # measured 0.01%
-    "sony_dsc-rx100m7.cfa.ljpeg.2ifds.dng": 0.28,  # measured 0.25%
+# Test cases for DNG rendering comparison
+# Format: (filename, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail)
+# Thresholds are 1.1x above measured values
+# muimg_threshold: threshold for MUIMG/SDK pipeline (None = use default 0.15%)
+# muimg_xfail: True to mark as expected failure for MUIMG pipeline
+# ci_threshold: threshold for Core Image pipeline (None = use default 2.75%)
+# ci_xfail: True to mark as expected failure for Core Image pipeline
+TEST_CASES = [
     # ASI676MC
-    "asi676mc.cfa.jxl_lossy.2ifds.dng": 0.03,  # measured 0.02%
-    "asi676mc.linearraw.jxl_lossy.1ifds.dng": 0.18,  # measured 0.17%
-    "asi676mc.cfa.uncomp.2ifds.dng": 0.04,  # measured 0.03%
-    "asi676mc.cfa.jxl_lossy.1ifds.dng": 0.08,  # measured 0.07%
-    # iPhone
-    "iphone16_1_back_camera.linearraw.jxl_lossy.2ifds.dng": 0.72,  # measured 0.65%
-    "iphone16_1_back_camera.linearraw.jxl_lossy.1ifds.dng": 0.21,  # measured 0.19%
-    # Canon
-    "canon_eos_r5.cfa.ljpeg.6ifds.dng": 0.02,  # measured 0.02%
-    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": 0.02,  # measured 0.02%
-    "canon_eos_r5.baselineexposure-bl0.dng": 0.1,
-    "canon_eos_r5.baselineexposure-bl1.dng": 0.1,
-    # Insta360
-    "insta360_oners.cfa.uncomp.1ifds.dng": 0.02,  # measured 0.01%
-    # Nikon
-    "nikon_z_9.cfa.ljpeg.2ifds.dng": 0.15,  # default threshold
+    ("asi676mc.cfa.jxl_lossy.1ifds.dng", 0.08, False, None, True),  # muimg: 0.07%, CI: 2.51% (>2%)
+    ("asi676mc.cfa.jxl_lossy.2ifds.dng", 0.03, False, 0.75, False),  # muimg: 0.02%, CI: 0.68%
+    ("asi676mc.cfa.uncomp.2ifds.dng", 0.04, False, 0.87, False),  # muimg: 0.03%, CI: 0.87%
+    ("asi676mc.linearraw.jxl_lossy.1ifds.dng", 0.18, False, 1.06, False),  # muimg: 0.17%, CI: 1.06%
+    
+    # Canon EOS R5
+    ("canon_eos_r5.baselineexposure-bl0.dng", 0.1, False, 0.76, False),  # muimg: 0.02%, CI: 0.76%
+    ("canon_eos_r5.baselineexposure-bl1.dng", 0.1, False, 0.37, False),  # muimg: 0.02%, CI: 0.37%
+    ("canon_eos_r5.cfa.ljpeg.6ifds.dng", 0.02, False, 1.73, False),  # muimg: 0.02%, CI: 1.73%
+    ("canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng", 0.02, False, None, True),  # muimg: 0.02%, CI: 22.24%
+    
     # DNG SDK test files - JXL
-    "dngsdk.01_jxl_linear_raw_integer.dng": 0.01,  # measured 0.01%
-    "dngsdk.02_jxl_linear_raw_float.dng": 0.09,  # measured 0.08%
-    "dngsdk.03_jxl_bayer_raw_integer.dng": 0.22,  # measured 0.20%
+    ("dngsdk.01_jxl_linear_raw_integer.dng", 0.01, False, 0.74, False),  # muimg: 0.01%, CI: 0.74%
+    ("dngsdk.02_jxl_linear_raw_float.dng", 0.09, False, None, True),  # muimg: 0.08%, CI: 9.74%
+    ("dngsdk.03_jxl_bayer_raw_integer.dng", 0.22, False, 1.89, False),  # muimg: 0.20%, CI: 1.89%
+    
     # DNG SDK test files - PGTM2
-    "dngsdk.04_PGTM2_per_profile.dng": 0.01,  # measured 0.00%
-    "dngsdk.05_PGTM2_unsigned8.dng": 0.01,  # measured 0.00%
-    "dngsdk.06_PGTM2_unsigned16.dng": 0.01,  # measured 0.00%
-    "dngsdk.07_PGTM2_float16.dng": 0.01,  # measured 0.00%
-    "dngsdk.08_PGTM2_float32.dng": 0.01,  # measured 0.00%
+    ("dngsdk.04_PGTM2_per_profile.dng", 0.01, False, 0.67, False),  # muimg: 0.00%, CI: 0.61%
+    ("dngsdk.05_PGTM2_unsigned8.dng", 0.01, False, 0.46, False),  # muimg: 0.00%, CI: 0.46%
+    ("dngsdk.06_PGTM2_unsigned16.dng", 0.01, False, 0.46, False),  # muimg: 0.00%, CI: 0.46%
+    ("dngsdk.07_PGTM2_float16.dng", 0.01, False, None, True),  # muimg: 0.00%, CI: 51.38%
+    ("dngsdk.08_PGTM2_float32.dng", 0.01, False, 0.46, False),  # muimg: 0.00%, CI: 0.46%
+    
     # DNG SDK test files - ImageSequenceInfo
-    "dngsdk.09_ImageSequenceInfo_1_of_3.dng": 0.01,  # measured 0.00%
-    "dngsdk.10_ImageSequenceInfo_2_of_3.dng": 0.01,  # measured 0.00%
-    "dngsdk.11_ImageSequenceInfo_3_of_3.dng": 0.01,  # measured 0.00%
+    ("dngsdk.09_ImageSequenceInfo_1_of_3.dng", 0.01, False, 0.01, False),  # muimg: 0.00%, CI: 0.01%
+    ("dngsdk.10_ImageSequenceInfo_2_of_3.dng", 0.01, False, 0.01, False),  # muimg: 0.00%, CI: 0.01%
+    ("dngsdk.11_ImageSequenceInfo_3_of_3.dng", 0.01, False, 0.01, False),  # muimg: 0.00%, CI: 0.01%
+    
     # DNG SDK test files - ImageStats
-    "dngsdk.12_ImageStats_WeightedAverage.dng": 0.02,  # measured 0.01%
-    "dngsdk.13_ImageStats_Several.dng": 0.02,  # measured 0.01%
+    ("dngsdk.12_ImageStats_WeightedAverage.dng", 0.02, False, None, True),  # muimg: 0.01%, CI: 33.75%
+    ("dngsdk.13_ImageStats_Several.dng", 0.02, False, None, True),  # muimg: 0.01%, CI: 33.75%
+    
     # DNG SDK test files - HDR/SDR
-    "dngsdk.14_hdr_sdr_profiles.dng": 0.01,  # measured 0.00%
-}
-MUIMG_DEFAULT_THRESHOLD = 0.15  # Fallback for unknown files
-CI_MEAN_DIFF_THRESHOLD = 2.75  # Core Image vs dng_validate: must be < 2.75%
+    ("dngsdk.14_hdr_sdr_profiles.dng", 0.01, False, None, True),  # muimg: 0.00%, CI: error
+    
+    # Insta360
+    ("insta360_oners.cfa.uncomp.1ifds.dng", 0.02, False, None, True),  # muimg: 0.01%, CI: 4.69%
+    
+    # iPhone 16
+    ("iphone16_1_back_camera.linearraw.jxl_lossy.1ifds.dng", 0.21, False, 0.87, False),  # muimg: 0.19%, CI: 0.79%
+    ("iphone16_1_back_camera.linearraw.jxl_lossy.2ifds.dng", 0.72, False, 0.82, False),  # muimg: 0.65%, CI: 0.82%
+    
+    # Lumix S9
+    ("lumixs9.dng", 0.15, False, None, True),  # muimg: 0.14%, CI: 2.90%
+    
+    # Nikon Z 9
+    ("nikon_z_9.cfa.ljpeg.2ifds.dng", 0.15, False, None, True),  # muimg: 0.11%, CI: 2.33% (>2%)
+    
+    # Sony DSC-RX100M7
+    ("sony_dsc-rx100m7.cfa.ljpeg.2ifds.dng", 0.28, False, None, True),  # muimg: 0.25%, CI: 4.15%
+    ("sony_dsc-rx100m7.linearraw.jxl_lossy.2ifds.dng", 0.02, False, None, True),  # muimg: 0.01%, CI: 21.39%
+    
+    # Sony ILCE-7C
+    ("sony_ilce-7c.cfa.jxl_lossy.1ifds.dng", 0.05, False, None, True),  # muimg: 0.04%, CI: 7.30%
+    ("sony_ilce-7c.cfa.jxl_lossy.4ifds.dng", 0.05, False, 1.52, False),  # muimg: 0.04%, CI: 1.38%
+]
 
-# Known Core Image differences vs dng_validate on this machine.
-# These appear to be inherent pipeline differences or Core Image limitations.
-COREIMAGE_XFAIL = {
-    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng",
-    "dngsdk.02_jxl_linear_raw_float.dng",
-    "dngsdk.07_PGTM2_float16.dng",
-    "dngsdk.12_ImageStats_WeightedAverage.dng",
-    "dngsdk.13_ImageStats_Several.dng",
-    "dngsdk.14_hdr_sdr_profiles.dng",
-    "insta360_oners.cfa.uncomp.1ifds.dng",
-    "sony_dsc-rx100m7.cfa.ljpeg.2ifds.dng",
-    "sony_dsc-rx100m7.linearraw.jxl_lossy.2ifds.dng",
-    "sony_ilce-7c.cfa.jxl_lossy.1ifds.dng",
-}
+MUIMG_DEFAULT_THRESHOLD = 0.15  # Fallback for unknown files
+CI_DEFAULT_THRESHOLD = 2.75  # Fallback for unknown files
 
 
 def get_dng_files():
@@ -104,9 +111,24 @@ def output_dir():
     return OUTPUT_DIR
 
 
+# Create lookup dictionaries from TEST_CASES
+TEST_CASES_DICT = {filename: (muimg_threshold, muimg_xfail, ci_threshold, ci_xfail) 
+                   for filename, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail in TEST_CASES}
+
+
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
 def test_muimg_vs_dngvalidate(dng_path, output_dir):
     """Test MUIMG rendering against C++ DNG SDK reference."""
+    # Get test case parameters
+    if dng_path.name in TEST_CASES_DICT:
+        muimg_threshold, muimg_xfail, _, _ = TEST_CASES_DICT[dng_path.name]
+    else:
+        muimg_threshold, muimg_xfail = MUIMG_DEFAULT_THRESHOLD, False
+    
+    # Mark as xfail if specified
+    if muimg_xfail:
+        pytest.xfail(f"MUIMG rendering known to fail for {dng_path.name}")
+    
     output_base = output_dir / f"{dng_path.stem}_dngvalidate"
     ref = run_dng_validate(dng_path, output_base, timeout=60)
     if ref is None:
@@ -130,7 +152,7 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
         pytest.fail(f"Shape mismatch: MUIMG {result.shape} vs REF {ref.shape}")
     
     stats = compute_diff_stats(result, ref)
-    threshold = MUIMG_THRESHOLDS.get(dng_path.name, MUIMG_DEFAULT_THRESHOLD)
+    threshold = muimg_threshold if muimg_threshold is not None else MUIMG_DEFAULT_THRESHOLD
     print(f"\n  [MUIMG] {dng_path.name}: {elapsed_ms:.0f}ms, diff:{stats['mean']:.2f}% (threshold:{threshold}%)")
     
     assert stats["mean"] < threshold, f"Mean diff {stats['mean']:.2f}% > {threshold}%"
@@ -142,6 +164,12 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
 @pytest.mark.parametrize("dng_path", get_dng_files(), ids=lambda p: p.name)
 def test_coreimage_vs_dngvalidate(dng_path, output_dir):
     """Test Core Image against C++ DNG SDK reference."""
+    # Get test case parameters
+    if dng_path.name in TEST_CASES_DICT:
+        _, _, ci_threshold, ci_xfail = TEST_CASES_DICT[dng_path.name]
+    else:
+        ci_threshold, ci_xfail = CI_DEFAULT_THRESHOLD, False
+    
     output_base = output_dir / f"{dng_path.stem}_dngvalidate"
     ref = run_dng_validate(dng_path, output_base, timeout=60)
     if ref is None:
@@ -153,10 +181,10 @@ def test_coreimage_vs_dngvalidate(dng_path, output_dir):
             file=str(dng_path),
             output_dtype=np.uint16,
             use_coreimage_if_available=True,
-            use_xmp=False,
+            use_xmp=False,  # Match dng_validate (no XMP), but still do color conversion
         )
     except Exception as e:
-        if dng_path.name in COREIMAGE_XFAIL:
+        if ci_xfail:
             pytest.xfail(f"Known Core Image failure for {dng_path.name}: {e}")
         raise
     elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -168,14 +196,15 @@ def test_coreimage_vs_dngvalidate(dng_path, output_dir):
         pytest.fail(f"Shape mismatch: CI {result.shape} vs REF {ref.shape}")
     
     stats = compute_diff_stats(result, ref)
+    threshold = ci_threshold if ci_threshold is not None else CI_DEFAULT_THRESHOLD
     print(f"\n  [CI] {dng_path.name}: {elapsed_ms:.0f}ms, diff:{stats['mean']:.2f}%")
 
-    if dng_path.name in COREIMAGE_XFAIL and stats["mean"] >= CI_MEAN_DIFF_THRESHOLD:
+    if ci_xfail and stats["mean"] >= threshold:
         pytest.xfail(
-            f"Known Core Image mismatch for {dng_path.name}: mean diff {stats['mean']:.2f}% > {CI_MEAN_DIFF_THRESHOLD}%"
+            f"Known Core Image mismatch for {dng_path.name}: mean diff {stats['mean']:.2f}% > {threshold}%"
         )
 
-    assert stats["mean"] < CI_MEAN_DIFF_THRESHOLD, f"Mean diff {stats['mean']:.2f}% > {CI_MEAN_DIFF_THRESHOLD}%"
+    assert stats["mean"] < threshold, f"Mean diff {stats['mean']:.2f}% > {threshold}%"
 
 
 # Per-file thresholds for stripped DNG test (1.1x above measured values)

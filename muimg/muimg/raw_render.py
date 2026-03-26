@@ -209,24 +209,28 @@ def _prophoto_gamma(linear: np.ndarray) -> np.ndarray:
     dng_function_GammaEncode_1_8
     
     Args:
-        linear: Linear RGB values (should be in 0-1 range)
+        linear: Linear RGB values (can exceed 0-1 for wide-gamut)
         
     Returns:
         Gamma-encoded values
     """
-    return np.power(linear, 1.0 / 1.8)
+    # Clip negative pixel values to 0 
+    linear_clipped = np.maximum(linear, 0.0)
+    return np.power(linear_clipped, 1.0 / 1.8)
 
 
 def _prophoto_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
     """Apply ProPhoto RGB gamma 1.8 decoding.
     
     Args:
-        gamma: Gamma-encoded values (should be in 0-1 range)
+        gamma: Gamma-encoded values (can exceed 0-1 for wide-gamut)
         
     Returns:
         Linear RGB values
     """
-    return np.power(gamma, 1.8)
+    # Clip negative pixel values to 0 
+    gamma_clipped = np.maximum(gamma, 0.0)
+    return np.power(gamma_clipped, 1.8)
 
 
 def _adobergb_gamma(linear: np.ndarray) -> np.ndarray:
@@ -238,24 +242,28 @@ def _adobergb_gamma(linear: np.ndarray) -> np.ndarray:
     Note: Adobe RGB uses a simple power curve, not the piecewise sRGB function.
     
     Args:
-        linear: Linear RGB values (should be in 0-1 range)
+        linear: Linear RGB values (can exceed 0-1 for wide-gamut)
         
     Returns:
         Gamma-encoded values
     """
-    return np.power(linear, 1.0 / 2.2)
+    # Clip negative pixel values to 0 
+    linear_clipped = np.maximum(linear, 0.0)
+    return np.power(linear_clipped, 1.0 / 2.2)
 
 
 def _adobergb_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
     """Apply Adobe RGB gamma 2.2 decoding.
     
     Args:
-        gamma: Gamma-encoded values (should be in 0-1 range)
+        gamma: Gamma-encoded values (can exceed 0-1 for wide-gamut)
         
     Returns:
         Linear RGB values
     """
-    return np.power(gamma, 2.2)
+    # Clip negative pixel values to 0 
+    gamma_clipped = np.maximum(gamma, 0.0)
+    return np.power(gamma_clipped, 2.2)
 
 
 def convert_dtype(

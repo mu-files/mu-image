@@ -1954,31 +1954,33 @@ def decode_dng(
     file: Union[str, Path, IO[bytes], DngFile],
     output_dtype: type = np.uint16,
     demosaic_algorithm: str = "RCD",
-    strict: bool = True,
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
-    **processing_params,
+    rendering_params: dict = None,
 ) -> np.ndarray:
     """
     Decode a DNG file to a numpy array.
     
     By default uses the Python SDK pipeline. When use_coreimage_if_available=True,
-    uses macOS Core Image pipeline if available (supports XMP and processing params).
+    uses macOS Core Image pipeline if available (supports XMP and rendering params).
     
     Args:
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
         demosaic_algorithm: Demosaic algorithm for Python pipeline - "RCD" (default), "VNG", etc.
-        strict: If True, raise error on unsupported DNG tags (Python pipeline only)
-        use_coreimage_if_available: If True, use Core Image pipeline when available on macOS
+        use_coreimage_if_available: If True, use (MacOS) Core Image pipeline when available
         use_xmp: Whether to read XMP metadata for processing defaults (both pipelines)
-        **processing_params: Core Image processing parameters:
-            - temperature: Color temperature in Kelvin
-            - tint: Tint adjustment
-            - exposure: Exposure adjustment in EV
-            - tone_curve: SplineCurve for tone mapping
-            - noise_reduction: Noise reduction amount
-            - orientation: EXIF orientation code
+        rendering_params: Optional dict to override rendering parameters. Supported keys:
+            - 'Temperature': White balance temperature in Kelvin (float)
+            - 'Tint': White balance tint adjustment (float)
+            - 'Exposure2012': Exposure compensation in stops (float)
+            - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
+            - 'ToneCurvePV2012Red': Red channel tone curve
+            - 'ToneCurvePV2012Green': Green channel tone curve
+            - 'ToneCurvePV2012Blue': Blue channel tone curve
+            - 'crlcp:PerspectiveModel': Lens correction profile
+            - 'highlight_preserving_exposure': Use highlight preservation (Python pipeline only)
+            - 'orientation': EXIF orientation code (Core Image only)
     
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype
@@ -1993,7 +1995,7 @@ def decode_dng(
                     file=file,
                     use_xmp=use_xmp,
                     output_dtype=output_dtype,
-                    **processing_params,
+                    rendering_params=rendering_params,
                 )
 
             logger.warning(
@@ -2014,6 +2016,7 @@ def decode_dng(
         demosaic_algorithm=demosaic_algorithm,
         strict=strict,
         use_xmp=use_xmp,
+        rendering_params=rendering_params,
     )
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")
