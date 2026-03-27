@@ -2448,18 +2448,17 @@ def apply_post_rendering_operations(
         Output image in dest_colorspace with output_dtype
     """
     
-    # Step 1: Convert input to ProPhoto linear
+    # Early return if no rendering params - just convert colorspace directly
+    if not rendering_params:
+        return convert_colorspace(rgb_input, source_colorspace, dest_colorspace, output_dtype=output_dtype)
+    
+    # Step 1: Convert input to ProPhoto linear for rendering operations
     if source_colorspace != ColorSpace.PROPHOTO_LINEAR:
         rgb_prophoto_linear = convert_colorspace(rgb_input, source_colorspace, ColorSpace.PROPHOTO_LINEAR)
     else:
         rgb_prophoto_linear = rgb_input
     
-    # Early return if no rendering params and no color space conversion needed
-    if not rendering_params and dest_colorspace == ColorSpace.PROPHOTO_LINEAR and output_dtype == np.float32:
-        return rgb_prophoto_linear
-    
-    if rendering_params:
-        logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
+    logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
     
     # Only copy if we're going to modify
     rgb_output = rgb_prophoto_linear
@@ -2540,7 +2539,7 @@ def apply_post_rendering_operations(
                     sensor_width_mm = 36.0 / sensor_format_factor
                     logger.debug(f"Using sensor width {sensor_width_mm:.3f}mm (SensorFormatFactor={sensor_format_factor})")
                 else:
-                    # Fallback to empirically determined 35.6mm if SensorFormatFactor not available
+                    # Fallback to "average" 35.8mm if SensorFormatFactor not available
                     sensor_width_mm = 35.8
                     logger.debug(f"SensorFormatFactor not found, using default sensor width {sensor_width_mm}mm")
                 

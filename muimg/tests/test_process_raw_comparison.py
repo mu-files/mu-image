@@ -212,6 +212,7 @@ STRIPPED_THRESHOLDS = {
     "asi676mc.cfa.jxl_lossy.1ifds.dng": 0.08,  # measured 0.07%
     "asi676mc.linearraw.jxl_lossy.1ifds.dng": 0.19,  # measured 0.17%
     "iphone16_1_back_camera.linearraw.jxl_lossy.1ifds.dng": 0.13,  # measured 0.11%
+    "lumixs9.dng": 0.08,  # measured 0.07%
 }
 STRIPPED_DEFAULT_THRESHOLD = 0.05
 

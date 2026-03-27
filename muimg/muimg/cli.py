@@ -113,6 +113,23 @@ def convert_image(input_file, output_file, bit_depth):
     default=1024,
     help="Maximum preview dimension (default: 1024)",
 )
+@click.option(
+    "--jxl-distance",
+    type=float,
+    default=None,
+    help="JXL compression distance (0=lossless, >0=lossy). None=uncompressed.",
+)
+@click.option(
+    "--jxl-effort",
+    type=int,
+    default=None,
+    help="JXL compression effort (1-9, default 5 if jxl-distance is set)",
+)
+@click.option(
+    "--tag",
+    multiple=True,
+    help="Set/override tag as NAME=VALUE (can be specified multiple times)",
+)
 def copy_dng(
     input_dng,
     output_dng,
@@ -122,14 +139,29 @@ def copy_dng(
     strip_tag,
     preview,
     preview_max_dim,
+    jxl_distance,
+    jxl_effort,
+    tag,
 ):
     """Copy DNG file with optional transformations.
     
     Apply scale, demosaic (CFA to LINEAR_RAW), strip tags, and/or generate preview.
     """
     from . import dngio
+    from .tiff_metadata import MetadataTags
     
     strip_tags_set = set(strip_tag) if strip_tag else None
+    
+    # Parse --tag NAME=VALUE options into MetadataTags
+    ifd0_tags = None
+    if tag:
+        ifd0_tags = MetadataTags()
+        for tag_spec in tag:
+            if "=" not in tag_spec:
+                click.echo(f"Error: Invalid tag format '{tag_spec}'. Use NAME=VALUE", err=True)
+                sys.exit(1)
+            name, value = tag_spec.split("=", 1)
+            ifd0_tags.add_tag(name.strip(), value.strip())
     
     try:
         dngio.copy_dng(
@@ -141,6 +173,9 @@ def copy_dng(
             strip_tags=strip_tags_set,
             generate_preview=preview,
             preview_max_dimension=preview_max_dim,
+            jxl_distance=jxl_distance,
+            jxl_effort=jxl_effort,
+            ifd0_tags=ifd0_tags,
         )
         click.echo(f"Successfully copied DNG to {output_dng}")
     except Exception as e:

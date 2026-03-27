@@ -71,7 +71,6 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
         # First pass: show all IFDs
         for i, page in enumerate(pages):
             is_raw = page.is_cfa or page.is_linear_raw
-            raw_type = "CFA" if page.is_cfa else ("LINEAR_RAW" if page.is_linear_raw else "")
             main_marker = " [MAIN]" if page.is_main_image else ""
             print(f"  IFD {i}: {page.photometric or 'unknown'} {page.shape}{main_marker} {'-> PROCESS' if is_raw else '-> skip'}")
         
@@ -93,7 +92,8 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 1. muimg render_dng -> {stem}_ifd{n}_muimg.tif
             try:
-                decoded = page.render(output_dtype=np.uint16, strict=False, use_xmp=False)
+                decoded = page.render(output_dtype=np.uint16, strict=False, use_xmp=False,
+                                      rendering_params={'highlight_preserving_exposure': False})
                 if decoded is None:
                     pytest.fail(f"page.render returned None for IFD {i}")
                 tifffile.imwrite(str(muimg_tif), decoded)
@@ -115,7 +115,9 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
             roundtrip_decoded = None
             try:
-                roundtrip_decoded = muimg.decode_dng(roundtrip_dng, output_dtype=np.uint16, strict=False, use_xmp=False)
+                with muimg.DngFile(roundtrip_dng) as roundtrip_dng_file:
+                    roundtrip_decoded = roundtrip_dng_file.render(output_dtype=np.uint16, strict=False, use_xmp=False,
+                                                                  rendering_params={'highlight_preserving_exposure': False})
                 if roundtrip_decoded is not None:
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")
