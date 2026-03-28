@@ -671,9 +671,8 @@ class DngFile(TiffFile):
             dng_page = DngPage(tiff_page)
             result.append(dng_page)
             
-            # Recursively process sub-pages
-            if tiff_page.pages:
-                result.extend(self._build_dng_pages_recursive(tiff_page.pages))
+            # Recursively process sub-pages:
+            result.extend(self._build_dng_pages_recursive(tiff_page.pages))
         
         return result
 
@@ -957,8 +956,7 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
     dng_tags = MetadataTags()
 
     # Use metadata if provided, otherwise create empty metadata
-    if metadata is not None:
-        dng_tags.extend(metadata)
+    dng_tags.extend(metadata)
     
     # Add required tags if not already set
     if "Orientation" not in dng_tags:
@@ -1168,34 +1166,6 @@ def write_dng(
             return True
         return False
 
-    def _decode_array_spec(spec: IfdSpec) -> Tuple[np.ndarray, int, str, str, Optional[float], Optional[int]]:
-        if spec.photometric not in ("cfa", "linear_raw"):
-            raise ValueError(
-                f"Unsupported photometric: {spec.photometric}. Must be 'cfa' or 'linear_raw'"
-            )
-        if spec.bits_per_pixel is None:
-            if isinstance(spec.data, np.ndarray):
-                if spec.data.dtype == np.uint8:
-                    bits_per_pixel = 8
-                elif spec.data.dtype == np.uint16:
-                    bits_per_pixel = 16
-                else:
-                    raise ValueError(
-                        "bits_per_pixel is required for ndarray IFD specs when dtype is not uint8/uint16"
-                    )
-            else:
-                raise ValueError("bits_per_pixel is required for ndarray IFD specs")
-        else:
-            bits_per_pixel = int(spec.bits_per_pixel)
-        return (
-            spec.data,
-            bits_per_pixel,
-            str(spec.photometric),
-            str(spec.cfa_pattern),
-            spec.jxl_distance,
-            spec.jxl_effort,
-        )
-
     def _has_jxl_ifd(spec: IfdSpec) -> bool:
         if isinstance(spec.data, DngPage):
             if _effective_decompress(spec):
@@ -1215,8 +1185,7 @@ def write_dng(
             break
 
     merged_ifd0_tags = source_ifd0_tags
-    if ifd0_tags is not None:
-        merged_ifd0_tags.extend(ifd0_tags)
+    merged_ifd0_tags.extend(ifd0_tags)
 
     if preview_image is not None:
         exclude_compression_ifd0 = True
@@ -1225,6 +1194,8 @@ def write_dng(
         exclude_compression_ifd0 = isinstance(first_spec.data, DngPage) and _effective_decompress(first_spec)
 
     allowed_ifd0_tags = _get_dng_copy_tags(exclude_compression=exclude_compression_ifd0)
+    # CFA tags belong to specific image IFDs, not file-level IFD0 metadata
+    allowed_ifd0_tags -= CFA_TAGS
     if skip_tags:
         allowed_ifd0_tags -= skip_tags
 
@@ -1253,12 +1224,14 @@ def write_dng(
         allowed_tags = _get_dng_copy_tags(exclude_compression=False)
         if skip_tags:
             allowed_tags -= skip_tags
+        # Strip CFA tags when writing LinearRaw
+        if page.is_linear_raw:
+            allowed_tags -= CFA_TAGS
 
         # Get page tags with inheritance logic
         if inherit_page_tags_from_source:
             page_tags_unfiltered = page.get_page_tags()
-            if page_tags is not None:
-                page_tags_unfiltered.extend(page_tags)
+            page_tags_unfiltered.extend(page_tags)
         else:
             page_tags_unfiltered = page_tags if page_tags is not None else MetadataTags()
         
@@ -1391,8 +1364,7 @@ def write_dng(
             # Extract page tags with inheritance logic
             if spec.inherit_page_tags_from_source:
                 page_tags_unfiltered = page.get_page_tags()
-                if spec.page_tags is not None:
-                    page_tags_unfiltered.extend(spec.page_tags)
+                page_tags_unfiltered.extend(spec.page_tags)
             else:
                 page_tags_unfiltered = spec.page_tags
             
@@ -1415,7 +1387,26 @@ def write_dng(
             jxl_distance = None
             jxl_effort = None
         else:
-            raw_data, bits_per_pixel, photometric, cfa_pattern, jxl_distance, jxl_effort = _decode_array_spec(spec)
+            if spec.photometric not in ("cfa", "linear_raw"):
+                raise ValueError(
+                    f"Unsupported photometric: {spec.photometric}. Must be 'cfa' or 'linear_raw'"
+                )
+            if spec.bits_per_pixel is None:
+                if spec.data.dtype == np.uint8:
+                    bits_per_pixel = 8
+                elif spec.data.dtype == np.uint16:
+                    bits_per_pixel = 16
+                else:
+                    raise ValueError(
+                        "bits_per_pixel is required for ndarray IFD specs when dtype is not uint8/uint16"
+                    )
+            else:
+                bits_per_pixel = int(spec.bits_per_pixel)
+            raw_data = spec.data
+            photometric = spec.photometric
+            cfa_pattern = spec.cfa_pattern
+            jxl_distance = spec.jxl_distance
+            jxl_effort = spec.jxl_effort
             page_tags_unfiltered = spec.page_tags
 
         # Validate input shape based on photometric
@@ -1449,6 +1440,9 @@ def write_dng(
             allowed_tags = _get_dng_copy_tags(exclude_compression=True)
             if skip_tags:
                 allowed_tags -= skip_tags
+            # Strip CFA tags when writing LinearRaw
+            if photometric == "linear_raw":
+                allowed_tags -= CFA_TAGS
             page_tags = _filter_metadata_tags(
                 page_tags_unfiltered,
                 allowed_names=allowed_tags,
@@ -1668,17 +1662,23 @@ def _generate_preview(
     return downscaled
 
 
-# Tags applied during stage1 and stage2 processing that must be stripped
-# when extracting processed data via get_camera_rgb()
-STAGE1_STAGE2_TAGS = {
-    # Stage1 tags (CFA-specific)
-    "ColumnInterleaveFactor",
-    "RowInterleaveFactor",
+# CFA-specific tags that must be stripped when writing LinearRaw
+CFA_TAGS = {
     "CFAPattern",
     "CFARepeatPatternDim",
     "CFAPlaneColor",
     "CFALayout",
     "BayerGreenSplit",
+}
+
+# Tags applied during stage1 and stage2 processing that must be stripped
+# when extracting processed data via get_camera_rgb()
+STAGE1_STAGE2_TAGS = {
+    # Stage1 tags (CFA-specific)
+    *CFA_TAGS,
+    # Interleave factors (applied during CFA JXL encoding)
+    "ColumnInterleaveFactor",
+    "RowInterleaveFactor",
     # Stage2 tags
     "BlackLevel",
     "BlackLevelRepeatDim",
@@ -1813,10 +1813,8 @@ def copy_dng(
     
     # Extract IFD0 tags and merge with user overrides
     merged_ifd0_tags = page.get_ifd0_tags()
-    if ifd0_tags is not None:
-        merged_ifd0_tags.extend(ifd0_tags)
+    merged_ifd0_tags.extend(ifd0_tags)
     
-    preview_image = None
     if generate_preview:
         # Two-pass approach: write to memory first, generate preview from that,
         # then write final DNG with preview
@@ -1844,22 +1842,27 @@ def copy_dng(
             temp_page, preview_max_dimension, demosaic_algorithm
         )
         
-        # Second pass: use temp_page for image data (efficiency), but cached metadata
-        # to avoid flattened SubIFD tags from temp DNG's IFD0
-        ifd_spec = IfdSpec(
-            data=temp_page,
-            page_tags=page.get_page_tags(),
-            inherit_ifd0_tags_from_source=False,
-            inherit_page_tags_from_source=False,
+        # Second pass: use temp_page for image data (efficiency), but original
+        # page_tags to avoid flattened SubIFD tags from temp DNG's IFD0
+        write_dng(
+            destination_file=dest_path,
+            ifd0_tags=merged_ifd0_tags,
+            subifds=[IfdSpec(
+                data=temp_page,
+                page_tags=page.get_page_tags(),
+                inherit_ifd0_tags_from_source=False,
+                inherit_page_tags_from_source=False,
+            )],
+            preview_image=preview_image,
+            skip_tags=strip_tags,
         )
-    
-    write_dng(
-        destination_file=dest_path,
-        ifd0_tags=merged_ifd0_tags,
-        subifds=[ifd_spec],
-        preview_image=preview_image,
-        skip_tags=strip_tags,
-    )
+    else:
+        write_dng(
+            destination_file=dest_path,
+            ifd0_tags=merged_ifd0_tags,
+            subifds=[ifd_spec],
+            skip_tags=strip_tags,
+        )
     
     if is_stream_output:
         logger.info("Successfully wrote DNG to stream")

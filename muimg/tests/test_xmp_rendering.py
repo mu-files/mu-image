@@ -73,6 +73,7 @@ TEST_CASES = [
     ("R0000762", 1.01, False, 0.53, False),  # RICOH GR IIIx, muimg: 0.92%, CI: 0.48%
     ("P4260210", 1.98, False, 1.19, False),  # Olympus E-M10MarkIV, muimg: 1.80%, CI: 1.08%
     ("DSC_1437", None, True, None, True),  # NIKON Z 8, muimg: 2.00% (FixVignetteRadial opcode unsupported), CI: 6.06% (looks like CI does not support WarpRectilinear opcode)
+    ("test_stacking3_RCD_corrected_cfa", None, False, None, False),
 
     # Lens distortion tests
     ("lumixs9", 1.47, False, None, True),  # muimg: 1.34%, CI: 2.83%
@@ -82,7 +83,7 @@ TEST_CASES = [
 
 
 @pytest.mark.parametrize("file_stem,muimg_threshold,muimg_xfail,ci_threshold,ci_xfail", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
-def test_muimg_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail, output_dir):
+def test_muimg_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail, output_dir, request):
     """Test MUIMG XMP-based rendering against Photoshop reference.
     
     Validates that rendered output matches Photoshop reference within threshold.
@@ -96,9 +97,9 @@ def test_muimg_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_thresho
         ci_threshold: Threshold for Core Image pipeline (unused in this test)
         ci_xfail: Core Image xfail flag (unused in this test)
     """
-    # Mark as xfail if specified
+    # Mark as xfail if specified (test still runs, failure is expected)
     if muimg_xfail:
-        pytest.xfail(f"MUIMG rendering known to fail for {file_stem}")
+        request.applymarker(pytest.mark.xfail(reason=f"MUIMG rendering known to fail for {file_stem}"))
     
     dng_path = XMP_TEST_DIR / f"{file_stem}.dng"
     tif_path = XMP_TEST_DIR / f"{file_stem}.tif"
@@ -156,7 +157,7 @@ def test_muimg_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_thresho
     not core_image_available_for_tests(), reason="Core Image not available"
 )
 @pytest.mark.parametrize("file_stem,muimg_threshold,muimg_xfail,ci_threshold,ci_xfail", TEST_CASES, ids=lambda x: x if isinstance(x, str) else None)
-def test_coreimage_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail, output_dir):
+def test_coreimage_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_threshold, ci_xfail, output_dir, request):
     """Test Core Image XMP-based rendering against Photoshop reference.
     
     Validates that Core Image rendered output matches Photoshop reference within threshold.
@@ -170,9 +171,9 @@ def test_coreimage_xmp_rendering(file_stem, muimg_threshold, muimg_xfail, ci_thr
         ci_threshold: Threshold for Core Image pipeline (None = 2.0% default)
         ci_xfail: True to mark as expected failure for Core Image
     """
-    # Mark as xfail if specified
+    # Mark as xfail if specified (test still runs, failure is expected)
     if ci_xfail:
-        pytest.xfail(f"Core Image rendering known to differ significantly for {file_stem}")
+        request.applymarker(pytest.mark.xfail(reason=f"Core Image rendering known to differ significantly for {file_stem}"))
     
     dng_path = XMP_TEST_DIR / f"{file_stem}.dng"
     tif_path = XMP_TEST_DIR / f"{file_stem}.tif"
