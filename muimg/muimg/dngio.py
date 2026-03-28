@@ -993,38 +993,19 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
         # Neutral analog balance
         dng_tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
     
-    def _as_version_tuple(value) -> Optional[tuple[int, int, int, int]]:
-        if value is None:
-            return None
-        if isinstance(value, (bytes, bytearray)):
-            if len(value) < 4:
-                return None
-            return (int(value[0]), int(value[1]), int(value[2]), int(value[3]))
-        if isinstance(value, (tuple, list)):
-            if len(value) < 4:
-                return None
-            return (int(value[0]), int(value[1]), int(value[2]), int(value[3]))
-        return None
+    def _version_bytes(major: int, minor: int, patch: int, build: int) -> bytes:
+        return bytes([major, minor, patch, build])
 
-    def _version_tuple_to_bytes(value: tuple[int, int, int, int]) -> bytes:
-        return bytes([value[0] & 0xFF, value[1] & 0xFF, value[2] & 0xFF, value[3] & 0xFF])
+    # Set DNGVersion (default 1.7.1.0, or keep existing if higher)
+    if "DNGVersion" not in dng_tags:
+        dng_tags.add_tag("DNGVersion", _version_bytes(1, 7, 1, 0))
 
-    default_dng_version = (1, 7, 1, 0)
-    existing_dng_version = _as_version_tuple(dng_tags.get_tag("DNGVersion") if "DNGVersion" in dng_tags else None)
-    chosen_dng_version = max([v for v in (existing_dng_version, default_dng_version) if v is not None])
-    dng_tags.add_tag("DNGVersion", _version_tuple_to_bytes(chosen_dng_version))
-
-    if not has_jxl:
-        # need latest version for CFA compression but lots of old software can't handle it
-        default_backward = (1, 4, 0, 0)
-    else:
-        default_backward = (1, 7, 1, 0)
-
-    existing_backward = _as_version_tuple(
-        dng_tags.get_tag("DNGBackwardVersion") if "DNGBackwardVersion" in dng_tags else None
-    )
-    chosen_backward = max([v for v in (existing_backward, default_backward) if v is not None])
-    dng_tags.add_tag("DNGBackwardVersion", _version_tuple_to_bytes(chosen_backward))
+    # Set DNGBackwardVersion based on compression
+    if "DNGBackwardVersion" not in dng_tags:
+        if has_jxl:
+            dng_tags.add_tag("DNGBackwardVersion", _version_bytes(1, 7, 1, 0))
+        else:
+            dng_tags.add_tag("DNGBackwardVersion", _version_bytes(1, 4, 0, 0))
         
     return dng_tags
 

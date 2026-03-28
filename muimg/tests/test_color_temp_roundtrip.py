@@ -84,10 +84,10 @@ def test_bradford_adaptation_basic():
     import numpy as np
     
     # D50 -> D65 should produce a non-identity matrix
-    adapt = compute_bradford_adaptation(D50_xy[0], D50_xy[1], D65_xy[0], D65_xy[1])
+    adapt = compute_bradford_adaptation(D50_xy, D65_xy)
     assert adapt.shape == (3, 3), f"Wrong shape: {adapt.shape}"
     assert adapt.dtype == np.float64, f"Wrong dtype: {adapt.dtype}"
     
     # Identity adaptation (same src/dst) should give identity matrix
-    identity = compute_bradford_adaptation(D50_xy[0], D50_xy[1], D50_xy[0], D50_xy[1])
+    identity = compute_bradford_adaptation(D50_xy, D50_xy)
     assert np.allclose(identity, np.eye(3), atol=1e-10), "Same src/dst should give identity"

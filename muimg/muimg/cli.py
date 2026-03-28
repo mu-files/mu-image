@@ -47,17 +47,25 @@ def convert_dng(
     # Map bit depth to numpy dtype
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
     
+    # Map CLI parameter names to XMP-style rendering_params names
+    params = {}
+    if temperature is not None:
+        params['Temperature'] = temperature
+    if tint is not None:
+        params['Tint'] = tint
+    if exposure is not None:
+        params['Exposure2012'] = exposure
+    if orientation is not None:
+        params['orientation'] = orientation
+    # Note: noise_reduction not currently supported in rendering_params
+    
     success = convert_imgformat(
         file=input_file,
         output_path=output_file,
-        temperature=temperature,
-        tint=tint,
-        exposure=exposure,
-        noise_reduction=noise_reduction,
-        orientation=orientation,
         output_dtype=output_dtype,
         use_xmp=not no_xmp,
         use_coreimage_if_available=use_coreimage,
+        **params,
     )
 
     sys.exit(0 if success else 1)

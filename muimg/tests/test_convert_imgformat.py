@@ -60,6 +60,7 @@ def test_convert_imgformat_sdk_vs_coreimage():
             str(TEST_DNG),
             str(tiff_path),
             "--bit-depth", "8",
+            "--no-xmp",  # Disable XMP to match Core Image pipeline
         ],
         capture_output=True,
         text=True,

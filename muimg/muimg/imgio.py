@@ -75,12 +75,18 @@ def decode_image(
     if is_dng:
         use_xmp = processing_params.pop('use_xmp', True)
         use_coreimage_if_available = processing_params.pop('use_coreimage_if_available', False)
+        demosaic_algorithm = processing_params.pop('demosaic_algorithm', 'RCD')
+        
+        # Remaining params go into rendering_params dict
+        rendering_params = processing_params if processing_params else None
+        
         return decode_dng(
             file=dng_file,
             output_dtype=output_dtype,
             use_coreimage_if_available=use_coreimage_if_available,
             use_xmp=use_xmp,
-            **processing_params,
+            demosaic_algorithm=demosaic_algorithm,
+            rendering_params=rendering_params,
         )
     
     # Fall back to cv2 for other formats
