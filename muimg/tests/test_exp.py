@@ -16,7 +16,7 @@ import shutil
 import tifffile
 
 from muimg.dngio import IfdSpec, MetadataTags
-from conftest import compute_diff_stats, run_dng_validate
+from conftest import compute_diff_stats
 
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent.parent.parent.parent / "mu-image-testdata" / "gradienttestfiles"

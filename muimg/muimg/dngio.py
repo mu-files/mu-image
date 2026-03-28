@@ -996,16 +996,19 @@ def _prepare_ifd0_tags(metadata: Optional[MetadataTags], has_jxl: bool) -> Metad
     def _version_bytes(major: int, minor: int, patch: int, build: int) -> bytes:
         return bytes([major, minor, patch, build])
 
-    # Set DNGVersion (default 1.7.1.0, or keep existing if higher)
+    # Set DNGVersion and DNGBackwardVersion
+    default_ver = _version_bytes(1, 7, 1, 0)
+    
+    # Set DNGVersion if not present
     if "DNGVersion" not in dng_tags:
-        dng_tags.add_tag("DNGVersion", _version_bytes(1, 7, 1, 0))
-
-    # Set DNGBackwardVersion based on compression
+        dng_tags.add_tag("DNGVersion", default_ver)
+        default_back = _version_bytes(1, 7, 1, 0) if has_jxl else _version_bytes(1, 4, 0, 0)
+    else:
+        default_back = dng_tags.get_tag("DNGVersion")
+    
+    # Set DNGBackwardVersion if not present
     if "DNGBackwardVersion" not in dng_tags:
-        if has_jxl:
-            dng_tags.add_tag("DNGBackwardVersion", _version_bytes(1, 7, 1, 0))
-        else:
-            dng_tags.add_tag("DNGBackwardVersion", _version_bytes(1, 4, 0, 0))
+        dng_tags.add_tag("DNGBackwardVersion", default_back)
         
     return dng_tags
 
@@ -1035,9 +1038,13 @@ _JPEG_THUMBNAIL_TAGS = {
     'JPEGQTables', 'JPEGDCTables', 'JPEGACTables',
 }
 
-# Tags invalidated when decompressing (digests become stale)
-_COMPRESSION_INVALIDATED_TAGS = {
+# Digest tags only valid for main IFD (computed from main raw data)
+_DIGEST_TAGS = {
     'NewRawImageDigest', 'RawImageDigest', 'OriginalRawFileDigest',
+}
+
+# Tags invalidated when decompressing (digests become stale)
+_COMPRESSION_INVALIDATED_TAGS = _DIGEST_TAGS | {
     'CacheVersion', 'JXLDistance', 'JXLEffort', 'JXLDecodeSpeed',
 }
 
@@ -1202,7 +1209,9 @@ def write_dng(
         inherit_page_tags_from_source: bool = True,
     ) -> None:
         # Get allowlist of tags to copy from source files (bounded to registry)
+        # Always exclude digest tags 
         allowed_tags = _get_dng_copy_tags(exclude_compression=False)
+        allowed_tags -= _DIGEST_TAGS
         if skip_tags:
             allowed_tags -= skip_tags
         # Strip CFA tags when writing LinearRaw
@@ -1216,13 +1225,15 @@ def write_dng(
         else:
             page_tags_unfiltered = page_tags if page_tags is not None else MetadataTags()
         
-        # Filter to allowed tags
+        # Combine page tags and IFD0 tags
+        if include_ifd0_tags:
+            page_tags_unfiltered.extend(prepared_ifd0_tags.copy())
+        
+        # Filter all tags at once 
         raw_ifd_tags = _filter_metadata_tags(
             page_tags_unfiltered,
             allowed_names=allowed_tags,
         )
-        if include_ifd0_tags:
-            raw_ifd_tags.extend(prepared_ifd0_tags.copy())
         _ensure_float_tags_be(raw_ifd_tags)
 
         # prepare the args to tif writer

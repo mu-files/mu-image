@@ -130,7 +130,7 @@ def test_muimg_vs_dngvalidate(dng_path, output_dir):
         pytest.xfail(f"MUIMG rendering known to fail for {dng_path.name}")
     
     output_base = output_dir / f"{dng_path.stem}_dngvalidate"
-    ref = run_dng_validate(dng_path, output_base, timeout=60)
+    ref = run_dng_validate(dng_path, output_base, timeout=60, validate=False)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     
@@ -171,7 +171,7 @@ def test_coreimage_vs_dngvalidate(dng_path, output_dir):
         ci_threshold, ci_xfail = CI_DEFAULT_THRESHOLD, False
     
     output_base = output_dir / f"{dng_path.stem}_dngvalidate"
-    ref = run_dng_validate(dng_path, output_base, timeout=60)
+    ref = run_dng_validate(dng_path, output_base, timeout=60, validate=False)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     
@@ -286,7 +286,7 @@ def test_stripped_dng_comparison(dng_path, output_dir):
     
     # Run dng_validate on stripped DNG
     ref_base = output_dir / f"{dng_path.stem}_stripped_dngvalidate"
-    ref = run_dng_validate(stripped_dng, ref_base, timeout=60)
+    ref = run_dng_validate(stripped_dng, ref_base, timeout=60, validate=False)
     if ref is None:
         pytest.skip("dng_validate reference not available")
     

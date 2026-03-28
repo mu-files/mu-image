@@ -120,17 +120,26 @@ def load_tiff(path: Path) -> np.ndarray | None:
         return None
 
 
-def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120) -> np.ndarray | None:
+def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True) -> np.ndarray | None:
     """Run dng_validate to render a DNG to TIFF.
     
     Args:
         dng_path: Path to DNG file
         output_base: Base path for output (will append .tif)
         timeout: Timeout in seconds
+        ignored_warnings: Optional list of warning patterns to ignore (case-insensitive)
+        validate: If False, ignore all errors/warnings and just decode (for reference comparison)
         
     Returns:
-        Loaded TIFF as numpy array, or None if failed
+        Loaded TIFF as numpy array, or None if dng_validate not available
+        
+    Raises:
+        RuntimeError: If dng_validate fails or produces errors (only when validate=True)
+        AssertionError: If dng_validate produces warnings (only when validate=True, except ignored ones)
     """
+    # Warnings to ignore (add patterns here as needed)
+    IGNORED_WARNINGS = ignored_warnings or []
+    
     if not DNG_VALIDATE_PATH.exists():
         return None
     
@@ -144,10 +153,33 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120) -> n
             timeout=timeout
         )
         if result.returncode != 0:
-            print(f"dng_validate failed: {result.stderr}")
-            return None
+            raise RuntimeError(f"dng_validate failed with return code {result.returncode}:\n{result.stderr}")
+        
+        # Only check for errors/warnings if validate=True
+        if validate:
+            # Check for errors or warnings in output
+            combined = (result.stdout or "") + "\n" + (result.stderr or "")
+            
+            # Extract only error/warning lines for cleaner output
+            error_lines = [line for line in combined.split('\n') if '*** error:' in line.lower()]
+            warning_lines = [line for line in combined.split('\n') if '*** warning:' in line.lower()]
+            
+            if error_lines:
+                errors_text = '\n'.join(error_lines)
+                raise RuntimeError(f"dng_validate produced errors:\n{errors_text}")
+            
+            if warning_lines:
+                # Check if this is an ignored warning
+                warnings_text = '\n'.join(warning_lines)
+                print(f"\ndng_validate warnings:\n{warnings_text}")
+                warnings_lower = warnings_text.lower()
+                is_ignored = any(ignored in warnings_lower for ignored in IGNORED_WARNINGS)
+                if not is_ignored:
+                    raise AssertionError(f"dng_validate produced warnings:\n{warnings_text}")
+            
     except (subprocess.TimeoutExpired, Exception) as e:
-        print(f"dng_validate error: {e}")
-        return None
+        if isinstance(e, (RuntimeError, AssertionError)):
+            raise
+        raise RuntimeError(f"dng_validate error: {e}")
     
     return load_tiff(output_tiff)
