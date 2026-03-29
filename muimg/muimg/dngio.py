@@ -35,6 +35,7 @@ from .tiff_metadata import (
     MetadataTags,
     TagSpec,
     TIFF_DTYPE_TO_STR,
+    special_tag_format,
     TIFF_TAG_TYPE_REGISTRY,
     XmpMetadata,
     get_native_type,
@@ -181,11 +182,10 @@ class DngPage(TiffPage):
         if raw_tag is None:
             return None
 
-        if tag_name == "XMP" and return_type is None:
-            xmp_string = decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, None, str)
-            if xmp_string is None:
-                xmp_string = ""
-            return XmpMetadata(xmp_string)
+        # Check for special formatting (XMP, DNGVersion, etc.)
+        special_value = special_tag_format(tag_name, raw_tag.value, raw_tag.dtype, return_type)
+        if special_value is not None:
+            return special_value
 
         shape_spec = None
         if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:

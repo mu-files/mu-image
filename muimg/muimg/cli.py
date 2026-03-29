@@ -27,19 +27,217 @@ def cli(verbose):
     )
 
 
-@cli.command(name="convert-dng")
+@cli.group(name="dng")
+def dng():
+    """DNG file operations."""
+    pass
+
+
+@dng.command(name="metadata")
+@click.argument("input_file", type=click.Path(exists=True))
+@click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
+@click.option("--tag", "filter_tags", multiple=True, help="Show only specific tag(s) (case-insensitive)")
+def dng_metadata(input_file, ifd, filter_tags):
+    """Display DNG file metadata."""
+    from . import dngio
+    from .tiff_metadata import TIFF_TAG_TYPE_REGISTRY, TIFF_DTYPES, LOCAL_TIFF_TAGS
+    import numpy as np
+    
+    # Normalize filter tags to lowercase for case-insensitive matching
+    filter_tags_lower = set(tag.lower() for tag in filter_tags) if filter_tags else None
+    
+    try:
+        dng_file = dngio.DngFile(input_file)
+    except Exception as e:
+        click.echo(f"Error opening DNG file: {e}", err=True)
+        sys.exit(1)
+    
+    # Get flattened pages for flat numbering (IFD0, then SubIFDs)
+    pages = dng_file.get_flattened_pages()
+    
+    if not pages:
+        click.echo("No IFDs found in file", err=True)
+        sys.exit(1)
+    
+    # Show summary of available IFDs
+    click.echo(f"File contains {len(pages)} IFD(s):")
+    for i, p in enumerate(pages):
+        ifd_type = "IFD0" if i == 0 else f"SubIFD[{i-1}]"
+        photometric = p.photometric_name or "Unknown"
+        width = p.imagewidth or "?"
+        length = p.imagelength or "?"
+        summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
+        click.echo(f"{i}:{summary_indent} {ifd_type} - {photometric}, {width}x{length}")
+    click.echo()
+    
+    # Determine which IFDs to show
+    if ifd is not None:
+        if ifd < 0 or ifd >= len(pages):
+            click.echo(f"Error: IFD {ifd} not found (file has {len(pages)} IFDs)", err=True)
+            sys.exit(1)
+        pages_to_show = [pages[ifd]]
+        ifd_indices = [ifd]
+    else:
+        # Default: show all IFDs
+        pages_to_show = pages
+        ifd_indices = list(range(len(pages)))
+    
+    # Display metadata for each IFD
+    for idx, (page, ifd_num) in enumerate(zip(pages_to_show, ifd_indices)):
+        if idx > 0:
+            click.echo()  # Blank line between IFDs
+        
+        # Use TIFF terminology for header
+        if ifd_num == 0:
+            ifd_label = "IFD0"
+            indent = ""
+            header_indent = ""
+        else:
+            ifd_label = f"SubIFD {ifd_num - 1}"
+            indent = "  "  # Indent SubIFD tags
+            header_indent = "  "  # Indent SubIFD header
+        click.echo(f"{header_indent}=== {ifd_label} (--ifd {ifd_num}) ===")
+        
+        # Get all tags using DngPage API
+        page_tags = page.get_page_tags()
+        
+        # Iterate through tags
+        for tag_code, _, _, _, _ in page_tags:
+            # Get tag name from registry
+            tag_name = LOCAL_TIFF_TAGS.get(tag_code)
+            if tag_name is None:
+                tag_name = f"Tag{tag_code}"
+            
+            # Filter if requested (case-insensitive)
+            if filter_tags_lower and tag_name.lower() not in filter_tags_lower:
+                continue
+            
+            # Get the converted value using DngPage API
+            value = page.get_tag(tag_code)
+            
+            # Display the tag with appropriate indentation
+            _display_tag(tag_name, value, indent)
+    
+    sys.exit(0)
+
+
+def _display_tag(tag_name, value, indent=""):
+    """Format and display a single tag value.
+    
+    Args:
+        tag_name: Name of the tag
+        value: Already-converted value from page.get_tag()
+        indent: String to prepend to each line (for SubIFD indentation)
+    """
+    import numpy as np
+    from .tiff_metadata import XmpMetadata
+    
+    def echo(text):
+        """Helper to echo with indentation."""
+        click.echo(f"{indent}{text}")
+    
+    # Special handling for XMP
+    if isinstance(value, XmpMetadata):
+        size = len(str(value))
+        echo(f"{tag_name}: XML metadata, {size} bytes")
+        return
+    
+    # Handle None
+    if value is None:
+        echo(f"{tag_name}: None")
+        return
+    
+    # Strings
+    if isinstance(value, str):
+        if len(value) > 200:
+            echo(f"{tag_name}: {value[:200]}... ({len(value)} chars)")
+        else:
+            echo(f"{tag_name}: {value}")
+        return
+    
+    # Special formatting for DNG version tags (4-tuple from get_tag)
+    if tag_name in ("DNGVersion", "DNGBackwardVersion") and isinstance(value, tuple) and len(value) == 4:
+        version_str = f"{value[0]}.{value[1]}.{value[2]}.{value[3]}"
+        echo(f"{tag_name}: {version_str}")
+        return
+    
+    # Bytes (binary data)
+    if isinstance(value, bytes):
+        if len(value) > 100:
+            echo(f"{tag_name}: Binary data, {len(value)} bytes")
+        else:
+            echo(f"{tag_name}: {value}")
+        return
+    
+    # Convert to numpy array for easier handling
+    if not isinstance(value, np.ndarray):
+        value = np.atleast_1d(value)
+    
+    # Simple scalars
+    if value.size == 1:
+        echo(f"{tag_name}: {value.item()}")
+        return
+    
+    # 2D arrays (matrices) - display in matrix format
+    if value.ndim == 2:
+        echo(f"{tag_name}:")
+        for i in range(min(value.shape[0], 3)):  # Max 3 lines
+            row_str = "  " + "  ".join(f"{v:8.4f}" for v in value[i])
+            echo(row_str)
+        if value.shape[0] > 3:
+            echo(f"  ... ({value.shape[0]} rows total)")
+        return
+    
+    # Small 1D arrays (≤16 elements)
+    if value.size <= 16:
+        clean_list = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value.flat]
+        echo(f"{tag_name}: {clean_list}")
+        return
+    
+    # Medium arrays (16 < count ≤ 100): format as multi-line
+    if value.size <= 100:
+        # Try to reshape into matrix format
+        if value.size == 9:
+            value = value.reshape(3, 3)
+        elif value.size == 6:
+            value = value.reshape(2, 3)
+        
+        if value.ndim == 2:
+            # Multi-line matrix display (like dng_validate)
+            echo(f"{tag_name}:")
+            for i in range(min(value.shape[0], 3)):
+                row_str = "  " + "  ".join(f"{v:8.4f}" for v in value[i])
+                echo(row_str)
+            if value.shape[0] > 3:
+                echo(f"  ... ({value.shape[0]} rows total)")
+        else:
+            # 1D array
+            clean_values = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value[:50]]
+            if value.size > 50:
+                echo(f"{tag_name}: {clean_values}... ({value.size} elements)")
+            else:
+                echo(f"{tag_name}: {clean_values}")
+        return
+    
+    # Very large arrays: show type, element count, and byte size
+    dtype_name = value.dtype.name
+    num_elements = value.size
+    num_bytes = value.nbytes
+    echo(f"{tag_name}: {dtype_name} array, {num_elements} elements, {num_bytes} bytes")
+
+
+@dng.command(name="convert")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
 @click.option("--exposure", type=float, help="Exposure adjustment in stops")
-@click.option("--noise-reduction", type=float, help="Noise reduction amount")
 @click.option("--orientation", type=int, help="Image orientation")
 @click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
 @click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
-def convert_dng(
-    input_file, output_file, temperature, tint, exposure, noise_reduction, orientation, bit_depth, no_xmp, use_coreimage
+def dng_convert(
+    input_file, output_file, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
 ):
     """Convert DNG file to image file with processing options."""
     import numpy as np
@@ -91,7 +289,7 @@ def convert_image(input_file, output_file, bit_depth):
     sys.exit(0 if success else 1)
 
 
-@cli.command(name="copy-dng")
+@dng.command(name="copy")
 @click.argument("input_dng", type=click.Path(exists=True))
 @click.argument("output_dng", type=click.Path())
 @click.option(
@@ -138,7 +336,7 @@ def convert_image(input_file, output_file, bit_depth):
     multiple=True,
     help="Set/override tag as NAME=VALUE (can be specified multiple times)",
 )
-def copy_dng(
+def dng_copy(
     input_dng,
     output_dng,
     scale,

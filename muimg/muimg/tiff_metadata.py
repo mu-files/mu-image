@@ -753,6 +753,46 @@ def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Opt
     return tag_id, tag_name, spec
 
 
+def special_tag_format(tag_name: str, raw_value: Any, dtype: int, return_type: Optional[type]) -> Optional[Any]:
+    """Handle special formatting for specific tags.
+    
+    Some tags require special handling beyond standard TIFF type conversion:
+    - XMP: Returns XmpMetadata object for easy manipulation
+    - DNGVersion/DNGBackwardVersion: Returns 4-tuple (major, minor, patch, build) for easy comparison
+    
+    Args:
+        tag_name: Name of the tag
+        raw_value: Raw value from TIFF tag
+        dtype: TIFF dtype code
+        return_type: Requested return type (None for auto)
+    
+    Returns:
+        Formatted value if this is a special tag, None otherwise (use normal decoding)
+    """
+    # Only apply special formatting when return_type is None (auto)
+    if return_type is not None:
+        return None
+    
+    # XMP: return XmpMetadata object
+    if tag_name == "XMP":
+        xmp_string = decode_tag_value(tag_name, raw_value, dtype, None, str)
+        if xmp_string is None:
+            xmp_string = ""
+        return XmpMetadata(xmp_string)
+    
+    # DNG Version tags: return 4-tuple (major, minor, patch, build)
+    if tag_name in ("DNGVersion", "DNGBackwardVersion"):
+        # Decode as bytes first
+        version_bytes = decode_tag_value(tag_name, raw_value, dtype, None, bytes)
+        if version_bytes is None:
+            return None
+        # Pad to 4 bytes if needed (null bytes may be stripped)
+        padded = version_bytes + b'\x00' * (4 - len(version_bytes))
+        return (padded[0], padded[1], padded[2], padded[3])
+    
+    return None
+
+
 def decode_tag_value(
     tag_name: str,
     tag_value: Any,
@@ -1203,6 +1243,7 @@ class MetadataTags:
             xmp: XmpMetadata instance to serialize and write to XMP tag.
         
         Example:
+           from .xmp import XmpMetadata
             xmp = XmpMetadata.from_attributes({
                 'crs:Temperature': '3900',
                 'crs:Tint': '0',
@@ -1265,12 +1306,10 @@ class MetadataTags:
         if tag_id in self._tags:
             t = self._tags[tag_id]
             
-            # Special handling for XMP tag: return XmpMetadata when no explicit return_type
-            if tag_name == "XMP" and return_type is None:
-                xmp_string = decode_tag_value(tag_name, t.value, t.dtype, None, str)
-                if xmp_string is None:
-                    xmp_string = ""
-                return XmpMetadata(xmp_string)
+            # Check for special formatting (XMP, DNGVersion, etc.)
+            special_value = special_tag_format(tag_name, t.value, t.dtype, return_type)
+            if special_value is not None:
+                return special_value
             
             effective_type = return_type or get_native_type(t.dtype, t.count)
             
