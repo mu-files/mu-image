@@ -22,16 +22,16 @@ from muimg.tiff_metadata import (
     encode_tag_value,
     LOCAL_TIFF_TAGS,
 )
-from conftest import TEST_FILES_DIR, LOCAL_TEST_FILES_DIR
+
+
+DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 
 def get_dng_files():
     """Get list of DNG files for parametrized tests."""
     files = []
-    if TEST_FILES_DIR.exists():
-        files.extend(TEST_FILES_DIR.glob("*.dng"))
-    if LOCAL_TEST_FILES_DIR.exists():
-        files.extend(LOCAL_TEST_FILES_DIR.glob("*.dng"))
+    if DNGFILES_DIR.exists():
+        files.extend(DNGFILES_DIR.glob("*.dng"))
     return sorted(files)
 
 

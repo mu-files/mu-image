@@ -5,11 +5,11 @@ import pytest
 from pathlib import Path
 
 from muimg.imgio import decode_dng
-from conftest import TEST_FILES_DIR, compute_diff_stats, run_dng_validate, DNG_VALIDATE_PATH
+from conftest import compute_diff_stats, run_dng_validate, DNG_VALIDATE_PATH
 
 
 # Test files - original, pure copy, and demosaiced copy
-TESTDATA_DIR = Path("/Users/anonymized/Projects/python/mu-image-testdata/xmptestfiles")
+TESTDATA_DIR = Path(__file__).parent / "dngfiles"
 ORIGINAL_DNG = TESTDATA_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
 COPIED_DNG = TESTDATA_DIR / "canon_eos_r5.cfa.copied.dng"
 DEMOSAICED_DNG = TESTDATA_DIR / "canon_eos_r5.cfa.demosaic.dng"
@@ -136,7 +136,7 @@ def test_copy_dng_vs_dng_validate():
         
         # Decode with dng_validate
         dngvalidate_base = OUTPUT_DIR / f"canon_eos_r5.{label}.dngvalidate"
-        dngvalidate_img = run_dng_validate(dng_path, dngvalidate_base, timeout=60)
+        dngvalidate_img = run_dng_validate(dng_path, dngvalidate_base, timeout=60, validate=False)
         assert dngvalidate_img is not None, f"Failed to decode {label} with dng_validate"
         print(f"dng_validate shape: {dngvalidate_img.shape}")
         

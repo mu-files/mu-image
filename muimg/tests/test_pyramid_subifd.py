@@ -11,16 +11,17 @@ import pytest
 
 import muimg
 from muimg.dngio import IfdSpec
-from conftest import DNG_VALIDATE_PATH, TEST_FILES_DIR, compute_diff_stats
+from conftest import DNG_VALIDATE_PATH, compute_diff_stats
 
 
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_pyramid_subifd"
+DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 
 TEST_FILES = [
     ("asi676mc.cfa.jxl_lossy.2ifds.dng", True),
     ("canon_eos_r5.cfa.ljpeg.6ifds.dng", False),
-    ("sony_dsc-rx100m7.cfa.ljpeg.2ifds.dng", True),
+    ("sony_ilce-7c.cfa.jxl_lossy.4ifds.dng", True),
 ]
 
 
@@ -75,7 +76,7 @@ def output_dir() -> Path:
 
 @pytest.mark.parametrize("filename, generate_preview", TEST_FILES)
 def test_write_subifd_pyramid_roundtrip(filename: str, generate_preview: bool, output_dir: Path):
-    dng_path = TEST_FILES_DIR / filename
+    dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
 
@@ -143,7 +144,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, generate_preview: bool, o
 
 def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path):
     filename = "asi676mc.cfa.jxl_lossy.2ifds.dng"
-    dng_path = TEST_FILES_DIR / filename
+    dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
 

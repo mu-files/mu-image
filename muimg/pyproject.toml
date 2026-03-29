@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260327.2330"
+version = "0.1.20260328.1825"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
@@ -43,6 +43,9 @@ Repository = "https://github.com/mu-files/mu-image"
 
 [tool.setuptools]
 packages = ["muimg"]
+
+[tool.setuptools.package-data]
+muimg = ["tests/dngfiles/*.dng", "tests/dngfiles/*.jxl"]
 
 [tool.pytest.ini_options]
 log_cli = true

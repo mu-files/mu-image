@@ -15,7 +15,6 @@ import tifffile
 import muimg
 from muimg.dngio import IfdSpec, MetadataTags
 from conftest import (
-    TEST_FILES_DIR,
     DNG_VALIDATE_PATH,
     compute_diff_stats,
     run_dng_validate,
@@ -23,24 +22,17 @@ from conftest import (
 
 # Output directory for this test
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_subifd_roundtrip"
+DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 # Threshold for comparison (percentage of full range)
 ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
 
-
-def get_multi_ifd_dng_files():
-    """Get list of DNG files with >2 IFDs (indicating SubIFDs)."""
-    files = []
-    if TEST_FILES_DIR.exists():
-        for path in sorted(TEST_FILES_DIR.glob("*.dng")):
-            try:
-                with muimg.DngFile(path) as dng:
-                    ifd_count = len(dng.get_flattened_pages())
-                    if ifd_count > 2:
-                        files.append(path)
-            except Exception:
-                pass  # Skip files that can't be opened
-    return files
+# Multi-IFD test files
+TEST_FILES = [
+    "asi676mc.cfa.jxl_lossy.2ifds.dng",
+    "canon_eos_r5.cfa.ljpeg.6ifds.dng",
+    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng",
+]
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +42,12 @@ def output_dir():
     return OUTPUT_DIR
 
 
-@pytest.mark.parametrize("dng_path", get_multi_ifd_dng_files(), ids=lambda p: p.name)
+def get_test_files():
+    """Get list of test DNG file paths."""
+    return [DNGFILES_DIR / filename for filename in TEST_FILES]
+
+
+@pytest.mark.parametrize("dng_path", get_test_files(), ids=lambda p: p.name)
 def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
     """Test that each raw SubIFD can be decoded and roundtripped through write_dng_from_page.
     

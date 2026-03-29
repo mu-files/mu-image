@@ -14,7 +14,6 @@ import pytest
 
 from muimg.imgio import convert_imgformat, convert_imgformat_to_stream
 from conftest import (
-    TEST_FILES_DIR,
     compute_diff_stats,
     core_image_available_for_tests,
 )
@@ -25,9 +24,10 @@ MUIMG_CLI = [sys.executable, "-m", "muimg.cli"]
 
 # Output directory for comparison files
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_convert_imgformat"
+DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 # Test file
-TEST_DNG = TEST_FILES_DIR / "asi676mc.cfa.jxl_lossy.2ifds.dng"
+TEST_DNG = DNGFILES_DIR / "asi676mc.cfa.jxl_lossy.2ifds.dng"
 
 # Threshold for comparing SDK vs Core Image output (percentage difference)
 # The two pipelines use different algorithms so some difference is expected

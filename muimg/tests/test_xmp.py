@@ -6,15 +6,14 @@ import pytest
 
 import muimg
 
-from conftest import TEST_FILES_DIR
 
-
+DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 DNG_FILENAME = "asi676mc.cfa.jxl_lossy.2ifds.dng"
 
 
 @pytest.mark.parametrize("filename", [DNG_FILENAME])
 def test_dump_xmp_properties(filename: str):
-    dng_path = TEST_FILES_DIR / filename
+    dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
 
