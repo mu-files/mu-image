@@ -102,7 +102,7 @@ def dng_metadata(input_file, ifd, filter_tags):
         page_tags = page.get_page_tags()
         
         # Iterate through tags
-        for tag_code, _, _, _, _ in page_tags:
+        for tag_code, dtype, count, _, _ in page_tags:
             # Get tag name from registry
             tag_name = LOCAL_TIFF_TAGS.get(tag_code)
             if tag_name is None:
@@ -116,58 +116,89 @@ def dng_metadata(input_file, ifd, filter_tags):
             value = page.get_tag(tag_code)
             
             # Display the tag with appropriate indentation
-            _display_tag(tag_name, value, indent)
+            _display_tag(tag_name, value, indent, tag_code, dtype, count)
     
     sys.exit(0)
 
 
-def _display_tag(tag_name, value, indent=""):
+def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=None):
     """Format and display a single tag value.
     
     Args:
         tag_name: Name of the tag
         value: Already-converted value from page.get_tag()
         indent: String to prepend to each line (for SubIFD indentation)
+        tag_code: Numeric tag code (for unknown tags)
+        dtype: TIFF dtype code (for unknown tags)
+        count: Element count (for unknown tags)
     """
     import numpy as np
-    from .tiff_metadata import XmpMetadata
+    from .tiff_metadata import XmpMetadata, TIFF_DTYPES
     
     def echo(text):
         """Helper to echo with indentation."""
         click.echo(f"{indent}{text}")
     
+    # For unknown tags, show tag code and type info
+    is_unknown = tag_name.startswith("Tag") and tag_code is not None
+    if is_unknown and dtype is not None:
+        dtype_info = TIFF_DTYPES.get(dtype, {})
+        dtype_name = dtype_info.get('name', f'Type{dtype}')
+        tag_display = f"{tag_name} ({tag_code}, {dtype_name})"
+    else:
+        tag_display = tag_name
+    
     # Special handling for XMP
     if isinstance(value, XmpMetadata):
         size = len(str(value))
-        echo(f"{tag_name}: XML metadata, {size} bytes")
+        echo(f"{tag_display}: XML metadata, {size} bytes")
+        return
+    
+    # Special handling for EXIF/GPS dictionaries - enumerate fields
+    if isinstance(value, dict) and tag_name in ("ExifTag", "GPSTag"):
+        echo(f"{tag_display}: {len(value)} fields")
+        # Display each EXIF field with extra indentation
+        for key, val in value.items():
+            # Recursively display each field
+            _display_tag(str(key), val, indent + "  ", None, None, None)
         return
     
     # Handle None
     if value is None:
-        echo(f"{tag_name}: None")
+        echo(f"{tag_display}: None")
         return
     
     # Strings
     if isinstance(value, str):
         if len(value) > 200:
-            echo(f"{tag_name}: {value[:200]}... ({len(value)} chars)")
+            echo(f"{tag_display}: {value[:200]}... ({len(value)} chars)")
         else:
-            echo(f"{tag_name}: {value}")
+            echo(f"{tag_display}: {value}")
         return
     
     # Special formatting for DNG version tags (4-tuple from get_tag)
     if tag_name in ("DNGVersion", "DNGBackwardVersion") and isinstance(value, tuple) and len(value) == 4:
         version_str = f"{value[0]}.{value[1]}.{value[2]}.{value[3]}"
-        echo(f"{tag_name}: {version_str}")
+        echo(f"{tag_display}: {version_str}")
         return
     
-    # Bytes (binary data)
+    # Bytes (binary data) - handle both bytes and numpy byte arrays
     if isinstance(value, bytes):
         if len(value) > 100:
-            echo(f"{tag_name}: Binary data, {len(value)} bytes")
+            echo(f"{tag_display}: Binary data, {len(value)} bytes")
         else:
-            echo(f"{tag_name}: {value}")
+            echo(f"{tag_display}: {value}")
         return
+    
+    # Check for numpy scalar bytes (0-d array with bytes dtype)
+    if isinstance(value, np.ndarray) and value.ndim == 0 and value.dtype.kind in ('S', 'V'):
+        byte_value = value.item()
+        if isinstance(byte_value, bytes):
+            if len(byte_value) > 100:
+                echo(f"{tag_display}: Binary data, {len(byte_value)} bytes")
+            else:
+                echo(f"{tag_display}: {byte_value}")
+            return
     
     # Convert to numpy array for easier handling
     if not isinstance(value, np.ndarray):
@@ -175,12 +206,12 @@ def _display_tag(tag_name, value, indent=""):
     
     # Simple scalars
     if value.size == 1:
-        echo(f"{tag_name}: {value.item()}")
+        echo(f"{tag_display}: {value.item()}")
         return
     
     # 2D arrays (matrices) - display in matrix format
     if value.ndim == 2:
-        echo(f"{tag_name}:")
+        echo(f"{tag_display}:")
         for i in range(min(value.shape[0], 3)):  # Max 3 lines
             row_str = "  " + "  ".join(f"{v:8.4f}" for v in value[i])
             echo(row_str)
@@ -188,10 +219,16 @@ def _display_tag(tag_name, value, indent=""):
             echo(f"  ... ({value.shape[0]} rows total)")
         return
     
-    # Small 1D arrays (≤16 elements)
-    if value.size <= 16:
+    # Small 1D arrays (≤9 elements): show full array
+    if value.size <= 9:
         clean_list = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value.flat]
-        echo(f"{tag_name}: {clean_list}")
+        echo(f"{tag_display}: {clean_list}")
+        return
+    
+    # Medium 1D arrays (9 < size ≤ 16): show first 9 with truncation
+    if value.size <= 16:
+        clean_list = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value.flat[:9]]
+        echo(f"{tag_display}: {clean_list}... ({value.size} elements)")
         return
     
     # Medium arrays (16 < count ≤ 100): format as multi-line
@@ -204,26 +241,23 @@ def _display_tag(tag_name, value, indent=""):
         
         if value.ndim == 2:
             # Multi-line matrix display (like dng_validate)
-            echo(f"{tag_name}:")
+            echo(f"{tag_display}:")
             for i in range(min(value.shape[0], 3)):
                 row_str = "  " + "  ".join(f"{v:8.4f}" for v in value[i])
                 echo(row_str)
             if value.shape[0] > 3:
                 echo(f"  ... ({value.shape[0]} rows total)")
         else:
-            # 1D array
-            clean_values = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value[:50]]
-            if value.size > 50:
-                echo(f"{tag_name}: {clean_values}... ({value.size} elements)")
-            else:
-                echo(f"{tag_name}: {clean_values}")
+            # 1D array - show first 9 elements
+            clean_values = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value[:9]]
+            echo(f"{tag_display}: {clean_values}... ({value.size} elements)")
         return
     
     # Very large arrays: show type, element count, and byte size
     dtype_name = value.dtype.name
     num_elements = value.size
     num_bytes = value.nbytes
-    echo(f"{tag_name}: {dtype_name} array, {num_elements} elements, {num_bytes} bytes")
+    echo(f"{tag_display}: {dtype_name} array, {num_elements} elements, {num_bytes} bytes")
 
 
 @dng.command(name="convert")
