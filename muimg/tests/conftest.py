@@ -27,6 +27,77 @@ def core_image_available_for_tests() -> bool:
 DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targets/mac/release64/dng_validate"
 
 
+def generate_rgb_ramp(width: int, height: int) -> np.ndarray:
+    """Generate synthetic RGB ramp test image.
+    
+    Args:
+        width: Image width in pixels
+        height: Image height in pixels
+        
+    Returns:
+        uint16 RGB image (H, W, 3) with:
+        - Red channel: 0-65535 gradient left to right
+        - Blue channel: 0-65535 gradient top to bottom
+        - Green channel: 0-65535 gradient on diagonal
+    """
+    img = np.zeros((height, width, 3), dtype=np.uint16)
+    
+    # Red: left to right gradient
+    img[:, :, 0] = np.linspace(0, 65535, width, dtype=np.uint16)[np.newaxis, :]
+    
+    # Blue: top to bottom gradient
+    img[:, :, 2] = np.linspace(0, 65535, height, dtype=np.uint16)[:, np.newaxis]
+    
+    # Green: diagonal gradient (top-left to bottom-right)
+    x = np.arange(width, dtype=np.float32)
+    y = np.arange(height, dtype=np.float32)
+    xx, yy = np.meshgrid(x, y)
+    diagonal = (xx / width + yy / height) / 2.0
+    img[:, :, 1] = (diagonal * 65535).astype(np.uint16)
+    
+    return img
+
+
+def sample_as_cfa(rgb_img: np.ndarray, pattern: str = "RGGB") -> np.ndarray:
+    """Sample RGB image as CFA (Bayer pattern).
+    
+    Extracts color channels at RGGB positions from full resolution RGB image.
+    
+    Args:
+        rgb_img: RGB image (H, W, 3) in uint16 format
+        pattern: CFA pattern, currently only "RGGB" supported
+        
+    Returns:
+        uint16 CFA array (H, W) - single channel with Bayer pattern
+        
+    Raises:
+        ValueError: If pattern is not "RGGB"
+    """
+    if pattern != "RGGB":
+        raise ValueError(f"Only RGGB pattern supported, got {pattern}")
+    
+    height, width = rgb_img.shape[:2]
+    cfa = np.zeros((height, width), dtype=np.uint16)
+    
+    # RGGB pattern:
+    # Row 0 (even): R G R G ...
+    # Row 1 (odd):  G B G B ...
+    
+    # Even rows, even cols: Red
+    cfa[0::2, 0::2] = rgb_img[0::2, 0::2, 0]
+    
+    # Even rows, odd cols: Green
+    cfa[0::2, 1::2] = rgb_img[0::2, 1::2, 1]
+    
+    # Odd rows, even cols: Green
+    cfa[1::2, 0::2] = rgb_img[1::2, 0::2, 1]
+    
+    # Odd rows, odd cols: Blue
+    cfa[1::2, 1::2] = rgb_img[1::2, 1::2, 2]
+    
+    return cfa
+
+
 def normalize_image(img: np.ndarray) -> np.ndarray:
     """Normalize image to float [0,1] range."""
     if img.dtype == np.uint8:
