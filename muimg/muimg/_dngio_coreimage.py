@@ -164,7 +164,7 @@ class CoreImageContext:
     This class is a context manager, ensuring resources are properly released for a single operation.
     """
 
-    def __init__(self, use_gpu: bool = False, icc_profile_path: Optional[str] = None):
+    def __init__(self, use_gpu: bool = False):
         if not core_image_available:
             raise RuntimeError(
                 "Core Image is not available on this system. "
@@ -175,52 +175,30 @@ class CoreImageContext:
         output_space_cg = None
         self.colorspace_name = None  # Track which color space was actually used
 
-        if icc_profile_path:
-            custom_cg_space = None
-            try:
-                with open(icc_profile_path, "rb") as f:
-                    profile_data = f.read()
-                custom_cg_space = CGColorSpaceCreateWithICCProfile(profile_data)
-            except IOError as e:
-                logger.warning(f"Could not read profile '{icc_profile_path}': {e}")
-
-            if custom_cg_space:
+        # Try to use system ProPhoto RGB profile (ROMM RGB)
+        # This ensures wide-gamut color space for RAW processing
+        prophoto_path = "/System/Library/ColorSync/Profiles/ROMM RGB.icc"
+        try:
+            with open(prophoto_path, "rb") as f:
+                profile_data = f.read()
+            prophoto_cg_space = CGColorSpaceCreateWithICCProfile(profile_data)
+            if prophoto_cg_space:
                 working_space_ns = NSColorSpace.alloc().initWithCGColorSpace_(
-                    custom_cg_space
+                    prophoto_cg_space
                 )
-                output_space_cg = custom_cg_space
-                self.colorspace_name = "custom"
-            else:
-                logger.warning(
-                    f"Failed to create color space from '{icc_profile_path}'. "
-                    f"Falling back to ProPhoto RGB."
-                )
-
+                output_space_cg = prophoto_cg_space
+                self.colorspace_name = "prophoto"
+                logger.debug("Using ProPhoto RGB (ROMM RGB) working color space")
+        except Exception as e:
+            logger.warning(f"Failed to load ProPhoto profile: {e}")
+        
+        # Fallback to sRGB if ProPhoto load fails
         if not working_space_ns:
-            # Try to use system ProPhoto RGB profile (ROMM RGB)
-            # This ensures wide-gamut color space for RAW processing
-            prophoto_path = "/System/Library/ColorSync/Profiles/ROMM RGB.icc"
-            try:
-                with open(prophoto_path, "rb") as f:
-                    profile_data = f.read()
-                prophoto_cg_space = CGColorSpaceCreateWithICCProfile(profile_data)
-                if prophoto_cg_space:
-                    working_space_ns = NSColorSpace.alloc().initWithCGColorSpace_(
-                        prophoto_cg_space
-                    )
-                    output_space_cg = prophoto_cg_space
-                    self.colorspace_name = "prophoto"
-                    logger.debug("Using ProPhoto RGB (ROMM RGB) working color space")
-            except Exception as e:
-                logger.warning(f"Failed to load ProPhoto profile: {e}")
-            
-            # Fallback to genericRGB if ProPhoto load fails
-            if not working_space_ns:
-                generic_rgb_space = NSColorSpace.genericRGBColorSpace()
-                working_space_ns = generic_rgb_space
-                output_space_cg = generic_rgb_space.CGColorSpace()
-                self.colorspace_name = "generic_rgb"
-                logger.warning("Using genericRGB working color space (fallback)")
+            srgb_space = NSColorSpace.sRGBColorSpace()
+            working_space_ns = srgb_space
+            output_space_cg = srgb_space.CGColorSpace()
+            self.colorspace_name = "srgb"
+            logger.warning("Using sRGB working color space (fallback)")
 
         context_options = {kCIContextWorkingColorSpace: working_space_ns}
         if not use_gpu:
@@ -254,7 +232,6 @@ def render_dng_coreimage(
     dng_input: Union[str, os.PathLike, IO[bytes]],
     raw_filter_options: Optional[dict] = None,
     use_gpu: bool = False,
-    icc_profile_path: Optional[str] = None,
     output_dtype: type = np.uint16,
     use_system_camera_profiles: bool = True,
 ) -> tuple[Optional[np.ndarray], str]:
@@ -266,14 +243,13 @@ def render_dng_coreimage(
         dng_input: Path to DNG file or file-like object containing DNG data
         raw_filter_options: Dictionary of Core Image raw filter options
         use_gpu: Whether to use GPU acceleration for processing
-        icc_profile_path: Optional path to ICC profile for color space conversion
         output_dtype: Output numpy data type. Supported: np.uint8, np.uint16, np.float16, np.float32
         use_system_camera_profiles: If True, use macOS built-in camera profiles. If False,
             strip UniqueCameraModel tag to force generic DNG processing.
     
     Returns:
         Tuple of (RGB image array with shape (height, width, 3) and specified dtype, colorspace name).
-        Colorspace name is one of: "prophoto", "generic_rgb", or "custom".
+        Colorspace name is one of: "prophoto" or "srgb".
         Returns (None, colorspace_name) on failure.
     """
     if not core_image_available:
@@ -282,7 +258,7 @@ def render_dng_coreimage(
     from objc import autorelease_pool
 
     with autorelease_pool():
-        with CoreImageContext(use_gpu=use_gpu, icc_profile_path=icc_profile_path) as context:
+        with CoreImageContext(use_gpu=use_gpu) as context:
             try:
                 # --- Prepare Filter Options ---
                 options_copy = dict(raw_filter_options) if raw_filter_options else {}
@@ -498,11 +474,9 @@ def decode_dng_coreimage(
         if colorspace_name == "prophoto":
             # ProPhoto with gamma 1.8
             source_colorspace = raw_render.ColorSpace.PROPHOTO_GAMMA
-        elif colorspace_name == "generic_rgb":
-            # GenericRGB - treat as ProPhoto gamma for now (best approximation)
-            # TODO: Determine exact GenericRGB primaries for accurate conversion
-            source_colorspace = raw_render.ColorSpace.PROPHOTO_GAMMA
-            logger.warning("Treating genericRGB as ProPhoto gamma - colors may be slightly inaccurate")
+        elif colorspace_name == "srgb":
+            # sRGB fallback
+            source_colorspace = raw_render.ColorSpace.SRGB_GAMMA
         else:
             raise ValueError(f"Unknown colorspace: {colorspace_name}")
         
