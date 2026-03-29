@@ -90,7 +90,7 @@ def test_muimg_vs_photoshop(
     
     threshold = muimg_ps_thresh
     if threshold >= 1.8:
-        request.applymarker(pytest.mark.xfail(reason=f"MUIMG vs Photoshop threshold {threshold}% >= 1.8%"))
+        request.applymarker(pytest.mark.xfail(reason=f"MUIMG vs Photoshop diff > 1.8%"))
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
     jxl_path = DNGFILES_DIR / f"{file_stem}.jxl"
@@ -126,12 +126,14 @@ def test_muimg_vs_photoshop(
 
     # Compare
     stats = compute_diff_stats(result, ref)
+    measured_diff = stats['mean']
 
-    print(f"\n  [MUIMG vs PS] {file_stem}: diff={stats['mean']:.2f}% (threshold={threshold}%)")
+    print(f"\n  [MUIMG vs PS] {file_stem}: diff={measured_diff:.2f}% (threshold={threshold}%)")
 
-    assert stats["mean"] < threshold, (
-        f"MUIMG vs Photoshop diff {stats['mean']:.2f}% > {threshold}% for {file_stem}"
-    )
+    if measured_diff >= threshold:
+        pytest.fail(f"MUIMG vs Photoshop: measured {measured_diff:.2f}% > threshold {threshold}%")
+    
+    assert measured_diff < threshold
 
 
 @pytest.mark.skipif(not core_image_available_for_tests(), reason="Core Image not available")
@@ -146,11 +148,12 @@ def test_coreimage_vs_photoshop(
 ):
     """Test Core Image rendering against Photoshop reference."""
     if ci_ps_thresh is None:
-        pytest.skip(f"Core Image vs Photoshop skipped for {file_stem} (shape mismatch or known issue)")
-    
-    threshold = ci_ps_thresh
-    if threshold >= 1.8:
-        request.applymarker(pytest.mark.xfail(reason=f"Core Image vs Photoshop threshold {threshold}% >= 1.8%"))
+        request.applymarker(pytest.mark.xfail(reason=f"Core Image vs Photoshop shape mismatch for {file_stem}"))
+        threshold = 100.0  # Set high threshold so test will fail
+    else:
+        threshold = ci_ps_thresh
+        if threshold >= 1.8:
+            request.applymarker(pytest.mark.xfail(reason=f"Core Image vs Photoshop diff > 1.8%"))
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
     jxl_path = DNGFILES_DIR / f"{file_stem}.jxl"
@@ -184,12 +187,14 @@ def test_coreimage_vs_photoshop(
 
     # Compare
     stats = compute_diff_stats(result, ref)
+    measured_diff = stats['mean']
 
-    print(f"\n  [CI vs PS] {file_stem}: diff={stats['mean']:.2f}% (threshold={threshold}%)")
+    print(f"\n  [CI vs PS] {file_stem}: diff={measured_diff:.2f}% (threshold={threshold}%)")
 
-    assert stats["mean"] < threshold, (
-        f"Core Image vs Photoshop diff {stats['mean']:.2f}% > {threshold}% for {file_stem}"
-    )
+    if measured_diff >= threshold:
+        pytest.fail(f"Core Image vs Photoshop: measured {measured_diff:.2f}% > threshold {threshold}%")
+    
+    assert measured_diff < threshold
 
 
 @pytest.mark.skipif(not DNG_VALIDATE_PATH.exists(), reason="dng_validate not available")
@@ -208,7 +213,7 @@ def test_muimg_vs_dng_validate(
     
     threshold = muimg_dngval_thresh
     if threshold >= 1.8:
-        request.applymarker(pytest.mark.xfail(reason=f"MUIMG vs dng_validate threshold {threshold}% >= 1.8%"))
+        request.applymarker(pytest.mark.xfail(reason=f"MUIMG vs dng_validate diff > 1.8%"))
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
 
@@ -240,12 +245,14 @@ def test_muimg_vs_dng_validate(
 
     # Compare
     stats = compute_diff_stats(muimg_result, dngval_result)
+    measured_diff = stats['mean']
 
-    print(f"\n  [MUIMG vs dng_validate] {file_stem}: diff={stats['mean']:.2f}% (threshold={threshold}%)")
+    print(f"\n  [MUIMG vs dngval] {file_stem}: diff={measured_diff:.2f}% (threshold={threshold}%)")
 
-    assert stats["mean"] < threshold, (
-        f"MUIMG vs dng_validate diff {stats['mean']:.2f}% > {threshold}% for {file_stem}"
-    )
+    if measured_diff >= threshold:
+        pytest.fail(f"MUIMG vs dng_validate: measured {measured_diff:.2f}% > threshold {threshold}%")
+    
+    assert measured_diff < threshold
 
 
 @pytest.mark.skipif(not core_image_available_for_tests(), reason="Core Image not available")
@@ -261,11 +268,12 @@ def test_coreimage_vs_dng_validate(
 ):
     """Test Core Image rendering against dng_validate reference."""
     if ci_dngval_thresh is None:
-        pytest.skip(f"Core Image vs dng_validate skipped for {file_stem} (shape mismatch or known issue)")
-    
-    threshold = ci_dngval_thresh
-    if threshold >= 1.8:
-        request.applymarker(pytest.mark.xfail(reason=f"Core Image vs dng_validate threshold {threshold}% >= 1.8%"))
+        request.applymarker(pytest.mark.xfail(reason=f"Core Image vs dng_validate shape mismatch for {file_stem}"))
+        threshold = 100.0  # Set high threshold so test will fail
+    else:
+        threshold = ci_dngval_thresh
+        if threshold >= 1.8:
+            request.applymarker(pytest.mark.xfail(reason=f"Core Image vs dng_validate diff > 1.8%"))
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
 
@@ -295,9 +303,11 @@ def test_coreimage_vs_dng_validate(
 
     # Compare
     stats = compute_diff_stats(ci_result, dngval_result)
+    measured_diff = stats['mean']
 
-    print(f"\n  [CI vs dng_validate] {file_stem}: diff={stats['mean']:.2f}% (threshold={threshold}%)")
+    print(f"\n  [CI vs dngval] {file_stem}: diff={measured_diff:.2f}% (threshold={threshold}%)")
 
-    assert stats["mean"] < threshold, (
-        f"Core Image vs dng_validate diff {stats['mean']:.2f}% > {threshold}% for {file_stem}"
-    )
+    if measured_diff >= threshold:
+        pytest.fail(f"Core Image vs dng_validate: measured {measured_diff:.2f}% > threshold {threshold}%")
+    
+    assert measured_diff < threshold

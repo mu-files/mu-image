@@ -20,7 +20,7 @@ DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 TEST_FILES = [
     ("asi676mc.cfa.jxl_lossy.2ifds.dng", True),
-    ("canon_eos_r5.cfa.ljpeg.6ifds.dng", False),
+    ("canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng", False),
     ("sony_ilce-7c.cfa.jxl_lossy.4ifds.dng", True),
 ]
 
@@ -83,12 +83,6 @@ def test_write_subifd_pyramid_roundtrip(filename: str, generate_preview: bool, o
     with muimg.DngFile(dng_path) as dng:
         page = dng.get_main_page()
         assert page is not None
-        if not page.is_cfa:
-            pytest.skip("Main page is not CFA")
-
-        cfa_result = page.get_cfa()
-        assert cfa_result is not None
-        _, cfa_pattern = cfa_result
 
         preview = None
         if generate_preview:
@@ -129,10 +123,15 @@ def test_write_subifd_pyramid_roundtrip(filename: str, generate_preview: bool, o
     with muimg.DngFile(out_path) as out_dng:
         out_pages = out_dng.get_flattened_pages()
         linear_pages = [p for p in out_pages if p.is_linear_raw]
-        assert len(linear_pages) >= len(pyramid_levels)
+        
+        # For CFA files: main page is CFA, linear_pages contains only pyramid levels
+        # For linearraw files: main page is linear_raw, so linear_pages[0] is the main page
+        # and pyramid levels start at index 1
+        pyramid_start_idx = 0 if page.is_cfa else 1
+        assert len(linear_pages) >= len(pyramid_levels) + pyramid_start_idx
 
         for i, expected in enumerate(pyramid_levels):
-            got_arr = linear_pages[i].get_linear_raw()
+            got_arr = linear_pages[i + pyramid_start_idx].get_linear_raw()
             assert got_arr is not None
             assert got_arr.shape == expected.shape
             assert got_arr.dtype == expected.dtype
