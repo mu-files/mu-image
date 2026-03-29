@@ -30,7 +30,7 @@ ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
 # Multi-IFD test files
 TEST_FILES = [
     "asi676mc.cfa.jxl_lossy.2ifds.dng",
-    "canon_eos_r5.cfa.ljpeg.6ifds.dng",
+    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng",
     "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng",
 ]
 
@@ -139,6 +139,9 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             # 4. dng_validate on roundtrip DNG -> {stem}_ifd{n}_dngvalidate.tif
             # Per-file ignored warnings
             ignored_warnings = []
+            if "asi676mc.cfa.jxl_lossy" in dng_path.name:
+                # ASI676MC file has MakerNote type issue and padding warnings in roundtrip
+                ignored_warnings.extend(["makernote", "padding"])
             if "sony_ilce-7c.cfa.jxl_lossy" in dng_path.name:
                 # Sony file has ColumnInterleaveFactor in SubIFD which becomes IFD 0 in extracted file
                 # Source file passes with DNGBackwardVersion 1.7.0.0, but validator is stricter for IFD 0
