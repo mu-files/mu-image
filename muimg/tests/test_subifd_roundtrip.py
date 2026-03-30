@@ -27,12 +27,13 @@ DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 # Threshold for comparison (percentage of full range)
 ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
 
-# Multi-IFD test files
-TEST_FILES = [
-    "asi676mc.cfa.jxl_lossy.2ifds.dng",
-    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng",
-    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng",
-]
+# Multi-IFD test files with validation warning ignores
+# Format: {filename: [warning_patterns_to_ignore]}
+TEST_FILES = {
+    "asi676mc.cfa.jxl_lossy.2ifds.dng": ["makernote has unexpected type", "too little padding"],
+    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": [],
+    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": ["columninterleavefactor tag not allowed"],
+}
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +45,7 @@ def output_dir():
 
 def get_test_files():
     """Get list of test DNG file paths."""
-    return [DNGFILES_DIR / filename for filename in TEST_FILES]
+    return [DNGFILES_DIR / filename for filename in TEST_FILES.keys()]
 
 
 @pytest.mark.parametrize("dng_path", get_test_files(), ids=lambda p: p.name)
@@ -137,15 +138,8 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                 print(f"    Shape mismatch: original {decoded.shape} vs roundtrip {roundtrip_decoded.shape}")
             
             # 4. dng_validate on roundtrip DNG -> {stem}_ifd{n}_dngvalidate.tif
-            # Per-file ignored warnings
-            ignored_warnings = []
-            if "asi676mc.cfa.jxl_lossy" in dng_path.name:
-                # ASI676MC file has MakerNote type issue and padding warnings in roundtrip
-                ignored_warnings.extend(["makernote", "padding"])
-            if "sony_ilce-7c.cfa.jxl_lossy" in dng_path.name:
-                # Sony file has ColumnInterleaveFactor in SubIFD which becomes IFD 0 in extracted file
-                # Source file passes with DNGBackwardVersion 1.7.0.0, but validator is stricter for IFD 0
-                ignored_warnings.append("columninterleavefactor")
+            # Get ignored warnings for this file from TEST_FILES
+            ignored_warnings = TEST_FILES.get(dng_path.name, [])
             
             dngvalidate_out = run_dng_validate(roundtrip_dng, dngvalidate_base, ignored_warnings=ignored_warnings)
             if dngvalidate_out is None:

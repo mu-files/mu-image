@@ -92,9 +92,9 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
         width = p.imagewidth or "?"
         length = p.imagelength or "?"
         
-        # Add NewSubfileType info for SubIFDs
+        # Add NewSubfileType info if present
         subfile_info = ""
-        if i > 0 and (subfile_type := p.get_tag(254)) is not None:
+        if (subfile_type := p.get_tag("NewSubfileType")) is not None:
             subfile_info = f" ({SUBFILE_TYPES.get(subfile_type, f'Type{subfile_type}')})"
         
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
@@ -141,6 +141,14 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
         # Get all tags using DngPage API
         page_tags = page.get_page_tags()
         
+        # Get NewSubfileType once for reuse in validation and display
+        newsubfiletype = page.get_tag("NewSubfileType")
+        
+        # Check if IFD0 contains main raw image (for validation)
+        ifd0_is_main_raw = (ifd_num == 0 and 
+                           newsubfiletype == 0 and 
+                           (page.photometric == PHOTOMETRIC.CFA or page.photometric == PHOTOMETRIC.LINEAR_RAW))
+        
         # Iterate through tags
         for tag_code, dtype, count, _, _ in page_tags:
             # Get tag name from registry
@@ -164,20 +172,24 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
             if tag_name in TIFF_TAG_TYPE_REGISTRY:
                 tag_spec = TIFF_TAG_TYPE_REGISTRY[tag_name]
                 if tag_spec.ifd_location != "any":
-                    # Normalize expected location (exif/profile -> ifd0)
+                    # Normalize expected location
                     expected_location = tag_spec.ifd_location
+                    # exif/profile -> ifd0
                     if expected_location in ("exif", "profile"):
+                        expected_location = "ifd0"
+                    # When IFD0 is main raw, also normalize raw -> ifd0
+                    elif ifd0_is_main_raw and expected_location == "raw":
                         expected_location = "ifd0"
                     
                     # Check if tag is in wrong IFD
-                    is_valid = False
                     if actual_ifd_type == expected_location:
-                        is_valid = True
+                        pass  # Valid
                     elif expected_location == "raw" and actual_ifd_type == "raw:cfa":
-                        # Allow 'raw' tags in 'raw:cfa' IFDs (CFA is a type of raw)
-                        is_valid = True
-                    
-                    if not is_valid:
+                        pass  # Allow 'raw' tags in 'raw:cfa' IFDs (CFA is a type of raw)
+                    elif expected_location == "raw:cfa" and page.photometric == PHOTOMETRIC.CFA:
+                        pass  # Allow 'raw:cfa' tags in any CFA IFD (including IFD0 if it's main CFA)
+                    else:
+                        # Tag is in wrong IFD
                         issue_number = len(validation_issues) + 1
                         validation_issues.append((
                             issue_number,
@@ -192,8 +204,7 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
                 value = page.photometric_name or "Unknown"
             # Special handling for NewSubfileType - use friendly name
             elif tag_name == "NewSubfileType":
-                numeric_value = page.get_tag(tag_code)
-                value = SUBFILE_TYPES.get(numeric_value, numeric_value)
+                value = SUBFILE_TYPES.get(newsubfiletype, newsubfiletype)
             # Special handling for Compression - use friendly name
             elif tag_name == "Compression":
                 numeric_value = page.get_tag(tag_code)

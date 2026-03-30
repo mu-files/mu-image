@@ -143,7 +143,7 @@ def load_tiff(path: Path) -> np.ndarray | None:
 
 
 def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True) -> np.ndarray | None:
-    """Run dng_validate to render a DNG to TIFF.
+    """Run dng_validate and muimg metadata validators on a DNG file.
     
     Args:
         dng_path: Path to DNG file
@@ -157,7 +157,7 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
         
     Raises:
         RuntimeError: If dng_validate fails or produces errors (only when validate=True)
-        AssertionError: If dng_validate produces warnings (only when validate=True, except ignored ones)
+        AssertionError: If either validator produces warnings (only when validate=True, except ignored ones)
     """
     # Warnings to ignore (add patterns here as needed)
     IGNORED_WARNINGS = ignored_warnings or []
@@ -166,8 +166,10 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
         return None
     
     output_tiff = Path(str(output_base) + ".tif")
+    all_warnings = []
     
     try:
+        # Run dng_validate (C++ SDK validator)
         result = subprocess.run(
             [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
             capture_output=True,
@@ -179,7 +181,7 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
         
         # Only check for errors/warnings if validate=True
         if validate:
-            # Check for errors or warnings in output
+            # Check for errors or warnings in dng_validate output
             combined = (result.stdout or "") + "\n" + (result.stderr or "")
             
             # Extract only error/warning lines for cleaner output
@@ -191,17 +193,60 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
                 raise RuntimeError(f"dng_validate produced errors:\n{errors_text}")
             
             if warning_lines:
-                # Check if this is an ignored warning
-                warnings_text = '\n'.join(warning_lines)
-                print(f"\ndng_validate warnings:\n{warnings_text}")
-                warnings_lower = warnings_text.lower()
-                is_ignored = any(ignored in warnings_lower for ignored in IGNORED_WARNINGS)
-                if not is_ignored:
-                    raise AssertionError(f"dng_validate produced warnings:\n{warnings_text}")
+                all_warnings.extend(warning_lines)
+            
+            # Run muimg dng metadata validator
+            import sys
+            muimg_cmd = [sys.executable, "-m", "muimg.cli", "dng", "metadata", str(dng_path)]
+            muimg_result = subprocess.run(
+                muimg_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            # Extract validation issues from muimg output
+            if muimg_result.returncode == 0:
+                output_lines = muimg_result.stdout.split('\n')
+                in_validation_section = False
+                for line in output_lines:
+                    if '=== DNG Validation Issues ===' in line:
+                        in_validation_section = True
+                        continue
+                    if in_validation_section and line.strip().startswith('*-'):
+                        # Convert muimg format to dng_validate format
+                        # "*-1: DefaultScale found in ifd0 IFD, should be in raw IFD"
+                        # becomes "*** Warning: DefaultScale found in ifd0 IFD, should be in raw IFD ***"
+                        issue_text = line.strip().split(':', 1)[1].strip() if ':' in line else line.strip()
+                        all_warnings.append(f"*** Warning: {issue_text} ***")
+            
+            # Filter out ignored warnings, checking each warning individually
+            if all_warnings:
+                unignored_warnings = []
+                ignored_count = 0
+                for warning in all_warnings:
+                    warning_lower = warning.lower()
+                    is_ignored = any(ignored in warning_lower for ignored in IGNORED_WARNINGS)
+                    if not is_ignored:
+                        unignored_warnings.append(warning)
+                    else:
+                        ignored_count += 1
+                
+                # Only print unignored warnings to make failures clear
+                if unignored_warnings:
+                    unignored_text = '\n'.join(unignored_warnings)
+                    if ignored_count > 0:
+                        print(f"\nValidation warnings ({ignored_count} ignored):")
+                    else:
+                        print(f"\nValidation warnings:")
+                    print(unignored_text)
+                    raise AssertionError(f"Validation produced {len(unignored_warnings)} unignored warning(s)")
+                elif ignored_count > 0:
+                    print(f"\nValidation: {ignored_count} warning(s) ignored")
             
     except (subprocess.TimeoutExpired, Exception) as e:
         if isinstance(e, (RuntimeError, AssertionError)):
             raise
-        raise RuntimeError(f"dng_validate error: {e}")
+        raise RuntimeError(f"Validation error: {e}")
     
     return load_tiff(output_tiff)

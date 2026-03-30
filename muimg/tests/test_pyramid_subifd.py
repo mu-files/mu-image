@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import cv2
@@ -11,18 +10,20 @@ import pytest
 
 import muimg
 from muimg.dngio import IfdSpec
-from conftest import DNG_VALIDATE_PATH, compute_diff_stats
+from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
 
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_pyramid_subifd"
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 
-TEST_FILES = [
-    ("asi676mc.cfa.jxl_lossy.2ifds.dng", True),
-    ("canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng", False),
-    ("sony_ilce-7c.cfa.jxl_lossy.4ifds.dng", True),
-]
+# Test files with (generate_preview, ignored_warnings)
+# Ignored warnings are for known issues that should be suppressed
+TEST_FILES = {
+    "asi676mc.cfa.jxl_lossy.2ifds.dng": (True, ["makernote has unexpected type", "non-zero nextifd", "too little padding"]),
+    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": (False, ["non-zero nextifd"]),
+    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": (True, ["non-zero nextifd", "noiseprofile found in", "columninterleavefactor tag not allowed"]),
+}
 
 
 def _build_pyramid_rgb_u16(rgb_u16: np.ndarray) -> list[np.ndarray]:
@@ -49,23 +50,15 @@ def _build_pyramid_rgb_u16(rgb_u16: np.ndarray) -> list[np.ndarray]:
     return levels
 
 
-def _run_dng_validate_no_warnings(dng_path: Path, output_base: Path, timeout: int = 120) -> None:
+def _run_dng_validate_no_warnings(dng_path: Path, output_base: Path, ignored_warnings: list[str] | None = None, timeout: int = 120) -> None:
+    """Run both validators on the DNG file and fail if any warnings are found."""
     if not DNG_VALIDATE_PATH.exists():
         pytest.skip("dng_validate not available")
-
-    result = subprocess.run(
-        [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"dng_validate failed: {result.stderr}")
-
-    combined = (result.stdout or "") + "\n" + (result.stderr or "")
-    if "*** error:" in combined.lower():
-        raise AssertionError(f"dng_validate produced errors:\n{combined}")
+    
+    # Use the shared run_dng_validate which runs both validators
+    result = run_dng_validate(dng_path, output_base, timeout=timeout, ignored_warnings=ignored_warnings, validate=True)
+    if result is None:
+        pytest.fail(f"Validation failed on {dng_path.name}")
 
 
 @pytest.fixture(scope="module")
@@ -74,8 +67,9 @@ def output_dir() -> Path:
     return OUTPUT_DIR
 
 
-@pytest.mark.parametrize("filename, generate_preview", TEST_FILES)
-def test_write_subifd_pyramid_roundtrip(filename: str, generate_preview: bool, output_dir: Path):
+@pytest.mark.parametrize("filename", TEST_FILES.keys())
+def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
+    generate_preview, ignored_warnings = TEST_FILES[filename]
     dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
@@ -138,11 +132,12 @@ def test_write_subifd_pyramid_roundtrip(filename: str, generate_preview: bool, o
             assert np.array_equal(got_arr, expected)
 
     dv_base = output_dir / f"{dng_path.stem}.pyramid.dngvalidate"
-    _run_dng_validate_no_warnings(out_path, dv_base)
+    _run_dng_validate_no_warnings(out_path, dv_base, ignored_warnings=ignored_warnings)
 
 
 def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path):
     filename = "asi676mc.cfa.jxl_lossy.2ifds.dng"
+    _, ignored_warnings = TEST_FILES[filename]
     dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
@@ -280,4 +275,4 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
             assert np.array_equal(got_arr, expected)
 
     dv_base = output_dir / f"{dng_path.stem}.cropped_activearea.pyramid.dngvalidate"
-    _run_dng_validate_no_warnings(out_path, dv_base)
+    _run_dng_validate_no_warnings(out_path, dv_base, ignored_warnings=ignored_warnings)
