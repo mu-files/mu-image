@@ -36,28 +36,53 @@ def dng():
 @dng.command(name="metadata")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
-@click.option("--tag", "filter_tags", multiple=True, help="Show only specific tag(s) (case-insensitive)")
-def dng_metadata(input_file, ifd, filter_tags):
+@click.option("--tag", multiple=True, help="Show only tag(s) matching regex pattern(s) (case-insensitive)")
+@click.option("--exclude-tag", multiple=True, help="Exclude tag(s) matching regex pattern(s) (case-insensitive)")
+def dng_metadata(input_file, ifd, tag, exclude_tag):
     """Display DNG file metadata."""
-    from . import dngio
-    from .tiff_metadata import TIFF_TAG_TYPE_REGISTRY, TIFF_DTYPES, LOCAL_TIFF_TAGS
-    import numpy as np
-    
-    # Normalize filter tags to lowercase for case-insensitive matching
-    filter_tags_lower = set(tag.lower() for tag in filter_tags) if filter_tags else None
+    import re
+    from tifffile import PHOTOMETRIC, COMPRESSION
+    from .dngio import DngFile
+    from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY
     
     try:
-        dng_file = dngio.DngFile(input_file)
+        f = DngFile(input_file)
+        pages = f.get_flattened_pages()
     except Exception as e:
         click.echo(f"Error opening DNG file: {e}", err=True)
         sys.exit(1)
     
-    # Get flattened pages for flat numbering (IFD0, then SubIFDs)
-    pages = dng_file.get_flattened_pages()
-    
     if not pages:
         click.echo("No IFDs found in file", err=True)
         sys.exit(1)
+    
+    # Compile regex patterns for tag filtering (inclusion)
+    tag_patterns = []
+    if tag:
+        for pattern in tag:
+            try:
+                tag_patterns.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as e:
+                click.echo(f"Error: Invalid --tag regex pattern '{pattern}': {e}", err=True)
+                sys.exit(1)
+    
+    # Compile regex patterns for tag exclusion
+    exclude_patterns = []
+    if exclude_tag:
+        for pattern in exclude_tag:
+            try:
+                exclude_patterns.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as e:
+                click.echo(f"Error: Invalid --exclude-tag regex pattern '{pattern}': {e}", err=True)
+                sys.exit(1)
+    
+    # NewSubfileType enum values (from DNG SDK)
+    SUBFILE_TYPES = {
+        0: "Main",
+        1: "Preview",
+        4: "TransparencyMask",
+        8: "DepthMap",
+    }
     
     # Show summary of available IFDs
     click.echo(f"File contains {len(pages)} IFD(s):")
@@ -66,8 +91,14 @@ def dng_metadata(input_file, ifd, filter_tags):
         photometric = p.photometric_name or "Unknown"
         width = p.imagewidth or "?"
         length = p.imagelength or "?"
+        
+        # Add NewSubfileType info for SubIFDs
+        subfile_info = ""
+        if i > 0 and (subfile_type := p.get_tag(254)) is not None:
+            subfile_info = f" ({SUBFILE_TYPES.get(subfile_type, f'Type{subfile_type}')})"
+        
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
-        click.echo(f"{i}:{summary_indent} {ifd_type} - {photometric}, {width}x{length}")
+        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric}, {width}x{length}")
     click.echo()
     
     # Determine which IFDs to show
@@ -82,6 +113,12 @@ def dng_metadata(input_file, ifd, filter_tags):
         pages_to_show = pages
         ifd_indices = list(range(len(pages)))
     
+    # Track XMP content for duplicate detection
+    xmp_tracker = {}
+    
+    # Track validation issues
+    validation_issues = []
+    
     # Display metadata for each IFD
     for idx, (page, ifd_num) in enumerate(zip(pages_to_show, ifd_indices)):
         if idx > 0:
@@ -92,10 +129,13 @@ def dng_metadata(input_file, ifd, filter_tags):
             ifd_label = "IFD0"
             indent = ""
             header_indent = ""
+            actual_ifd_type = "ifd0"
         else:
             ifd_label = f"SubIFD {ifd_num - 1}"
             indent = "  "  # Indent SubIFD tags
             header_indent = "  "  # Indent SubIFD header
+            actual_ifd_type = ("raw:cfa" if page.photometric == PHOTOMETRIC.CFA 
+                              else "raw" if page.photometric == PHOTOMETRIC.LINEAR_RAW else "other")
         click.echo(f"{header_indent}=== {ifd_label} (--ifd {ifd_num}) ===")
         
         # Get all tags using DngPage API
@@ -108,20 +148,72 @@ def dng_metadata(input_file, ifd, filter_tags):
             if tag_name is None:
                 tag_name = f"Tag{tag_code}"
             
-            # Filter if requested (case-insensitive)
-            if filter_tags_lower and tag_name.lower() not in filter_tags_lower:
-                continue
+            # Filter if requested (regex matching, case-insensitive)
+            # First apply inclusion filter (--tag)
+            if tag_patterns:
+                if not any(pattern.search(tag_name) for pattern in tag_patterns):
+                    continue
+            
+            # Then apply exclusion filter (--exclude-tag)
+            if exclude_patterns:
+                if any(pattern.search(tag_name) for pattern in exclude_patterns):
+                    continue
+            
+            # Validate IFD location for known tags
+            issue_number = None
+            if tag_name in TIFF_TAG_TYPE_REGISTRY:
+                tag_spec = TIFF_TAG_TYPE_REGISTRY[tag_name]
+                if tag_spec.ifd_location != "any":
+                    # Normalize expected location (exif/profile -> ifd0)
+                    expected_location = tag_spec.ifd_location
+                    if expected_location in ("exif", "profile"):
+                        expected_location = "ifd0"
+                    
+                    # Check if tag is in wrong IFD
+                    is_valid = False
+                    if actual_ifd_type == expected_location:
+                        is_valid = True
+                    elif expected_location == "raw" and actual_ifd_type == "raw:cfa":
+                        # Allow 'raw' tags in 'raw:cfa' IFDs (CFA is a type of raw)
+                        is_valid = True
+                    
+                    if not is_valid:
+                        issue_number = len(validation_issues) + 1
+                        validation_issues.append((
+                            issue_number,
+                            tag_name,
+                            actual_ifd_type,
+                            tag_spec.ifd_location  # Store original spec for display
+                        ))
             
             # Get the converted value using DngPage API
-            value = page.get_tag(tag_code)
+            # Special handling for PhotometricInterpretation - use friendly name
+            if tag_name == "PhotometricInterpretation":
+                value = page.photometric_name or "Unknown"
+            # Special handling for NewSubfileType - use friendly name
+            elif tag_name == "NewSubfileType":
+                numeric_value = page.get_tag(tag_code)
+                value = SUBFILE_TYPES.get(numeric_value, numeric_value)
+            # Special handling for Compression - use friendly name
+            elif tag_name == "Compression":
+                numeric_value = page.get_tag(tag_code)
+                value = COMPRESSION(numeric_value).name if numeric_value in COMPRESSION.__members__.values() else numeric_value
+            else:
+                value = page.get_tag(tag_code)
             
             # Display the tag with appropriate indentation
-            _display_tag(tag_name, value, indent, tag_code, dtype, count)
+            _display_tag(tag_name, value, indent, tag_code, dtype, count, xmp_tracker, ifd_num, issue_number)
+    
+    # Display validation issues summary if any were found
+    if validation_issues:
+        click.echo()
+        click.echo("=== DNG Validation Issues ===")
+        for issue_num, tag_name, actual_type, expected_spec in validation_issues:
+            click.echo(f"*-{issue_num}: {tag_name} found in {actual_type} IFD, should be in {expected_spec} IFD")
     
     sys.exit(0)
 
-
-def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=None):
+def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=None, xmp_tracker=None, ifd_num=None, issue_number=None):
     """Format and display a single tag value.
     
     Args:
@@ -131,6 +223,9 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         tag_code: Numeric tag code (for unknown tags)
         dtype: TIFF dtype code (for unknown tags)
         count: Element count (for unknown tags)
+        xmp_tracker: Dict for tracking XMP content across IFDs (None to disable duplicate detection)
+        ifd_num: Current IFD number (for duplicate messages)
+        issue_number: Validation issue number (if tag is in wrong IFD)
     """
     import numpy as np
     from .tiff_metadata import XmpMetadata, TIFF_DTYPES
@@ -148,10 +243,39 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     else:
         tag_display = tag_name
     
-    # Special handling for XMP
+    # Prepend issue marker if this tag has a validation issue
+    if issue_number is not None:
+        tag_display = f"[*-{issue_number}] {tag_display}"
+    
+    # Handle None first
+    if value is None:
+        echo(f"{tag_display}: None")
+        return
+    
+    # Special handling for XMP - show raw XML with duplicate detection
     if isinstance(value, XmpMetadata):
-        size = len(str(value))
-        echo(f"{tag_display}: XML metadata, {size} bytes")
+        # Get the formatted XMP string for comparison and display
+        xmp_str = value.get_formatted_string(strip_whitespace=True, filter_blank_lines=True)
+        
+        # Check for duplicates
+        if xmp_str and xmp_str in xmp_tracker:
+            # Duplicate found - show reference to first occurrence
+            first_ifd = xmp_tracker[xmp_str]
+            first_ifd_label = "IFD0" if first_ifd == 0 else f"SubIFD {first_ifd - 1}"
+            echo(f"{tag_display}: duplicate of {first_ifd_label}")
+            return
+        
+        # First occurrence - track it
+        if xmp_str:
+            xmp_tracker[xmp_str] = ifd_num
+        
+            # Display the full XMP
+            echo(f"{tag_display}:")
+            for line in xmp_str.splitlines():
+                echo(f"  {line}")
+        else:
+            size = len(str(value))
+            echo(f"{tag_display}: XML metadata, {size} bytes")
         return
     
     # Special handling for EXIF/GPS dictionaries - enumerate fields
@@ -163,17 +287,10 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             _display_tag(str(key), val, indent + "  ", None, None, None)
         return
     
-    # Handle None
-    if value is None:
-        echo(f"{tag_display}: None")
-        return
-    
     # Strings
     if isinstance(value, str):
-        if len(value) > 200:
-            echo(f"{tag_display}: {value[:200]}... ({len(value)} chars)")
-        else:
-            echo(f"{tag_display}: {value}")
+        display_str = f"{value[:200]}... ({len(value)} chars)" if len(value) > 200 else value
+        echo(f"{tag_display}: {display_str}")
         return
     
     # Special formatting for DNG version tags (4-tuple from get_tag)
@@ -183,22 +300,18 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         return
     
     # Bytes (binary data) - handle both bytes and numpy byte arrays
+    byte_value = None
     if isinstance(value, bytes):
-        if len(value) > 100:
-            echo(f"{tag_display}: Binary data, {len(value)} bytes")
-        else:
-            echo(f"{tag_display}: {value}")
-        return
-    
-    # Check for numpy scalar bytes (0-d array with bytes dtype)
-    if isinstance(value, np.ndarray) and value.ndim == 0 and value.dtype.kind in ('S', 'V'):
+        byte_value = value
+    elif isinstance(value, np.ndarray) and value.ndim == 0 and value.dtype.kind in ('S', 'V'):
         byte_value = value.item()
-        if isinstance(byte_value, bytes):
-            if len(byte_value) > 100:
-                echo(f"{tag_display}: Binary data, {len(byte_value)} bytes")
-            else:
-                echo(f"{tag_display}: {byte_value}")
-            return
+    
+    if byte_value is not None and isinstance(byte_value, bytes):
+        if len(byte_value) > 100:
+            echo(f"{tag_display}: Binary data, {len(byte_value)} bytes")
+        else:
+            echo(f"{tag_display}: {byte_value}")
+        return
     
     # Convert to numpy array for easier handling
     if not isinstance(value, np.ndarray):
@@ -219,38 +332,28 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             echo(f"  ... ({value.shape[0]} rows total)")
         return
     
-    # Small 1D arrays (≤9 elements): show full array
-    if value.size <= 9:
-        clean_list = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value.flat]
-        echo(f"{tag_display}: {clean_list}")
-        return
+    # Helper to format values with appropriate precision
+    def format_value(v):
+        """Format a value with appropriate precision."""
+        val = v.item() if isinstance(v, (np.integer, np.floating)) else v
+        # Use Python's 'g' format for floats (4 significant figures, auto-chooses notation)
+        if isinstance(val, float):
+            return float(f"{val:.4g}")
+        return val
     
-    # Medium 1D arrays (9 < size ≤ 16): show first 9 with truncation
-    if value.size <= 16:
-        clean_list = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value.flat[:9]]
-        echo(f"{tag_display}: {clean_list}... ({value.size} elements)")
-        return
-    
-    # Medium arrays (16 < count ≤ 100): format as multi-line
-    if value.size <= 100:
-        # Try to reshape into matrix format
-        if value.size == 9:
-            value = value.reshape(3, 3)
-        elif value.size == 6:
-            value = value.reshape(2, 3)
+    # 1D arrays
+    if value.ndim == 1:
+        # Small arrays (≤9 elements): show full array
+        if value.size <= 9:
+            clean_list = [format_value(v) for v in value.flat]
+            echo(f"{tag_display}: {clean_list}")
+            return
         
-        if value.ndim == 2:
-            # Multi-line matrix display (like dng_validate)
-            echo(f"{tag_display}:")
-            for i in range(min(value.shape[0], 3)):
-                row_str = "  " + "  ".join(f"{v:8.4f}" for v in value[i])
-                echo(row_str)
-            if value.shape[0] > 3:
-                echo(f"  ... ({value.shape[0]} rows total)")
-        else:
-            # 1D array - show first 9 elements
-            clean_values = [v.item() if isinstance(v, (np.integer, np.floating)) else v for v in value[:9]]
-            echo(f"{tag_display}: {clean_values}... ({value.size} elements)")
+        # Larger 1D arrays: show first 9 with truncation
+        clean_list = [format_value(v) for v in value.flat[:9]]
+        # Format as list with ... inside brackets
+        list_str = str(clean_list)[:-1]  # Remove closing bracket
+        echo(f"{tag_display}: {list_str}, ... ({value.size} elements)]")
         return
     
     # Very large arrays: show type, element count, and byte size

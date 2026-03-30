@@ -56,7 +56,8 @@ def test_convert_imgformat_sdk_vs_coreimage():
     # 1. Convert to TIFF via CLI (Python SDK pipeline, no --use-coreimage flag)
     result = subprocess.run(
         MUIMG_CLI + [
-            "convert-dng",
+            "dng",
+            "convert",
             str(TEST_DNG),
             str(tiff_path),
             "--bit-depth", "8",
