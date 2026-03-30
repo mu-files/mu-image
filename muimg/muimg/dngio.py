@@ -867,6 +867,33 @@ def _ensure_float_tags_be(tags: MetadataTags) -> MetadataTags:
     return tags
 
 
+def _prepare_auto_args(metadata: MetadataTags, is_ifd0: bool) -> dict:
+    """Prepare tifffile auto-generated tag parameters.
+    
+    Controls Software, ImageDescription, and metadata parameters to ensure
+    these tags only appear in IFD0, not in SubIFDs (DNG spec requirement).
+    
+    Args:
+        metadata: MetadataTags instance (modified in-place to remove handled tags)
+        is_ifd0: True if writing to IFD0, False if writing to SubIFD
+        
+    Returns:
+        Dict with 'software' and 'metadata' kwargs for TiffWriter.write()
+    """
+    auto_args = {}
+    
+    if is_ifd0:
+        # IFD0: Extract Software from metadata if present
+        if 'Software' in metadata:
+            auto_args['software'] = metadata.get_tag('Software')
+            metadata.remove_tag('Software')
+    else:
+        # SubIFDs: Prevent tifffile from adding these tags - DNG spec only allows them in ifd0
+        auto_args['software'] = False  # Prevents tifffile default 'tifffile.py'
+        auto_args['metadata'] = None   # Prevents auto-generated {"shape": [...]}
+    
+    return auto_args
+
 def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_tags: MetadataTags, subifds_count: int = 1) -> None:
     """Write thumbnail IFD exactly as in write_dng function."""
     # Prepare thumbnail specific tags
@@ -884,6 +911,11 @@ def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_ta
         "subfiletype": 1,  # Reduced resolution image (standard for DNG previews)
         "subifds": int(subifds_count),
     }
+    
+    # Add auto-generated tag handling (thumbnail is IFD0)
+    auto_args = _prepare_auto_args(dng_tags, is_ifd0=True)
+    thumb_ifd_args.update(auto_args)
+    
     # set datasize to max uncompressed size to avoid writing strips
     datasize = thumbnail_image.shape[0] * thumbnail_image.shape[1] * 3
     writer.write(
@@ -893,7 +925,7 @@ def _write_thumbnail_ifd(writer: TiffWriter, thumbnail_image: np.ndarray, dng_ta
     )
 
 
-def _prepare_ifd_args(metadata: MetadataTags, compression, **base_args) -> dict:
+def _prepare_ifd_args(metadata: MetadataTags, compression, include_ifd0_tags: bool, **base_args) -> dict:
     """Prepare TiffWriter IFD args, extracting tags that have kwargs equivalents.
     
     Extracts Software, XResolution, YResolution, ResolutionUnit from metadata,
@@ -903,6 +935,7 @@ def _prepare_ifd_args(metadata: MetadataTags, compression, **base_args) -> dict:
     Args:
         metadata: MetadataTags instance to use as extratags (modified in-place)
         compression: COMPRESSION enum value for this IFD
+        include_ifd0_tags: True if writing to IFD0, False if writing to SubIFD
         **base_args: Base IFD args (photometric, subfiletype, etc.)
         
     Returns:
@@ -912,10 +945,9 @@ def _prepare_ifd_args(metadata: MetadataTags, compression, **base_args) -> dict:
     ifd_args = dict(base_args)
     ifd_args["compression"] = compression
     
-    # Extract Software
-    if 'Software' in metadata:
-        ifd_args['software'] = metadata.get_tag('Software')
-        metadata.remove_tag('Software')
+    # Handle auto-generated tags
+    auto_args = _prepare_auto_args(metadata, is_ifd0=include_ifd0_tags)
+    ifd_args.update(auto_args)
     
     # Extract Resolution (need both X and Y)
     x_res = metadata.get_tag('XResolution') if 'XResolution' in metadata else None
@@ -1244,7 +1276,7 @@ def write_dng(
         if subifds_count:
             prepare_kwargs["subifds"] = int(subifds_count)
 
-        raw_ifd_args = _prepare_ifd_args(raw_ifd_tags, page.compression, **prepare_kwargs)
+        raw_ifd_args = _prepare_ifd_args(raw_ifd_tags, page.compression, include_ifd0_tags, **prepare_kwargs)
 
         # Uncompressed: use numpy array so tifffile handles byte order
         if page.compression == COMPRESSION.NONE:
@@ -1472,7 +1504,7 @@ def write_dng(
                 raw_ifd_tags.add_tag("ColumnInterleaveFactor", 2)
                 raw_ifd_tags.add_tag("RowInterleaveFactor", 2)
             
-            raw_ifd_args = _prepare_ifd_args(raw_ifd_tags, COMPRESSION.JPEGXL_DNG, **prepare_kwargs)
+            raw_ifd_args = _prepare_ifd_args(raw_ifd_tags, COMPRESSION.JPEGXL_DNG, include_ifd0_tags, **prepare_kwargs)
 
             encoded_bytes = imagecodecs.jpegxl_encode(
                 raw_data, distance=jxl_distance, effort=actual_effort
@@ -1490,7 +1522,7 @@ def write_dng(
             )
         else:
             # Uncompressed path
-            raw_ifd_args = _prepare_ifd_args(raw_ifd_tags, COMPRESSION.NONE, **prepare_kwargs)
+            raw_ifd_args = _prepare_ifd_args(raw_ifd_tags, COMPRESSION.NONE, include_ifd0_tags, **prepare_kwargs)
 
             writer.write(raw_data, rowsperstrip=raw_datasize, **raw_ifd_args)
 
