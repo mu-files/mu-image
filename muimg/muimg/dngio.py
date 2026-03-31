@@ -636,9 +636,6 @@ class DngFile(TiffFile):
     """A TIFF file with DNG-specific extensions and helper methods."""
 
     def __init__(self, file, *args, **kwargs):
-        import io
-        from pathlib import Path
-        
         # Normalize file input to BytesIO for consistent in-memory operation
         if isinstance(file, (str, Path)):
             # Read file into memory

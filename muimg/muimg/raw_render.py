@@ -140,8 +140,6 @@ class SplineCurve:
         Returns:
             New SplineCurve with resampled control points
         """
-        import numpy as np
-        
         if num_points < 2:
             raise ValueError("resample requires at least 2 points")
         
