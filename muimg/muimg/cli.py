@@ -129,13 +129,13 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
             ifd_label = "IFD0"
             indent = ""
             header_indent = ""
-            actual_ifd_type = "ifd0"
+            actual_ifd_type = "dng_ifd0"
         else:
             ifd_label = f"SubIFD {ifd_num - 1}"
             indent = "  "  # Indent SubIFD tags
             header_indent = "  "  # Indent SubIFD header
-            actual_ifd_type = ("raw:cfa" if page.photometric == PHOTOMETRIC.CFA 
-                              else "raw" if page.photometric == PHOTOMETRIC.LINEAR_RAW else "other")
+            actual_ifd_type = ("dng_raw:cfa" if page.photometric == PHOTOMETRIC.CFA 
+                              else "dng_raw" if page.photometric == PHOTOMETRIC.LINEAR_RAW else "other")
         click.echo(f"{header_indent}=== {ifd_label} (--ifd {ifd_num}) ===")
         
         # Get all tags using DngPage API
@@ -167,27 +167,27 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
                 if any(pattern.search(tag_name) for pattern in exclude_patterns):
                     continue
             
-            # Validate IFD location for known tags
+            # Validate DNG IFD for known tags
             issue_number = None
             if tag_name in TIFF_TAG_TYPE_REGISTRY:
                 tag_spec = TIFF_TAG_TYPE_REGISTRY[tag_name]
-                if tag_spec.ifd_location != "any":
-                    # Normalize expected location
-                    expected_location = tag_spec.ifd_location
-                    # exif/profile -> ifd0
-                    if expected_location in ("exif", "profile"):
-                        expected_location = "ifd0"
-                    # When IFD0 is main raw, also normalize raw -> ifd0
-                    elif ifd0_is_main_raw and expected_location == "raw":
-                        expected_location = "ifd0"
+                if tag_spec.dng_ifd != "any":
+                    # Normalize expected DNG IFD
+                    expected_dng_ifd = tag_spec.dng_ifd
+                    # exif/dng_profile -> dng_ifd0
+                    if expected_dng_ifd in ("exif", "dng_profile"):
+                        expected_dng_ifd = "dng_ifd0"
+                    # When IFD0 is main raw, also normalize dng_raw -> dng_ifd0
+                    elif ifd0_is_main_raw and expected_dng_ifd == "dng_raw":
+                        expected_dng_ifd = "dng_ifd0"
                     
                     # Check if tag is in wrong IFD
-                    if actual_ifd_type == expected_location:
+                    if actual_ifd_type == expected_dng_ifd:
                         pass  # Valid
-                    elif expected_location == "raw" and actual_ifd_type == "raw:cfa":
-                        pass  # Allow 'raw' tags in 'raw:cfa' IFDs (CFA is a type of raw)
-                    elif expected_location == "raw:cfa" and page.photometric == PHOTOMETRIC.CFA:
-                        pass  # Allow 'raw:cfa' tags in any CFA IFD (including IFD0 if it's main CFA)
+                    elif expected_dng_ifd == "dng_raw" and actual_ifd_type == "dng_raw:cfa":
+                        pass  # Allow 'dng_raw' tags in 'dng_raw:cfa' IFDs (CFA is a type of raw)
+                    elif expected_dng_ifd == "dng_raw:cfa" and page.photometric == PHOTOMETRIC.CFA:
+                        pass  # Allow 'dng_raw:cfa' tags in any CFA IFD (including IFD0 if it's main CFA)
                     else:
                         # Tag is in wrong IFD
                         issue_number = len(validation_issues) + 1
@@ -195,7 +195,7 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
                             issue_number,
                             tag_name,
                             actual_ifd_type,
-                            tag_spec.ifd_location  # Store original spec for display
+                            tag_spec.dng_ifd  # Store original spec for display
                         ))
             
             # Get the converted value using DngPage API
