@@ -33,6 +33,15 @@ def dng():
     pass
 
 
+def _format_bytes(size):
+    """Format bytes to human-readable size."""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
+
 @dng.command(name="metadata")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
@@ -41,6 +50,7 @@ def dng():
 def dng_metadata(input_file, ifd, tag, exclude_tag):
     """Display DNG file metadata."""
     import re
+    import os
     from tifffile import PHOTOMETRIC, COMPRESSION
     from .dngio import DngFile
     from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY
@@ -92,13 +102,49 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
         width = p.imagewidth or "?"
         length = p.imagelength or "?"
         
+        # Get bit depth
+        bits_per_sample = p.bitspersample if hasattr(p, 'bitspersample') else 16
+        photometric_with_bits = f"{photometric}{bits_per_sample}"
+        
+        # Calculate compressed size
+        compressed_size = sum(p.databytecounts) if hasattr(p, 'databytecounts') else 0
+        
+        # Calculate uncompressed size
+        if width != "?" and length != "?":
+            samples_per_pixel = p.samplesperpixel if hasattr(p, 'samplesperpixel') else 1
+            uncompressed_size = width * length * samples_per_pixel * (bits_per_sample // 8)
+            compression_ratio = compressed_size / uncompressed_size if uncompressed_size > 0 else 0
+        else:
+            compression_ratio = 0
+        
+        # Get compression type name
+        compression_name = "uncompressed"
+        if hasattr(p, 'compression'):
+            if p.compression == COMPRESSION.JPEGXL or p.compression == COMPRESSION.JPEGXL_DNG:
+                compression_name = "JXL compression"
+            elif p.compression == COMPRESSION.JPEG:
+                compression_name = "JPEG compression"
+            elif p.compression == COMPRESSION.ADOBE_DEFLATE or p.compression == COMPRESSION.DEFLATE:
+                compression_name = "Deflate compression"
+            elif p.compression == COMPRESSION.LZW:
+                compression_name = "LZW compression"
+            elif p.compression == COMPRESSION.LZMA:
+                compression_name = "LZMA compression"
+            elif p.compression != COMPRESSION.NONE:
+                compression_name = f"compression {p.compression}"
+        
         # Add NewSubfileType info if present
         subfile_info = ""
         if (subfile_type := p.get_tag("NewSubfileType")) is not None:
             subfile_info = f" ({SUBFILE_TYPES.get(subfile_type, f'Type{subfile_type}')})"
         
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
-        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric}, {width}x{length}")
+        size_str = _format_bytes(compressed_size)
+        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {width}x{length}, {size_str} ({compression_ratio:.2f}x {compression_name})")
+    
+    # Show total file size
+    total_size = os.path.getsize(input_file)
+    click.echo(f"Total file size: {_format_bytes(total_size)}")
     click.echo()
     
     # Determine which IFDs to show
