@@ -3,7 +3,6 @@ import logging
 from pathlib import Path
 from typing import IO, Union
 
-import cv2
 import numpy as np
 
 from .dngio import DngFile, decode_dng
@@ -11,6 +10,7 @@ from .dngio import DngFile, decode_dng
 logger = logging.getLogger(__name__)
 
 def _coerce_decoded_image(img: np.ndarray, output_dtype: type) -> np.ndarray:
+    import cv2
     if img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
     elif img.ndim == 3 and img.shape[2] == 4:
@@ -90,6 +90,7 @@ def decode_image(
         )
     
     # Fall back to cv2 for other formats
+    import cv2
     if isinstance(file, (str, Path)):
         img = cv2.imread(str(file), cv2.IMREAD_UNCHANGED)
     else:
@@ -134,6 +135,7 @@ def convert_imgformat(
         )
         
         # Convert RGB to BGR for OpenCV
+        import cv2
         bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         
         # Save to file
@@ -181,6 +183,7 @@ def convert_imgformat_to_stream(
         )
         
         # Convert RGB to BGR for OpenCV
+        import cv2
         bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         
         # Ensure format has leading dot

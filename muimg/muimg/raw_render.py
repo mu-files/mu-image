@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 import logging
 
@@ -476,6 +475,7 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     Returns:
         Rotated image array
     """
+    import cv2
     if orientation == 6:
         return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     elif orientation == 3:
@@ -586,6 +586,7 @@ def demosaic(
     
     # OPENCV_EA: uint8 or uint16 kernel
     elif algorithm == "OPENCV_EA":
+        import cv2
         bayer_map = {
             "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
             "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
@@ -2406,6 +2407,7 @@ def apply_radial_distortion_correction(
     y_distorted = cy + scale_factor * (y_coords - cy) * distortion_factor
     
     # Use cv2.remap with bicubic interpolation
+    import cv2
     corrected = cv2.remap(
         rgb_image,
         x_distorted,

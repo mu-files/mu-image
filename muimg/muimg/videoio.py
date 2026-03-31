@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Union
 
-import av
 import numpy as np
 
 from .imgio import decode_image
@@ -131,6 +130,7 @@ class SequenceEncodePipeline(ProcessingPipeline):
     
     def _setup_encoder(self):
         """Initialize PyAV container and video stream."""
+        import av
         if self.output_path is None:
             raise ValueError("output_path is required for video encoding")
         if self.resolution is None:
@@ -281,6 +281,7 @@ class SequenceEncodePipeline(ProcessingPipeline):
                 continue
             
             # Encode frame
+            import av
             frame = av.VideoFrame.from_ndarray(img, format=self.input_format)
             for packet in self._stream.encode(frame):
                 self._container.mux(packet)
