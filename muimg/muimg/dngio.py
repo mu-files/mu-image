@@ -363,7 +363,21 @@ class DngPage(TiffPage):
             bits_per_sample = int(bits_per_sample_raw[0])
         else:
             bits_per_sample = int(bits_per_sample_raw)
-        default_white = float((1 << bits_per_sample) - 1)
+        
+        # Check if this is float data (SampleFormat = 3)
+        sample_format = self.get_tag("SampleFormat")
+        if sample_format is not None:
+            # SampleFormat can be a single value or array
+            if isinstance(sample_format, (list, tuple, np.ndarray)):
+                sample_format = sample_format[0]
+        
+        # Match DNG SDK default: float uses 1.0, integer uses (2^bits - 1)
+        # DNG SDK reference: dng_ifd.cpp lines 3466-3468
+        if sample_format == 3:
+            default_white = 1.0
+        else:
+            # Integer data (SampleFormat=1) or missing SampleFormat tag
+            default_white = float((1 << bits_per_sample) - 1)
 
         white_level_raw = self.get_tag("WhiteLevel")
         if white_level_raw is None:
@@ -1417,9 +1431,13 @@ def write_dng(
                     bits_per_pixel = 8
                 elif spec.data.dtype == np.uint16:
                     bits_per_pixel = 16
+                elif spec.data.dtype == np.float16:
+                    bits_per_pixel = 16
+                elif spec.data.dtype == np.float32:
+                    bits_per_pixel = 32
                 else:
                     raise ValueError(
-                        "bits_per_pixel is required for ndarray IFD specs when dtype is not uint8/uint16"
+                        f"Unsupported dtype {spec.data.dtype}. Supported: uint8, uint16, float16, float32"
                     )
             else:
                 bits_per_pixel = int(spec.bits_per_pixel)
@@ -1444,13 +1462,14 @@ def write_dng(
                 )
             samples_per_pixel = 3
 
-        # Ensure data is uint16/uint8 for tifffile
-        if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
-            bits_per_pixel = 16
-            raw_data = raw_data.astype(np.uint16)
-        elif bits_per_pixel <= 8 and raw_data.dtype != np.uint8:
-            bits_per_pixel = 8
-            raw_data = raw_data.astype(np.uint8)
+        # Ensure integer data is uint16/uint8 for tifffile (skip float types)
+        if raw_data.dtype not in (np.float16, np.float32):
+            if bits_per_pixel > 8 and raw_data.dtype != np.uint16:
+                bits_per_pixel = 16
+                raw_data = raw_data.astype(np.uint16)
+            elif bits_per_pixel <= 8 and raw_data.dtype != np.uint8:
+                bits_per_pixel = 8
+                raw_data = raw_data.astype(np.uint8)
 
         raw_datasize = int(
             raw_data.shape[0] * raw_data.shape[1] * samples_per_pixel * bits_per_pixel / 8
@@ -1479,6 +1498,7 @@ def write_dng(
             raw_ifd_tags.add_tag("CFAPattern", cfa_pattern)
             raw_ifd_tags.add_tag("CFARepeatPatternDim", (2, 2))
             raw_ifd_tags.add_tag("CFAPlaneColor", bytes([0, 1, 2]))
+        
         _ensure_float_tags_be(raw_ifd_tags)
 
         # Prepare IFD args        

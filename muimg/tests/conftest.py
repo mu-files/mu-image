@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from muimg.raw_render import convert_dtype
+
 
 def core_image_available_for_tests() -> bool:
     try:
@@ -27,33 +29,39 @@ def core_image_available_for_tests() -> bool:
 DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targets/mac/release64/dng_validate"
 
 
-def generate_rgb_ramp(width: int, height: int) -> np.ndarray:
+def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16) -> np.ndarray:
     """Generate synthetic RGB ramp test image.
     
     Args:
         width: Image width in pixels
         height: Image height in pixels
+        dtype: Output data type (np.uint8, np.uint16, np.float32, etc.)
         
     Returns:
-        uint16 RGB image (H, W, 3) with:
-        - Red channel: 0-65535 gradient left to right
-        - Blue channel: 0-65535 gradient top to bottom
-        - Green channel: 0-65535 gradient on diagonal
+        RGB image (H, W, 3) with specified dtype:
+        - Red channel: gradient left to right
+        - Blue channel: gradient top to bottom
+        - Green channel: gradient on diagonal
     """
-    img = np.zeros((height, width, 3), dtype=np.uint16)
+    # Generate in float32 for highest precision
+    img = np.zeros((height, width, 3), dtype=np.float32)
     
-    # Red: left to right gradient
-    img[:, :, 0] = np.linspace(0, 65535, width, dtype=np.uint16)[np.newaxis, :]
+    # Red: left to right gradient (0.0 to 1.0)
+    img[:, :, 0] = np.linspace(0.0, 1.0, width, dtype=np.float32)[np.newaxis, :]
     
-    # Blue: top to bottom gradient
-    img[:, :, 2] = np.linspace(0, 65535, height, dtype=np.uint16)[:, np.newaxis]
+    # Blue: top to bottom gradient (0.0 to 1.0)
+    img[:, :, 2] = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, np.newaxis]
     
-    # Green: diagonal gradient (top-left to bottom-right)
+    # Green: diagonal gradient (top-left to bottom-right, 0.0 to 1.0)
     x = np.arange(width, dtype=np.float32)
     y = np.arange(height, dtype=np.float32)
     xx, yy = np.meshgrid(x, y)
     diagonal = (xx / width + yy / height) / 2.0
-    img[:, :, 1] = (diagonal * 65535).astype(np.uint16)
+    img[:, :, 1] = diagonal
+    
+    # Convert to target dtype if needed
+    if dtype != np.float32:
+        img = convert_dtype(img, dtype)
     
     return img
 
@@ -64,11 +72,11 @@ def sample_as_cfa(rgb_img: np.ndarray, pattern: str = "RGGB") -> np.ndarray:
     Extracts color channels at RGGB positions from full resolution RGB image.
     
     Args:
-        rgb_img: RGB image (H, W, 3) in uint16 format
+        rgb_img: RGB image (H, W, 3) - any numeric dtype
         pattern: CFA pattern, currently only "RGGB" supported
         
     Returns:
-        uint16 CFA array (H, W) - single channel with Bayer pattern
+        CFA array (H, W) with same dtype as input - single channel with Bayer pattern
         
     Raises:
         ValueError: If pattern is not "RGGB"
@@ -77,7 +85,7 @@ def sample_as_cfa(rgb_img: np.ndarray, pattern: str = "RGGB") -> np.ndarray:
         raise ValueError(f"Only RGGB pattern supported, got {pattern}")
     
     height, width = rgb_img.shape[:2]
-    cfa = np.zeros((height, width), dtype=np.uint16)
+    cfa = np.zeros((height, width), dtype=rgb_img.dtype)
     
     # RGGB pattern:
     # Row 0 (even): R G R G ...
@@ -142,7 +150,7 @@ def load_tiff(path: Path) -> np.ndarray | None:
         return None
 
 
-def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True) -> np.ndarray | None:
+def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True, indent: str = "") -> np.ndarray | None:
     """Run dng_validate and muimg metadata validators on a DNG file.
     
     Args:
@@ -151,6 +159,7 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
         timeout: Timeout in seconds
         ignored_warnings: Optional list of warning patterns to ignore (case-insensitive)
         validate: If False, ignore all errors/warnings and just decode (for reference comparison)
+        indent: String to prepend to validation messages (default: no indent)
         
     Returns:
         Loaded TIFF as numpy array, or None if dng_validate not available
@@ -236,13 +245,13 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
                 if unignored_warnings:
                     unignored_text = '\n'.join(unignored_warnings)
                     if ignored_count > 0:
-                        print(f"\nValidation warnings ({ignored_count} ignored):")
+                        print(f"{indent}Validation warnings ({ignored_count} ignored):")
                     else:
-                        print(f"\nValidation warnings:")
+                        print(f"{indent}Validation warnings:")
                     print(unignored_text)
                     raise AssertionError(f"Validation produced {len(unignored_warnings)} unignored warning(s)")
                 elif ignored_count > 0:
-                    print(f"\nValidation: {ignored_count} warning(s) ignored")
+                    print(f"{indent}Validation: {ignored_count} warning(s) ignored")
             
     except (subprocess.TimeoutExpired, Exception) as e:
         if isinstance(e, (RuntimeError, AssertionError)):

@@ -8,66 +8,98 @@ import io
 import numpy as np
 import pytest
 import cv2
+from pathlib import Path
 
 from muimg.dngio import write_dng_from_array, decode_dng, DngFile
 from muimg.tiff_metadata import MetadataTags
-from muimg.raw_render import _srgb_gamma
-from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats
+from muimg.raw_render import _srgb_gamma, convert_dtype
+from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats, run_dng_validate
 
 
-def test_write_dng_compression_fidelity():
-    """Test DNG write/decode fidelity across compression methods and photometric types.
+# Compression configurations per dtype: (label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
+# Thresholds based on observed values with ~10% margin
+# Note: RGB (LINEAR_RAW) shows higher loss than CFA at same distance
+
+# float32 - uncompressed only (JXL limited to 16-bit)
+# Observed: Raw mean=0.0%, max=0.0%, Render mean=0.30%, max=7.06%
+FLOAT32_CONFIGS = [
+    ("uncompressed", None, 0.0, 0.0, 0.32, 9.06),
+]
+
+# float16 thresholds (16-bit float supports JXL)
+# Observed: uncompressed Raw max=0.0%, Render mean=0.30%, max=7.06%
+#           lossless_jxl Raw mean=0.0062%, max=0.0977%, Render mean=0.30%, max=7.06%
+#           lossy_jxl_0.5 Raw mean=0.1542%, max=0.9277%, Render mean=0.33%, max=9.80%
+#           lossy_jxl_1.0 Raw mean=0.1645%, max=1.0742%, Render mean=0.33%, max=9.80%
+#           lossy_jxl_2.0 Raw mean=0.1601%, max=1.3672%, Render mean=0.33%, max=9.80%
+#           lossy_jxl_4.0 Raw mean=0.1509%, max=2.0020%, Render mean=0.32%, max=10.20%
+FLOAT16_CONFIGS = [
+    ("uncompressed", None, 0.0, 0.0, 0.32, 9.06),
+    ("lossless_jxl", 0.0, 0.02, 2.10, 0.32, 9.06),
+    ("lossy_jxl_0.5", 0.5, 0.18, 2.44, 0.35, 11.80),
+    ("lossy_jxl_1.0", 1.0, 0.19, 3.07, 0.35, 11.80),
+    ("lossy_jxl_2.0", 2.0, 0.24, 3.37, 0.37, 11.80),
+    ("lossy_jxl_4.0", 4.0, 0.21, 4.25, 0.37, 12.20),
+]
+
+# uint16 thresholds
+# Observed: uncompressed Raw max=0.0%, Render mean=0.30%, max=7.06%
+#           lossless_jxl Raw mean=0.0074%, max=0.0717%, Render mean=0.30%, max=7.06%
+#           lossy_jxl_0.5 Raw mean=0.1543%, max=0.8911%, Render mean=0.33%, max=9.80%
+#           lossy_jxl_1.0 Raw mean=0.1645%, max=1.0681%, Render mean=0.33%, max=9.80%
+#           lossy_jxl_2.0 Raw mean=0.2122%, max=1.4878%, Render mean=0.35%, max=9.80%
+#           lossy_jxl_4.0 Raw mean=0.1918%, max=2.5757%, Render mean=0.35%, max=10.20%
+UINT16_CONFIGS = [
+    ("uncompressed", None, 0.0, 0.0, 0.32, 9.06),
+    ("lossless_jxl", 0.0, 0.03, 2.07, 0.32, 9.06),
+    ("lossy_jxl_0.5", 0.5, 0.18, 2.89, 0.35, 11.80),
+    ("lossy_jxl_1.0", 1.0, 0.19, 3.07, 0.35, 11.80),
+    ("lossy_jxl_2.0", 2.0, 0.24, 3.49, 0.37, 11.80),
+    ("lossy_jxl_4.0", 4.0, 0.21, 4.58, 0.37, 12.20),
+]
+
+# uint8 thresholds
+# Observed: uncompressed Raw max=0.0%, Render mean=0.32%, max=7.84%
+#           lossless_jxl Raw mean=0.0321%, max=1.9608%, Render mean=0.32%, max=14.90%
+#           lossy_jxl_0.5 Raw mean=0.1580%, max=3.5294%, Render mean=0.34%, max=16.08%
+#           lossy_jxl_1.0 Raw mean=0.1885%, max=3.5294%, Render mean=0.35%, max=18.82%
+#           lossy_jxl_2.0 Raw mean=0.1841%, max=5.0980%, Render mean=0.35%, max=23.53%
+#           lossy_jxl_4.0 Raw mean=0.2013%, max=8.6275%, Render mean=0.41%, max=31.37%
+UINT8_CONFIGS = [
+    ("uncompressed", None, 0.0, 0.0, 0.34, 9.84),
+    ("lossless_jxl", 0.0, 0.05, 3.96, 0.34, 16.90),
+    ("lossy_jxl_0.5", 0.5, 0.18, 5.53, 0.37, 18.08),
+    ("lossy_jxl_1.0", 1.0, 0.21, 5.53, 0.37, 20.82),
+    ("lossy_jxl_2.0", 2.0, 0.21, 7.10, 0.37, 25.53),
+    ("lossy_jxl_4.0", 4.0, 0.22, 10.63, 0.43, 33.37),
+]
+
+def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+    """Test DNG write/decode fidelity for a specific dtype and compression combination.
     
-    Tests both CFA (Bayer) and LINEAR_RAW (demosaiced RGB) with:
-    - Uncompressed
-    - Lossless JXL
-    - Lossy JXL at various quality levels
+    Tests both CFA (Bayer) and LINEAR_RAW (demosaiced RGB) photometric types.
     """
+    
     # Test dimensions
     width, height = 1280, 720
     preview_width, preview_height = 640, 360
     
-    # Compression configurations: (label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
-    # Thresholds based on observed values with ~10% margin
-    # Note: RGB (LINEAR_RAW) shows higher loss than CFA at same distance
-    compression_configs = [
-        ("uncompressed", None, 0.0, 0.0, 0.34, 7.8),      # Raw: 0%, Render: mean=0.30%, max=7.06%
-        ("lossless_jxl", 0.0, 0.009, 0.08, 0.34, 7.8),    # Raw: mean=0.0074%, max=0.0717%, Render: mean=0.30%, max=7.06%
-        ("lossy_jxl_0.5", 0.5, 0.17, 0.98, 0.37, 10.8),   # Raw: mean=0.1543%, max=0.8911%, Render: mean=0.33%, max=9.80%
-        ("lossy_jxl_1.0", 1.0, 0.18, 1.18, 0.37, 10.8),   # Raw: mean=0.1645%, max=1.0681%, Render: mean=0.33%, max=9.80%
-        ("lossy_jxl_1.5", 1.5, 0.20, 1.35, 0.38, 10.8),   # Raw: mean=0.1788%, max=1.2207%, Render: mean=0.34%, max=9.80%
-        ("lossy_jxl_2.0", 2.0, 0.24, 1.64, 0.39, 10.8),   # Raw: mean=0.2122%, max=1.4878%, Render: mean=0.35%, max=9.80%
-        ("lossy_jxl_2.5", 2.5, 0.26, 1.73, 0.40, 10.8),   # Raw: mean=0.2297%, max=1.5656%, Render: mean=0.36%, max=9.80%
-        ("lossy_jxl_3.0", 3.0, 0.27, 2.02, 0.41, 10.8),   # Raw: mean=0.2408%, max=1.8341%, Render: mean=0.37%, max=9.80%
-    ]
-    
-    # Photometric types
-    photometric_types = ["cfa", "linear_raw"]
-    
-    # Preview configurations
-    preview_configs = [
-        ("with_preview", True),
-        ("no_preview", False),
-    ]
-    
-    for preview_label, use_preview in preview_configs:
-        for photometric in photometric_types:
-            print(f"\n{'='*60}")
-            print(f"Testing {photometric} ({preview_label})")
-            print(f"{'='*60}")
-            
-            # Generate test data
-            rgb_ramp = generate_rgb_ramp(width, height)
+    # Test both photometric types and preview configurations
+    for photometric in ["cfa", "linear_raw"]:
+        for use_preview in [True, False]:
+            # Generate test data in target dtype
+            rgb_ramp = generate_rgb_ramp(width, height, dtype=input_dtype)
             
             # Add identity ProfileToneCurve to bypass tone adjustments
             # This makes the rendering pipeline nearly pass-through
             metadata = MetadataTags()
             metadata.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
+            metadata.add_tag("UniqueCameraModel", "Test Camera")
             
             if use_preview:
                 # Preview must be uint8 for JPEG compression
-                preview_rgb = cv2.resize(rgb_ramp, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
-                preview_data = (preview_rgb / 256).astype(np.uint8)
+                rgb_ramp_u8 = convert_dtype(rgb_ramp, np.uint8)
+                preview_data = cv2.resize(rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
             else:
                 preview_data = None
             
@@ -80,15 +112,12 @@ def test_write_dng_compression_fidelity():
                 test_data = rgb_ramp
                 cfa_pattern = None
             
-            for label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh in compression_configs:
-                print(f"\n  {label}:")
-                print(f"    test_data shape: {test_data.shape}, dtype: {test_data.dtype}")
-                print(f"    preview_data shape: {preview_data.shape if preview_data is not None else 'None'}, dtype: {preview_data.dtype if preview_data is not None else 'N/A'}")
-                
-                # Write to in-memory stream
-                stream = io.BytesIO()
-                write_dng_from_array(
-                    destination_file=stream,
+            # Write to file for dng_validate
+            preview_label = "with_preview" if use_preview else "no_preview"
+            dng_filename = f"{dtype_label}_{photometric}_{preview_label}_{comp_label}.dng"
+            dng_path = tmp_path / dng_filename
+            write_dng_from_array(
+                    destination_file=dng_path,
                     data=test_data,
                     ifd0_tags=metadata,
                     photometric=photometric,
@@ -96,82 +125,116 @@ def test_write_dng_compression_fidelity():
                     jxl_distance=jxl_distance,
                     jxl_effort=4,
                     preview_image=preview_data,
-                )
-                
-                # Get file size
-                file_size = stream.tell()
-                size_kb = file_size / 1024
-                print(f"    Size: {size_kb:.1f} KB")
-                
-                # Extract raw data from DNG and validate rendering
-                stream.seek(0)
-                with DngFile(stream) as dng:
-                    if photometric == "cfa":
-                        decoded_cfa, decoded_pattern = dng.get_cfa()
-                        assert decoded_cfa is not None, f"Failed to get CFA from {label}"
-                        assert decoded_pattern == cfa_pattern, f"CFA pattern mismatch: {decoded_pattern} != {cfa_pattern}"
-                        decoded = decoded_cfa
-                    else:
-                        decoded_rgb = dng.get_linear_raw()
-                        assert decoded_rgb is not None, f"Failed to get LINEAR_RAW from {label}"
-                        decoded = decoded_rgb
-                    
-                    # Test render pipeline: with identity ProfileToneCurve, 
-                    # render should apply sRGB gamma to linear RGB
-                    # Use DNGSDK_BILINEAR for consistent demosaic comparison
-                    rendered = dng.render(output_dtype=np.uint8, demosaic_algorithm="DNGSDK_BILINEAR")
-                    assert rendered is not None, f"Failed to render {label}"
-                
-                # Compare raw data against original
-                comparison_target = test_data
-                
-                # Compute diff stats for raw data
-                stats = compute_diff_stats(decoded, comparison_target)
-                print(f"    Raw mean diff: {stats['mean']:.4f}%")
-                print(f"    Raw p99 diff: {stats['p99']:.4f}%")
-                print(f"    Raw max diff: {stats['max']:.4f}%")
-                
-                # Compare rendered output against sRGB gamma-corrected RGB ramp
-                # render() applies: identity ProfileToneCurve + sRGB gamma + uint8 conversion
-                rgb_linear_normalized = rgb_ramp.astype(np.float32) / 65535.0
-                rgb_srgb = _srgb_gamma(rgb_linear_normalized)
-                rgb_u8 = np.clip(rgb_srgb * 255.0, 0, 255).astype(np.uint8)
-                
-                render_stats = compute_diff_stats(rendered, rgb_u8)
-                print(f"    Render mean diff: {render_stats['mean']:.4f}%")
-                print(f"    Render max diff: {render_stats['max']:.4f}%")
-                
-                # Assert raw data thresholds
-                if raw_mean_thresh == 0.0:
-                    # Exact match expected for uncompressed
-                    assert np.array_equal(decoded, comparison_target), (
-                        f"{photometric} {label}: Raw expected exact match, got "
-                        f"mean={stats['mean']:.4f}%, max={stats['max']:.4f}%"
-                    )
+            )
+            
+            # Extract raw data from DNG and validate rendering
+            with DngFile(dng_path) as dng:
+                if photometric == "cfa":
+                    decoded_cfa, decoded_pattern = dng.get_cfa()
+                    assert decoded_cfa is not None, f"Failed to get CFA from {comp_label}"
+                    assert decoded_pattern == cfa_pattern, f"CFA pattern mismatch: {decoded_pattern} != {cfa_pattern}"
+                    decoded = decoded_cfa
                 else:
-                    # Lossy compression - check thresholds
-                    assert stats['mean'] < raw_mean_thresh, (
-                        f"{photometric} {label}: Raw mean diff {stats['mean']:.4f}% "
-                        f"exceeds threshold {raw_mean_thresh}%"
-                    )
-                    assert stats['max'] < raw_max_thresh, (
-                        f"{photometric} {label}: Raw max diff {stats['max']:.4f}% "
-                        f"exceeds threshold {raw_max_thresh}%"
-                    )
+                    decoded_rgb = dng.get_linear_raw()
+                    assert decoded_rgb is not None, f"Failed to get LINEAR_RAW from {comp_label}"
+                    decoded = decoded_rgb
                 
-                # Assert render thresholds
-                assert render_stats['mean'] < render_mean_thresh, (
-                    f"{photometric} {label}: Render mean diff {render_stats['mean']:.4f}% "
-                    f"exceeds threshold {render_mean_thresh}%"
+                # Test render pipeline: with identity ProfileToneCurve, 
+                # render should apply sRGB gamma to linear RGB
+                # Use DNGSDK_BILINEAR for consistent demosaic comparison
+                rendered = dng.render(output_dtype=np.uint8, demosaic_algorithm="DNGSDK_BILINEAR")
+                assert rendered is not None, f"Failed to render {comp_label}"
+            
+            # Compare raw data against original
+            comparison_target = test_data
+            
+            # Compute diff stats for raw data
+            stats = compute_diff_stats(decoded, comparison_target)
+            
+            # Compare rendered output against sRGB gamma-corrected reference
+            # render() applies: identity ProfileToneCurve + sRGB gamma + uint8 conversion
+            # Convert ramp to float [0,1], apply gamma, then convert to uint8
+            rgb_linear_normalized = convert_dtype(rgb_ramp, np.float32)
+            rgb_srgb = _srgb_gamma(rgb_linear_normalized)
+            rgb_ramp_u8 = convert_dtype(rgb_srgb, np.uint8)
+            
+            render_stats = compute_diff_stats(rendered, rgb_ramp_u8)
+            
+            # Print observed values for threshold tuning
+            preview_str = "with_preview" if use_preview else "no_preview"
+            print(f"\n  {dtype_label} {photometric} {comp_label} ({preview_str}):")
+            print(f"    Raw:    mean={stats['mean']:.4f}%, p99={stats['p99']:.4f}%, max={stats['max']:.4f}%")
+            print(f"    Render: mean={render_stats['mean']:.4f}%, max={render_stats['max']:.4f}%")
+            
+            # Run dng_validate if available (inline with test results)
+            output_base = tmp_path / f"{dtype_label}_{photometric}_{preview_label}_{comp_label}"
+            ignored_warnings = [
+                "too little padding",  # Matches all 4 edge padding warnings
+            ]
+            validated_tiff = run_dng_validate(dng_path, output_base, validate=True, ignored_warnings=ignored_warnings, indent="    ")
+            assert validated_tiff is not None, f"dng_validate failed for {dng_filename}"
+            
+            # Assert raw data thresholds
+            if raw_mean_thresh == 0.0:
+                # Exact match expected for uncompressed
+                assert np.array_equal(decoded, comparison_target), (
+                    f"{dtype_label} {photometric} {comp_label}: Raw expected exact match, got "
+                    f"mean={stats['mean']:.4f}%, max={stats['max']:.4f}%"
                 )
-                assert render_stats['max'] < render_max_thresh, (
-                    f"{photometric} {label}: Render max diff {render_stats['max']:.4f}% "
-                    f"exceeds threshold {render_max_thresh}%"
+            else:
+                # Lossy compression - check thresholds
+                assert stats['mean'] < raw_mean_thresh, (
+                    f"{dtype_label} {photometric} {comp_label}: Raw mean diff {stats['mean']:.4f}% "
+                    f"exceeds threshold {raw_mean_thresh}%"
                 )
-    
-    print(f"\n{'='*60}")
-    print("✓ All compression tests passed")
-    print(f"{'='*60}")
+                assert stats['max'] < raw_max_thresh, (
+                    f"{dtype_label} {photometric} {comp_label}: Raw max diff {stats['max']:.4f}% "
+                    f"exceeds threshold {raw_max_thresh}%"
+                )
+            
+            # Assert render thresholds
+            assert render_stats['mean'] < render_mean_thresh, (
+                f"{dtype_label} {photometric} {comp_label}: Render mean diff {render_stats['mean']:.4f}% "
+                f"exceeds threshold {render_mean_thresh}%"
+            )
+            assert render_stats['max'] < render_max_thresh, (
+                f"{dtype_label} {photometric} {comp_label}: Render max diff {render_stats['max']:.4f}% "
+                f"exceeds threshold {render_max_thresh}%"
+            )
+
+
+# Test functions for each dtype
+@pytest.mark.parametrize("comp_label,jxl_distance,raw_mean_thresh,raw_max_thresh,render_mean_thresh,render_max_thresh", 
+                         FLOAT32_CONFIGS,
+                         ids=[c[0] for c in FLOAT32_CONFIGS])
+def test_float32(tmp_path, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+    """Test float32 DNG compression fidelity."""
+    _test_compression_fidelity(tmp_path, "float32", np.float32, comp_label, jxl_distance, 
+                               raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
+
+@pytest.mark.parametrize("comp_label,jxl_distance,raw_mean_thresh,raw_max_thresh,render_mean_thresh,render_max_thresh", 
+                         FLOAT16_CONFIGS,
+                         ids=[c[0] for c in FLOAT16_CONFIGS])
+def test_float16(tmp_path, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+    """Test float16 DNG compression fidelity."""
+    _test_compression_fidelity(tmp_path, "float16", np.float16, comp_label, jxl_distance, 
+                               raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
+
+@pytest.mark.parametrize("comp_label,jxl_distance,raw_mean_thresh,raw_max_thresh,render_mean_thresh,render_max_thresh", 
+                         UINT16_CONFIGS,
+                         ids=[c[0] for c in UINT16_CONFIGS])
+def test_uint16(tmp_path, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+    """Test uint16 DNG compression fidelity."""
+    _test_compression_fidelity(tmp_path, "uint16", np.uint16, comp_label, jxl_distance, 
+                               raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
+
+@pytest.mark.parametrize("comp_label,jxl_distance,raw_mean_thresh,raw_max_thresh,render_mean_thresh,render_max_thresh", 
+                         UINT8_CONFIGS,
+                         ids=[c[0] for c in UINT8_CONFIGS])
+def test_uint8(tmp_path, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+    """Test uint8 DNG compression fidelity."""
+    _test_compression_fidelity(tmp_path, "uint8", np.uint8, comp_label, jxl_distance, 
+                               raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
 
 
 if __name__ == "__main__":
