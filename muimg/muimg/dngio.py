@@ -518,7 +518,7 @@ class DngPage(TiffPage):
             return self._stage2(stage1, apply_ops=True).data
         raise ValueError(f"Unknown stage selector: {stage}")
 
-    def get_camera_rgb_raw(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
+    def get_camera_rgb_raw(self, demosaic_algorithm: str = "OPENCV_EA") -> Optional[np.ndarray]:
         """Extract the camera-RGB intermediate from a raw page for the color pipeline.
 
         This corresponds to the `rgb_camera` input passed into
@@ -605,7 +605,7 @@ class DngPage(TiffPage):
     def render_raw(
         self,
         output_dtype: type = np.uint16,
-        demosaic_algorithm: str = "RCD",
+        demosaic_algorithm: str = "OPENCV_EA",
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict = None,
@@ -833,7 +833,7 @@ class DngFile(TiffFile):
             require=lambda p: p.is_linear_raw,
         )
 
-    def get_camera_rgb_raw(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
+    def get_camera_rgb_raw(self, demosaic_algorithm: str = "OPENCV_EA") -> Optional[np.ndarray]:
         """See `DngPage.get_camera_rgb_raw`."""
         return self._forward_main_page(
             "get_camera_rgb_raw",
@@ -880,7 +880,7 @@ class DngFile(TiffFile):
     def render_raw(
         self,
         output_dtype: type = np.uint16,
-        demosaic_algorithm: str = "RCD",
+        demosaic_algorithm: str = "OPENCV_EA",
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict = None,
@@ -1769,7 +1769,7 @@ def write_dng_from_page(
     )
 
 def _generate_preview(
-    page: DngPage, max_dimension: int, demosaic_algorithm: str = "RCD"
+    page: DngPage, max_dimension: int, demosaic_algorithm: str = "OPENCV_EA"
 ) -> np.ndarray:
     """Generate preview image from DNG page.
     
@@ -1847,7 +1847,7 @@ def copy_dng(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: str = "RCD",
+    demosaic_algorithm: str = "OPENCV_EA",
     strip_tags: Optional[set[str]] = None,
     generate_preview: bool = False,
     preview_max_dimension: int = 1024,
@@ -2020,7 +2020,7 @@ def copy_dng(
 def decode_dng(
     file: Union[str, Path, IO[bytes], DngFile, DngPage],
     output_dtype: type = np.uint16,
-    demosaic_algorithm: str = "RCD",
+    demosaic_algorithm: str = "OPENCV_EA",
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
     rendering_params: dict = None,

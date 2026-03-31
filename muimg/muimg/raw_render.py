@@ -490,7 +490,7 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 def demosaic(
     image_data: np.ndarray, 
     cfa_pattern: str,
-    algorithm: str = "RCD",
+    algorithm: str = "OPENCV_EA",
 ) -> np.ndarray:
     """Demosaic CFA data to RGB.
     
@@ -502,9 +502,9 @@ def demosaic(
         image_data: 2D raw CFA data array (uint8, uint16, or float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         algorithm: Demosaic algorithm:
-            - "RCD" (default): Best quality/speed, supports float32 natively
+            - "OPENCV_EA" (default): Fastest, uint8/uint16 only
             - "VNG": Variable Number of Gradients, uint16 only
-            - "OPENCV_EA": Fastest, uint8/uint16 only
+            - "RCD": Best quality/speed, supports float32 natively (optional dependency)
             - "DNGSDK_BILINEAR": DNG SDK bilinear, float32 only
     Returns:
         RGB array with same dtype as input
@@ -575,7 +575,7 @@ def demosaic(
     elif algorithm == "VNG":
         # Only warn for lossy conversions (float to uint16)
         if input_dtype in (np.float32, np.float64):
-            logger.warning(f"VNG requires uint16; converting from {input_dtype}")
+            logger.debug(f"VNG requires uint16; converting from {input_dtype}")
         # Convert to uint16 for VNG
         data_u16 = convert_dtype(image_data, np.uint16)
         rgb = _vng.vng_demosaic(data_u16, cfa_pattern)
@@ -593,7 +593,7 @@ def demosaic(
         }
         # OpenCV prefers uint16 for better precision
         if input_dtype in (np.float32, np.float64):
-            logger.warning(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
+            logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
             data_u16 = convert_dtype(image_data, np.uint16)
             rgb = cv2.demosaicing(data_u16, bayer_map[cfa_pattern])
             rgb = rgb[..., [2, 1, 0]]  # BGR to RGB

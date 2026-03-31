@@ -544,8 +544,8 @@ def dng_convert(
 @click.option(
     "--demosaic-algorithm",
     type=str,
-    default="RCD",
-    help="Demosaic algorithm (RCD, VNG, OPENCV_EA)",
+    default="OPENCV_EA",
+    help="Demosaic algorithm (OPENCV_EA, VNG, RCD)",
 )
 @click.option(
     "--strip-tag",
