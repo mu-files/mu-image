@@ -80,7 +80,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
 
         preview = None
         if generate_preview:
-            decoded_u8 = dng.render(output_dtype=np.uint8, strict=False)
+            decoded_u8 = dng.render_raw(output_dtype=np.uint8, strict=False)
             assert decoded_u8 is not None
             preview = cv2.resize(
                 decoded_u8,
@@ -88,7 +88,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
                 interpolation=cv2.INTER_AREA,
             )
 
-        camera_rgb = dng.get_camera_rgb(demosaic_algorithm="RCD")
+        camera_rgb = dng.get_camera_rgb_raw(demosaic_algorithm="RCD")
         assert camera_rgb is not None
 
         camera_rgb_u16 = np.clip((camera_rgb * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
@@ -150,7 +150,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         ifd0_tags = page.get_ifd0_tags()
 
-        decoded_orig_u8 = dng.render(output_dtype=np.uint8, strict=False)
+        decoded_orig_u8 = dng.render_raw(output_dtype=np.uint8, strict=False)
         assert decoded_orig_u8 is not None
 
         cfa_result = page.get_cfa()
@@ -222,7 +222,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         out_main = out_dng.get_main_page()
         assert out_main is not None
 
-        decoded_crop_u8 = out_dng.render(output_dtype=np.uint8, strict=False)
+        decoded_crop_u8 = out_dng.render_raw(output_dtype=np.uint8, strict=False)
         assert decoded_crop_u8 is not None
 
         expected_crop_u8 = decoded_orig_u8[

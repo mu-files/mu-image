@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import pytest
 
-from muimg.imgio import convert_imgformat, convert_imgformat_to_stream
+from muimg.imgio import convert_imgformat, convert_imgformat_to_stream, convert_dng_to_stream
 from conftest import (
     compute_diff_stats,
     core_image_available_for_tests,
@@ -71,7 +71,7 @@ def test_convert_imgformat_sdk_vs_coreimage():
     print(f"\nSDK output: {tiff_path}")
     
     # 2. Convert to PNG via Core Image pipeline (disable XMP for fair comparison)
-    png_bytes = convert_imgformat_to_stream(
+    png_bytes = convert_dng_to_stream(
         file=str(TEST_DNG),
         output_format="png",
         output_dtype=np.uint8,
@@ -132,7 +132,7 @@ def test_convert_imgformat_to_file():
         
         success = convert_imgformat(
             file=str(TEST_DNG),
-            output_path=str(output_path),
+            output=str(output_path),
             output_dtype=np.uint8,
         )
         

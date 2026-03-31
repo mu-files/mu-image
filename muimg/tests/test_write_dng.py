@@ -142,7 +142,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                 # Test render pipeline: with identity ProfileToneCurve, 
                 # render should apply sRGB gamma to linear RGB
                 # Use DNGSDK_BILINEAR for consistent demosaic comparison
-                rendered = dng.render(output_dtype=np.uint8, demosaic_algorithm="DNGSDK_BILINEAR")
+                rendered = dng.render_raw(output_dtype=np.uint8, demosaic_algorithm="DNGSDK_BILINEAR")
                 assert rendered is not None, f"Failed to render {comp_label}"
             
             # Compare raw data against original

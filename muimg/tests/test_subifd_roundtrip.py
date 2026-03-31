@@ -90,14 +90,14 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             
             # 1. muimg render_dng -> {stem}_ifd{n}_muimg.tif
             try:
-                decoded = page.render(output_dtype=np.uint16, strict=False, use_xmp=False,
+                decoded = page.render_raw(output_dtype=np.uint16, strict=False, use_xmp=False,
                                       rendering_params={'highlight_preserving_exposure': False})
                 if decoded is None:
-                    pytest.fail(f"page.render returned None for IFD {i}")
+                    pytest.fail(f"page.render_raw returned None for IFD {i}")
                 tifffile.imwrite(str(muimg_tif), decoded)
                 print(f"    -> {muimg_tif.name} ({decoded.shape})")
             except Exception as e:
-                pytest.fail(f"page.render failed for IFD {i}: {e}")
+                pytest.fail(f"page.render_raw failed for IFD {i}: {e}")
             
             # 2. write_dng_from_page -> {stem}_ifd{n}.dng
             try:
@@ -114,7 +114,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             roundtrip_decoded = None
             try:
                 with muimg.DngFile(roundtrip_dng) as roundtrip_dng_file:
-                    roundtrip_decoded = roundtrip_dng_file.render(output_dtype=np.uint16, strict=False, use_xmp=False,
+                    roundtrip_decoded = roundtrip_dng_file.render_raw(output_dtype=np.uint16, strict=False, use_xmp=False,
                                                                   rendering_params={'highlight_preserving_exposure': False})
                 if roundtrip_decoded is not None:
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)

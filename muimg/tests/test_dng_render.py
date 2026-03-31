@@ -103,7 +103,7 @@ def test_muimg_vs_photoshop(
 
     # Render with MUIMG
     with muimg.DngFile(dng_path) as dng:
-        result = dng.render(
+        result = dng.render_raw(
             output_dtype=np.uint16,
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,
@@ -222,7 +222,7 @@ def test_muimg_vs_dng_validate(
 
     # Render with MUIMG (use_xmp=False, no highlight preservation)
     with muimg.DngFile(dng_path) as dng:
-        muimg_result = dng.render(
+        muimg_result = dng.render_raw(
             output_dtype=np.uint16,
             demosaic_algorithm="DNGSDK_BILINEAR",
             strict=False,

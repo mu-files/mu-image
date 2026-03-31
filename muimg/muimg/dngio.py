@@ -122,18 +122,18 @@ class DngPage(TiffPage):
     @property
     def is_main_image(self) -> bool:
         """True if this page is the main image (NewSubfileType == 0)."""
-        tag = self.tags.get(254)  # NewSubfileType tag ID
-        if tag is None:
+        value = self.get_tag("NewSubfileType")
+        if value is None:
             return False
-        return tag.value == self.SF_MAIN_IMAGE
+        return value == self.SF_MAIN_IMAGE
     
     @property
     def is_preview(self) -> bool:
         """True if this page is a preview image."""
-        tag = self.tags.get(254)  # NewSubfileType tag ID
-        if tag is None:
+        value = self.get_tag("NewSubfileType") 
+        if value is None:
             return False
-        return tag.value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
+        return value in (self.SF_PREVIEW_IMAGE, self.SF_ALT_PREVIEW_IMAGE)
 
     def get_xmp(self) -> Optional[XmpMetadata]:
         """Return XMP metadata as an `XmpMetadata` object."""
@@ -518,11 +518,11 @@ class DngPage(TiffPage):
             return self._stage2(stage1, apply_ops=True).data
         raise ValueError(f"Unknown stage selector: {stage}")
 
-    def get_camera_rgb(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
-        """Extract the camera-RGB intermediate used for the final color pipeline.
+    def get_camera_rgb_raw(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
+        """Extract the camera-RGB intermediate from a raw page for the color pipeline.
 
         This corresponds to the `rgb_camera` input passed into
-        `raw_render._render_camera_rgb(...)` during `render()`.
+        `raw_render._render_camera_rgb(...)` during `render_raw()`.
 
         Returns stage2 (normalized + ActiveArea-cropped), applies OpcodeList2 (if
         present), and then:
@@ -559,7 +559,50 @@ class DngPage(TiffPage):
         rgb_camera = np.clip(rgb_camera, 0.0, 1.0).astype(np.float32, copy=False)
         return rgb_camera
     
-    def render(
+    def get_preview_rgb(
+        self,
+        output_dtype: type = np.uint8
+    ) -> Optional[np.ndarray]:
+        """Decode RGB or YCBCR preview page to RGB array.
+        
+        For pages with PhotometricInterpretation of RGB or YCBCR.
+        Does NOT apply raw rendering pipeline - just decompresses and
+        converts color space if needed.
+        
+        This is for already-rendered preview images embedded in the DNG.
+        For raw preview pages (LINEAR_RAW), use render_raw() instead.
+        
+        Args:
+            output_dtype: Output data type (np.uint8 or np.uint16)
+            
+        Returns:
+            RGB image array (H, W, 3) or None if not a preview page
+            
+        Raises:
+            ValueError: If page is not RGB or YCBCR photometric type
+        """
+        photometric = self.photometric_name
+        
+        if photometric not in ("RGB", "YCBCR"):
+            raise ValueError(
+                f"get_preview_rgb() requires RGB or YCBCR page, got {photometric}"
+            )
+        
+        # Decode the image data
+        # Note: tifffile automatically converts JPEG-compressed YCBCR to RGB
+        try:
+            image = self.asarray()
+        except Exception as e:
+            logger.error(f"Failed to decode preview page: {e}")
+            return None
+        
+        # Convert dtype if needed
+        if image.dtype != output_dtype:
+            image = raw_render.convert_dtype(image, output_dtype)
+        
+        return image
+    
+    def render_raw(
         self,
         output_dtype: type = np.uint16,
         demosaic_algorithm: str = "RCD",
@@ -567,11 +610,14 @@ class DngPage(TiffPage):
         use_xmp: bool = True,
         rendering_params: dict = None,
     ) -> "np.ndarray | None":
-        """Render DNG page to RGB image with optional XMP-based adjustments.
+        """Render raw DNG page to RGB image with optional XMP-based adjustments.
         
-        Demosaics CFA data (if needed), applies color matrices, tone curves, and
-        converts to output color space. Supports XMP metadata for white balance,
-        exposure, and tone curve adjustments.
+        This method is specifically for raw pages (CFA or LINEAR_RAW). It demosaics
+        CFA data (if needed), applies color matrices, tone curves, and converts to
+        output color space. Supports XMP metadata for white balance, exposure, and
+        tone curve adjustments.
+        
+        For RGB/YCBCR preview pages, use get_preview_rgb() instead.
         
         Args:
             output_dtype: Output data type (np.uint8 or np.uint16)
@@ -589,18 +635,25 @@ class DngPage(TiffPage):
         
         Raises:
             UnsupportedDNGTagError: If strict=True and unsupported tags are encountered
-            ValueError: If rendering_params contains unsupported parameter names
+            ValueError: If rendering_params contains unsupported parameter names or if
+                page is not a raw page (CFA or LINEAR_RAW)
         
         Example:
             # Use XMP metadata from DNG file
-            rgb = page.render()
+            rgb = page.render_raw()
             
             # Override white balance
-            rgb = page.render(rendering_params={'temperature': 6500, 'tint': 10})
+            rgb = page.render_raw(rendering_params={'temperature': 6500, 'tint': 10})
             
             # Disable XMP, use only DNG tags
-            rgb = page.render(use_xmp=False)
+            rgb = page.render_raw(use_xmp=False)
         """
+        # Validate this is a raw page
+        if not (self.is_cfa or self.is_linear_raw):
+            raise ValueError(
+                f"render_raw() requires CFA or LINEAR_RAW page, got {self.photometric_name}"
+            )
+        
         try:
             unsupported = raw_render.validate_dng_tags(self, strict=strict)
             if unsupported and not strict:
@@ -608,7 +661,7 @@ class DngPage(TiffPage):
                     f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
                 )
 
-            rgb_camera = self.get_camera_rgb(demosaic_algorithm=demosaic_algorithm)
+            rgb_camera = self.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
             if rgb_camera is None:
                 logger.error("Failed to extract camera RGB from DNG")
                 return None
@@ -780,14 +833,51 @@ class DngFile(TiffFile):
             require=lambda p: p.is_linear_raw,
         )
 
-    def get_camera_rgb(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
-        """See `DngPage.get_camera_rgb`."""
+    def get_camera_rgb_raw(self, demosaic_algorithm: str = "RCD") -> Optional[np.ndarray]:
+        """See `DngPage.get_camera_rgb_raw`."""
         return self._forward_main_page(
-            "get_camera_rgb",
+            "get_camera_rgb_raw",
             demosaic_algorithm=demosaic_algorithm,
         )
 
-    def render(
+    def get_preview_rgb(
+        self,
+        output_dtype: type = np.uint8,
+    ) -> Optional[np.ndarray]:
+        """Decode RGB or YCBCR preview page from IFD0 to RGB array.
+        
+        In most DNG files, IFD0 contains a preview image. This method decodes
+        that preview. If IFD0 is a raw page instead, raises ValueError.
+        
+        For accessing preview pages at other IFD indices, use
+        get_flattened_pages()[ifd].get_preview_rgb().
+        
+        See `DngPage.get_preview_rgb` for full documentation.
+        
+        Args:
+            output_dtype: Output data type (np.uint8 or np.uint16)
+            
+        Returns:
+            RGB image array or None if decoding fails
+            
+        Raises:
+            ValueError: If IFD0 is a raw page instead of a preview
+        """
+        pages = self.get_flattened_pages()
+        if not pages:
+            raise ValueError("DNG file has no pages")
+        
+        ifd0 = pages[0]
+        if ifd0.is_cfa or ifd0.is_linear_raw:
+            raise ValueError(
+                f"IFD0 is a raw page ({ifd0.photometric_name}), not a preview. "
+                f"Use render_raw() for raw pages or access preview pages via "
+                f"get_flattened_pages()[ifd].get_preview_rgb()"
+            )
+        
+        return ifd0.get_preview_rgb(output_dtype=output_dtype)
+
+    def render_raw(
         self,
         output_dtype: type = np.uint16,
         demosaic_algorithm: str = "RCD",
@@ -795,9 +885,25 @@ class DngFile(TiffFile):
         use_xmp: bool = True,
         rendering_params: dict = None,
     ) -> "np.ndarray | None":
-        """See `DngPage.render`."""
+        """Render main raw DNG page to RGB image.
+        
+        To render a specific raw page (e.g., LINEAR_RAW preview at a different
+        resolution), use get_flattened_pages()[ifd].render_raw() instead.
+        
+        See `DngPage.render_raw` for full documentation.
+        
+        Args:
+            output_dtype: Output data type (np.uint8 or np.uint16)
+            demosaic_algorithm: Algorithm for CFA demosaicing
+            strict: If True, raise error on unsupported DNG tags
+            use_xmp: If True, extract rendering parameters from XMP metadata
+            rendering_params: Optional dict to override rendering parameters
+        
+        Returns:
+            Rendered RGB image or None if rendering fails
+        """
         return self._forward_main_page(
-            "render",
+            "render_raw",
             output_dtype=output_dtype,
             demosaic_algorithm=demosaic_algorithm,
             strict=strict,
@@ -1677,7 +1783,7 @@ def _generate_preview(
     """
     import cv2
     
-    rendered = page.render(
+    rendered = page.render_raw(
         output_dtype=np.uint8, demosaic_algorithm=demosaic_algorithm
     )
     if rendered is None:
@@ -1912,24 +2018,30 @@ def copy_dng(
 
 
 def decode_dng(
-    file: Union[str, Path, IO[bytes], DngFile],
+    file: Union[str, Path, IO[bytes], DngFile, DngPage],
     output_dtype: type = np.uint16,
     demosaic_algorithm: str = "RCD",
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
     rendering_params: dict = None,
+    strict: bool = True,
 ) -> np.ndarray:
     """
-    Decode a DNG file to a numpy array.
+    Decode a DNG file or page to a numpy array.
+    
+    Renders raw pages (CFA or LINEAR_RAW) or decodes preview pages (RGB/YCBCR).
+    When passed a file path/DngFile, renders the main raw page.
+    When passed a DngPage, renders that specific page.
     
     By default uses the Python SDK pipeline. When use_coreimage_if_available=True,
     uses macOS Core Image pipeline if available (supports XMP and rendering params).
     
     Args:
-        file: Path to DNG file, file-like object containing DNG data, or DngFile instance
+        file: Path to DNG file, file-like object, DngFile instance, or DngPage instance
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
         demosaic_algorithm: Demosaic algorithm for Python pipeline - "RCD" (default), "VNG", etc.
         use_coreimage_if_available: If True, use (MacOS) Core Image pipeline when available
+            Note: Not supported for DngPage input
         use_xmp: Whether to read XMP metadata for processing defaults (both pipelines)
         rendering_params: Optional dict to override rendering parameters. Supported keys:
             - 'Temperature': White balance temperature in Kelvin (float)
@@ -1946,6 +2058,37 @@ def decode_dng(
     Returns:
         RGB image array with shape (height, width, 3) and specified dtype
     """
+    # Handle DngPage input
+    if isinstance(file, DngPage):
+        page = file
+        
+        # Warn if Core Image was requested but not available for DngPage
+        # TODO: when copy_dng function is done we can create a DngFile with requested subifd as main page
+        if use_coreimage_if_available:
+            logger.warning("Core Image not supported for DngPage rendering it does not have a subifd option")
+        
+        # Check if page is raw or preview
+        if page.is_cfa or page.is_linear_raw:
+            # Raw page - render with parameters
+            result = page.render_raw(
+                output_dtype=output_dtype,
+                use_xmp=use_xmp,
+                rendering_params=rendering_params,
+                strict=strict,
+            )
+        else:
+            # Preview page - validate no rendering params
+            if rendering_params:
+                raise ValueError("Rendering parameters not allowed for preview pages (RGB/YCBCR)")
+            
+            # Decode preview page
+            result = page.get_preview_rgb(output_dtype=output_dtype)
+        
+        if result is None:
+            raise RuntimeError("Failed to decode DNG page")
+        
+        return result
+    
     # Try Core Image path if requested
     if use_coreimage_if_available:
         try:
@@ -1972,7 +2115,7 @@ def decode_dng(
     # Create or use DngFile
     dng_file = file if isinstance(file, DngFile) else DngFile(file)
 
-    result = dng_file.render(
+    result = dng_file.render_raw(
         output_dtype=output_dtype,
         demosaic_algorithm=demosaic_algorithm,
         use_xmp=use_xmp,

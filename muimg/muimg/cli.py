@@ -47,7 +47,8 @@ def _format_bytes(size):
 @click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
 @click.option("--tag", multiple=True, help="Show only tag(s) matching regex pattern(s) (case-insensitive)")
 @click.option("--exclude-tag", multiple=True, help="Exclude tag(s) matching regex pattern(s) (case-insensitive)")
-def dng_metadata(input_file, ifd, tag, exclude_tag):
+@click.option("--summary", is_flag=True, help="Show only IFD summary and exit")
+def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     """Display DNG file metadata."""
     import re
     import os
@@ -145,6 +146,11 @@ def dng_metadata(input_file, ifd, tag, exclude_tag):
     # Show total file size
     total_size = os.path.getsize(input_file)
     click.echo(f"Total file size: {_format_bytes(total_size)}")
+    
+    # If --summary flag is set, exit early
+    if summary:
+        sys.exit(0)
+    
     click.echo()
     
     # Determine which IFDs to show
@@ -423,6 +429,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 @dng.command(name="convert")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
+@click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
 @click.option("--exposure", type=float, help="Exposure adjustment in stops")
@@ -431,10 +438,13 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
 @click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
 def dng_convert(
-    input_file, output_file, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
+    input_file, output_file, ifd, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
 ):
     """Convert DNG file to image file with processing options."""
     import numpy as np
+    import re
+    from .dngio import DngFile
+    from .imgio import convert_dng
     
     # Map bit depth to numpy dtype
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
@@ -449,38 +459,74 @@ def dng_convert(
         params['Exposure2012'] = exposure
     if orientation is not None:
         params['orientation'] = orientation
-    # Note: noise_reduction not currently supported in rendering_params
     
-    success = convert_imgformat(
-        file=input_file,
-        output_path=output_file,
-        output_dtype=output_dtype,
-        use_xmp=not no_xmp,
-        use_coreimage_if_available=use_coreimage,
-        **params,
-    )
-
-    sys.exit(0 if success else 1)
-
-
-@cli.command(name="convert-image")
-@click.argument("input_file", type=click.Path(exists=True))
-@click.argument("output_file", type=click.Path())
-@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
-def convert_image(input_file, output_file, bit_depth):
-    """Convert image file to another format."""
-    import numpy as np
-    
-    # Map bit depth to numpy dtype
-    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
-    
-    success = convert_imgformat(
-        file=input_file,
-        output_path=output_file,
-        output_dtype=output_dtype,
-    )
-
-    sys.exit(0 if success else 1)
+    # Convert DNG
+    try:
+        # Default: render main raw page using file path
+        if ifd is None:
+            success = convert_dng(
+                file=input_file,
+                output=output_file,
+                output_dtype=output_dtype,
+                demosaic_algorithm='RCD',
+                strict=False,
+                use_xmp=not no_xmp,
+                rendering_params=params,
+                use_coreimage_if_available=use_coreimage,
+            )
+            
+            if not success:
+                click.echo("Error: Failed to convert main raw page", err=True)
+                sys.exit(1)
+            
+            click.echo(f"Converted main raw page to {output_file}")
+            return
+        
+        # Parse IFD specification for specific IFD
+        if ifd == "ifd0":
+            ifd_index = 0
+        elif match := re.match(r"subifd(\d+)$", ifd):
+            ifd_index = int(match.group(1)) + 1  # SubIFD[0] is flattened index 1
+        else:
+            click.echo(f"Error: Invalid IFD specification '{ifd}'. Use 'ifd0' or 'subifd0', 'subifd1', etc.", err=True)
+            sys.exit(1)
+        
+        # Specific IFD requested - open DNG and get the page
+        with DngFile(input_file) as dng:
+            pages = dng.get_flattened_pages()
+            
+            if ifd_index >= len(pages):
+                click.echo(f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).", err=True)
+                sys.exit(1)
+            
+            page = pages[ifd_index]
+            
+            # Validate parameters before rendering
+            if params and not (page.is_cfa or page.is_linear_raw):
+                click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
+                sys.exit(1)
+            
+            # Use convert_dng to handle rendering and saving
+            success = convert_dng(
+                file=page,
+                output=output_file,
+                output_dtype=output_dtype,
+                demosaic_algorithm='RCD',
+                strict=False,
+                use_xmp=not no_xmp,
+                rendering_params=params,
+                use_coreimage_if_available=use_coreimage,
+            )
+            
+            if not success:
+                click.echo(f"Error: Failed to convert {ifd}", err=True)
+                sys.exit(1)
+            
+            click.echo(f"Extracted {ifd} ({page.photometric_name}, {page.imagewidth}x{page.imagelength}) to {output_file}")
+            
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
 
 @dng.command(name="copy")
@@ -583,6 +629,22 @@ def dng_copy(
         logger.exception("Failed to copy DNG")
         sys.exit(1)
 
+
+@cli.command(name="convert-image")
+@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("output_file", type=click.Path())
+@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
+def convert_image(input_file, output_file, bit_depth):
+    """Convert image file to another format."""
+    import numpy as np
+    
+    success = convert_imgformat(
+        file=input_file,
+        output_path=output_file,
+        output_dtype=np.uint16 if bit_depth == "16" else np.uint8
+    )
+
+    sys.exit(0 if success else 1)
 
 @cli.group(name="google-photos")
 def google_photos():
