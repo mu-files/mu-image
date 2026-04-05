@@ -91,6 +91,7 @@ CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {v: k for k, v in CFA_PATTERN
 # - "dng_raw": Must be in IFD containing raw image data (CFA or LINEAR_RAW)
 # - "dng_raw:cfa": A raw IFD with PhotometricInterpretation = CFA
 # - "dng_profile": Can be in IFD 0 or Camera Profile IFDs
+# - "dng_preview": Must be in Preview NewSubFileType
 
 
 @dataclass
@@ -486,12 +487,12 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ProfileCopyright": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 50942
     "ForwardMatrix1": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 50964 - 3x3 matrix
     "ForwardMatrix2": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 50965 - 3x3 matrix
-    "PreviewApplicationName": TagSpec("s", None, dng_ifd="any"),  # 50966
-    "PreviewApplicationVersion": TagSpec("s", None, dng_ifd="any"),  # 50967
-    "PreviewSettingsName": TagSpec("s", None, dng_ifd="any"),  # 50968
-    "PreviewSettingsDigest": TagSpec("B", 16, dng_ifd="any"),  # 50969
-    "PreviewColorSpace": TagSpec("I", 1, dng_ifd="any"),  # 50970
-    "PreviewDateTime": TagSpec("s", None, dng_ifd="any"),  # 50971
+    "PreviewApplicationName": TagSpec("s", None, dng_ifd="dng_preview"),  # 50966
+    "PreviewApplicationVersion": TagSpec("s", None, dng_ifd="dng_preview"),  # 50967
+    "PreviewSettingsName": TagSpec("s", None, dng_ifd="dng_preview"),  # 50968
+    "PreviewSettingsDigest": TagSpec("B", 16, dng_ifd="dng_preview"),  # 50969
+    "PreviewColorSpace": TagSpec("I", 1, dng_ifd="dng_preview"),  # 50970
+    "PreviewDateTime": TagSpec("s", None, dng_ifd="dng_preview"),  # 50971
     "RawImageDigest": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 50972
     "OriginalRawFileDigest": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 50973
     "SubTileBlockSize": TagSpec("H", 2, dng_ifd="dng_raw"),  # 50974
@@ -517,7 +518,9 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "BaselineExposureOffset": TagSpec("2i", 1, dng_ifd="dng_ifd0"),  # 51109
     "DefaultBlackRender": TagSpec("I", 1, dng_ifd="dng_ifd0"),  # 51110
     "NewRawImageDigest": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 51111
-    "RawToPreviewGain": TagSpec("d", 1, dng_ifd="dng_raw"),  # 51112
+    "RawToPreviewGain": TagSpec("d", 1, dng_ifd="dng_preview"),  # 51112
+    "CacheBlob": TagSpec("B", None, dng_ifd="dng_preview"),  # 51113
+    "CacheVersion": TagSpec("I", 1, dng_ifd="dng_preview"),  # 51114
     "DefaultUserCrop": TagSpec("2I", 4, dng_ifd="dng_raw"),  # 51125
     "DepthFormat": TagSpec("H", 1, dng_ifd="any"),  # 51177
     "DepthNear": TagSpec("2I", 1, dng_ifd="any"),  # 51178
@@ -538,7 +541,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ProfileHueSatMapData3": TagSpec("f", None, dng_ifd="dng_profile"),  # 52537
     "ReductionMatrix3": TagSpec("2i", None, dng_ifd="dng_profile"),  # 52538
     "RGBTables": TagSpec("B", None, dng_ifd="dng_profile"),  # 52543
-    "ProfileGainTableMap2": TagSpec("B", None, dng_ifd="any"),  # 52544
+    "ProfileGainTableMap2": TagSpec("B", None, dng_ifd="dng_profile"),  # 52544
     "ColumnInterleaveFactor": TagSpec("H", 1, dng_ifd="dng_raw"),  # 52547
     "ImageSequenceInfo": TagSpec("B", None, dng_ifd="any"),  # 52548
     "ProfileToneMethod": TagSpec("I", 1, dng_ifd="dng_profile"),  # 52549 (not in tifffile)
@@ -681,7 +684,10 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
             value = bytes(value)
             return (dtype, len(value), value)
         if hasattr(value, '__array__'):
-            value = np.asarray(value).tobytes()
+            arr = np.asarray(value)
+            # use C-order to preserve exact bytes
+            # this ensures get_tag() -> add_tag() roundtrip works correctly
+            value = arr.tobytes(order='C')
             return (dtype, len(value), value)
         # Single byte
         return (dtype, 1, bytes([int(value)]))
@@ -745,6 +751,34 @@ def get_cfa_pattern_codes(pattern: str) -> tuple:
         Returns (0, 1, 1, 2) as default if pattern not recognized.
     """
     return CFA_PATTERN_TO_CODES.get(pattern, (0, 1, 1, 2))
+
+
+def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: List[str]) -> 'MetadataTags':
+    """Filter tags to only those belonging to specified IFD categories.
+    
+    Args:
+        tags: Input tags to filter
+        include_categories: List of IFD categories to keep (e.g., ["any", "dng_ifd0", "exif"])
+        
+    Returns:
+        New MetadataTags with only tags matching the specified categories
+    """
+    from . import tiff_metadata as tm
+    
+    filtered = tm.MetadataTags()
+    
+    for code, dtype, count, value, _ in tags:
+        _, tag_name, spec = resolve_tag(int(code))
+        if tag_name is None or spec is None:
+            # Unknown tag - preserve it (user may have custom/proprietary tags)
+            filtered.add_raw_tag(int(code), int(dtype), int(count), value)
+            continue
+        
+        # Check if tag's dng_ifd category is in the include list
+        if spec.dng_ifd in include_categories:
+            filtered.add_raw_tag(int(code), int(dtype), int(count), value)
+    
+    return filtered
 
 
 def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Optional[TagSpec]]:

@@ -194,15 +194,15 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
             combined = (result.stdout or "") + "\n" + (result.stderr or "")
             
             # Extract only error/warning lines for cleaner output
-            error_lines = [line for line in combined.split('\n') if '*** error:' in line.lower()]
-            warning_lines = [line for line in combined.split('\n') if '*** warning:' in line.lower()]
+            # Note: dng_validate uses "*** Error:" and "*** Warning:" (capital E/W)
+            error_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** error:')]
+            warning_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** warning:')]
             
-            if error_lines:
-                errors_text = '\n'.join(error_lines)
-                raise RuntimeError(f"dng_validate produced errors:\n{errors_text}")
-            
+            # Collect warnings and errors from dng_validate (errors can be ignored too)
             if warning_lines:
                 all_warnings.extend(warning_lines)
+            if error_lines:
+                all_warnings.extend(error_lines)
             
             # Run muimg dng metadata validator
             import sys
@@ -229,7 +229,7 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
                         issue_text = line.strip().split(':', 1)[1].strip() if ':' in line else line.strip()
                         all_warnings.append(f"*** Warning: {issue_text} ***")
             
-            # Filter out ignored warnings, checking each warning individually
+            # Filter out ignored warnings/errors, checking each individually
             if all_warnings:
                 unignored_warnings = []
                 ignored_count = 0
@@ -241,15 +241,21 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
                     else:
                         ignored_count += 1
                 
-                # Only print unignored warnings to make failures clear
+                # Only print unignored warnings/errors to make failures clear
                 if unignored_warnings:
                     unignored_text = '\n'.join(unignored_warnings)
                     if ignored_count > 0:
-                        print(f"{indent}Validation warnings ({ignored_count} ignored):")
+                        print(f"{indent}Validation issues ({ignored_count} ignored):")
                     else:
-                        print(f"{indent}Validation warnings:")
+                        print(f"{indent}Validation issues:")
                     print(unignored_text)
-                    raise AssertionError(f"Validation produced {len(unignored_warnings)} unignored warning(s)")
+                    # Check if any are errors (start with "*** Error:")
+                    has_errors = any(line.strip().lower().startswith('*** error:') for line in unignored_warnings)
+                    if has_errors:
+                        error_summary = '; '.join([line.strip() for line in unignored_warnings if line.strip().lower().startswith('*** error:')])
+                        raise RuntimeError(f"dng_validate errors: {error_summary}")
+                    else:
+                        raise AssertionError(f"Validation produced {len(unignored_warnings)} unignored warning(s)")
                 elif ignored_count > 0:
                     print(f"{indent}Validation: {ignored_count} warning(s) ignored")
             

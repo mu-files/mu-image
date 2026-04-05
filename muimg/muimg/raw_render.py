@@ -20,6 +20,70 @@ from . import _raw_render
 logger = logging.getLogger(__name__)
 
 
+def _get_ifd0_tag(
+    ifd0: "dngio.DngPage",
+    raw_page: Optional["dngio.DngPage"],
+    tag: Union[str, int],
+    return_type: Optional[type] = None
+) -> Optional:
+    """Get a tag value from IFD0 with validation.
+    
+    Internal helper for _render_camera_rgb() that enforces only IFD0/profile
+    tags are accessed, preventing coding errors where SubIFD-specific tags
+    are requested.
+    
+    Args:
+        ifd0: The IFD0 page (must pass is_ifd0 assertion)
+        raw_page: Optional raw page to check as fallback for ill-formed files
+        tag: Tag name or code
+        return_type: Optional type conversion
+        
+    Returns:
+        Tag value or None if not found
+        
+    Raises:
+        AssertionError: If tag is not marked as dng_ifd0 or dng_profile
+    """
+    from .tiff_metadata import resolve_tag
+    
+    # Resolve tag to get spec
+    tag_id, tag_name, spec = resolve_tag(tag)
+    
+    # Assert tag is known and is IFD0 or profile tag (coding error check)
+    assert spec is not None, \
+        f"Tag '{tag_name or tag}' is not in TIFF_TAG_TYPE_REGISTRY"
+    assert spec.dng_ifd in ("dng_ifd0", "dng_profile", "any"), \
+        f"Tag '{tag_name}' (dng_ifd={spec.dng_ifd}) is not an IFD0/profile tag"
+    
+    # Try IFD0 first
+    value = ifd0.get_tag(tag, return_type)
+    
+    # Fall back to raw_page for ill-formed files where tags might be in wrong IFD
+    if value is None and raw_page is not None:
+        value = raw_page.get_tag(tag, return_type, no_inherit=True)
+    
+    return value
+
+
+# DNG Opcode IDs to friendly names (DNG Spec 1.7.1.0 section 5.2.4)
+OPCODE_NAMES = {
+    1: 'WarpRectilinear',
+    2: 'WarpFisheye',
+    3: 'FixVignetteRadial',
+    4: 'FixBadPixelsConstant',
+    5: 'FixBadPixelsList',
+    6: 'TrimBounds',
+    7: 'MapTable',
+    8: 'MapPolynomial',
+    9: 'GainMap',
+    10: 'DeltaPerRow',
+    11: 'DeltaPerColumn',
+    12: 'ScalePerRow',
+    13: 'ScalePerColumn',
+    14: 'WarpRectilinear2',
+}
+
+
 class ColorSpace(Enum):
     """Color space definitions with native gamma encoding.
     
@@ -1439,6 +1503,113 @@ def parse_opcode_list(data: bytes) -> list[dict]:
     return opcodes
 
 
+def get_opcode_summary(opcode_list_data: bytes, detailed: bool = False) -> str:
+    """Get a human-readable summary of opcodes in an OpcodeList.
+    
+    Args:
+        opcode_list_data: Raw bytes from OpcodeList1/2/3 tag
+        detailed: If True, return multi-line detailed summary with parameters
+        
+    Returns:
+        String like "3 opcodes: GainMap, WarpRectilinear, FixVignetteRadial"
+        or detailed multi-line summary if detailed=True
+        or "Invalid opcode list" if parsing fails
+    """
+    try:
+        opcodes = parse_opcode_list(opcode_list_data)
+        if not opcodes:
+            return "0 opcodes"
+        
+        opcode_ids = [op.get('id', 0) for op in opcodes]
+        opcode_names = [OPCODE_NAMES.get(oid, f'Unknown({oid})') for oid in opcode_ids]
+        
+        count = len(opcodes)
+        
+        if not detailed:
+            names_str = ', '.join(opcode_names)
+            return f"{count} opcode{'s' if count != 1 else ''}: {names_str}"
+        
+        # Detailed multi-line summary
+        lines = [f"{count} opcode{'s' if count != 1 else ''}:"]
+        for i, op in enumerate(opcodes):
+            opcode_id = op.get('id', 0)
+            name = OPCODE_NAMES.get(opcode_id, f'Unknown({opcode_id})')
+            lines.append(f"  [{i}] {name}")
+            
+            # Add type-specific details
+            if op.get('type') == 'MapPolynomial':
+                area = op.get('area', {})
+                plane = op.get('plane', '?')
+                planes = op.get('planes', '?')
+                row_pitch = op.get('row_pitch', '?')
+                col_pitch = op.get('col_pitch', '?')
+                degree = op.get('degree', '?')
+                coeffs = op.get('coefficients', np.array([]))
+                
+                lines.append(
+                    f"      area=[{area.get('top', '?')}, {area.get('left', '?')}, "
+                    f"{area.get('bottom', '?')}, {area.get('right', '?')}], "
+                    f"plane={plane}, planes={planes}, pitch=[{row_pitch}, {col_pitch}]"
+                )
+                if len(coeffs) <= 5:
+                    coeffs_str = '[' + ', '.join(f'{c:g}' for c in coeffs) + ']'
+                else:
+                    coeffs_str = f'[{coeffs[0]:g}, ..., {coeffs[-1]:g}] ({len(coeffs)} values)'
+                lines.append(f"      degree={degree}, coeffs={coeffs_str}")
+            
+            elif op.get('type') == 'GainMap':
+                area = op.get('area', {})
+                plane = op.get('plane', '?')
+                planes = op.get('planes', '?')
+                points_v = op.get('points_v', '?')
+                points_h = op.get('points_h', '?')
+                spacing_v = op.get('spacing_v', '?')
+                spacing_h = op.get('spacing_h', '?')
+                gain_vals = op.get('gain_values', np.array([]))
+                
+                lines.append(
+                    f"      area=[{area.get('top', '?')}, {area.get('left', '?')}, "
+                    f"{area.get('bottom', '?')}, {area.get('right', '?')}], "
+                    f"plane={plane}, planes={planes}, points=[{points_v}x{points_h}]"
+                )
+                lines.append(f"      spacing=[{spacing_v:g}, {spacing_h:g}]")
+                if len(gain_vals) > 0:
+                    lines.append(f"      gain_range=[{gain_vals.min():g}, {gain_vals.max():g}]")
+            
+            elif op.get('type') == 'WarpRectilinear':
+                planes_data = op.get('planes', [])
+                center_x = op.get('center_x', '?')
+                center_y = op.get('center_y', '?')
+                
+                lines.append(f"      center=[{center_x:g}, {center_y:g}], planes={len(planes_data)}")
+                for p_idx, plane_data in enumerate(planes_data[:3]):  # Show max 3 planes
+                    radial = plane_data.get('radial', [])
+                    tangential = plane_data.get('tangential', [])
+                    radial_str = '[' + ', '.join(f'{r:g}' for r in radial) + ']' if radial else '[]'
+                    tangential_str = (
+                        '[' + ', '.join(f'{t:g}' for t in tangential) + ']' if tangential else '[]'
+                    )
+                    lines.append(
+                        f"      plane[{p_idx}]: radial={radial_str}, tangential={tangential_str}"
+                    )
+            
+            elif op.get('type') == 'FixVignetteRadial':
+                area = op.get('area', {})
+                plane = op.get('plane', '?')
+                params = op.get('params', [])
+                
+                params_str = '[' + ', '.join(f'{p:g}' for p in params) + ']' if params else '[]'
+                lines.append(
+                    f"      area=[{area.get('top', '?')}, {area.get('left', '?')}, "
+                    f"{area.get('bottom', '?')}, {area.get('right', '?')}], "
+                    f"plane={plane}, params={params_str}"
+                )
+        
+        return '\n'.join(lines)
+    except Exception as e:
+        return f"Invalid opcode list: {e}"
+
+
 def parse_area_spec(data: bytes, offset: int = 0) -> tuple[dict, int]:
     """Parse dng_area_spec from opcode data.
     
@@ -1599,14 +1770,6 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
     """
     result = data.astype(np.float32)
     
-    opcode_names = {
-        1: 'WarpRectilinear', 2: 'WarpFisheye', 3: 'FixVignetteRadial',
-        4: 'FixBadPixelsConstant', 5: 'FixBadPixelsList', 6: 'TrimBounds',
-        7: 'MapTable', 8: 'MapPolynomial', 9: 'GainMap',
-        10: 'DeltaPerRow', 11: 'DeltaPerColumn', 12: 'ScalePerRow',
-        13: 'ScalePerColumn', 14: 'WarpRectilinear2',
-    }
-    
     for opcode in opcodes:
         opcode_type = opcode.get('type')
         
@@ -1672,7 +1835,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             )
             
         else:
-            name = opcode_names.get(opcode['id'], f"Unknown({opcode['id']})")
+            name = OPCODE_NAMES.get(opcode['id'], f"Unknown({opcode['id']})")
             logger.warning(f"Skipping unsupported opcode: {name}")
     
     return result
@@ -1695,14 +1858,6 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
         Processed CFA data
     """
     result = data.astype(np.float32)
-    
-    opcode_names = {
-        1: 'WarpRectilinear', 2: 'WarpFisheye', 3: 'FixVignetteRadial',
-        4: 'FixBadPixelsConstant', 5: 'FixBadPixelsList', 6: 'TrimBounds',
-        7: 'MapTable', 8: 'MapPolynomial', 9: 'GainMap',
-        10: 'DeltaPerRow', 11: 'DeltaPerColumn', 12: 'ScalePerRow',
-        13: 'ScalePerColumn', 14: 'WarpRectilinear2',
-    }
     
     for opcode in opcodes:
         opcode_type = opcode.get('type')
@@ -1737,7 +1892,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
             )
             
         else:
-            name = opcode_names.get(opcode['id'], f"Unknown({opcode['id']})")
+            name = OPCODE_NAMES.get(opcode['id'], f"Unknown({opcode['id']})")
             logger.warning(f"Skipping unsupported CFA opcode: {name}")
     
     return result
@@ -2559,42 +2714,48 @@ def apply_post_rendering_operations(
 
 
 def _render_camera_rgb(
-    page: "dngio.DngPage",
+    ifd0: "dngio.DngPage",
     rgb_camera: np.ndarray,
     output_dtype: type,
+    raw_page: Optional["dngio.DngPage"] = None,
     rendering_params: dict = None,
+    use_xmp: bool = True,
 ) -> np.ndarray:
     import time
 
     timings = {}
 
+    # Assert this is IFD0 (coding error check)
+    assert ifd0.is_ifd0, "_render_camera_rgb() requires IFD0, got a SubIFD page"
+
     try:
-        opcode_list3 = page.get_tag("OpcodeList3")
-        if opcode_list3 is not None:
-            try:
-                opcodes = parse_opcode_list(bytes(opcode_list3))
-                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
-                rgb_camera = apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
-            except Exception as e:
-                logger.warning(f"Failed to apply OpcodeList3: {e}")
-
-        crop_origin = page.get_tag("DefaultCropOrigin")
-        crop_size = page.get_tag("DefaultCropSize")
-
-        if crop_origin is not None and crop_size is not None:
-            crop_x = int(crop_origin[0])
-            crop_y = int(crop_origin[1])
-            crop_w = int(crop_size[0])
-            crop_h = int(crop_size[1])
-            rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
-
+        # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
+        extracted_params = supported_xmp_to_dict(ifd0) if use_xmp else {}
+        
+        # Merge rendering_params overrides (with validation)
+        if rendering_params is not None:
+            # Render-method specific parameters (not from XMP)
+            render_specific_params = {'highlight_preserving_exposure'}
+            # Combine XMP params and render-specific params
+            supported_params = SUPPORTED_XMP_PARAMS | render_specific_params
+            
+            for key, value in rendering_params.items():
+                if key not in supported_params:
+                    raise ValueError(
+                        f"Unsupported rendering parameter: {key}. "
+                        f"Supported: {supported_params}"
+                    )
+                extracted_params[key] = value
+        
+        # Use extracted_params for rendering (None if empty dict)
+        rendering_params = extracted_params if extracted_params else None
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)
         # SDK ref: dng_render.cpp lines 869-1070
         # =====================================================================
         
         # Get ColorMatrix1 (XYZ to Camera, 3x3)
-        color_matrix1 = page.get_tag("ColorMatrix1")
+        color_matrix1 = _get_ifd0_tag(ifd0, raw_page, "ColorMatrix1")
         if color_matrix1 is None:
             logger.warning("No ColorMatrix1 found, using identity")
             color_matrix1 = np.eye(3, dtype=np.float64)
@@ -2602,28 +2763,28 @@ def _render_camera_rgb(
             color_matrix1 = np.asarray(color_matrix1, dtype=np.float64)
         
         # Get ColorMatrix2 for dual-illuminant interpolation
-        color_matrix2 = page.get_tag("ColorMatrix2")
+        color_matrix2 = _get_ifd0_tag(ifd0, raw_page, "ColorMatrix2")
         if color_matrix2 is not None:
             color_matrix2 = np.asarray(color_matrix2, dtype=np.float64)
         
         # Get ForwardMatrix1/2 (camera to PCS, 3x3)
         # SDK ref: dng_color_spec.cpp lines 126-128, 177, 213, 586-596
         # NormalizeForwardMatrix is called BEFORE AnalogBalance/CameraCalibration
-        forward_matrix1 = _normalize_forward_matrix(page.get_tag("ForwardMatrix1"))
-        forward_matrix2 = _normalize_forward_matrix(page.get_tag("ForwardMatrix2"))
+        forward_matrix1 = _normalize_forward_matrix(_get_ifd0_tag(ifd0, raw_page, "ForwardMatrix1"))
+        forward_matrix2 = _normalize_forward_matrix(_get_ifd0_tag(ifd0, raw_page, "ForwardMatrix2"))
         
         # Get CameraCalibration1/2 matrices (3x3, default to identity)
         # SDK ref: dng_color_spec.cpp lines 134-166
-        camera_calib1 = page.get_tag("CameraCalibration1")
-        camera_calib2 = page.get_tag("CameraCalibration2")
+        camera_calib1 = _get_ifd0_tag(ifd0, raw_page, "CameraCalibration1")
+        camera_calib2 = _get_ifd0_tag(ifd0, raw_page, "CameraCalibration2")
         if camera_calib1 is None:
             camera_calib1 = np.eye(3, dtype=np.float64)
         if camera_calib2 is None:
             camera_calib2 = np.eye(3, dtype=np.float64)
         
         # Get calibration illuminant temperatures
-        illum1 = page.get_tag("CalibrationIlluminant1")
-        illum2 = page.get_tag("CalibrationIlluminant2")
+        illum1 = _get_ifd0_tag(ifd0, raw_page, "CalibrationIlluminant1")
+        illum2 = _get_ifd0_tag(ifd0, raw_page, "CalibrationIlluminant2")
         temp1 = illuminant_to_temperature(illum1) if illum1 is not None else None
         temp2 = illuminant_to_temperature(illum2) if illum2 is not None else None
         
@@ -2640,8 +2801,8 @@ def _render_camera_rgb(
             white_xy_override = temp_tint_to_xy(temp, tint)
         else:
             # Use DNG tags
-            as_shot = page.get_tag("AsShotNeutral")
-            as_shot_xy = page.get_tag("AsShotWhiteXY")
+            as_shot = _get_ifd0_tag(ifd0, raw_page, "AsShotNeutral")
+            as_shot_xy = _get_ifd0_tag(ifd0, raw_page, "AsShotWhiteXY")
             
             if as_shot is not None and hasattr(as_shot, '__len__') and len(as_shot) >= 3:
                 camera_neutral = np.array(as_shot[:3], dtype=np.float64)
@@ -2652,7 +2813,7 @@ def _render_camera_rgb(
         
         # Get AnalogBalance
         ab_diag = np.eye(3, dtype=np.float64)
-        analog_balance = page.get_tag("AnalogBalance")
+        analog_balance = _get_ifd0_tag(ifd0, raw_page, "AnalogBalance")
         if analog_balance is not None:
             analog_balance = np.asarray(analog_balance, dtype=np.float64)
             if analog_balance.size >= 3:
@@ -2731,13 +2892,13 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp lines 917-955, 1822-1837
         # Applied AFTER camera->ProPhoto, BEFORE exposure ramp
         # =====================================================================
-        hue_sat_dims = page.get_tag("ProfileHueSatMapDims")
-        hue_sat_data1 = page.get_tag("ProfileHueSatMapData1")
+        hue_sat_dims = _get_ifd0_tag(ifd0, raw_page, "ProfileHueSatMapDims")
+        hue_sat_data1 = _get_ifd0_tag(ifd0, raw_page, "ProfileHueSatMapData1")
         
         if hue_sat_dims is not None and hue_sat_data1 is not None:
             hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
             hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
-            hue_sat_data2 = page.get_tag("ProfileHueSatMapData2")
+            hue_sat_data2 = _get_ifd0_tag(ifd0, raw_page, "ProfileHueSatMapData2")
             
             # Interpolate between dual illuminant HueSatMaps if available
             if hue_sat_data2 is not None and temp1 is not None and temp2 is not None and temp1 != temp2:
@@ -2767,8 +2928,8 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp line 1882: exposureWeightGain = pow(2.0, fBaselineExposure)
         # fBaselineExposure = TotalBaselineExposure (Stage3Gain = 1.0 for normal images)
         # Note: PGTM uses only baseline exposure, NOT user exposure
-        baseline_exposure = page.get_tag("BaselineExposure") or 0.0
-        baseline_exposure_offset = page.get_tag("BaselineExposureOffset") or 0.0
+        baseline_exposure = _get_ifd0_tag(ifd0, raw_page, "BaselineExposure") or 0.0
+        baseline_exposure_offset = _get_ifd0_tag(ifd0, raw_page, "BaselineExposureOffset") or 0.0
         total_baseline_exposure = baseline_exposure + baseline_exposure_offset
         
         # Add user exposure from rendering_params if provided
@@ -2779,18 +2940,24 @@ def _render_camera_rgb(
         logger.debug(f"Exposure computation: baseline={baseline_exposure:.4f}, offset={baseline_exposure_offset:.4f}, "
                     f"total_baseline={total_baseline_exposure:.4f}, user={user_exposure:.4f}, final={exposure:.4f}")
 
-        # Check for PGTM2 first (takes precedence), then fall back to PGTM1
-        pgtm_data = page.get_tag("ProfileGainTableMap2")
+        # Check for PGTM2 first (takes precedence), then fall back to PGTM
+        # Per DNG spec: PGTM2 (DNG 1.7) uses IFD0 or Camera Profile IFD
+        # PGTM (DNG 1.6) was intended for IFD0 but spec mistakenly said "Raw IFD"
+        # Check raw_page first for PGTM (for files following the mistaken spec), then IFD0
+        pgtm_data = _get_ifd0_tag(ifd0, raw_page, "ProfileGainTableMap2")
         is_version2 = pgtm_data is not None
+        
         if pgtm_data is None:
-            pgtm_data = page.get_tag("ProfileGainTableMap")
+            # Try PGTM on raw_page first (for DNG 1.6 files following mistaken spec)
+            if raw_page:
+                pgtm_data = raw_page.get_tag("ProfileGainTableMap")
         
         if pgtm_data is not None:
             t0 = time.perf_counter()
             try:
                 # PGTM uses file's byte order (from TIFF header)
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
-                byteorder = getattr(getattr(page, "parent", None), "byteorder", "<")
+                byteorder = getattr(getattr(ifd0, "parent", None), "byteorder", "<")
                 pgtm = parse_profile_gain_table_map(
                     bytes(pgtm_data),
                     is_version2=is_version2,
@@ -2822,8 +2989,8 @@ def _render_camera_rgb(
         # Note: exposure = total_baseline_exposure + user_exposure (computed above)
         
         # Extract DNG tags for exposure_ramp
-        shadow_scale = page.get_tag("ShadowScale") or 1
-        default_black_render = page.get_tag("DefaultBlackRender") or 0
+        shadow_scale = _get_ifd0_tag(ifd0, raw_page, "ShadowScale") or 1
+        default_black_render = _get_ifd0_tag(ifd0, raw_page, "DefaultBlackRender") or 0
         
         logger.debug(f"Shadow params: shadow_scale={shadow_scale:.4f}, default_black_render={default_black_render}")
         
@@ -2850,8 +3017,8 @@ def _render_camera_rgb(
         # Applied AFTER exposure ramp, BEFORE tone curve
         # =====================================================================
         look_table = None
-        look_table_dims = page.get_tag("ProfileLookTableDims")
-        look_table_data = page.get_tag("ProfileLookTableData")
+        look_table_dims = _get_ifd0_tag(ifd0, raw_page, "ProfileLookTableDims")
+        look_table_data = _get_ifd0_tag(ifd0, raw_page, "ProfileLookTableData")
         
         if look_table_dims is not None and look_table_data is not None:
             look_hue_divs, look_sat_divs, look_val_divs = int(look_table_dims[0]), int(look_table_dims[1]), int(look_table_dims[2])
@@ -2904,8 +3071,8 @@ def _render_camera_rgb(
         # Get ProfileToneCurve from DNG tags, or use ACR3 default
         # SDK ref: dng_render.cpp lines 2153-2162
         tag_profile_curve = None
-        if page.get_tag("ProfileToneCurve") is not None:
-            profile_tone_curve = page.get_tag("ProfileToneCurve")
+        if _get_ifd0_tag(ifd0, raw_page, "ProfileToneCurve") is not None:
+            profile_tone_curve = _get_ifd0_tag(ifd0, raw_page, "ProfileToneCurve")
             if len(profile_tone_curve) >= 4:
                 # ProfileToneCurve is array of 2N values: [x0, y0, x1, y1, ...]
                 curve_data = np.asarray(profile_tone_curve, dtype=np.float64)
@@ -2950,7 +3117,7 @@ def _render_camera_rgb(
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
         t0 = time.perf_counter()
-        orientation = page.get_tag("Orientation")
+        orientation = _get_ifd0_tag(ifd0, raw_page, "Orientation")
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
         timings['orientation'] = time.perf_counter() - t0

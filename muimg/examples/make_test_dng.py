@@ -73,9 +73,9 @@ def make_test_dng(
     source_size = input_file.stat().st_size
     
     # Create metadata override
-    ifd0_tags = MetadataTags()
+    extratags = MetadataTags()
     if not preserve_unique_camera_model:
-        ifd0_tags.add_tag("UniqueCameraModel", "muimg: test")
+        extratags.add_tag("UniqueCameraModel", "muimg: test")
     
     # If source is already small enough - still need to copy to inject new metadata and generate preview
     if source_size <= target_size:
@@ -84,7 +84,7 @@ def make_test_dng(
                 source_file=input_file,
                 destination_file=output_file,
                 generate_preview=generate_preview,
-                ifd0_tags=ifd0_tags,
+                extratags=extratags,
             )
         return source_size, 1.0, False
     
@@ -100,10 +100,9 @@ def make_test_dng(
             scale=scale,
             demosaic=True,
             demosaic_algorithm="DNGSDK_BILINEAR",
-            jxl_distance=jxl_distance,
-            jxl_effort=jxl_effort,
+            compression_args={'distance': jxl_distance, 'effort': jxl_effort},
             generate_preview=generate_preview,
-            ifd0_tags=ifd0_tags,
+            extratags=extratags,
         )
         
         size = stream.tell()

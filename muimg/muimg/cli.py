@@ -42,6 +42,34 @@ def _format_bytes(size):
     return f"{size:.1f} TB"
 
 
+def _parse_ifd_spec(ifd_spec):
+    """Parse IFD specification string to flattened page index.
+    
+    Args:
+        ifd_spec: String like 'ifd0', 'subifd0', 'subifd1', etc., or None for main page
+        
+    Returns:
+        Tuple of (ifd_index, ifd_name) where ifd_index is the flattened page index,
+        or (None, "main raw page") if ifd_spec is None
+        
+    Raises:
+        click.ClickException: If IFD specification is invalid
+    """
+    import re
+    
+    if ifd_spec is None:
+        return None, "main raw page"
+    elif ifd_spec == "ifd0":
+        return 0, "ifd0"
+    elif match := re.match(r"subifd(\d+)$", ifd_spec):
+        subifd_num = int(match.group(1))
+        return subifd_num + 1, ifd_spec  # SubIFD[0] is flattened index 1
+    else:
+        raise click.ClickException(
+            f"Invalid IFD specification '{ifd_spec}'. Use 'ifd0' or 'subifd0', 'subifd1', etc."
+        )
+
+
 @dng.command(name="metadata")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
@@ -53,8 +81,9 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     import re
     import os
     from tifffile import PHOTOMETRIC, COMPRESSION
-    from .dngio import DngFile
+    from .dngio import DngFile, SubFileType
     from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY
+    from .common import enum_display_name
     
     try:
         f = DngFile(input_file)
@@ -87,14 +116,6 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                 click.echo(f"Error: Invalid --exclude-tag regex pattern '{pattern}': {e}", err=True)
                 sys.exit(1)
     
-    # NewSubfileType enum values (from DNG SDK)
-    SUBFILE_TYPES = {
-        0: "Main",
-        1: "Preview",
-        4: "TransparencyMask",
-        8: "DepthMap",
-    }
-    
     # Show summary of available IFDs
     click.echo(f"File contains {len(pages)} IFD(s):")
     for i, p in enumerate(pages):
@@ -119,25 +140,15 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             compression_ratio = 0
         
         # Get compression type name
-        compression_name = "uncompressed"
-        if hasattr(p, 'compression'):
-            if p.compression == COMPRESSION.JPEGXL or p.compression == COMPRESSION.JPEGXL_DNG:
-                compression_name = "JXL compression"
-            elif p.compression == COMPRESSION.JPEG:
-                compression_name = "JPEG compression"
-            elif p.compression == COMPRESSION.ADOBE_DEFLATE or p.compression == COMPRESSION.DEFLATE:
-                compression_name = "Deflate compression"
-            elif p.compression == COMPRESSION.LZW:
-                compression_name = "LZW compression"
-            elif p.compression == COMPRESSION.LZMA:
-                compression_name = "LZMA compression"
-            elif p.compression != COMPRESSION.NONE:
-                compression_name = f"compression {p.compression}"
+        if hasattr(p, 'compression') and p.compression != COMPRESSION.NONE:
+            compression_name = enum_display_name(COMPRESSION, p.compression, " compression")
+        else:
+            compression_name = "uncompressed"
         
         # Add NewSubfileType info if present
         subfile_info = ""
         if (subfile_type := p.get_tag("NewSubfileType")) is not None:
-            subfile_info = f" ({SUBFILE_TYPES.get(subfile_type, f'Type{subfile_type}')})"
+            subfile_info = f" ({enum_display_name(SubFileType, subfile_type)})"
         
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
         size_str = _format_bytes(compressed_size)
@@ -194,11 +205,11 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
         page_tags = page.get_page_tags()
         
         # Get NewSubfileType once for reuse in validation and display
-        newsubfiletype = page.get_tag("NewSubfileType")
+        newsubfiletype = page.get_tag("NewSubfileType") or 0
         
         # Check if IFD0 contains main raw image (for validation)
         ifd0_is_main_raw = (ifd_num == 0 and 
-                           newsubfiletype == 0 and 
+                           newsubfiletype == SubFileType.MAIN_IMAGE and 
                            (page.photometric == PHOTOMETRIC.CFA or page.photometric == PHOTOMETRIC.LINEAR_RAW))
         
         # Iterate through tags
@@ -240,6 +251,8 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                         pass  # Allow 'dng_raw' tags in 'dng_raw:cfa' IFDs (CFA is a type of raw)
                     elif expected_dng_ifd == "dng_raw:cfa" and page.photometric == PHOTOMETRIC.CFA:
                         pass  # Allow 'dng_raw:cfa' tags in any CFA IFD (including IFD0 if it's main CFA)
+                    elif expected_dng_ifd == "dng_preview" and newsubfiletype in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE):
+                        pass  # Preview tags are valid in preview IFDs
                     else:
                         # Tag is in wrong IFD
                         issue_number = len(validation_issues) + 1
@@ -256,11 +269,11 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                 value = page.photometric_name or "Unknown"
             # Special handling for NewSubfileType - use friendly name
             elif tag_name == "NewSubfileType":
-                value = SUBFILE_TYPES.get(newsubfiletype, newsubfiletype)
+                value = enum_display_name(SubFileType, newsubfiletype)
             # Special handling for Compression - use friendly name
             elif tag_name == "Compression":
                 numeric_value = page.get_tag(tag_code)
-                value = COMPRESSION(numeric_value).name if numeric_value in COMPRESSION.__members__.values() else numeric_value
+                value = enum_display_name(COMPRESSION, numeric_value)
             else:
                 value = page.get_tag(tag_code)
             
@@ -362,6 +375,19 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         echo(f"{tag_display}: {version_str}")
         return
     
+    # Special handling for OpcodeList tags - show opcode names
+    if tag_name in ('OpcodeList1', 'OpcodeList2', 'OpcodeList3'):
+        from . import raw_render
+        summary = raw_render.get_opcode_summary(bytes(value), detailed=True)
+        num_bytes = len(bytes(value))
+        
+        # Display multi-line summary
+        lines = summary.split('\n')
+        echo(f"{tag_display}: {lines[0]} ({num_bytes} bytes)")
+        for line in lines[1:]:
+            echo(f"  {line}")
+        return
+    
     # Bytes (binary data) - handle both bytes and numpy byte arrays
     byte_value = None
     if isinstance(value, bytes):
@@ -460,46 +486,27 @@ def dng_convert(
     if orientation is not None:
         params['orientation'] = orientation
     
+    # Parse IFD specification before opening file
+    ifd_index, ifd_name = _parse_ifd_spec(ifd)
+    
     # Convert DNG
     try:
-        # Default: render main raw page using file path
-        if ifd is None:
-            success = convert_dng(
-                file=input_file,
-                output=output_file,
-                output_dtype=output_dtype,
-                demosaic_algorithm='RCD',
-                strict=False,
-                use_xmp=not no_xmp,
-                rendering_params=params,
-                use_coreimage_if_available=use_coreimage,
-            )
-            
-            if not success:
-                click.echo("Error: Failed to convert main raw page", err=True)
-                sys.exit(1)
-            
-            click.echo(f"Converted main raw page to {output_file}")
-            return
-        
-        # Parse IFD specification for specific IFD
-        if ifd == "ifd0":
-            ifd_index = 0
-        elif match := re.match(r"subifd(\d+)$", ifd):
-            ifd_index = int(match.group(1)) + 1  # SubIFD[0] is flattened index 1
-        else:
-            click.echo(f"Error: Invalid IFD specification '{ifd}'. Use 'ifd0' or 'subifd0', 'subifd1', etc.", err=True)
-            sys.exit(1)
-        
-        # Specific IFD requested - open DNG and get the page
+        # Open DNG and select page
         with DngFile(input_file) as dng:
-            pages = dng.get_flattened_pages()
-            
-            if ifd_index >= len(pages):
-                click.echo(f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).", err=True)
-                sys.exit(1)
-            
-            page = pages[ifd_index]
+            if ifd_index is None:
+                # Default: get main raw page
+                page = dng.get_main_page()
+                if page is None:
+                    click.echo("Error: No main raw page found", err=True)
+                    sys.exit(1)
+            else:
+                # Get specific IFD by index
+                pages = dng.get_flattened_pages()
+                if ifd_index >= len(pages):
+                    click.echo(f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).", err=True)
+                    sys.exit(1)
+                
+                page = pages[ifd_index]
             
             # Validate parameters before rendering
             if params and not (page.is_cfa or page.is_linear_raw):
@@ -519,13 +526,132 @@ def dng_convert(
             )
             
             if not success:
-                click.echo(f"Error: Failed to convert {ifd}", err=True)
+                click.echo(f"Error: Failed to convert {ifd_name}", err=True)
                 sys.exit(1)
             
-            click.echo(f"Extracted {ifd} ({page.photometric_name}, {page.imagewidth}x{page.imagelength}) to {output_file}")
+            click.echo(f"Converted {ifd_name} ({page.photometric_name}, {page.imagewidth}x{page.imagelength}) to {output_file}")
             
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@dng.command(name="raw-stage")
+@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("output_file", type=click.Path())
+@click.argument("stage", type=click.Choice(["raw", "linearized", "linearized-plus-ops", "camera-rgb"]))
+@click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
+@click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (OPENCV_EA, VNG, RCD, AHD)")
+def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
+    """Extract raw image data at a specific pipeline stage.
+    
+    Stages:
+      raw                   - Raw sensor data (decoded, no processing)
+      linearized            - After linearization and normalization
+      linearized-plus-ops   - After OpcodeList2 (includes MapPolynomial)
+      camera-rgb            - Demosaiced camera RGB
+    
+    Examples:
+      muimg dng raw-stage input.dng output.tif linearized
+      muimg dng raw-stage input.dng output.tif camera-rgb --ifd subifd2
+      muimg dng raw-stage input.dng output.tif linearized --demosaic OPENCV_EA
+      muimg dng raw-stage input.dng output.tif linearized-plus-ops --demosaic RCD
+    """
+    import sys
+    import numpy as np
+    import tifffile
+    from .dngio import DngFile, RawStageSelector
+    from . import raw_render
+    
+    # Parse IFD specification before opening file
+    ifd_index, ifd_name = _parse_ifd_spec(ifd)
+    
+    try:
+        # Open DNG file and select page
+        with DngFile(input_file) as dng:
+            if ifd_index is None:
+                # Default: get main raw page
+                page = dng.get_main_page()
+                if page is None:
+                    click.echo("Error: No main raw page found", err=True)
+                    sys.exit(1)
+            else:
+                # Get specific IFD by index
+                pages = dng.get_flattened_pages()
+                if ifd_index >= len(pages):
+                    click.echo(f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).", err=True)
+                    sys.exit(1)
+                
+                page = pages[ifd_index]
+            
+            # Validate page is raw
+            if not (page.is_cfa or page.is_linear_raw):
+                click.echo(f"Error: Selected IFD is not a raw page ({page.photometric_name})", err=True)
+                sys.exit(1)
+            
+            # Extract data based on stage
+            data = None
+            cfa_pattern = None
+            
+            if stage == "camera-rgb":
+                # Special case: camera-rgb uses get_camera_rgb_raw()
+                # Use specified demosaic algorithm or default to OPENCV_EA
+                algorithm = demosaic if demosaic is not None else "OPENCV_EA"
+                data = page.get_camera_rgb_raw(demosaic_algorithm=algorithm)
+                if data is None:
+                    click.echo("Error: Failed to extract camera RGB", err=True)
+                    sys.exit(1)
+            else:
+                # Map stage names to RawStageSelector
+                stage_map = {
+                    "raw": RawStageSelector.RAW,
+                    "linearized": RawStageSelector.LINEARIZED,
+                    "linearized-plus-ops": RawStageSelector.LINEARIZED_PLUS_OPS,
+                }
+                
+                stage_selector = stage_map[stage]
+                
+                if page.is_cfa:
+                    # CFA: use get_cfa() with stage selector
+                    cfa_data, cfa_pattern = page.get_cfa(stage_selector)
+                    data = cfa_data
+                    
+                    # Apply demosaic if requested
+                    if demosaic is not None:
+                        data = raw_render.demosaic(data, cfa_pattern, algorithm=demosaic)
+                else:
+                    # LINEAR_RAW: use get_linear_raw() with stage selector
+                    if demosaic is not None:
+                        click.echo("Warning: --demosaic ignored for LINEAR_RAW page (already RGB)", err=True)
+                    data = page.get_linear_raw(stage_selector)
+                    if data is None:
+                        click.echo(f"Error: Failed to extract {stage} stage", err=True)
+                        sys.exit(1)
+            
+            if data is None:
+                click.echo(f"Error: Failed to extract {stage} stage", err=True)
+                sys.exit(1)
+            
+            # Convert to uint16
+            data_uint16 = raw_render.convert_dtype(data, np.uint16)
+            
+            # Save as TIFF
+            tifffile.imwrite(output_file, data_uint16)
+            
+            # Report actual extracted data dimensions
+            if data.ndim == 3:
+                h, w, c = data.shape
+                dims_str = f"{w}x{h}x{c}"
+            else:
+                h, w = data.shape
+                dims_str = f"{w}x{h}"
+            
+            click.echo(f"Extracted {stage} stage from {ifd_name} ({page.photometric_name}): {dims_str} -> {output_file}")
+    
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
@@ -546,11 +672,6 @@ def dng_convert(
     type=str,
     default="OPENCV_EA",
     help="Demosaic algorithm (OPENCV_EA, VNG, RCD)",
-)
-@click.option(
-    "--strip-tag",
-    multiple=True,
-    help="Tag name to strip (can be specified multiple times)",
 )
 @click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
 @click.option(
@@ -575,6 +696,11 @@ def dng_convert(
     "--tag",
     multiple=True,
     help="Set/override tag as NAME=VALUE (can be specified multiple times)",
+)
+@click.option(
+    "--strip-tag",
+    multiple=True,
+    help="Tag name to strip (can be specified multiple times)",
 )
 def dng_copy(
     input_dng,
@@ -610,6 +736,20 @@ def dng_copy(
             ifd0_tags.add_tag(name.strip(), value.strip())
     
     try:
+        # Build compression args and determine compression type
+        from tifffile import COMPRESSION
+        
+        compression = None
+        compression_args = None
+        
+        if jxl_distance is not None or jxl_effort is not None:
+            compression = COMPRESSION.JPEGXL_DNG
+            compression_args = {}
+            if jxl_distance is not None:
+                compression_args['distance'] = jxl_distance
+            if jxl_effort is not None:
+                compression_args['effort'] = jxl_effort
+        
         dngio.copy_dng(
             source_file=input_dng,
             destination_file=output_dng,
@@ -619,9 +759,10 @@ def dng_copy(
             strip_tags=strip_tags_set,
             generate_preview=preview,
             preview_max_dimension=preview_max_dim,
-            jxl_distance=jxl_distance,
-            jxl_effort=jxl_effort,
-            ifd0_tags=ifd0_tags,
+            decompress=demosaic,
+            compression=compression,
+            compression_args=compression_args,
+            extratags=ifd0_tags,
         )
         click.echo(f"Successfully copied DNG to {output_dng}")
     except Exception as e:
@@ -645,6 +786,127 @@ def convert_image(input_file, output_file, bit_depth):
     )
 
     sys.exit(0 if success else 1)
+
+
+@cli.command(name="convert-dngs-to-video")
+@click.argument("input_folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("output_mp4", type=click.Path())
+@click.option("--temperature", type=float, help="White balance temperature")
+@click.option("--tint", type=float, help="White balance tint")
+@click.option("--exposure", type=float, help="Exposure adjustment in stops")
+@click.option("--orientation", type=int, help="Image orientation")
+@click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
+@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
+@click.option("--resolution", type=str, help="Output video resolution (e.g., '1920x1080')")
+@click.option("--codec", type=str, default="hevc", help="Video codec (hevc, h264, vp9)")
+@click.option("--crf", type=int, default=20, help="Constant Rate Factor for quality (lower=better)")
+@click.option("--bit-depth", type=click.Choice(["8", "10"]), default="8", help="Video bit depth (8 or 10)")
+@click.option("--frame-rate", type=int, default=30, help="Output frame rate in fps")
+@click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
+def convert_dngs_to_video(
+    input_folder, output_mp4, temperature, tint, exposure, orientation, 
+    no_xmp, use_coreimage, resolution, codec, crf, bit_depth, frame_rate, num_workers
+):
+    """Convert a folder of DNG files to MP4 video."""
+    import io
+    import numpy as np
+    from .dngio import decode_dng
+    from .videoio import SequenceEncodePipeline
+    
+    # Scan input folder for DNG files
+    input_path = Path(input_folder)
+    dng_files = sorted(input_path.glob("*.dng"))
+    
+    if not dng_files:
+        click.echo(f"Error: No DNG files found in {input_folder}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"Found {len(dng_files)} DNG files in {input_folder}")
+    
+    # Parse resolution if provided
+    resolution_tuple = None
+    if resolution:
+        try:
+            width, height = resolution.split('x')
+            resolution_tuple = (int(width), int(height))
+        except ValueError:
+            click.echo(f"Error: Invalid resolution format '{resolution}'. Use format like '1920x1080'", err=True)
+            sys.exit(1)
+    
+    # Build rendering_params dict from DNG options
+    rendering_params = {}
+    if temperature is not None:
+        rendering_params['Temperature'] = temperature
+    if tint is not None:
+        rendering_params['Tint'] = tint
+    if exposure is not None:
+        rendering_params['Exposure2012'] = exposure
+    if orientation is not None:
+        rendering_params['orientation'] = orientation
+    
+    # Build video encoding config
+    config = {
+        "codec": codec,
+        "crf": crf,
+        "bit_depth": int(bit_depth),
+        "frame_rate": frame_rate,
+    }
+    
+    # Determine output dtype based on bit depth
+    output_dtype = np.uint16 if int(bit_depth) == 10 else np.uint8
+    
+    # Create custom consumer function for DNG decoding
+    def dng_consumer(task):
+        """Custom consumer: decodes DNG blob using decode_dng with rendering params."""
+        index, file_path, blob = task
+        try:
+            img = decode_dng(
+                file=io.BytesIO(blob),
+                output_dtype=output_dtype,
+                demosaic_algorithm='RCD',
+                use_coreimage_if_available=use_coreimage,
+                use_xmp=not no_xmp,
+                rendering_params=rendering_params,
+                strict=False,
+            )
+            
+            if img is None:
+                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                return (index, None)
+            
+            # Resize if resolution is set and image doesn't match
+            if resolution_tuple is not None:
+                current_height, current_width = img.shape[:2]
+                if (current_width, current_height) != resolution_tuple:
+                    import cv2
+                    img = cv2.resize(img, resolution_tuple, interpolation=cv2.INTER_AREA)
+            
+            return (index, img)
+            
+        except Exception as e:
+            logger.error(f"Frame {index}: Error decoding {Path(file_path).name}: {e}")
+            return (index, None)
+    
+    # Create and run the pipeline
+    try:
+        pipeline = SequenceEncodePipeline(
+            source_files=dng_files,
+            output_path=output_mp4,
+            resolution=resolution_tuple,
+            config=config,
+            consumer=dng_consumer,
+            num_workers=num_workers,
+        )
+        
+        click.echo(f"Encoding {len(dng_files)} DNGs to {output_mp4}...")
+        pipeline.run()
+        click.echo(f"Successfully created video: {output_mp4}")
+        
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        logger.exception("Failed to encode video")
+        sys.exit(1)
+
 
 @cli.group(name="google-photos")
 def google_photos():

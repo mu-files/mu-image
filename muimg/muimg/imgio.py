@@ -66,7 +66,8 @@ def decode_image(
     is_dng = False
     try:
         dng_file = DngFile(file)
-        is_dng = "DNGVersion" in dng_file.pages[0].tags
+        # Check if file has DNG version tag in IFD0
+        is_dng = "DNGVersion" in dng_file.get_ifd0_tags()
     except Exception:
         pass
     

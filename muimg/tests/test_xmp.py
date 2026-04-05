@@ -173,7 +173,6 @@ def test_xmp_roundtrip_dng_file():
         data=linear_rgb,
         ifd0_tags=tags,
         photometric="linear_raw",
-        bits_per_pixel=16,
     )
     
     # Verify file was created

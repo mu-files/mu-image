@@ -2,8 +2,7 @@
 
 For multi-IFD DNG files, validates that:
 1. Each raw SubIFD can be decoded by muimg's render_dng
-2. write_dng_from_page produces valid DNG output
-3. The roundtrip DNG produces identical results when processed by dng_validate
+2. The roundtrip DNG produces identical results when processed by dng_validate
 """
 
 from pathlib import Path
@@ -13,7 +12,7 @@ import pytest
 import tifffile
 
 import muimg
-from muimg.dngio import IfdSpec, MetadataTags
+from muimg.dngio import IfdPageSpec, write_dng, SubFileType
 from conftest import (
     DNG_VALIDATE_PATH,
     compute_diff_stats,
@@ -27,12 +26,21 @@ DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 # Threshold for comparison (percentage of full range)
 ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
 
-# Multi-IFD test files with validation warning ignores
-# Format: {filename: [warning_patterns_to_ignore]}
+# Multi-IFD test files with validation warning ignores and strip_tags
+# Format: {filename: {"ignored_warnings": [...], "strip_tags": [...]}}
 TEST_FILES = {
-    "asi676mc.cfa.jxl_lossy.2ifds.dng": ["makernote has unexpected type", "too little padding"],
-    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": [],
-    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": ["columninterleavefactor tag not allowed"],
+    "asi676mc.cfa.jxl_lossy.2ifds.dng": {
+        "ignored_warnings": ["makernote has unexpected type", "too little padding"],
+        "strip_tags": [],
+    },
+    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": {
+        "ignored_warnings": [],
+        "strip_tags": [],
+    },
+    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": {
+        "ignored_warnings": ["columninterleavefactor tag not allowed"],
+        "strip_tags": ["NewRawImageDigest"],  # Original file has bad digest from Adobe DNG Converter 16.1
+    },
 }
 
 
@@ -50,10 +58,10 @@ def get_test_files():
 
 @pytest.mark.parametrize("dng_path", get_test_files(), ids=lambda p: p.name)
 def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
-    """Test that each raw SubIFD can be decoded and roundtripped through write_dng_from_page.
+    """Test that each raw SubIFD can be decoded and roundtripped through write_dng.
     
     For each raw IFD, produces 3 files:
-    - {stem}_ifd{n}.dng - roundtrip DNG created by write_dng_from_page
+    - {stem}_ifd{n}.dng - roundtrip DNG created by write_dng
     - {stem}_ifd{n}_muimg.tif - muimg render_dng output
     - {stem}_ifd{n}_dngvalidate.tif - dng_validate output on roundtrip DNG
     """
@@ -61,6 +69,11 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
         pytest.skip("dng_validate not available")
     
     stem = dng_path.stem
+    
+    # Get test config for this file
+    test_config = TEST_FILES.get(dng_path.name, {"ignored_warnings": [], "strip_tags": []})
+    ignored_warnings = test_config["ignored_warnings"]
+    strip_tags = set(test_config["strip_tags"]) if test_config["strip_tags"] else None
     
     with muimg.DngFile(dng_path) as dng:
         pages = dng.get_flattened_pages()
@@ -99,13 +112,31 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             except Exception as e:
                 pytest.fail(f"page.render_raw failed for IFD {i}: {e}")
             
-            # 2. write_dng_from_page -> {stem}_ifd{n}.dng
+            # 2. write_dng -> {stem}_ifd{n}.dng
             try:
-                muimg.write_dng(
-                    destination_file=roundtrip_dng,
-                    subifds=[IfdSpec(data=page)],
+                # Create IFD spec for the page
+                ifd_spec = IfdPageSpec(
+                    page=page,
+                    subfiletype=SubFileType.MAIN_IMAGE,
+                    strip_tags=strip_tags,
                 )
+                
+                # Write as IFD0 (no SubIFDs)
+                write_dng(destination_file=roundtrip_dng, ifd0_spec=ifd_spec)
                 print(f"    -> {roundtrip_dng.name}")
+                
+                # Validate NewRawImageDigest preservation
+                # If source had digest, page was main, and we didn't strip it, roundtrip should have it
+                source_digest = page.get_tag('NewRawImageDigest')
+                if source_digest is not None and page.is_main_image and 'NewRawImageDigest' not in (strip_tags or set()):
+                    with muimg.DngFile(roundtrip_dng) as rt_dng:
+                        roundtrip_digest = rt_dng.get_tag('NewRawImageDigest')
+                        if roundtrip_digest is None:
+                            pytest.fail(
+                                f"NewRawImageDigest was lost in roundtrip for IFD {i}: "
+                                f"source had digest but roundtrip doesn't"
+                            )
+                        print(f"    ✓ NewRawImageDigest preserved in roundtrip")
             except Exception as e:
                 pytest.fail(f"write_dng failed for IFD {i}: {e}")
             
@@ -138,9 +169,6 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                 print(f"    Shape mismatch: original {decoded.shape} vs roundtrip {roundtrip_decoded.shape}")
             
             # 4. dng_validate on roundtrip DNG -> {stem}_ifd{n}_dngvalidate.tif
-            # Get ignored warnings for this file from TEST_FILES
-            ignored_warnings = TEST_FILES.get(dng_path.name, [])
-            
             dngvalidate_out = run_dng_validate(roundtrip_dng, dngvalidate_base, ignored_warnings=ignored_warnings)
             if dngvalidate_out is None:
                 pytest.fail(f"dng_validate failed on {roundtrip_dng.name}")

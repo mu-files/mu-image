@@ -9,8 +9,9 @@ import numpy as np
 import pytest
 import cv2
 from pathlib import Path
+from tifffile import COMPRESSION
 
-from muimg.dngio import write_dng_from_array, decode_dng, DngFile
+from muimg.dngio import write_dng_from_array, DngFile
 from muimg.tiff_metadata import MetadataTags
 from muimg.raw_render import _srgb_gamma, convert_dtype
 from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats, run_dng_validate
@@ -84,8 +85,16 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
     width, height = 1280, 720
     preview_width, preview_height = 640, 360
     
+    # Determine compression settings from jxl_distance
+    if jxl_distance is None:
+        compression = None
+        compression_args = None
+    else:
+        compression = COMPRESSION.JPEGXL_DNG
+        compression_args = {'distance': jxl_distance, 'effort': 4}
+    
     # Test both photometric types and preview configurations
-    for photometric in ["cfa", "linear_raw"]:
+    for photometric in ["CFA", "LINEAR_RAW"]:
         for use_preview in [True, False]:
             # Generate test data in target dtype
             rgb_ramp = generate_rgb_ramp(width, height, dtype=input_dtype)
@@ -103,36 +112,39 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             else:
                 preview_data = None
             
-            if photometric == "cfa":
+            if photometric == "CFA":
                 # Sample as CFA
                 test_data = sample_as_cfa(rgb_ramp, pattern="RGGB")
-                cfa_pattern = "RGGB"
             else:
-                # Use full RGB
+                # Use full RGB (LINEAR_RAW)
                 test_data = rgb_ramp
-                cfa_pattern = None
             
             # Write to file for dng_validate
             preview_label = "with_preview" if use_preview else "no_preview"
             dng_filename = f"{dtype_label}_{photometric}_{preview_label}_{comp_label}.dng"
             dng_path = tmp_path / dng_filename
-            write_dng_from_array(
-                    destination_file=dng_path,
-                    data=test_data,
-                    ifd0_tags=metadata,
-                    photometric=photometric,
-                    cfa_pattern=cfa_pattern,
-                    jxl_distance=jxl_distance,
-                    jxl_effort=4,
-                    preview_image=preview_data,
-            )
+            
+            # Build write_dng_from_array kwargs
+            write_kwargs = {
+                'destination_file': dng_path,
+                'data': test_data,
+                'ifd0_tags': metadata,
+                'photometric': photometric,
+                'compression': compression,
+                'compression_args': compression_args,
+                'preview_image': preview_data,
+            }
+            if photometric == "CFA":
+                write_kwargs['cfa_pattern'] = "RGGB"
+            
+            write_dng_from_array(**write_kwargs)
             
             # Extract raw data from DNG and validate rendering
             with DngFile(dng_path) as dng:
-                if photometric == "cfa":
+                if photometric == "CFA":
                     decoded_cfa, decoded_pattern = dng.get_cfa()
                     assert decoded_cfa is not None, f"Failed to get CFA from {comp_label}"
-                    assert decoded_pattern == cfa_pattern, f"CFA pattern mismatch: {decoded_pattern} != {cfa_pattern}"
+                    assert decoded_pattern == "RGGB", f"CFA pattern mismatch: {decoded_pattern} != RGGB"
                     decoded = decoded_cfa
                 else:
                     decoded_rgb = dng.get_linear_raw()

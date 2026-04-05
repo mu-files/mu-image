@@ -224,8 +224,8 @@ def test_preview_pages_match_main_render(output_dir: Path):
             print(f"\n   IFD {i}: {page.photometric_name}, {size}")
             
             try:
-                preview = page.get_preview_rgb(output_dtype=np.uint16)
-                assert preview is not None, f"get_preview_rgb returned None for IFD {i}"
+                preview = page.decode_to_rgb(output_dtype=np.uint16)
+                assert preview is not None, f"decode_to_rgb returned None for IFD {i}"
                 
                 print(f"     ✓ Decoded: {preview.shape}, dtype={preview.dtype}")
                 
@@ -291,11 +291,66 @@ def test_preview_pages_match_main_render(output_dir: Path):
         else:
             print(f"     Only one RGB/YCBCR preview found, skipping inter-preview comparison")
         
+        # Step 6: Test DngFile.get_preview_rgb() API
+        print(f"\n6. Testing DngFile.get_preview_rgb() API...")
+        
+        ifd0 = pages[0]
+        
+        try:
+            # Always call get_preview_rgb() to test API behavior
+            api_preview = dng.get_preview_rgb(output_dtype=np.uint16)
+            
+            if api_preview is None:
+                # Should only return None if IFD0 is not a preview
+                print(f"   get_preview_rgb() returned None - verifying IFD0 is not a preview...")
+                assert ifd0.photometric_name not in ("RGB", "YCBCR"), \
+                    f"get_preview_rgb() returned None but IFD0 is {ifd0.photometric_name} (should be a preview)"
+                print(f"     ✓ Correct: IFD0 is {ifd0.photometric_name} (not RGB/YCBCR)")
+            else:
+                # Returned a preview - verify IFD0 is actually RGB/YCBCR
+                print(f"   get_preview_rgb() returned preview - verifying IFD0 is RGB/YCBCR...")
+                assert ifd0.photometric_name in ("RGB", "YCBCR"), \
+                    f"get_preview_rgb() returned data but IFD0 is {ifd0.photometric_name} (not a preview)"
+                
+                print(f"     ✓ Correct: IFD0 is {ifd0.photometric_name} preview")
+                print(f"     ✓ DngFile.get_preview_rgb(): {api_preview.shape}, dtype={api_preview.dtype}")
+                
+                # Get preview using page API for comparison
+                page_preview = ifd0.decode_to_rgb(output_dtype=np.uint16)
+                assert page_preview is not None, "decode_to_rgb returned None"
+                
+                print(f"     ✓ DngPage.decode_to_rgb(): {page_preview.shape}, dtype={page_preview.dtype}")
+                
+                # Compare the two methods - should be identical
+                assert api_preview.shape == page_preview.shape, \
+                    f"Shape mismatch: API {api_preview.shape} vs Page {page_preview.shape}"
+                
+                # Compute difference (should be zero or near-zero)
+                diff = np.abs(api_preview.astype(np.float32) - page_preview.astype(np.float32))
+                max_diff = np.max(diff)
+                mean_diff = np.mean(diff)
+                
+                print(f"     Comparison: mean diff={mean_diff:.6f}, max diff={max_diff:.6f}")
+                
+                # Should be identical (allow tiny floating point error)
+                assert max_diff < 1.0, f"Max difference {max_diff} too large - APIs should return identical results"
+                
+                # Save comparison
+                api_path = test_output_dir / "api_get_preview_rgb.tif"
+                page_path = test_output_dir / "page_decode_to_rgb.tif"
+                tifffile.imwrite(str(api_path), api_preview)
+                tifffile.imwrite(str(page_path), page_preview)
+                
+                print(f"     ✓ APIs return identical results")
+                
+        except Exception as e:
+            pytest.fail(f"DngFile.get_preview_rgb() API test failed: {e}")
+        
         print(f"\n✓ Test completed. Results saved to: {test_output_dir}")
 
 
-def test_get_preview_rgb_on_raw_page():
-    """Test that get_preview_rgb raises ValueError on CFA/LINEAR_RAW pages."""
+def test_decode_to_rgb_on_raw_page():
+    """Test that decode_to_rgb() works on CFA/LINEAR_RAW pages by rendering them."""
     
     test_file = TESTDATA_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
     
@@ -310,9 +365,11 @@ def test_get_preview_rgb_on_raw_page():
         assert main_page is not None
         assert main_page.is_cfa or main_page.is_linear_raw
         
-        # Should raise ValueError
-        with pytest.raises(ValueError, match="get_preview_rgb.*requires RGB or YCBCR"):
-            main_page.get_preview_rgb(output_dtype=np.uint8)
+        # Should successfully decode (render) the raw page
+        result = main_page.decode_to_rgb(output_dtype=np.uint8)
+        assert result is not None
+        assert result.shape[2] == 3  # RGB output
+        assert result.dtype == np.uint8
 
 
 def test_render_raw_on_preview_page():
@@ -335,8 +392,8 @@ def test_render_raw_on_preview_page():
             ifd0.render_raw(output_dtype=np.uint16)
 
 
-def test_dngfile_get_preview_rgb_on_raw_ifd0():
-    """Test that DngFile.get_preview_rgb raises ValueError when IFD0 is raw."""
+def test_dngfile_decode_to_rgb_on_raw_ifd0():
+    """Test that DngFile.decode_to_rgb raises ValueError when IFD0 is raw."""
     
     # Need a DNG file where IFD0 is raw (not common, but possible)
     # For now, we'll look for such a file in the test directory
@@ -355,7 +412,7 @@ def test_dngfile_get_preview_rgb_on_raw_ifd0():
                     
                     # Should raise ValueError
                     with pytest.raises(ValueError, match="IFD0 is a raw page"):
-                        dng.get_preview_rgb(output_dtype=np.uint8)
+                        dng.decode_to_rgb(output_dtype=np.uint8)
                     
                     print(f"✓ Tested with {test_file.name} (IFD0 is {pages[0].photometric_name})")
                     break

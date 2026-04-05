@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import muimg
-from muimg.dngio import IfdSpec
+from muimg.dngio import IfdPageSpec, IfdDataSpec, SubFileType
 from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
 
@@ -17,12 +17,13 @@ OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_pyramid_subifd"
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 
-# Test files with (generate_preview, ignored_warnings)
+# Test files with (generate_preview, ignored_warnings, strip_tags)
 # Ignored warnings are for known issues that should be suppressed
+# strip_tags are tags to remove from source (e.g., invalid digest)
 TEST_FILES = {
-    "asi676mc.cfa.jxl_lossy.2ifds.dng": (True, ["makernote has unexpected type", "non-zero nextifd", "too little padding"]),
-    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": (False, ["non-zero nextifd"]),
-    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": (True, ["non-zero nextifd", "noiseprofile found in", "columninterleavefactor tag not allowed"]),
+    "asi676mc.cfa.jxl_lossy.2ifds.dng": (True, ["makernote has unexpected type", "non-zero nextifd", "too little padding"], None),
+    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": (False, ["non-zero nextifd"], None),
+    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": (True, ["non-zero nextifd", "columninterleavefactor tag not allowed"], {"NewRawImageDigest"}),
 }
 
 
@@ -69,7 +70,7 @@ def output_dir() -> Path:
 
 @pytest.mark.parametrize("filename", TEST_FILES.keys())
 def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
-    generate_preview, ignored_warnings = TEST_FILES[filename]
+    generate_preview, ignored_warnings, strip_tags = TEST_FILES[filename]
     dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
@@ -98,20 +99,39 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
 
         out_path = output_dir / f"{dng_path.stem}.pyramid.dng"
 
-        subifds: list[IfdSpec] = [IfdSpec(data=page)]
-        subifds += [
-            IfdSpec(
+        # IFD0: main image from source page
+        ifd0_spec = IfdPageSpec(
+            page=page,
+            subfiletype=SubFileType.MAIN_IMAGE,
+            copy_page_tags=True,
+            strip_tags=strip_tags,
+        )
+        
+        # SubIFDs: pyramid levels as preview images
+        subifds = [
+            IfdDataSpec(
                 data=level,
-                bits_per_pixel=16,
-                photometric="linear_raw",
+                subfiletype=SubFileType.PREVIEW_IMAGE,
+                photometric="LINEAR_RAW",
+                compression=None,
             )
             for level in pyramid_levels
         ]
+        
+        # Add preview if requested
+        if preview is not None:
+            preview_spec = IfdDataSpec(
+                data=preview,
+                subfiletype=SubFileType.PREVIEW_IMAGE,
+                photometric="RGB",
+                compression=None,
+            )
+            subifds.insert(0, preview_spec)
 
         muimg.write_dng(
             destination_file=out_path,
+            ifd0_spec=ifd0_spec,
             subifds=subifds,
-            preview_image=preview,
         )
 
     with muimg.DngFile(out_path) as out_dng:
@@ -137,7 +157,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
 
 def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path):
     filename = "asi676mc.cfa.jxl_lossy.2ifds.dng"
-    _, ignored_warnings = TEST_FILES[filename]
+    _, ignored_warnings, _ = TEST_FILES[filename]
     dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
@@ -193,29 +213,31 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         assert (crop_w - pad) - aa_right >= 2
         assert (crop_h - pad) - aa_bottom >= 2
 
-        subifds: list[IfdSpec] = [
-            IfdSpec(
-                data=cfa_u16_crop,
-                bits_per_pixel=16,
-                photometric="cfa",
-                cfa_pattern=cfa_pattern,
-            )
-        ]
-        subifds += [
-            IfdSpec(
+        # IFD0: CFA main image with custom crop/active area
+        ifd0_spec = IfdDataSpec(
+            data=cfa_u16_crop,
+            subfiletype=SubFileType.MAIN_IMAGE,
+            photometric="CFA",
+            cfa_pattern=cfa_pattern,
+            compression=None,
+            extratags=ifd0_tags,
+        )
+        
+        # SubIFDs: pyramid levels as preview images
+        subifds = [
+            IfdDataSpec(
                 data=level,
-                bits_per_pixel=16,
-                photometric="linear_raw",
-                inherit_ifd0_tags_from_source=False,
+                subfiletype=SubFileType.PREVIEW_IMAGE,
+                photometric="LINEAR_RAW",
+                compression=None,
             )
             for level in pyramid_levels
         ]
 
         muimg.write_dng(
             destination_file=out_path,
-            ifd0_tags=ifd0_tags,
+            ifd0_spec=ifd0_spec,
             subifds=subifds,
-            preview_image=None,
         )
 
     with muimg.DngFile(out_path) as out_dng:

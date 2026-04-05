@@ -2,6 +2,48 @@
 
 import logging
 import sys
+from enum import Enum
+from typing import Type, Optional
+
+
+def enum_display_name(enum_class: Type[Enum], value: int, suffix: str = "") -> str:
+    """
+    Get display name for an enum value.
+    
+    Converts enum member name to display format (e.g., MAIN_IMAGE -> MainImage).
+    Returns formatted value string if enum member not found.
+    
+    Args:
+        enum_class: The enum class to look up
+        value: The numeric value to find
+        suffix: Optional suffix to append (e.g., " compression")
+        
+    Returns:
+        Display name string (e.g., "MainImage") or "Type{value}" if not found
+    """
+    try:
+        member = enum_class(value)
+        display = ''.join(word.capitalize() for word in member.name.split('_'))
+        return f"{display}{suffix}" if suffix else display
+    except ValueError:
+        return f"Type{value}{suffix}" if suffix else f"Type{value}"
+
+
+def enum_from_value(enum_class: Type[Enum], value: int) -> Optional[Enum]:
+    """
+    Get enum member from numeric value.
+    
+    Args:
+        enum_class: The enum class to look up
+        value: The numeric value to find
+        
+    Returns:
+        Enum member or None if not found
+    """
+    try:
+        return enum_class(value)
+    except ValueError:
+        return None
 
 
 def setup_logging(verbosity: int = 0) -> None:
