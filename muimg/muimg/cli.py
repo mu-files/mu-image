@@ -313,8 +313,11 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     # For unknown tags, show tag code and type info
     is_unknown = tag_name.startswith("Tag") and tag_code is not None
     if is_unknown and dtype is not None:
-        dtype_info = TIFF_DTYPES.get(dtype, {})
-        dtype_name = dtype_info.get('name', f'Type{dtype}')
+        dtype_info = TIFF_DTYPES.get(dtype)
+        if dtype_info:
+            dtype_name = f"{dtype_info.name}({dtype})"
+        else:
+            dtype_name = f'Type{dtype}'
         tag_display = f"{tag_name} ({tag_code}, {dtype_name})"
     else:
         tag_display = tag_name

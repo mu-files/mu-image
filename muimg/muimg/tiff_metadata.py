@@ -1151,11 +1151,11 @@ class MetadataTags:
         else:
             tag_code = name_or_code
 
-        # Handle dtype parameter - can be string key or DATATYPE enum value
+        # Handle dtype parameter - can be string key, int, or DATATYPE enum value
         if isinstance(dtype, str):
             tag_dtype = TIFF.DATA_DTYPES[dtype]
         else:
-            tag_dtype = dtype
+            tag_dtype = int(dtype)  # Convert enum or any numeric type to int
 
         self._tags[tag_code] = self.StoredTag(code=tag_code, dtype=tag_dtype, count=count, value=value)
 
