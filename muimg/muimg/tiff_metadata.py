@@ -637,148 +637,6 @@ class LocalTiffTags:
 LOCAL_TIFF_TAGS = LocalTiffTags()
 
 
-def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
-    """Encode a Python value to TIFF format based on tag spec (Python → TIFF).
-    
-    Args:
-        tag_name: Tag name (e.g., 'CFAPattern', 'ColorMatrix1')
-        value: Python value (float, int, str, datetime, np.ndarray, bytes, etc.)
-        spec: TagSpec defining the expected TIFF type (may support multiple types)
-        
-    Returns:
-        Tuple of (dtype, count, converted_value) ready for add_tag
-    """
-    # Special case: CFAPattern accepts pattern key strings
-    if tag_name == "CFAPattern" and isinstance(value, str):
-        if value in CFA_PATTERN_TO_CODES:
-            value = bytes(CFA_PATTERN_TO_CODES[value])
-        else:
-            logger.warning(f"Unknown CFAPattern '{value}', using default 'RGGB'")
-            value = bytes(CFA_PATTERN_TO_CODES["RGGB"])
-    
-    # UTF-8 string tags: tags with ["s", "B"] dtype support UTF-8 encoding
-    # Includes: LocalizedCameraModel, ProfileName, ProfileCopyright, etc.
-    if isinstance(value, str) and isinstance(spec.dtype, list) and "B" in spec.dtype:
-        value = value.encode("utf-8") + b"\x00"
-    
-    # Select appropriate dtype based on value type (handles multi-type TagSpecs)
-    dtype = spec.get_dtype_for_value(value)
-    
-    # === String handling ===
-    if dtype == 's':
-        if hasattr(value, 'strftime'):
-            # Convert datetime-like objects to TIFF format
-            value = value.strftime("%Y:%m:%d %H:%M:%S")
-        if isinstance(value, bytes):
-            value = value.decode('utf-8', errors='replace')
-        value = str(value)
-        if not value.endswith('\x00'):
-            value = value + '\x00'
-        return (dtype, len(value), value)
-    
-    # === Byte array handling ===
-    if dtype == 'B':
-        if isinstance(value, bytes):
-            return (dtype, len(value), value)
-        if isinstance(value, (list, tuple)):
-            value = bytes(value)
-            return (dtype, len(value), value)
-        if hasattr(value, '__array__'):
-            arr = np.asarray(value)
-            value = arr.tobytes()
-            return (dtype, len(value), value)
-        # Single byte
-        return (dtype, 1, bytes([int(value)]))
-    
-    # === Rational handling (2I or 2i) ===
-    if dtype in ('2I', '2i'):
-        max_denom = 10000
-        
-        # Handle array-like objects (numpy, pandas, xarray, etc.)
-        if hasattr(value, '__array__'):
-            flat = np.asarray(value).flatten()
-            rationals = []
-            for v in flat:
-                frac = Fraction(float(v)).limit_denominator(max_denom)
-                rationals.extend([frac.numerator, frac.denominator])
-            return (dtype, len(flat), tuple(rationals))
-        
-        # Handle lists/tuples of floats
-        if isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], (int, float)):
-            rationals = []
-            for v in value:
-                frac = Fraction(float(v)).limit_denominator(max_denom)
-                rationals.extend([frac.numerator, frac.denominator])
-            return (dtype, len(value), tuple(rationals))
-        
-        # Handle single float/int
-        if isinstance(value, (int, float)):
-            frac = Fraction(float(value)).limit_denominator(max_denom)
-            return (dtype, 1, (frac.numerator, frac.denominator))
-        
-        # Already in rational tuple format (num, denom, num, denom, ...)
-        if isinstance(value, tuple) and len(value) % 2 == 0:
-            return (dtype, len(value) // 2, value)
-    
-    # === Integer handling ===
-    if dtype in ('H', 'I', 'h', 'i', 'Q', 'q'):
-        if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
-            arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
-            return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
-        return (dtype, 1, int(value))
-    
-    # === Float handling ===
-    if dtype in ('f', 'd'):
-        if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
-            arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
-            return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
-        return (dtype, 1, float(value))
-    
-    # Fallback: return as-is with count from spec
-    count = spec.count if spec.count is not None else 1
-    return (dtype, count, value)
-
-def get_cfa_pattern_codes(pattern: str) -> tuple:
-    """Convert CFA pattern string to code tuple.
-    
-    Args:
-        pattern: CFA pattern string ('RGGB', 'BGGR', 'GRBG', 'GBRG')
-        
-    Returns:
-        Tuple of 4 codes (0=R, 1=G, 2=B), e.g., (0, 1, 1, 2) for RGGB.
-        Returns (0, 1, 1, 2) as default if pattern not recognized.
-    """
-    return CFA_PATTERN_TO_CODES.get(pattern, (0, 1, 1, 2))
-
-
-def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: List[str]) -> 'MetadataTags':
-    """Filter tags to only those belonging to specified IFD categories.
-    
-    Args:
-        tags: Input tags to filter
-        include_categories: List of IFD categories to keep (e.g., ["any", "dng_ifd0", "exif"])
-        
-    Returns:
-        New MetadataTags with only tags matching the specified categories
-    """
-    from . import tiff_metadata as tm
-    
-    filtered = tm.MetadataTags()
-    
-    for code, dtype, count, value, _ in tags:
-        _, tag_name, spec = resolve_tag(int(code))
-        if tag_name is None or spec is None:
-            # Unknown tag - preserve it (user may have custom/proprietary tags)
-            filtered.add_raw_tag(int(code), int(dtype), int(count), value)
-            continue
-        
-        # Check if tag's dng_ifd category is in the include list
-        if spec.dng_ifd in include_categories:
-            filtered.add_raw_tag(int(code), int(dtype), int(count), value)
-    
-    return filtered
-
-
 def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Optional[TagSpec]]:
     """Resolve a tag name or code to (tag_id, tag_name, spec).
     
@@ -797,46 +655,6 @@ def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Opt
     
     spec = TIFF_TAG_TYPE_REGISTRY.get(tag_name) if tag_name else None
     return tag_id, tag_name, spec
-
-
-def special_tag_format(tag_name: str, raw_value: Any, dtype: int, return_type: Optional[type]) -> Optional[Any]:
-    """Handle special formatting for specific tags.
-    
-    Some tags require special handling beyond standard TIFF type conversion:
-    - XMP: Returns XmpMetadata object for easy manipulation
-    - DNGVersion/DNGBackwardVersion: Returns 4-tuple (major, minor, patch, build) for easy comparison
-    
-    Args:
-        tag_name: Name of the tag
-        raw_value: Raw value from TIFF tag
-        dtype: TIFF dtype code
-        return_type: Requested return type (None for auto)
-    
-    Returns:
-        Formatted value if this is a special tag, None otherwise (use normal decoding)
-    """
-    # Only apply special formatting when return_type is None (auto)
-    if return_type is not None:
-        return None
-    
-    # XMP: return XmpMetadata object
-    if tag_name == "XMP":
-        xmp_string = decode_tag_value(tag_name, raw_value, dtype, None, str)
-        if xmp_string is None:
-            xmp_string = ""
-        return XmpMetadata(xmp_string)
-    
-    # DNG Version tags: return 4-tuple (major, minor, patch, build)
-    if tag_name in ("DNGVersion", "DNGBackwardVersion"):
-        # Decode as bytes first
-        version_bytes = decode_tag_value(tag_name, raw_value, dtype, None, bytes)
-        if version_bytes is None:
-            return None
-        # Pad to 4 bytes if needed (null bytes may be stripped)
-        padded = version_bytes + b'\x00' * (4 - len(version_bytes))
-        return (padded[0], padded[1], padded[2], padded[3])
-    
-    return None
 
 
 def decode_tag_value(
@@ -958,6 +776,259 @@ def decode_tag_value(
     except (TypeError, ValueError):
         return tag_value
 
+def special_tag_format(tag_name: str, raw_value: Any, dtype: int, return_type: Optional[type]) -> Optional[Any]:
+    """Handle special formatting for specific tags.
+    
+    Some tags require special handling beyond standard TIFF type conversion:
+    - XMP: Returns XmpMetadata object for easy manipulation
+    - DNGVersion/DNGBackwardVersion: Returns 4-tuple (major, minor, patch, build) for easy comparison
+    
+    Args:
+        tag_name: Name of the tag
+        raw_value: Raw value from TIFF tag
+        dtype: TIFF dtype code
+        return_type: Requested return type (None for auto)
+    
+    Returns:
+        Formatted value if this is a special tag, None otherwise (use normal decoding)
+    """
+    # Only apply special formatting when return_type is None (auto)
+    if return_type is not None:
+        return None
+    
+    # XMP: return XmpMetadata object
+    if tag_name == "XMP":
+        xmp_string = decode_tag_value(tag_name, raw_value, dtype, None, str)
+        if xmp_string is None:
+            xmp_string = ""
+        return XmpMetadata(xmp_string)
+    
+    # DNG Version tags: return 4-tuple (major, minor, patch, build)
+    if tag_name in ("DNGVersion", "DNGBackwardVersion"):
+        # Decode as bytes first
+        version_bytes = decode_tag_value(tag_name, raw_value, dtype, None, bytes)
+        if version_bytes is None:
+            return None
+        # Pad to 4 bytes if needed (null bytes may be stripped)
+        padded = version_bytes + b'\x00' * (4 - len(version_bytes))
+        return (padded[0], padded[1], padded[2], padded[3])
+    
+    return None
+
+def convert_tag_value(
+    tag_name: str,
+    tag_value: Any,
+    tag_dtype: int,
+    tag_count: int,
+    registry_spec: Optional[TagSpec] = None,
+    return_type: Optional[type] = None,
+) -> Any:
+    """Convert a tag value with special formatting and type conversion.
+    
+    This is the high-level conversion function that:
+    1. Checks for special formatting (XMP, DNGVersion, etc.)
+    2. Determines effective return type (auto if None)
+    3. Creates shape spec if registry spec matches count
+    4. Calls decode_tag_value for standard conversion
+    
+    Args:
+        tag_name: Tag name (e.g., 'CFAPattern', 'ColorMatrix1')
+        tag_value: Raw or normalized value
+        tag_dtype: TIFF dtype code (5=RATIONAL, 10=SRATIONAL, etc.)
+        tag_count: Number of values in the tag
+        registry_spec: Optional registry TagSpec for shape info
+        return_type: Target type for conversion (float, np.ndarray, str, None=auto)
+    
+    Returns:
+        Converted value with special formatting applied if applicable.
+    """
+    # Check for special formatting (XMP, DNGVersion, etc.)
+    special_value = special_tag_format(tag_name, tag_value, tag_dtype, return_type)
+    if special_value is not None:
+        return special_value
+    
+    # Determine effective return type (auto-convert if None)
+    effective_type = return_type or get_native_type(tag_dtype, tag_count)
+    
+    # Use registry spec shape only if count matches tag
+    shape_spec = None
+    if registry_spec and registry_spec.shape and registry_spec.count == tag_count:
+        shape_spec = TagSpec(
+            TIFF_DTYPE_TO_STR.get(tag_dtype, 'B'), tag_count, registry_spec.shape
+        )
+    
+    return decode_tag_value(tag_name, tag_value, tag_dtype, shape_spec, effective_type)
+
+
+def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
+    """Encode a Python value to TIFF format based on tag spec (Python → TIFF).
+    
+    Args:
+        tag_name: Tag name (e.g., 'CFAPattern', 'ColorMatrix1')
+        value: Python value (float, int, str, datetime, np.ndarray, bytes, etc.)
+        spec: TagSpec defining the expected TIFF type (may support multiple types)
+        
+    Returns:
+        Tuple of (dtype, count, converted_value) ready for add_tag
+    """
+    # Special case: CFAPattern accepts pattern key strings
+    if tag_name == "CFAPattern" and isinstance(value, str):
+        if value in CFA_PATTERN_TO_CODES:
+            value = bytes(CFA_PATTERN_TO_CODES[value])
+        else:
+            logger.warning(f"Unknown CFAPattern '{value}', using default 'RGGB'")
+            value = bytes(CFA_PATTERN_TO_CODES["RGGB"])
+    
+    # UTF-8 string tags: tags with ["s", "B"] dtype support UTF-8 encoding
+    # Includes: LocalizedCameraModel, ProfileName, ProfileCopyright, etc.
+    if isinstance(value, str) and isinstance(spec.dtype, list) and "B" in spec.dtype:
+        value = value.encode("utf-8") + b"\x00"
+    
+    # Select appropriate dtype based on value type (handles multi-type TagSpecs)
+    dtype = spec.get_dtype_for_value(value)
+    
+    # === String handling ===
+    if dtype == 's':
+        if hasattr(value, 'strftime'):
+            # Convert datetime-like objects to TIFF format
+            value = value.strftime("%Y:%m:%d %H:%M:%S")
+        if isinstance(value, bytes):
+            value = value.decode('utf-8', errors='replace')
+        value = str(value)
+        if not value.endswith('\x00'):
+            value = value + '\x00'
+        return (dtype, len(value), value)
+    
+    # === Byte array handling ===
+    if dtype == 'B':
+        if isinstance(value, bytes):
+            return (dtype, len(value), value)
+        if isinstance(value, (list, tuple)):
+            value = bytes(value)
+            return (dtype, len(value), value)
+        if hasattr(value, '__array__'):
+            arr = np.asarray(value)
+            value = arr.tobytes()
+            return (dtype, len(value), value)
+        # Single byte
+        return (dtype, 1, bytes([int(value)]))
+    
+    # === Rational handling (2I or 2i) ===
+    if dtype in ('2I', '2i'):
+        max_denom = 10000
+        
+        # Handle array-like objects (numpy, pandas, xarray, etc.)
+        if hasattr(value, '__array__'):
+            flat = np.asarray(value).flatten()
+            rationals = []
+            for v in flat:
+                frac = Fraction(float(v)).limit_denominator(max_denom)
+                rationals.extend([frac.numerator, frac.denominator])
+            return (dtype, len(flat), tuple(rationals))
+        
+        # Handle lists/tuples of floats
+        if isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], (int, float)):
+            rationals = []
+            for v in value:
+                frac = Fraction(float(v)).limit_denominator(max_denom)
+                rationals.extend([frac.numerator, frac.denominator])
+            return (dtype, len(value), tuple(rationals))
+        
+        # Handle single float/int
+        if isinstance(value, (int, float)):
+            frac = Fraction(float(value)).limit_denominator(max_denom)
+            return (dtype, 1, (frac.numerator, frac.denominator))
+        
+        # Already in rational tuple format (num, denom, num, denom, ...)
+        if isinstance(value, tuple) and len(value) % 2 == 0:
+            return (dtype, len(value) // 2, value)
+    
+    # === Integer handling ===
+    if dtype in ('H', 'I', 'h', 'i', 'Q', 'q'):
+        if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
+            arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
+            return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
+        return (dtype, 1, int(value))
+    
+    # === Float handling ===
+    if dtype in ('f', 'd'):
+        if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
+            arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
+            return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
+        return (dtype, 1, float(value))
+    
+    # Fallback: return as-is with count from spec
+    count = spec.count if spec.count is not None else 1
+    return (dtype, count, value)
+
+def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
+    """Normalize array byte order to target byte order.
+    
+    For numpy arrays, source byte order is determined from the array's dtype.
+    
+    Args:
+        value: Array value (ndarray, scalar, string, etc.)
+        target_byteorder: Target byte order ('>' big-endian, '<' little-endian, '=' system)
+        
+    Returns:
+        Value converted to target byte order
+    """
+    import sys
+    system_byteorder = '<' if sys.byteorder == 'little' else '>'
+
+    # Resolve '=' to actual system byte order
+    if target_byteorder == '=':
+        target_byteorder = system_byteorder
+    
+    # Multi-byte typed arrays - always convert to explicit byte order
+    if isinstance(value, np.ndarray) and value.dtype.byteorder not in ('|', target_byteorder):
+        # Convert to target byte order with explicit marker
+        # This handles both actual byte swapping and normalizing '=' to explicit byte order
+        base_dtype = value.dtype.str[1:]  # Remove byte order prefix
+        target_dtype = f'{target_byteorder}{base_dtype}'
+        return value.astype(target_dtype)
+    
+    return value
+
+def get_cfa_pattern_codes(pattern: str) -> tuple:
+    """Convert CFA pattern string to code tuple.
+    
+    Args:
+        pattern: CFA pattern string ('RGGB', 'BGGR', 'GRBG', 'GBRG')
+        
+    Returns:
+        Tuple of 4 codes (0=R, 1=G, 2=B), e.g., (0, 1, 1, 2) for RGGB.
+        Returns (0, 1, 1, 2) as default if pattern not recognized.
+    """
+    return CFA_PATTERN_TO_CODES.get(pattern, (0, 1, 1, 2))
+
+
+def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: List[str]) -> 'MetadataTags':
+    """Filter tags to only those belonging to specified IFD categories.
+    
+    Args:
+        tags: Input tags to filter
+        include_categories: List of IFD categories to keep (e.g., ["any", "dng_ifd0", "exif"])
+        
+    Returns:
+        New MetadataTags with only tags matching the specified categories
+    """
+    from . import tiff_metadata as tm
+    
+    filtered = tm.MetadataTags()
+    
+    for code, dtype, count, value, _ in tags:
+        _, tag_name, spec = resolve_tag(int(code))
+        if tag_name is None or spec is None:
+            # Unknown tag - preserve it (user may have custom/proprietary tags)
+            filtered.add_raw_tag(int(code), int(dtype), int(count), value)
+            continue
+        
+        # Check if tag's dng_ifd category is in the include list
+        if spec.dng_ifd in include_categories:
+            filtered.add_raw_tag(int(code), int(dtype), int(count), value)
+    
+    return filtered
 
 def _get_time_impl(
     tag_source: Any,
@@ -1030,40 +1101,6 @@ def _get_time_impl(
                     pass  # Keep naive datetime if offset parsing fails
     
     return dt_obj
-
-
-def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
-    """Normalize array byte order to target byte order.
-    
-    For numpy arrays, source byte order is determined from the array's dtype.
-    
-    Args:
-        value: Array value (ndarray, scalar, string, etc.)
-        target_byteorder: Target byte order ('>' or '<')
-        
-    Returns:
-        Value converted to target byte order
-    """
-    import numpy as np
-    import sys
-    
-    system_byteorder = '<' if sys.byteorder == 'little' else '>'
-    
-    # Multi-byte typed arrays
-    if isinstance(value, np.ndarray) and value.dtype.byteorder not in ('|', target_byteorder):
-        # Handle '=' (native) byte order marker
-        if value.dtype.byteorder == '=':
-            if system_byteorder == target_byteorder:
-                # Already in target byte order, no conversion needed
-                return value
-        
-        # Convert to target byte order
-        base_dtype = value.dtype.str[1:]  # Remove byte order prefix
-        target_dtype = f'{target_byteorder}{base_dtype}'
-        return value.astype(target_dtype)
-    
-    return value
-
 
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
@@ -1180,10 +1217,9 @@ class MetadataTags:
             count: Number of values
             value: The tag value (numpy arrays will be normalized to system byte order)
         """
-        if isinstance(name_or_code, str):
-            tag_code = LOCAL_TIFF_TAGS[name_or_code]
-        else:
-            tag_code = name_or_code
+        tag_code, _, _ = resolve_tag(name_or_code)
+        if tag_code is None:
+            raise KeyError(f"Tag '{name_or_code}' not found in LOCAL_TIFF_TAGS.")
 
         # Handle dtype parameter - can be string key, int, or DATATYPE enum value
         if isinstance(dtype, str):
@@ -1192,10 +1228,7 @@ class MetadataTags:
             tag_dtype = int(dtype)  # Convert enum or any numeric type to int
 
         # Normalize value to system byte order for internal storage
-        # Source byte order comes from the array's dtype
-        import sys
-        system_byteorder = '<' if sys.byteorder == 'little' else '>'
-        normalized_value = normalize_array_to_target_byteorder(value, system_byteorder)
+        normalized_value = normalize_array_to_target_byteorder(value, '=')
 
         self._tags[tag_code] = self.StoredTag(code=tag_code, dtype=tag_dtype, count=count, value=normalized_value)
 
@@ -1359,6 +1392,33 @@ class MetadataTags:
         xmp = self.get_tag("XMP")
         return xmp
 
+    def _get_tag_info(
+        self, tag: Union[str, int]
+    ) -> Optional[tuple]:
+        """Internal helper to resolve tag and get stored tag object.
+        
+        Args:
+            tag: Either a numeric tag code (int) or tag name string
+        
+        Returns:
+            Tuple of (tag_id, tag_name, registry_spec, stored_tag) or None if not found.
+        """
+        if isinstance(tag, int):
+            tag_id = tag
+            _, tag_name, spec = resolve_tag(tag)
+            if tag_name is None:
+                tag_name = str(tag)
+        else:
+            tag_id, tag_name, spec = resolve_tag(tag)
+            if tag_id is None:
+                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+                return None
+        
+        if tag_id not in self._tags:
+            return None
+        
+        return (tag_id, tag_name, spec, self._tags[tag_id])
+
     def get_tag(
         self, 
         tag: Union[str, int], 
@@ -1378,37 +1438,12 @@ class MetadataTags:
         See also:
             get_raw_tag: Returns raw tag value without any conversion.
         """
-        # Resolve tag to id/name and get registry spec (for shape info)
-        if isinstance(tag, int):
-            tag_id = tag
-            _, tag_name, registry_spec = resolve_tag(tag)
-            if tag_name is None:
-                tag_name = str(tag)
-        else:
-            tag_id, tag_name, registry_spec = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
+        tag_info = self._get_tag_info(tag)
+        if tag_info is None:
+            return None
         
-        # Dict lookup
-        if tag_id in self._tags:
-            t = self._tags[tag_id]
-            
-            # Check for special formatting (XMP, DNGVersion, etc.)
-            special_value = special_tag_format(tag_name, t.value, t.dtype, return_type)
-            if special_value is not None:
-                return special_value
-            
-            effective_type = return_type or get_native_type(t.dtype, t.count)
-            
-            # Use registry spec shape only if count matches tag
-            shape_spec = None
-            if registry_spec and registry_spec.shape and registry_spec.count == t.count:
-                shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(t.dtype, 'B'), t.count, registry_spec.shape)
-            
-            return decode_tag_value(tag_name, t.value, t.dtype, shape_spec, effective_type)
-        
-        return None
+        _, tag_name, spec, t = tag_info
+        return convert_tag_value(tag_name, t.value, t.dtype, t.count, spec, return_type)
 
     def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
         """Get raw tag value without any type conversion.
@@ -1422,20 +1457,11 @@ class MetadataTags:
         See also:
             get_tag: Returns tag value with automatic or specified type conversion.
         """
-        # For raw access, we can work with tags not in the registry
-        if isinstance(tag, int):
-            tag_id = tag
-        else:
-            tag_id, _, _ = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
+        tag_info = self._get_tag_info(tag)
+        if tag_info is None:
+            return None
         
-        # Dict lookup
-        if tag_id in self._tags:
-            return self._tags[tag_id].value
-        
-        return None
+        return tag_info[3].value
     
     def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
         """Extract datetime from EXIF time tags with subseconds and timezone.

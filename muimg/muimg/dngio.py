@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # tifffile followups:
 # - dng_validate expects SubIFD NextIFD == 0, but tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero.
 # - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.
-# - TiffWriter writes float tag array bytes unchanged; when writing BE files we must ensure float arrays are big-endian (see _ensure_float_tags_be).
 # - We always write big-endian files but tiffwriter seems to try to byte swap in that case on the encoded jxl bitstream so we encode jxl oursleves.
 
 class RawStageSelector(str, Enum):
@@ -39,6 +38,7 @@ from .tiff_metadata import (
     XmpMetadata,
     get_native_type,
     decode_tag_value,
+    convert_tag_value,
     resolve_tag,
     LOCAL_TIFF_TAGS
 )
@@ -53,8 +53,8 @@ def _transcode_pgtm_if_needed(tag_code: int, value: Any, source_byteorder: str, 
     Args:
         tag_code: TIFF tag code
         value: Tag value (may be bytes for PGTM tags)
-        source_byteorder: Source byte order ('>' or '<')
-        target_byteorder: Target byte order ('>' or '<')
+        source_byteorder: Source byte order ('>' big-endian, '<' little-endian)
+        target_byteorder: Target byte order ('>' big-endian, '<' little-endian, '=' system)
         
     Returns:
         Transcoded value if PGTM, otherwise original value
@@ -64,6 +64,12 @@ def _transcode_pgtm_if_needed(tag_code: int, value: Any, source_byteorder: str, 
     
     if tag_code in (PGTM_TAG, PGTM2_TAG) and isinstance(value, bytes):
         from .raw_render import transcode_profile_gain_table_map
+        
+        # Resolve '=' to actual system byte order
+        if target_byteorder == '=':
+            import sys
+            target_byteorder = '<' if sys.byteorder == 'little' else '>'
+        
         is_version2 = (tag_code == PGTM2_TAG)
         return transcode_profile_gain_table_map(value, source_byteorder, target_byteorder, is_version2)
     
@@ -139,31 +145,6 @@ class DngPage(TiffPage):
     def is_ifd0(self) -> bool:
         """True if this page is IFD0 (top-level IFD, not a SubIFD)."""
         return self._is_ifd0
-
-    def get_ifd0_tags(self) -> MetadataTags:
-        """Return a copy of IFD0 tags as a MetadataTags object."""
-        return self.ifd0.get_page_tags()
-    
-    def get_page_tags(self) -> MetadataTags:
-        """Return a copy of all page-level tags as a MetadataTags object.
-        
-        All multi-byte arrays are normalized to system byte order for consistent
-        internal representation. This includes:
-        - Multi-byte typed arrays (SHORT, LONG, FLOAT, etc.)
-        - ProfileGainTableMap/ProfileGainTableMap2 binary blobs
-        """
-        import sys
-        
-        tags = MetadataTags()
-        source_byteorder = self.parent.byteorder
-        system_byteorder = '<' if sys.byteorder == 'little' else '>'
-        
-        for tag in self.tags.values():
-            # Transcode PGTM to system byte order if needed
-            value = _transcode_pgtm_if_needed(tag.code, tag.value, source_byteorder, system_byteorder)
-            tags.add_raw_tag(tag.code, tag.dtype, tag.count, value)
-        
-        return tags
     
     @property
     def photometric_name(self) -> Optional[str]:
@@ -203,41 +184,35 @@ class DngPage(TiffPage):
         xmp = self.get_tag("XMP")
         return xmp
     
-    def get_tag(
-        self, 
-        tag: Union[str, int], 
-        return_type: Optional[type] = None,
-        no_inherit: bool = False
-    ) -> Optional[Any]:
-        """Get a tag value with type conversion.
+    def _get_tag_object(self, tag: Union[str, int], no_inherit: bool = False) -> Optional[tuple]:
+        """Internal helper to get tag object and metadata with normalized values.
+        
+        All tag values are normalized to system byte order for consistent internal
+        representation. This includes:
+        - Multi-byte typed arrays (SHORT, LONG, FLOAT, etc.)
+        - ProfileGainTableMap/ProfileGainTableMap2 binary blobs
         
         Args:
-            tag: Either a numeric tag code (int) or tag name string 
-                 (e.g., 'ColorMatrix1', 'CFAPattern')
-            return_type: Controls type conversion:
-                - None (default): auto-convert to native type from TagSpec
-                - specific type (str, float, list, etc.): convert to that type
+            tag: Either a numeric tag code (int) or tag name string
             no_inherit: If True, only check this page's tags, don't fall back to IFD0
         
         Returns:
-            Tag value (converted based on return_type), or None if not found.
-            
-        See also:
-            get_raw_tag: Returns raw tag value without any conversion.
+            Tuple of (tag_id, tag_name, tag_code, tag_dtype, tag_count, 
+                      normalized_value, registry_spec) or None if not found.
         """
-        # Resolve tag to id/name and get registry spec (for shape info)
+        from .tiff_metadata import normalize_array_to_target_byteorder
+        
         if isinstance(tag, int):
             tag_id = tag
-            _, tag_name, registry_spec = resolve_tag(tag)
+            _, tag_name, spec = resolve_tag(tag)
             if tag_name is None:
                 tag_name = str(tag)
         else:
-            tag_id, tag_name, registry_spec = resolve_tag(tag)
+            tag_id, tag_name, spec = resolve_tag(tag)
             if tag_id is None:
                 logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
                 return None
         
-        # Get value from page, or fall back to IFD0 for global tags (unless no_inherit)
         raw_tag = None
         if tag_id in self.tags:
             raw_tag = self.tags[tag_id]
@@ -246,18 +221,44 @@ class DngPage(TiffPage):
         
         if raw_tag is None:
             return None
+        
+        # Normalize tag value to system byte order
+        source_byteorder = self.parent.byteorder
+        
+        # First handle PGTM special case (needs explicit source/target byte order)
+        val = _transcode_pgtm_if_needed(
+            raw_tag.code, raw_tag.value, source_byteorder, '='
+        )
+        # Then normalize any multi-byte arrays
+        normalized_val = normalize_array_to_target_byteorder(val, '=')
+        
+        return (tag_id, tag_name, raw_tag.code, raw_tag.dtype, raw_tag.count, normalized_val, spec)
 
-        # Check for special formatting (XMP, DNGVersion, etc.)
-        special_value = special_tag_format(tag_name, raw_tag.value, raw_tag.dtype, return_type)
-        if special_value is not None:
-            return special_value
-
-        shape_spec = None
-        if registry_spec and registry_spec.shape and registry_spec.count == raw_tag.count:
-            shape_spec = TagSpec(TIFF_DTYPE_TO_STR.get(raw_tag.dtype, 'B'), raw_tag.count, registry_spec.shape)
-
-        effective_type = return_type or get_native_type(raw_tag.dtype, raw_tag.count)
-        return decode_tag_value(tag_name, raw_tag.value, raw_tag.dtype, shape_spec, effective_type)
+    def get_tag(
+        self,
+        tag: Union[str, int],
+        return_type: Optional[type] = None,
+        no_inherit: bool = False,
+    ) -> Optional[Any]:
+        """Get tag value with automatic or specified type conversion.
+        
+        Args:
+            tag: Either a numeric tag code (int) or tag name string
+            return_type: Optional type to convert to (int, float, str, tuple, list, etc.)
+            no_inherit: If True, only check this page's tags, don't fall back to IFD0
+        
+        Returns:
+            Tag value (converted based on return_type), or None if not found.
+            
+        See also:
+            get_raw_tag: Returns raw tag value without any conversion.
+        """
+        tag_info = self._get_tag_object(tag, no_inherit)
+        if tag_info is None:
+            return None
+        
+        _, tag_name, _, tag_dtype, tag_count, normalized_val, spec = tag_info
+        return convert_tag_value(tag_name, normalized_val, tag_dtype, tag_count, spec, return_type)
 
     def get_raw_tag(self, tag: Union[str, int], no_inherit: bool = False) -> Optional[Any]:
         """Get raw tag value without any type conversion.
@@ -272,23 +273,11 @@ class DngPage(TiffPage):
         See also:
             get_tag: Returns tag value with automatic or specified type conversion.
         """
-        # For raw access, we can work with tags not in the registry
-        if isinstance(tag, int):
-            tag_id = tag
-        else:
-            tag_id, _, _ = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
+        tag_info = self._get_tag_object(tag, no_inherit)
+        if tag_info is None:
+            return None
         
-        if tag_id in self.tags:
-            return self.tags[tag_id].value
-        
-        # Fall back to IFD0 for global tags (unless no_inherit)
-        if not no_inherit and self.ifd0 is not None and tag_id in self.ifd0.tags:
-            return self.ifd0.tags[tag_id].value
-        
-        return None
+        return tag_info[5]  # Return normalized_value
     
     def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
         """Extract datetime from EXIF time tags with subseconds and timezone.
@@ -315,6 +304,30 @@ class DngPage(TiffPage):
         """
         from .tiff_metadata import _get_time_impl
         return _get_time_impl(self, time_type)
+
+
+    def get_ifd0_tags(self) -> MetadataTags:
+        """Return a copy of IFD0 tags as a MetadataTags object."""
+        return self.ifd0.get_page_tags()
+    
+    def get_page_tags(self) -> MetadataTags:
+        """Return a copy of all page-level tags as a MetadataTags object.
+        
+        All multi-byte arrays are normalized to system byte order for consistent
+        internal representation. This includes:
+        - Multi-byte typed arrays (SHORT, LONG, FLOAT, etc.)
+        - ProfileGainTableMap/ProfileGainTableMap2 binary blobs
+        """
+        tags = MetadataTags()
+        
+        # Use _get_tag_object to get normalized values for each tag
+        for tag_code in self.tags.keys():
+            tag_info = self._get_tag_object(tag_code, no_inherit=True)
+            if tag_info is not None:
+                _, _, tag_code, tag_dtype, tag_count, normalized_value, _ = tag_info
+                tags.add_raw_tag(tag_code, tag_dtype, tag_count, normalized_value)
+        
+        return tags
     
     def _decode_jpegxl(self) -> np.ndarray:
         """Decode JPEG XL compressed image data, handling tiled images.
