@@ -31,13 +31,8 @@ class RawStageSelector(str, Enum):
 # Import metadata classes from tiff_metadata module
 from .tiff_metadata import (
     MetadataTags,
-    TagSpec,
-    TIFF_DTYPE_TO_STR,
-    special_tag_format,
     TIFF_TAG_TYPE_REGISTRY,
     XmpMetadata,
-    get_native_type,
-    decode_tag_value,
     convert_tag_value,
     resolve_tag,
     LOCAL_TIFF_TAGS
@@ -197,21 +192,13 @@ class DngPage(TiffPage):
             no_inherit: If True, only check this page's tags, don't fall back to IFD0
         
         Returns:
-            Tuple of (tag_id, tag_name, tag_code, tag_dtype, tag_count, 
-                      normalized_value, registry_spec) or None if not found.
-        """
-        from .tiff_metadata import normalize_array_to_target_byteorder
+            Tuple of (tag_id, tag_name, registry_spec, raw_tag, normalized_value) or None if not found.
+        """        
+        tag_id, tag_name, spec = resolve_tag(tag)
         
-        if isinstance(tag, int):
-            tag_id = tag
-            _, tag_name, spec = resolve_tag(tag)
-            if tag_name is None:
-                tag_name = str(tag)
-        else:
-            tag_id, tag_name, spec = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
+        if tag_id is None:
+            logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+            return None
         
         raw_tag = None
         if tag_id in self.tags:
@@ -222,17 +209,14 @@ class DngPage(TiffPage):
         if raw_tag is None:
             return None
         
-        # Normalize tag value to system byte order
-        source_byteorder = self.parent.byteorder
-        
         # First handle PGTM special case (needs explicit source/target byte order)
-        val = _transcode_pgtm_if_needed(
-            raw_tag.code, raw_tag.value, source_byteorder, '='
-        )
+        val = _transcode_pgtm_if_needed(raw_tag.code, raw_tag.value, self.parent.byteorder, '=')
+
         # Then normalize any multi-byte arrays
+        from .tiff_metadata import normalize_array_to_target_byteorder
         normalized_val = normalize_array_to_target_byteorder(val, '=')
         
-        return (tag_id, tag_name, raw_tag.code, raw_tag.dtype, raw_tag.count, normalized_val, spec)
+        return (tag_id, tag_name, spec, raw_tag, normalized_val)
 
     def get_tag(
         self,
@@ -257,8 +241,9 @@ class DngPage(TiffPage):
         if tag_info is None:
             return None
         
-        _, tag_name, _, tag_dtype, tag_count, normalized_val, spec = tag_info
-        return convert_tag_value(tag_name, normalized_val, tag_dtype, tag_count, spec, return_type)
+        _, tag_name, spec, raw_tag, normalized_val = tag_info
+        return convert_tag_value(
+            tag_name, normalized_val, raw_tag.dtype, raw_tag.count, spec, return_type)
 
     def get_raw_tag(self, tag: Union[str, int], no_inherit: bool = False) -> Optional[Any]:
         """Get raw tag value without any type conversion.
@@ -274,10 +259,7 @@ class DngPage(TiffPage):
             get_tag: Returns tag value with automatic or specified type conversion.
         """
         tag_info = self._get_tag_object(tag, no_inherit)
-        if tag_info is None:
-            return None
-        
-        return tag_info[5]  # Return normalized_value
+        return tag_info[4] if tag_info else None
     
     def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
         """Extract datetime from EXIF time tags with subseconds and timezone.
@@ -324,8 +306,8 @@ class DngPage(TiffPage):
         for tag_code in self.tags.keys():
             tag_info = self._get_tag_object(tag_code, no_inherit=True)
             if tag_info is not None:
-                _, _, tag_code, tag_dtype, tag_count, normalized_value, _ = tag_info
-                tags.add_raw_tag(tag_code, tag_dtype, tag_count, normalized_value)
+                _, _, _, raw_tag, normalized_value = tag_info
+                tags.add_raw_tag(tag_code, raw_tag.dtype, raw_tag.count, normalized_value)
         
         return tags
     

@@ -645,10 +645,14 @@ def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Opt
         
     Returns:
         Tuple of (tag_id, tag_name, spec) where any may be None if not found.
+        For unknown numeric tags, tag_name will be str(tag_id) as fallback.
     """
     if isinstance(tag, int):
         tag_id = tag
         tag_name = LOCAL_TIFF_TAGS.get(tag_id)
+        # Fallback to string representation for unknown numeric tags
+        if tag_name is None:
+            tag_name = str(tag_id)
     else:
         tag_name = tag
         tag_id = LOCAL_TIFF_TAGS.get(tag_name)
@@ -776,45 +780,6 @@ def decode_tag_value(
     except (TypeError, ValueError):
         return tag_value
 
-def special_tag_format(tag_name: str, raw_value: Any, dtype: int, return_type: Optional[type]) -> Optional[Any]:
-    """Handle special formatting for specific tags.
-    
-    Some tags require special handling beyond standard TIFF type conversion:
-    - XMP: Returns XmpMetadata object for easy manipulation
-    - DNGVersion/DNGBackwardVersion: Returns 4-tuple (major, minor, patch, build) for easy comparison
-    
-    Args:
-        tag_name: Name of the tag
-        raw_value: Raw value from TIFF tag
-        dtype: TIFF dtype code
-        return_type: Requested return type (None for auto)
-    
-    Returns:
-        Formatted value if this is a special tag, None otherwise (use normal decoding)
-    """
-    # Only apply special formatting when return_type is None (auto)
-    if return_type is not None:
-        return None
-    
-    # XMP: return XmpMetadata object
-    if tag_name == "XMP":
-        xmp_string = decode_tag_value(tag_name, raw_value, dtype, None, str)
-        if xmp_string is None:
-            xmp_string = ""
-        return XmpMetadata(xmp_string)
-    
-    # DNG Version tags: return 4-tuple (major, minor, patch, build)
-    if tag_name in ("DNGVersion", "DNGBackwardVersion"):
-        # Decode as bytes first
-        version_bytes = decode_tag_value(tag_name, raw_value, dtype, None, bytes)
-        if version_bytes is None:
-            return None
-        # Pad to 4 bytes if needed (null bytes may be stripped)
-        padded = version_bytes + b'\x00' * (4 - len(version_bytes))
-        return (padded[0], padded[1], padded[2], padded[3])
-    
-    return None
-
 def convert_tag_value(
     tag_name: str,
     tag_value: Any,
@@ -842,10 +807,23 @@ def convert_tag_value(
     Returns:
         Converted value with special formatting applied if applicable.
     """
-    # Check for special formatting (XMP, DNGVersion, etc.)
-    special_value = special_tag_format(tag_name, tag_value, tag_dtype, return_type)
-    if special_value is not None:
-        return special_value
+    # Special formatting only applies when return_type is None (auto)
+    if return_type is None:
+        # XMP: return XmpMetadata object
+        if tag_name == "XMP":
+            xmp_string = decode_tag_value(tag_name, tag_value, tag_dtype, None, str)
+            if xmp_string is None:
+                xmp_string = ""
+            return XmpMetadata(xmp_string)
+        
+        # DNG Version tags: return 4-tuple (major, minor, patch, build)
+        if tag_name in ("DNGVersion", "DNGBackwardVersion"):
+            version_bytes = decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
+            if version_bytes is None:
+                return None
+            # Pad to 4 bytes if needed (null bytes may be stripped)
+            padded = version_bytes + b'\x00' * (4 - len(version_bytes))
+            return (padded[0], padded[1], padded[2], padded[3])
     
     # Determine effective return type (auto-convert if None)
     effective_type = return_type or get_native_type(tag_dtype, tag_count)
@@ -1130,9 +1108,10 @@ class MetadataTags:
     
     def __contains__(self, tag: Union[int, str]) -> bool:
         """Check if a tag exists by code (int) or name (str)."""
-        if isinstance(tag, str):
-            tag = LOCAL_TIFF_TAGS.get(tag, tag)
-        return tag in self._tags
+        tag_id, _, _ = resolve_tag(tag)
+        if tag_id is None:
+            return False
+        return tag_id in self._tags
 
     def remove_tag(self, tag: Union[int, str]) -> bool:
         """Remove a tag by code (int) or name (str).
@@ -1143,10 +1122,11 @@ class MetadataTags:
         Returns:
             True if tag was removed, False if it didn't exist
         """
-        if isinstance(tag, str):
-            tag = LOCAL_TIFF_TAGS.get(tag, tag)
-        if tag in self._tags:
-            del self._tags[tag]
+        tag_id, _, _ = resolve_tag(tag)
+        if tag_id is None:
+            return False
+        if tag_id in self._tags:
+            del self._tags[tag_id]
             return True
         return False
 
@@ -1403,16 +1383,11 @@ class MetadataTags:
         Returns:
             Tuple of (tag_id, tag_name, registry_spec, stored_tag) or None if not found.
         """
-        if isinstance(tag, int):
-            tag_id = tag
-            _, tag_name, spec = resolve_tag(tag)
-            if tag_name is None:
-                tag_name = str(tag)
-        else:
-            tag_id, tag_name, spec = resolve_tag(tag)
-            if tag_id is None:
-                logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
-                return None
+        tag_id, tag_name, spec = resolve_tag(tag)
+        
+        if tag_id is None:
+            logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
+            return None
         
         if tag_id not in self._tags:
             return None
