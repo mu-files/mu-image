@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 def _get_ifd0_tag(
-    ifd0: "dngio.DngPage",
-    raw_page: Optional["dngio.DngPage"],
+    ifd0_tags: "MetadataTags",
+    raw_ifd_tags: Optional["MetadataTags"],
     tag: Union[str, int],
     return_type: Optional[type] = None
 ) -> Optional:
@@ -33,8 +33,8 @@ def _get_ifd0_tag(
     are requested.
     
     Args:
-        ifd0: The IFD0 page (must pass is_ifd0 assertion)
-        raw_page: Optional raw page to check as fallback for ill-formed files
+        ifd0_tags: The IFD0 metadata tags
+        raw_ifd_tags: Optional raw IFD tags to check as fallback for ill-formed files
         tag: Tag name or code
         return_type: Optional type conversion
         
@@ -56,11 +56,11 @@ def _get_ifd0_tag(
         f"Tag '{tag_name}' (dng_ifd={spec.dng_ifd}) is not an IFD0/profile tag"
     
     # Try IFD0 first
-    value = ifd0.get_tag(tag, return_type)
+    value = ifd0_tags.get_tag(tag, return_type)
     
-    # Fall back to raw_page for ill-formed files where tags might be in wrong IFD
-    if value is None and raw_page is not None:
-        value = raw_page.get_tag(tag, return_type, no_inherit=True)
+    # Fall back to raw_ifd_tags for ill-formed files where tags might be in wrong IFD
+    if value is None and raw_ifd_tags is not None:
+        value = raw_ifd_tags.get_tag(tag, return_type)
     
     return value
 
@@ -1447,6 +1447,85 @@ def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteord
     }
 
 
+def transcode_profile_gain_table_map(data: bytes, source_byteorder: str, target_byteorder: str, is_version2: bool = False) -> bytes:
+    """Transcode ProfileGainTableMap from source to target byte order.
+    
+    ProfileGainTableMap is a binary blob where all multi-byte values are stored
+    in the file's byte order. To transcode, we just byte-swap all multi-byte
+    values in place.
+    
+    Structure:
+    - Header (64 bytes): 2×uint32, 4×float64, 1×uint32, 5×float32
+    - Version 2 adds (16 bytes): 1×uint32, 3×float32
+    - Gain data: N×float32 (or float16/uint16/uint8 depending on data_type)
+    
+    Args:
+        data: Raw bytes from ProfileGainTableMap tag
+        source_byteorder: Source byte order ('>' or '<')
+        target_byteorder: Target byte order ('>' or '<')
+        is_version2: True for ProfileGainTableMap2 format
+        
+    Returns:
+        Byte-swapped binary blob in target byte order
+    """
+    if source_byteorder == target_byteorder:
+        return data  # No conversion needed
+    
+    # Make a mutable copy
+    result = bytearray(data)
+    offset = 0
+    
+    # Byte-swap header fields
+    # 2×uint32 (points_v, points_h)
+    np.frombuffer(result, dtype=np.uint32, count=2, offset=offset).byteswap(inplace=True)
+    offset += 8
+    
+    # 2×float64 (spacing_v, spacing_h)
+    np.frombuffer(result, dtype=np.float64, count=2, offset=offset).byteswap(inplace=True)
+    offset += 16
+    
+    # 2×float64 (origin_v, origin_h)
+    np.frombuffer(result, dtype=np.float64, count=2, offset=offset).byteswap(inplace=True)
+    offset += 16
+    
+    # 1×uint32 (num_table_points)
+    np.frombuffer(result, dtype=np.uint32, count=1, offset=offset).byteswap(inplace=True)
+    offset += 4
+    
+    # 5×float32 (weights)
+    np.frombuffer(result, dtype=np.float32, count=5, offset=offset).byteswap(inplace=True)
+    offset += 20
+    
+    # Version 2 fields
+    if is_version2:
+        # 1×uint32 (data_type)
+        data_type_view = np.frombuffer(result, dtype=np.uint32, count=1, offset=offset)
+        data_type_view.byteswap(inplace=True)
+        data_type = data_type_view[0]
+        offset += 4
+        
+        # 3×float32 (gamma, gain_min, gain_max)
+        np.frombuffer(result, dtype=np.float32, count=3, offset=offset).byteswap(inplace=True)
+        offset += 12
+    else:
+        data_type = 3  # float32 default
+    
+    # Byte-swap gain data based on data_type
+    remaining = len(result) - offset
+    if data_type == 3:  # float32
+        count = remaining // 4
+        np.frombuffer(result, dtype=np.float32, count=count, offset=offset).byteswap(inplace=True)
+    elif data_type == 2:  # float16
+        count = remaining // 2
+        np.frombuffer(result, dtype=np.float16, count=count, offset=offset).byteswap(inplace=True)
+    elif data_type == 1:  # uint16
+        count = remaining // 2
+        np.frombuffer(result, dtype=np.uint16, count=count, offset=offset).byteswap(inplace=True)
+    # data_type == 0 (uint8) needs no byte swapping
+    
+    return bytes(result)
+
+
 def parse_opcode_list(data: bytes) -> list[dict]:
     """Parse OpcodeList1/2/3 binary blob.
     
@@ -2714,10 +2793,10 @@ def apply_post_rendering_operations(
 
 
 def _render_camera_rgb(
-    ifd0: "dngio.DngPage",
+    ifd0_tags: "MetadataTags",
     rgb_camera: np.ndarray,
     output_dtype: type,
-    raw_page: Optional["dngio.DngPage"] = None,
+    raw_ifd_tags: Optional["MetadataTags"] = None,
     rendering_params: dict = None,
     use_xmp: bool = True,
 ) -> np.ndarray:
@@ -2725,12 +2804,9 @@ def _render_camera_rgb(
 
     timings = {}
 
-    # Assert this is IFD0 (coding error check)
-    assert ifd0.is_ifd0, "_render_camera_rgb() requires IFD0, got a SubIFD page"
-
     try:
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
-        extracted_params = supported_xmp_to_dict(ifd0) if use_xmp else {}
+        extracted_params = supported_xmp_to_dict(ifd0_tags) if use_xmp else {}
         
         # Merge rendering_params overrides (with validation)
         if rendering_params is not None:
@@ -2755,7 +2831,7 @@ def _render_camera_rgb(
         # =====================================================================
         
         # Get ColorMatrix1 (XYZ to Camera, 3x3)
-        color_matrix1 = _get_ifd0_tag(ifd0, raw_page, "ColorMatrix1")
+        color_matrix1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ColorMatrix1")
         if color_matrix1 is None:
             logger.warning("No ColorMatrix1 found, using identity")
             color_matrix1 = np.eye(3, dtype=np.float64)
@@ -2763,28 +2839,28 @@ def _render_camera_rgb(
             color_matrix1 = np.asarray(color_matrix1, dtype=np.float64)
         
         # Get ColorMatrix2 for dual-illuminant interpolation
-        color_matrix2 = _get_ifd0_tag(ifd0, raw_page, "ColorMatrix2")
+        color_matrix2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ColorMatrix2")
         if color_matrix2 is not None:
             color_matrix2 = np.asarray(color_matrix2, dtype=np.float64)
         
         # Get ForwardMatrix1/2 (camera to PCS, 3x3)
         # SDK ref: dng_color_spec.cpp lines 126-128, 177, 213, 586-596
         # NormalizeForwardMatrix is called BEFORE AnalogBalance/CameraCalibration
-        forward_matrix1 = _normalize_forward_matrix(_get_ifd0_tag(ifd0, raw_page, "ForwardMatrix1"))
-        forward_matrix2 = _normalize_forward_matrix(_get_ifd0_tag(ifd0, raw_page, "ForwardMatrix2"))
+        forward_matrix1 = _normalize_forward_matrix(_get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ForwardMatrix1"))
+        forward_matrix2 = _normalize_forward_matrix(_get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ForwardMatrix2"))
         
         # Get CameraCalibration1/2 matrices (3x3, default to identity)
         # SDK ref: dng_color_spec.cpp lines 134-166
-        camera_calib1 = _get_ifd0_tag(ifd0, raw_page, "CameraCalibration1")
-        camera_calib2 = _get_ifd0_tag(ifd0, raw_page, "CameraCalibration2")
+        camera_calib1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "CameraCalibration1")
+        camera_calib2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "CameraCalibration2")
         if camera_calib1 is None:
             camera_calib1 = np.eye(3, dtype=np.float64)
         if camera_calib2 is None:
             camera_calib2 = np.eye(3, dtype=np.float64)
         
         # Get calibration illuminant temperatures
-        illum1 = _get_ifd0_tag(ifd0, raw_page, "CalibrationIlluminant1")
-        illum2 = _get_ifd0_tag(ifd0, raw_page, "CalibrationIlluminant2")
+        illum1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "CalibrationIlluminant1")
+        illum2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "CalibrationIlluminant2")
         temp1 = illuminant_to_temperature(illum1) if illum1 is not None else None
         temp2 = illuminant_to_temperature(illum2) if illum2 is not None else None
         
@@ -2801,8 +2877,8 @@ def _render_camera_rgb(
             white_xy_override = temp_tint_to_xy(temp, tint)
         else:
             # Use DNG tags
-            as_shot = _get_ifd0_tag(ifd0, raw_page, "AsShotNeutral")
-            as_shot_xy = _get_ifd0_tag(ifd0, raw_page, "AsShotWhiteXY")
+            as_shot = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "AsShotNeutral")
+            as_shot_xy = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "AsShotWhiteXY")
             
             if as_shot is not None and hasattr(as_shot, '__len__') and len(as_shot) >= 3:
                 camera_neutral = np.array(as_shot[:3], dtype=np.float64)
@@ -2813,7 +2889,7 @@ def _render_camera_rgb(
         
         # Get AnalogBalance
         ab_diag = np.eye(3, dtype=np.float64)
-        analog_balance = _get_ifd0_tag(ifd0, raw_page, "AnalogBalance")
+        analog_balance = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "AnalogBalance")
         if analog_balance is not None:
             analog_balance = np.asarray(analog_balance, dtype=np.float64)
             if analog_balance.size >= 3:
@@ -2892,13 +2968,13 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp lines 917-955, 1822-1837
         # Applied AFTER camera->ProPhoto, BEFORE exposure ramp
         # =====================================================================
-        hue_sat_dims = _get_ifd0_tag(ifd0, raw_page, "ProfileHueSatMapDims")
-        hue_sat_data1 = _get_ifd0_tag(ifd0, raw_page, "ProfileHueSatMapData1")
+        hue_sat_dims = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapDims")
+        hue_sat_data1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData1")
         
         if hue_sat_dims is not None and hue_sat_data1 is not None:
             hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
             hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
-            hue_sat_data2 = _get_ifd0_tag(ifd0, raw_page, "ProfileHueSatMapData2")
+            hue_sat_data2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData2")
             
             # Interpolate between dual illuminant HueSatMaps if available
             if hue_sat_data2 is not None and temp1 is not None and temp2 is not None and temp1 != temp2:
@@ -2928,40 +3004,39 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp line 1882: exposureWeightGain = pow(2.0, fBaselineExposure)
         # fBaselineExposure = TotalBaselineExposure (Stage3Gain = 1.0 for normal images)
         # Note: PGTM uses only baseline exposure, NOT user exposure
-        baseline_exposure = _get_ifd0_tag(ifd0, raw_page, "BaselineExposure") or 0.0
-        baseline_exposure_offset = _get_ifd0_tag(ifd0, raw_page, "BaselineExposureOffset") or 0.0
+        baseline_exposure = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "BaselineExposure") or 0.0
+        baseline_exposure_offset = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "BaselineExposureOffset") or 0.0
         total_baseline_exposure = baseline_exposure + baseline_exposure_offset
         
         # Add user exposure from rendering_params if provided
-        # SDK ref: User exposure is applied in exposure ramp, not in PGTM
         user_exposure = rendering_params.get('Exposure2012', 0.0) if rendering_params else 0.0
         exposure = total_baseline_exposure + user_exposure
         
-        logger.debug(f"Exposure computation: baseline={baseline_exposure:.4f}, offset={baseline_exposure_offset:.4f}, "
-                    f"total_baseline={total_baseline_exposure:.4f}, user={user_exposure:.4f}, final={exposure:.4f}")
-
-        # Check for PGTM2 first (takes precedence), then fall back to PGTM
+        # =====================================================================
+        # Step 2: DoProfileGainTableMap (PGTM)
+        # SDK ref: dng_render.cpp lines 1862-1910
         # Per DNG spec: PGTM2 (DNG 1.7) uses IFD0 or Camera Profile IFD
         # PGTM (DNG 1.6) was intended for IFD0 but spec mistakenly said "Raw IFD"
-        # Check raw_page first for PGTM (for files following the mistaken spec), then IFD0
-        pgtm_data = _get_ifd0_tag(ifd0, raw_page, "ProfileGainTableMap2")
+        # Check raw_ifd_tags first for PGTM (for files following the mistaken spec), then IFD0
+        pgtm_data = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileGainTableMap2")
         is_version2 = pgtm_data is not None
         
         if pgtm_data is None:
-            # Try PGTM on raw_page first (for DNG 1.6 files following mistaken spec)
-            if raw_page:
-                pgtm_data = raw_page.get_tag("ProfileGainTableMap")
+            # Try PGTM on raw_ifd_tags first (for DNG 1.6 files following mistaken spec)
+            if raw_ifd_tags:
+                pgtm_data = raw_ifd_tags.get_tag("ProfileGainTableMap")
         
         if pgtm_data is not None:
             t0 = time.perf_counter()
             try:
-                # PGTM uses file's byte order (from TIFF header)
+                # PGTM data is already normalized to system byte order by get_page_tags()
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
-                byteorder = getattr(getattr(ifd0, "parent", None), "byteorder", "<")
+                import sys
+                system_byteorder = '<' if sys.byteorder == 'little' else '>'
                 pgtm = parse_profile_gain_table_map(
                     bytes(pgtm_data),
                     is_version2=is_version2,
-                    byteorder=byteorder,
+                    byteorder=system_byteorder,
                 )
                 rgb_prophoto = _raw_render.apply_profile_gain_table_map(
                     rgb_prophoto.astype(np.float32),
@@ -2989,8 +3064,8 @@ def _render_camera_rgb(
         # Note: exposure = total_baseline_exposure + user_exposure (computed above)
         
         # Extract DNG tags for exposure_ramp
-        shadow_scale = _get_ifd0_tag(ifd0, raw_page, "ShadowScale") or 1
-        default_black_render = _get_ifd0_tag(ifd0, raw_page, "DefaultBlackRender") or 0
+        shadow_scale = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ShadowScale") or 1
+        default_black_render = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "DefaultBlackRender") or 0
         
         logger.debug(f"Shadow params: shadow_scale={shadow_scale:.4f}, default_black_render={default_black_render}")
         
@@ -3017,8 +3092,8 @@ def _render_camera_rgb(
         # Applied AFTER exposure ramp, BEFORE tone curve
         # =====================================================================
         look_table = None
-        look_table_dims = _get_ifd0_tag(ifd0, raw_page, "ProfileLookTableDims")
-        look_table_data = _get_ifd0_tag(ifd0, raw_page, "ProfileLookTableData")
+        look_table_dims = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileLookTableDims")
+        look_table_data = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileLookTableData")
         
         if look_table_dims is not None and look_table_data is not None:
             look_hue_divs, look_sat_divs, look_val_divs = int(look_table_dims[0]), int(look_table_dims[1]), int(look_table_dims[2])
@@ -3071,8 +3146,8 @@ def _render_camera_rgb(
         # Get ProfileToneCurve from DNG tags, or use ACR3 default
         # SDK ref: dng_render.cpp lines 2153-2162
         tag_profile_curve = None
-        if _get_ifd0_tag(ifd0, raw_page, "ProfileToneCurve") is not None:
-            profile_tone_curve = _get_ifd0_tag(ifd0, raw_page, "ProfileToneCurve")
+        if _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileToneCurve") is not None:
+            profile_tone_curve = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileToneCurve")
             if len(profile_tone_curve) >= 4:
                 # ProfileToneCurve is array of 2N values: [x0, y0, x1, y1, ...]
                 curve_data = np.asarray(profile_tone_curve, dtype=np.float64)
@@ -3117,7 +3192,7 @@ def _render_camera_rgb(
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
         t0 = time.perf_counter()
-        orientation = _get_ifd0_tag(ifd0, raw_page, "Orientation")
+        orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
         timings['orientation'] = time.perf_counter() - t0

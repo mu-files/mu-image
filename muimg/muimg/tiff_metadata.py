@@ -475,7 +475,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ColorimetricReference": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 50879
     "CameraCalibrationSignature": TagSpec(["s", "B"], None, dng_ifd="dng_ifd0"),  # 50931
     "ProfileCalibrationSignature": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 50932
-    "ProfileIFD": TagSpec("I", None, dng_ifd="any"),  # 50933 - variable count (can have multiple profiles)
+    "ProfileIFD": TagSpec("I", None, dng_ifd="dng_ifd0"),  # 50933 - variable count (can have multiple profiles)
     "AsShotProfileName": TagSpec(["s", "B"], None, dng_ifd="dng_ifd0"),  # 50934
     "NoiseReductionApplied": TagSpec("2I", 1, dng_ifd="dng_raw"),  # 50935
     "ProfileName": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 50936
@@ -543,7 +543,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "RGBTables": TagSpec("B", None, dng_ifd="dng_profile"),  # 52543
     "ProfileGainTableMap2": TagSpec("B", None, dng_ifd="dng_profile"),  # 52544
     "ColumnInterleaveFactor": TagSpec("H", 1, dng_ifd="dng_raw"),  # 52547
-    "ImageSequenceInfo": TagSpec("B", None, dng_ifd="any"),  # 52548
+    "ImageSequenceInfo": TagSpec("B", None, dng_ifd="dng_ifd0"),  # 52548
     "ProfileToneMethod": TagSpec("I", 1, dng_ifd="dng_profile"),  # 52549 (not in tifffile)
     "ImageStats": TagSpec("B", None, dng_ifd="dng_raw"),  # 52550
     "ProfileDynamicRange": TagSpec("d", 1, dng_ifd="dng_profile"),  # 52551
@@ -685,9 +685,7 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
             return (dtype, len(value), value)
         if hasattr(value, '__array__'):
             arr = np.asarray(value)
-            # use C-order to preserve exact bytes
-            # this ensures get_tag() -> add_tag() roundtrip works correctly
-            value = arr.tobytes(order='C')
+            value = arr.tobytes()
             return (dtype, len(value), value)
         # Single byte
         return (dtype, 1, bytes([int(value)]))
@@ -1034,6 +1032,39 @@ def _get_time_impl(
     return dt_obj
 
 
+def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
+    """Normalize array byte order to target byte order.
+    
+    For numpy arrays, source byte order is determined from the array's dtype.
+    
+    Args:
+        value: Array value (ndarray, scalar, string, etc.)
+        target_byteorder: Target byte order ('>' or '<')
+        
+    Returns:
+        Value converted to target byte order
+    """
+    import numpy as np
+    import sys
+    
+    system_byteorder = '<' if sys.byteorder == 'little' else '>'
+    
+    # Multi-byte typed arrays
+    if isinstance(value, np.ndarray) and value.dtype.byteorder not in ('|', target_byteorder):
+        # Handle '=' (native) byte order marker
+        if value.dtype.byteorder == '=':
+            if system_byteorder == target_byteorder:
+                # Already in target byte order, no conversion needed
+                return value
+        
+        # Convert to target byte order
+        base_dtype = value.dtype.str[1:]  # Remove byte order prefix
+        target_dtype = f'{target_byteorder}{base_dtype}'
+        return value.astype(target_dtype)
+    
+    return value
+
+
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
     
@@ -1140,11 +1171,14 @@ class MetadataTags:
     ) -> None:
         """Add a tag with explicit type specification.
         
+        Values are automatically normalized to system byte order for internal storage.
+        For numpy arrays, source byte order is determined from the array's dtype.
+        
         Args:
             name_or_code: Tag name string or numeric code
             dtype: TIFF data type string ('s', 'H', 'I', '2I', etc.) or int
             count: Number of values
-            value: The tag value
+            value: The tag value (numpy arrays will be normalized to system byte order)
         """
         if isinstance(name_or_code, str):
             tag_code = LOCAL_TIFF_TAGS[name_or_code]
@@ -1157,7 +1191,13 @@ class MetadataTags:
         else:
             tag_dtype = int(dtype)  # Convert enum or any numeric type to int
 
-        self._tags[tag_code] = self.StoredTag(code=tag_code, dtype=tag_dtype, count=count, value=value)
+        # Normalize value to system byte order for internal storage
+        # Source byte order comes from the array's dtype
+        import sys
+        system_byteorder = '<' if sys.byteorder == 'little' else '>'
+        normalized_value = normalize_array_to_target_byteorder(value, system_byteorder)
+
+        self._tags[tag_code] = self.StoredTag(code=tag_code, dtype=tag_dtype, count=count, value=normalized_value)
 
     def add_time_tags(
         self,

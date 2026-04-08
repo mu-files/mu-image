@@ -39,8 +39,35 @@ from .tiff_metadata import (
     XmpMetadata,
     get_native_type,
     decode_tag_value,
-    resolve_tag
+    resolve_tag,
+    LOCAL_TIFF_TAGS
 )
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def _transcode_pgtm_if_needed(tag_code: int, value: Any, source_byteorder: str, target_byteorder: str) -> Any:
+    """Transcode ProfileGainTableMap bytes from source to target byte order.
+    
+    Args:
+        tag_code: TIFF tag code
+        value: Tag value (may be bytes for PGTM tags)
+        source_byteorder: Source byte order ('>' or '<')
+        target_byteorder: Target byte order ('>' or '<')
+        
+    Returns:
+        Transcoded value if PGTM, otherwise original value
+    """
+    PGTM_TAG = LOCAL_TIFF_TAGS["ProfileGainTableMap"]
+    PGTM2_TAG = LOCAL_TIFF_TAGS["ProfileGainTableMap2"]
+    
+    if tag_code in (PGTM_TAG, PGTM2_TAG) and isinstance(value, bytes):
+        from .raw_render import transcode_profile_gain_table_map
+        is_version2 = (tag_code == PGTM2_TAG)
+        return transcode_profile_gain_table_map(value, source_byteorder, target_byteorder, is_version2)
+    
+    return value
 
 # =============================================================================
 # Core DNG Classes
@@ -115,17 +142,27 @@ class DngPage(TiffPage):
 
     def get_ifd0_tags(self) -> MetadataTags:
         """Return a copy of IFD0 tags as a MetadataTags object."""
-        src = self.ifd0
-        tags = MetadataTags()
-        for tag in src.tags.values():
-            tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
-        return tags
+        return self.ifd0.get_page_tags()
     
     def get_page_tags(self) -> MetadataTags:
-        """Return a copy of all page-level tags as a MetadataTags object."""
+        """Return a copy of all page-level tags as a MetadataTags object.
+        
+        All multi-byte arrays are normalized to system byte order for consistent
+        internal representation. This includes:
+        - Multi-byte typed arrays (SHORT, LONG, FLOAT, etc.)
+        - ProfileGainTableMap/ProfileGainTableMap2 binary blobs
+        """
+        import sys
+        
         tags = MetadataTags()
+        source_byteorder = self.parent.byteorder
+        system_byteorder = '<' if sys.byteorder == 'little' else '>'
+        
         for tag in self.tags.values():
-            tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+            # Transcode PGTM to system byte order if needed
+            value = _transcode_pgtm_if_needed(tag.code, tag.value, source_byteorder, system_byteorder)
+            tags.add_raw_tag(tag.code, tag.dtype, tag.count, value)
+        
         return tags
     
     @property
@@ -720,8 +757,8 @@ class DngPage(TiffPage):
         
         # Get IFD0 for rendering (color profile tags are in IFD0)
         result = raw_render._render_camera_rgb(
-            ifd0=self.ifd0,
-            raw_page=self,
+            ifd0_tags=self.ifd0.get_ifd0_tags(),
+            raw_ifd_tags=self.get_page_tags(),
             rgb_camera=rgb_camera,
             output_dtype=output_dtype,
             rendering_params=rendering_params,
@@ -1028,8 +1065,8 @@ class DngFile(TiffFile):
         
         # Render camera RGB to final output
         rgb_image = raw_render._render_camera_rgb(
-            ifd0=self.ifd0,
-            raw_page=main_page,
+            ifd0_tags=self.ifd0.get_ifd0_tags(),
+            raw_ifd_tags=main_page.get_page_tags(),
             rgb_camera=rgb_camera,
             output_dtype=output_dtype,
             rendering_params=rendering_params,
@@ -1125,20 +1162,6 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
     original_data[1::2, 1::2] = b_channel  # B pixels
 
     return original_data
-
-
-def _ensure_float_tags_be(tags: MetadataTags) -> MetadataTags:
-    """Convert float arrays to big-endian for TiffWriter.
-    
-    TiffWriter passes numpy array bytes unchanged, so we must ensure
-    float arrays are in big-endian byte order to match our BE file header.
-    """
-    for code, dtype, count, value, _ in tags:
-        if dtype == 11:  # FLOAT
-            if isinstance(value, (np.ndarray, np.floating)) and value.dtype.byteorder != '>':
-                tags._tags[code] = tags.StoredTag(code, dtype, count, value.astype('>f4'))
-    return tags
-
 
 def _prepare_ifd_args(
     metadata: MetadataTags,
@@ -1285,11 +1308,12 @@ _TIFFWRITER_MANAGED_TAGS = {
     'PlanarConfiguration', 'ResolutionUnit', 'Software',
     'TileWidth', 'TileLength', 'TileOffsets', 'TileByteCounts',
     'SubIFDs', 'ExifTag', 'GPSTag', 'InteroperabilityTag',
+    'ProfileIFD',  # 'OpcodeList1',
 }
 
-# Digest tags only valid for IFD0 (computed from main raw data)
+# Digest tags only valid if we do a loss-less copy of the main page
 _DIGEST_TAGS = {
-    'NewRawImageDigest', 'RawImageDigest', 'OriginalRawFileDigest',
+    'NewRawImageDigest', 'RawImageDigest', 'OriginalRawFileDigest', 'RawDataUniqueID',
 }
 
 # Tags invalidated when decompressing or recompressing
@@ -1480,6 +1504,32 @@ def write_dng(
                     f"Successfully copied stripped compressed data ({sum(page.databytecounts)} bytes)"
                 )
 
+    def _prepare_tags_for_write(tags: MetadataTags, target_byteorder: str):
+        """Prepare MetadataTags for writing by converting arrays to target byte order.
+        
+        Args:
+            tags: MetadataTags object with values in system byte order
+            target_byteorder: Target file's byte order ('>' or '<')
+            
+        Yields:
+            Tuples of (code, dtype, count, value, writeonce) ready for tifffile
+        """
+        import sys
+        from .tiff_metadata import normalize_array_to_target_byteorder
+        
+        system_byteorder = '<' if sys.byteorder == 'little' else '>'
+        
+        for code in sorted(tags._tags.keys()):
+            tag = tags._tags[code]
+            
+            # Transcode PGTM if needed (no-op for non-PGTM tags)
+            value = _transcode_pgtm_if_needed(code, tag.value, system_byteorder, target_byteorder)
+            
+            # Normalize arrays if needed (no-op for non-arrays or PGTM bytes)
+            value = normalize_array_to_target_byteorder(value, target_byteorder)
+            
+            yield (tag.code, tag.dtype, tag.count, value, False)
+
     def _write_ifd_from_spec(
         writer: TiffWriter,
         spec: Union[IfdPageSpec, IfdDataSpec],
@@ -1566,7 +1616,6 @@ def write_dng(
         
         # Filter tags in-place
         _filter_metadata_tags(ifd_tags, exclude_names=exclude_tags)
-        _ensure_float_tags_be(ifd_tags)
         
         # ==== handle tifffile args for this IFD ====
         # Determine compression type for args preparation
@@ -1595,7 +1644,8 @@ def write_dng(
         
         # Fast path: copy page data as-is (no decompress)
         if isinstance(spec, IfdPageSpec) and not spec.requires_decompress():
-            ifd_args["extratags"] = ifd_tags
+            # Prepare tags for write (convert arrays to target byte order)
+            ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
             _write_page_ifd(writer, spec.page, raw_ifd_args=ifd_args)
             return
 
@@ -1681,15 +1731,14 @@ def write_dng(
                 ifd_tags.add_tag("ColumnInterleaveFactor", 2)
                 ifd_tags.add_tag("RowInterleaveFactor", 2)
 
-            # Set extratags after all tag additions are complete
-            ifd_args["extratags"] = ifd_tags
-
             encoded_bytes = imagecodecs.jpegxl_encode(
                 data, distance=jxl_distance, effort=jxl_effort
             )
             def encoded_data_iterator():
                 yield encoded_bytes
 
+            # Prepare tags after all additions are complete
+            ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
             writer.write(
                 data=encoded_data_iterator(),
                 shape=data.shape,
@@ -1700,11 +1749,12 @@ def write_dng(
             )
         else:
             # All other compression types - let tifffile handle encoding
-            ifd_args["extratags"] = ifd_tags
+            # Prepare tags after all additions are complete (including CFA tags)
+            ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
             writer.write(data, rowsperstrip=datasize, **ifd_args)
 
     try:
-        with TiffWriter(destination_file, bigtiff=False, byteorder='>') as tif:
+        with TiffWriter(destination_file, bigtiff=False, byteorder='<') as tif:
 
             # Write IFD0
             _write_ifd_from_spec(
@@ -2182,10 +2232,10 @@ def copy_dng(
         
         # Render with color transforms
         rendered_preview = raw_render._render_camera_rgb(
-            ifd0=ifd0,
+            ifd0_tags=ifd0.get_ifd0_tags(),
+            raw_ifd_tags=main_page.get_page_tags(),
             rgb_camera=preview_rgb,
             output_dtype=np.uint8,
-            raw_page=main_page,
             rendering_params=preview_rendering_params,
             use_xmp=preview_use_xmp,
         )

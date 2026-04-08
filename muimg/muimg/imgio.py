@@ -93,7 +93,7 @@ def decode_image(
     return _coerce_decoded_image(img, output_dtype=output_dtype)
 
 
-def _save_decoded_image(
+def write_image(
     image: np.ndarray,
     output: Union[str, Path, IO[bytes]],
     output_format: str = "jpg",
@@ -169,7 +169,7 @@ def convert_imgformat(
         image = decode_image(file=file, output_dtype=output_dtype)
         
         # Save using shared helper
-        return _save_decoded_image(image, output, output_format)
+        return write_image(image, output, output_format)
                 
     except Exception as e:
         logger.error(f"Error converting {file}: {e}", exc_info=True)
@@ -257,7 +257,7 @@ def convert_dng(
         )
         
         # Save using shared helper
-        return _save_decoded_image(image, output, output_format)
+        return write_image(image, output, output_format)
                 
     except ValueError as e:
         # Handle validation errors (e.g., rendering params on preview pages)
