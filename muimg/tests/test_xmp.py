@@ -18,10 +18,7 @@ def test_dump_xmp_properties(filename: str):
         pytest.skip(f"Test file not available: {filename}")
 
     with muimg.DngFile(dng_path) as dng:
-        main_page = dng.get_main_page()
-        assert main_page is not None
-
-        xmp = main_page.get_xmp()
+        xmp = dng.get_xmp()
         assert xmp is not None
         props = getattr(xmp, "_attributes", None)
         assert isinstance(props, dict)

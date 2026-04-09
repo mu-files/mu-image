@@ -32,17 +32,12 @@ def read_tags_with_normalization(tiff_page):
     """
     from muimg.tiff_metadata import normalize_array_to_target_byteorder
     
-    system_byteorder = '<' if sys.byteorder == 'little' else '>'
-    source_byteorder = tiff_page.parent.byteorder
-    
     tags = MetadataTags()
     for tag in tiff_page.tags.values():
         # Normalize value to system byte order
-        normalized_value = normalize_array_to_target_byteorder(tag.value, system_byteorder)
+        normalized_value = normalize_array_to_target_byteorder(tag.value, '=')
         tags.add_raw_tag(tag.code, tag.dtype, tag.count, normalized_value)
     return tags
-
-
 
 
 def create_test_tiff(path: Path, byteorder: str):

@@ -147,7 +147,7 @@ class DngPage(TiffPage):
         xmp = self.get_tag("XMP")
         return xmp
     
-    def _get_tag_object(self, tag: Union[str, int], no_inherit: bool = False) -> Optional[tuple]:
+    def _get_tag_object(self, tag: Union[str, int]) -> Optional[tuple]:
         """Internal helper to get tag object and metadata with normalized values.
         
         All tag values are normalized to system byte order for consistent internal
@@ -157,7 +157,6 @@ class DngPage(TiffPage):
         
         Args:
             tag: Either a numeric tag code (int) or tag name string
-            no_inherit: If True, only check this page's tags, don't fall back to IFD0
         
         Returns:
             Tuple of (tag_id, tag_name, registry_spec, raw_tag, normalized_value) or None if not found.
@@ -171,8 +170,6 @@ class DngPage(TiffPage):
         raw_tag = None
         if tag_id in self.tags:
             raw_tag = self.tags[tag_id]
-        elif not no_inherit and self.ifd0 is not None and tag_id in self.ifd0.tags:
-            raw_tag = self.ifd0.tags[tag_id]
         
         if raw_tag is None:
             return None
@@ -191,14 +188,12 @@ class DngPage(TiffPage):
         self,
         tag: Union[str, int],
         return_type: Optional[type] = None,
-        no_inherit: bool = False,
     ) -> Optional[Any]:
         """Get tag value with automatic or specified type conversion.
         
         Args:
             tag: Either a numeric tag code (int) or tag name string
             return_type: Optional type to convert to (int, float, str, tuple, list, etc.)
-            no_inherit: If True, only check this page's tags, don't fall back to IFD0
         
         Returns:
             Tag value (converted based on return_type), or None if not found.
@@ -206,7 +201,7 @@ class DngPage(TiffPage):
         See also:
             get_raw_tag: Returns raw tag value without any conversion.
         """
-        tag_info = self._get_tag_object(tag, no_inherit)
+        tag_info = self._get_tag_object(tag)
         if tag_info is None:
             return None
         
@@ -214,12 +209,11 @@ class DngPage(TiffPage):
         return convert_tag_value(
             tag_name, normalized_val, raw_tag.dtype, raw_tag.count, spec, return_type)
 
-    def get_raw_tag(self, tag: Union[str, int], no_inherit: bool = False) -> Optional[Any]:
+    def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
         """Get raw tag value without any type conversion.
         
         Args:
             tag: Either a numeric tag code (int) or tag name string
-            no_inherit: If True, only check this page's tags, don't fall back to IFD0
         
         Returns:
             Raw tag value as stored, or None if not found.
@@ -227,7 +221,7 @@ class DngPage(TiffPage):
         See also:
             get_tag: Returns tag value with automatic or specified type conversion.
         """
-        tag_info = self._get_tag_object(tag, no_inherit)
+        tag_info = self._get_tag_object(tag)
         return tag_info[4] if tag_info else None
     
     def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
@@ -273,7 +267,7 @@ class DngPage(TiffPage):
         
         # Use _get_tag_object to get normalized values for each tag
         for tag_code in self.tags.keys():
-            tag_info = self._get_tag_object(tag_code, no_inherit=True)
+            tag_info = self._get_tag_object(tag_code)
             if tag_info is not None:
                 _, _, _, raw_tag, normalized_value = tag_info
                 tags.add_raw_tag(tag_code, raw_tag.dtype, raw_tag.count, normalized_value)
@@ -875,10 +869,23 @@ class DngFile(TiffFile):
 
     def get_ifd0_tags(self) -> MetadataTags:
         """Return a copy of IFD0 tags as a MetadataTags object."""
-        ifd0 = self.ifd0
-        if ifd0 is None:
-            return MetadataTags()
-        return ifd0.get_ifd0_tags()
+        return self.ifd0.get_ifd0_tags() if self.ifd0 else MetadataTags()
+
+    def get_tag(
+        self,
+        tag: Union[str, int],
+        return_type: Optional[type] = None,
+    ) -> Optional[Any]:
+        """See `DngPage.get_tag`."""
+        return self.ifd0.get_tag(tag, return_type=return_type) if self.ifd0 else None
+
+    def get_xmp(self) -> Optional[XmpMetadata]:
+        """See `DngPage.get_xmp`."""
+        return self.ifd0.get_xmp() if self.ifd0 else None
+
+    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+        """See `DngPage.get_time_from_tags`."""
+        return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
 
     def _forward_main_page(self, method_name: str, *args, require=None, **kwargs):
         page = self.get_main_page()
@@ -888,30 +895,7 @@ class DngFile(TiffFile):
             return None
         method = getattr(page, method_name)
         return method(*args, **kwargs)
-
-    def get_tag(
-        self,
-        tag: Union[str, int],
-        return_type: Optional[type] = None,
-    ) -> Optional[Any]:
-        """See `DngPage.get_tag`."""
-        return self._forward_main_page(
-            "get_tag",
-            tag,
-            return_type=return_type,
-        )
-
-    def get_xmp(self) -> Optional[XmpMetadata]:
-        """See `DngPage.get_xmp`."""
-        return self._forward_main_page("get_xmp")
-
-    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
-        """See `DngPage.get_time_from_tags`."""
-        return self._forward_main_page(
-            "get_time_from_tags",
-            time_type=time_type,
-        )
-
+        
     def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
     ) -> Optional[tuple[np.ndarray, str]]:
@@ -1028,9 +1012,10 @@ class DngFile(TiffFile):
                 )
         
         # Render camera RGB to final output
+        # use main_page for raw_ifd in case there is a PGTM, nothing else uses raw_ifd tags in RGB render path
         rgb_image = raw_render._render_camera_rgb(
             ifd0_tags=self.ifd0.get_ifd0_tags(),
-            raw_ifd_tags=main_page.get_page_tags(),
+            raw_ifd_tags=main_page.get_page_tags(), 
             rgb_camera=rgb_camera,
             output_dtype=output_dtype,
             rendering_params=rendering_params,
