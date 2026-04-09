@@ -2,67 +2,13 @@ import numpy as np
 import logging
 
 from enum import Enum, auto
-from typing import Dict, Union, Optional
-from . import _vng
+from typing import Any, Union, Optional
 from .tiff_metadata import get_cfa_pattern_codes
-
-# RCD is optional (GPL-licensed) - only available if user has enabled it
-try:
-    from . import _rcd
-    RCD_AVAILABLE = True
-except ImportError:
-    _rcd = None
-    RCD_AVAILABLE = False
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
 from . import _raw_render
 
 logger = logging.getLogger(__name__)
-
-
-def _get_ifd0_tag(
-    ifd0_tags: "MetadataTags",
-    raw_ifd_tags: Optional["MetadataTags"],
-    tag: Union[str, int],
-    return_type: Optional[type] = None
-) -> Optional:
-    """Get a tag value from IFD0 with validation.
-    
-    Internal helper for _render_camera_rgb() that enforces only IFD0/profile
-    tags are accessed, preventing coding errors where SubIFD-specific tags
-    are requested.
-    
-    Args:
-        ifd0_tags: The IFD0 metadata tags
-        raw_ifd_tags: Optional raw IFD tags to check as fallback for ill-formed files
-        tag: Tag name or code
-        return_type: Optional type conversion
-        
-    Returns:
-        Tag value or None if not found
-        
-    Raises:
-        AssertionError: If tag is not marked as dng_ifd0 or dng_profile
-    """
-    from .tiff_metadata import resolve_tag
-    
-    # Resolve tag to get spec
-    tag_id, tag_name, spec = resolve_tag(tag)
-    
-    # Assert tag is known and is IFD0 or profile tag (coding error check)
-    assert spec is not None, \
-        f"Tag '{tag_name or tag}' is not in TIFF_TAG_TYPE_REGISTRY"
-    assert spec.dng_ifd in ("dng_ifd0", "dng_profile", "any"), \
-        f"Tag '{tag_name}' (dng_ifd={spec.dng_ifd}) is not an IFD0/profile tag"
-    
-    # Try IFD0 first
-    value = ifd0_tags.get_tag(tag, return_type)
-    
-    # Fall back to raw_ifd_tags for ill-formed files where tags might be in wrong IFD
-    if value is None and raw_ifd_tags is not None:
-        value = raw_ifd_tags.get_tag(tag, return_type)
-    
-    return value
 
 
 # DNG Opcode IDs to friendly names (DNG Spec 1.7.1.0 section 5.2.4)
@@ -623,7 +569,9 @@ def demosaic(
     # RCD: float32 kernel (expects 0-1 normalized data)
     # RCD is GPL-licensed and optional - see README for setup instructions
     elif algorithm == "RCD":
-        if not RCD_AVAILABLE:
+        try:
+            from . import _rcd
+        except ImportError:
             raise ImportError(
                 "RCD demosaicing is not available. RCD is GPL-licensed and must be "
                 "enabled separately. See README.md for instructions to enable RCD, "
@@ -642,6 +590,8 @@ def demosaic(
             logger.debug(f"VNG requires uint16; converting from {input_dtype}")
         # Convert to uint16 for VNG
         data_u16 = convert_dtype(image_data, np.uint16)
+
+        from . import _vng
         rgb = _vng.vng_demosaic(data_u16, cfa_pattern)
         # Convert back to input dtype
         rgb = convert_dtype(rgb, input_dtype)
@@ -1354,6 +1304,99 @@ def interpolate_hue_sat_map(
     else:
         return g * map_data1 + (1.0 - g) * map_data2
 
+def transcode_pgtm_if_needed(
+    tag_code: int, value: Any, source_byteorder: str, target_byteorder: str) -> Any:
+    """Transcode ProfileGainTableMap bytes from source to target byte order.
+    
+    ProfileGainTableMap is a binary blob where all multi-byte values are stored
+    in the file's byte order. To transcode, we byte-swap all multi-byte values.
+    
+    Structure:
+    - Header (64 bytes): 2×uint32, 4×float64, 1×uint32, 5×float32
+    - Version 2 adds (16 bytes): 1×uint32, 3×float32
+    - Gain data: N×float32 (or float16/uint16/uint8 depending on data_type)
+    
+    Args:
+        tag_code: TIFF tag code
+        value: Tag value (may be bytes for PGTM tags)
+        source_byteorder: Source byte order ('>' big-endian, '<' little-endian)
+        target_byteorder: Target byte order ('>' big-endian, '<' little-endian, '=' system)
+        
+    Returns:
+        Transcoded value if PGTM, otherwise original value
+    """
+    from .tiff_metadata import LOCAL_TIFF_TAGS
+    
+    PGTM_TAG = LOCAL_TIFF_TAGS["ProfileGainTableMap"]
+    PGTM2_TAG = LOCAL_TIFF_TAGS["ProfileGainTableMap2"]
+    
+    if tag_code not in (PGTM_TAG, PGTM2_TAG) or not isinstance(value, bytes):
+        return value
+    
+    # Resolve '=' to actual system byte order
+    if target_byteorder == '=':
+        import sys
+        target_byteorder = '<' if sys.byteorder == 'little' else '>'
+    
+    if source_byteorder == target_byteorder:
+        return value  # No conversion needed
+    
+    is_version2 = (tag_code == PGTM2_TAG)
+    
+    # Make a mutable copy
+    result = bytearray(value)
+    offset = 0
+    
+    # Byte-swap header fields
+    # 2×uint32 (points_v, points_h)
+    np.frombuffer(result, dtype=np.uint32, count=2, offset=offset).byteswap(inplace=True)
+    offset += 8
+    
+    # 2×float64 (spacing_v, spacing_h)
+    np.frombuffer(result, dtype=np.float64, count=2, offset=offset).byteswap(inplace=True)
+    offset += 16
+    
+    # 2×float64 (origin_v, origin_h)
+    np.frombuffer(result, dtype=np.float64, count=2, offset=offset).byteswap(inplace=True)
+    offset += 16
+    
+    # 1×uint32 (num_table_points)
+    np.frombuffer(result, dtype=np.uint32, count=1, offset=offset).byteswap(inplace=True)
+    offset += 4
+    
+    # 5×float32 (weights)
+    np.frombuffer(result, dtype=np.float32, count=5, offset=offset).byteswap(inplace=True)
+    offset += 20
+    
+    # Version 2 fields
+    if is_version2:
+        # 1×uint32 (data_type)
+        data_type_view = np.frombuffer(result, dtype=np.uint32, count=1, offset=offset)
+        data_type_view.byteswap(inplace=True)
+        data_type = data_type_view[0]
+        offset += 4
+        
+        # 3×float32 (gamma, gain_min, gain_max)
+        np.frombuffer(result, dtype=np.float32, count=3, offset=offset).byteswap(inplace=True)
+        offset += 12
+    else:
+        data_type = 3  # float32 default
+    
+    # Byte-swap gain data based on data_type
+    remaining = len(result) - offset
+    if data_type == 3:  # float32
+        count = remaining // 4
+        np.frombuffer(result, dtype=np.float32, count=count, offset=offset).byteswap(inplace=True)
+    elif data_type == 2:  # float16
+        count = remaining // 2
+        np.frombuffer(result, dtype=np.float16, count=count, offset=offset).byteswap(inplace=True)
+    elif data_type == 1:  # uint16
+        count = remaining // 2
+        np.frombuffer(result, dtype=np.uint16, count=count, offset=offset).byteswap(inplace=True)
+    # data_type == 0 (uint8) needs no byte swapping
+    
+    return bytes(result)
+
 def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteorder: str = '<') -> dict:
     """Parse ProfileGainTableMap binary blob.
     
@@ -1445,85 +1488,6 @@ def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteord
         'gamma': gamma,
         'gains': gains,
     }
-
-
-def transcode_profile_gain_table_map(data: bytes, source_byteorder: str, target_byteorder: str, is_version2: bool = False) -> bytes:
-    """Transcode ProfileGainTableMap from source to target byte order.
-    
-    ProfileGainTableMap is a binary blob where all multi-byte values are stored
-    in the file's byte order. To transcode, we just byte-swap all multi-byte
-    values in place.
-    
-    Structure:
-    - Header (64 bytes): 2×uint32, 4×float64, 1×uint32, 5×float32
-    - Version 2 adds (16 bytes): 1×uint32, 3×float32
-    - Gain data: N×float32 (or float16/uint16/uint8 depending on data_type)
-    
-    Args:
-        data: Raw bytes from ProfileGainTableMap tag
-        source_byteorder: Source byte order ('>' or '<')
-        target_byteorder: Target byte order ('>' or '<')
-        is_version2: True for ProfileGainTableMap2 format
-        
-    Returns:
-        Byte-swapped binary blob in target byte order
-    """
-    if source_byteorder == target_byteorder:
-        return data  # No conversion needed
-    
-    # Make a mutable copy
-    result = bytearray(data)
-    offset = 0
-    
-    # Byte-swap header fields
-    # 2×uint32 (points_v, points_h)
-    np.frombuffer(result, dtype=np.uint32, count=2, offset=offset).byteswap(inplace=True)
-    offset += 8
-    
-    # 2×float64 (spacing_v, spacing_h)
-    np.frombuffer(result, dtype=np.float64, count=2, offset=offset).byteswap(inplace=True)
-    offset += 16
-    
-    # 2×float64 (origin_v, origin_h)
-    np.frombuffer(result, dtype=np.float64, count=2, offset=offset).byteswap(inplace=True)
-    offset += 16
-    
-    # 1×uint32 (num_table_points)
-    np.frombuffer(result, dtype=np.uint32, count=1, offset=offset).byteswap(inplace=True)
-    offset += 4
-    
-    # 5×float32 (weights)
-    np.frombuffer(result, dtype=np.float32, count=5, offset=offset).byteswap(inplace=True)
-    offset += 20
-    
-    # Version 2 fields
-    if is_version2:
-        # 1×uint32 (data_type)
-        data_type_view = np.frombuffer(result, dtype=np.uint32, count=1, offset=offset)
-        data_type_view.byteswap(inplace=True)
-        data_type = data_type_view[0]
-        offset += 4
-        
-        # 3×float32 (gamma, gain_min, gain_max)
-        np.frombuffer(result, dtype=np.float32, count=3, offset=offset).byteswap(inplace=True)
-        offset += 12
-    else:
-        data_type = 3  # float32 default
-    
-    # Byte-swap gain data based on data_type
-    remaining = len(result) - offset
-    if data_type == 3:  # float32
-        count = remaining // 4
-        np.frombuffer(result, dtype=np.float32, count=count, offset=offset).byteswap(inplace=True)
-    elif data_type == 2:  # float16
-        count = remaining // 2
-        np.frombuffer(result, dtype=np.float16, count=count, offset=offset).byteswap(inplace=True)
-    elif data_type == 1:  # uint16
-        count = remaining // 2
-        np.frombuffer(result, dtype=np.uint16, count=count, offset=offset).byteswap(inplace=True)
-    # data_type == 0 (uint8) needs no byte swapping
-    
-    return bytes(result)
 
 
 def parse_opcode_list(data: bytes) -> list[dict]:
@@ -2791,6 +2755,49 @@ def apply_post_rendering_operations(
     
     return result
 
+def _get_ifd0_tag(
+    ifd0_tags: "MetadataTags",
+    raw_ifd_tags: Optional["MetadataTags"],
+    tag: Union[str, int],
+    return_type: Optional[type] = None
+) -> Optional:
+    """Get a tag value from IFD0 with validation.
+    
+    Internal helper for _render_camera_rgb() that enforces only IFD0/profile
+    tags are accessed, preventing coding errors where SubIFD-specific tags
+    are requested.
+    
+    Args:
+        ifd0_tags: The IFD0 metadata tags
+        raw_ifd_tags: Optional raw IFD tags to check as fallback for ill-formed files
+        tag: Tag name or code
+        return_type: Optional type conversion
+        
+    Returns:
+        Tag value or None if not found
+        
+    Raises:
+        AssertionError: If tag is not marked as dng_ifd0 or dng_profile
+    """
+    from .tiff_metadata import resolve_tag
+    
+    # Resolve tag to get spec
+    tag_id, tag_name, spec = resolve_tag(tag)
+    
+    # Assert tag is known and is IFD0 or profile tag (coding error check)
+    assert spec is not None, \
+        f"Tag '{tag_name or tag}' is not in TIFF_TAG_TYPE_REGISTRY"
+    assert spec.dng_ifd in ("dng_ifd0", "dng_profile", "any"), \
+        f"Tag '{tag_name}' (dng_ifd={spec.dng_ifd}) is not an IFD0/profile tag"
+    
+    # Try IFD0 first
+    value = ifd0_tags.get_tag(tag, return_type)
+    
+    # Fall back to raw_ifd_tags for ill-formed files where tags might be in wrong IFD
+    if value is None and raw_ifd_tags is not None:
+        value = raw_ifd_tags.get_tag(tag, return_type)
+    
+    return value
 
 def _render_camera_rgb(
     ifd0_tags: "MetadataTags",

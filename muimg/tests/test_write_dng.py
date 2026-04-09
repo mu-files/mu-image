@@ -11,11 +11,13 @@ import cv2
 from pathlib import Path
 from tifffile import COMPRESSION
 
-from muimg.dngio import write_dng_from_array, DngFile
+from muimg.dngio import write_dng_from_array, write_dng, DngFile, IfdDataSpec
 from muimg.tiff_metadata import MetadataTags
 from muimg.raw_render import _srgb_gamma, convert_dtype
 from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats, run_dng_validate
 
+# Test output configuration: Set to True to use persistent test_outputs folder, False for tmp_path
+USE_PERSISTENT_OUTPUT = False
 
 # Compression configurations per dtype: (label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
 # Thresholds based on observed values with ~10% margin
@@ -80,6 +82,12 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
     
     Tests both CFA (Bayer) and LINEAR_RAW (demosaiced RGB) photometric types.
     """
+    # Determine output path based on configuration
+    if USE_PERSISTENT_OUTPUT:
+        output_path = Path(__file__).parent / "test_outputs" / "test_write_dng"
+        output_path.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path = tmp_path
     
     # Test dimensions
     width, height = 1280, 720
@@ -87,7 +95,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
     
     # Determine compression settings from jxl_distance
     if jxl_distance is None:
-        compression = None
+        compression = COMPRESSION.NONE
         compression_args = None
     else:
         compression = COMPRESSION.JPEGXL_DNG
@@ -104,14 +112,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             metadata = MetadataTags()
             metadata.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
             metadata.add_tag("UniqueCameraModel", "Test Camera")
-            
-            if use_preview:
-                # Preview must be uint8 for JPEG compression
-                rgb_ramp_u8 = convert_dtype(rgb_ramp, np.uint8)
-                preview_data = cv2.resize(rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
-            else:
-                preview_data = None
-            
+
             if photometric == "CFA":
                 # Sample as CFA
                 test_data = sample_as_cfa(rgb_ramp, pattern="RGGB")
@@ -122,23 +123,50 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             # Write to file for dng_validate
             preview_label = "with_preview" if use_preview else "no_preview"
             dng_filename = f"{dtype_label}_{photometric}_{preview_label}_{comp_label}.dng"
-            dng_path = tmp_path / dng_filename
+            dng_path = output_path / dng_filename
             
-            # Build write_dng_from_array kwargs
-            write_kwargs = {
-                'destination_file': dng_path,
-                'data': test_data,
-                'ifd0_tags': metadata,
-                'photometric': photometric,
-                'compression': compression,
-                'compression_args': compression_args,
-                'preview_image': preview_data,
-            }
-            if photometric == "CFA":
-                write_kwargs['cfa_pattern'] = "RGGB"
-            
-            write_dng_from_array(**write_kwargs)
-            
+            if use_preview:
+                # Preview must be uint8 for JPEG compression
+                rgb_ramp_u8 = convert_dtype(rgb_ramp, np.uint8)
+                preview_data = cv2.resize(rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
+                
+                # Use write_dng API with preview as IFD0 and main data as SubIFD
+                preview_spec = IfdDataSpec(
+                    data=preview_data,
+                    photometric="RGB",
+                    subfiletype=1,  # Preview
+                    compression=COMPRESSION.JPEG,
+                    compression_args={'level': 90},
+                    extratags=metadata,
+                )
+                main_spec = IfdDataSpec(
+                    data=test_data,
+                    photometric=photometric,
+                    cfa_pattern="RGGB",
+                    subfiletype=0,  # Main image
+                    compression=compression,
+                    compression_args=compression_args,
+                )
+                write_dng(
+                    destination_file=dng_path,
+                    ifd0_spec=preview_spec,
+                    subifds=[main_spec],
+                )
+            else:
+                # No preview: use write_dng_from_array
+                data_spec = IfdDataSpec(
+                    data=test_data,
+                    photometric=photometric,
+                    cfa_pattern="RGGB",
+                    compression=compression,
+                    compression_args=compression_args,
+                    extratags=metadata,
+                )
+                write_dng_from_array(
+                    destination_file=dng_path,
+                    data_spec=data_spec,
+                )
+
             # Extract raw data from DNG and validate rendering
             with DngFile(dng_path) as dng:
                 if photometric == "CFA":
@@ -179,7 +207,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             print(f"    Render: mean={render_stats['mean']:.4f}%, max={render_stats['max']:.4f}%")
             
             # Run dng_validate if available (inline with test results)
-            output_base = tmp_path / f"{dtype_label}_{photometric}_{preview_label}_{comp_label}"
+            output_base = output_path / f"{dtype_label}_{photometric}_{preview_label}_{comp_label}"
             ignored_warnings = [
                 "too little padding",  # Matches all 4 edge padding warnings
             ]

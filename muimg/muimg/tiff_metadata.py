@@ -19,10 +19,12 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Tag Type Registry
 # =============================================================================
-# Maps tag names to (dtype, count) where:
-#   dtype: TIFF data type string ('s'=ascii, 'H'=ushort, 'I'=ulong, '2I'=urational, 
-#          '2i'=srational, 'B'=byte, 'f'=float, 'd'=double)
+# Maps tag names to TagSpec with:
+#   dtype: TIFF data type string(s) ('s'=ascii, 'H'=ushort, 'I'=ulong, '2I'=urational, 
+#          '2i'=srational, 'B'=byte, 'f'=float, 'd'=double). Can be a list for type inference.
 #   count: Expected count, or None for variable length
+#   shape: Target shape for reshaping arrays (e.g., (3, 3) for matrices), or None
+#   dng_ifd: IFD location category ("dng_raw", "dng_ifd0", "dng_profile", "any", etc.)
 #
 # This registry enables auto-conversion: clients provide friendly Python types
 # (float, datetime, str, np.ndarray) and we convert to appropriate TIFF format.
@@ -31,14 +33,6 @@ logger = logging.getLogger(__name__)
 # Type inference order: int types first, then float/rational types.
 # Example: ["I", "2I"] means int→LONG, float→RATIONAL
 
-# =============================================================================
-# TIFF Data Type Information
-# =============================================================================
-# Unified table mapping tifffile dtype codes to dtype strings and categories.
-# - code: tifffile numeric dtype code
-# - dtype_str: our dtype string used in TagSpec  
-# - category: 'int' or 'float' for type inference when TagSpec has multiple dtypes
-
 @dataclass
 class TiffDtype:
     """TIFF data type specification."""
@@ -46,7 +40,6 @@ class TiffDtype:
     dtype_str: str
     category: str  # 'int' or 'float'
     name: str
-
 
 TIFF_DTYPES = {
     1:  TiffDtype(1,  'B',  'int',   'BYTE'),
@@ -93,7 +86,6 @@ CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {v: k for k, v in CFA_PATTERN
 # - "dng_profile": Can be in IFD 0 or Camera Profile IFDs
 # - "dng_preview": Must be in Preview NewSubFileType
 
-
 @dataclass
 class TagSpec:
     """Specification for a TIFF/DNG tag.
@@ -110,36 +102,29 @@ class TagSpec:
     dtype: Union[str, List[str]]  # Single type or list for inference
     count: Optional[int] = None
     shape: Optional[Tuple[int, ...]] = None
-    dng_ifd: str = "any"  # Required: "dng_raw", "main", "exif", "dng_raw:cfa", "dng_profile", or "any"
-    
-    @staticmethod
-    def _get_value_category(value: Any) -> Optional[str]:
-        """Determine the category ('int' or 'float') of a Python value."""
-        # Scalar checks
-        if isinstance(value, (int, np.integer)):
-            return 'int'
-        if isinstance(value, (float, np.floating)):
-            return 'float'
-        
-        # Array checks
-        if isinstance(value, np.ndarray):
-            if np.issubdtype(value.dtype, np.integer):
-                return 'int'
-            if np.issubdtype(value.dtype, np.floating):
-                return 'float'
-        
-        # List/tuple: check first element
-        if isinstance(value, (list, tuple)) and len(value) > 0:
-            return TagSpec._get_value_category(value[0])
-        
-        return None
+    dng_ifd: str = "any"
     
     def get_dtype_for_value(self, value: Any) -> str:
         """Select appropriate dtype based on value type."""
         if isinstance(self.dtype, str):
             return self.dtype
         
-        category = self._get_value_category(value)
+        # For list/tuple, check first element
+        if isinstance(value, (list, tuple)) and len(value) > 0:
+            value = value[0]
+        
+        # Determine category from value
+        category = None
+        if isinstance(value, (int, np.integer)):
+            category = 'int'
+        elif isinstance(value, (float, np.floating)):
+            category = 'float'
+        elif isinstance(value, np.ndarray):
+            if np.issubdtype(value.dtype, np.integer):
+                category = 'int'
+            elif np.issubdtype(value.dtype, np.floating):
+                category = 'float'
+        
         if category:
             for dt in self.dtype:
                 if DTYPE_CATEGORY.get(dt) == category:

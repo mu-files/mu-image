@@ -17,10 +17,11 @@ from .dngio import (
     DngPage,
     IfdPageSpec,
     IfdDataSpec,
+    PageOp,
     write_dng,
     write_dng_from_array,
+    write_dng_from_page,
     create_dng,
-    create_dng_from_array,
     decode_dng,
 )
 from .csv import CsvOrderedWriter, CsvReader, CsvWriter
@@ -80,10 +81,11 @@ __all__ = [
     'uvUCS_to_xy',
     'IfdPageSpec',
     'IfdDataSpec',
+    'PageOp',
     'write_dng',
     'write_dng_from_array',
+    'write_dng_from_page',
     'create_dng',
-    'create_dng_from_array',
     'xy_to_temp_tint',
     'xy_to_uvUCS',
 ]

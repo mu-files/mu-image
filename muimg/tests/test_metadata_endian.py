@@ -16,7 +16,7 @@ import tifffile
 import sys
 import muimg
 from muimg.tiff_metadata import MetadataTags
-from muimg.dngio import write_dng_from_array, DngFile
+from muimg.dngio import write_dng_from_array, DngFile, IfdDataSpec
 
 
 # Private tag codes (65000-65535 are reserved for private use)
@@ -484,12 +484,12 @@ def test_dng_cross_endian_write(dtype_name, np_dtype, tiff_dtype, input_format):
         
         # Write DNG using write_dng_from_array
         # write_dng() hardcodes byteorder='>' so this is a cross-endian write on LE systems
-        write_dng_from_array(
-            destination_file=dng_path,
+        data_spec = IfdDataSpec(
             data=image_data,
-            ifd0_tags=metadata,
             photometric='LINEAR_RAW',
+            extratags=metadata,
         )
+        write_dng_from_array(destination_file=dng_path, data_spec=data_spec)
         
         # Read back with DngFile
         with DngFile(dng_path) as dng:

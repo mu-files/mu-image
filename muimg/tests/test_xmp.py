@@ -168,11 +168,14 @@ def test_xmp_roundtrip_dng_file():
     output_dir = Path(__file__).parent / "test_outputs" / "test_xmp_roundtrip"
     output_dir.mkdir(parents=True, exist_ok=True)
     dng_path = output_dir / "test_xmp_roundtrip.dng"
+    data_spec = muimg.IfdDataSpec(
+        data=linear_rgb,
+        photometric="linear_raw",
+        extratags=tags,
+    )
     muimg.write_dng_from_array(
         destination_file=str(dng_path),
-        data=linear_rgb,
-        ifd0_tags=tags,
-        photometric="linear_raw",
+        data_spec=data_spec,
     )
     
     # Verify file was created

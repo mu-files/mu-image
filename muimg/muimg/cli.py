@@ -753,19 +753,38 @@ def dng_copy(
             if jxl_effort is not None:
                 compression_args['effort'] = jxl_effort
         
-        dngio.copy_dng(
-            source_file=input_dng,
+        # Open source DNG and get main page
+        dng_file = dngio.DngFile(input_dng)
+        main_page = dng_file.get_main_page()
+        if main_page is None:
+            raise ValueError("No main page found in source DNG")
+        
+        # Determine page_operation based on explicit compression request
+        if compression is not None:
+            # TRANSCODE mode - decompress and recompress with specified compression
+            page_operation = (dngio.PageOp.TRANSCODE, compression)
+        else:
+            # COPY mode - preserve source compression (even when demosaicing/scaling)
+            page_operation = dngio.PageOp.COPY
+        
+        # Create IfdPageSpec
+        page_spec = dngio.IfdPageSpec(
+            page=main_page,
+            page_operation=page_operation,
+            compression_args=compression_args,
+            extratags=ifd0_tags,
+            strip_tags=strip_tags_set,
+        )
+        
+        # Write using write_dng_from_page
+        dngio.write_dng_from_page(
             destination_file=output_dng,
+            page=page_spec,
             scale=scale,
             demosaic=demosaic,
             demosaic_algorithm=demosaic_algorithm,
-            strip_tags=strip_tags_set,
             generate_preview=preview,
             preview_max_dimension=preview_max_dim,
-            decompress=demosaic,
-            compression=compression,
-            compression_args=compression_args,
-            extratags=ifd0_tags,
         )
         click.echo(f"Successfully copied DNG to {output_dng}")
     except Exception as e:
