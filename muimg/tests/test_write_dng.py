@@ -77,7 +77,18 @@ UINT8_CONFIGS = [
     ("lossy_jxl_4.0", 4.0, 0.22, 10.63, 0.43, 33.37),
 ]
 
-def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+# uint16_10bit: 10-bit data stored in uint16 arrays (placeholder thresholds, TBD)
+# Note: DNG spec requires BitsPerSample to be 8-32 bits, so 4-bit is not supported
+UINT16_10BIT_CONFIGS = [
+    ("uncompressed", None, 0.0, 0.0, 0.32, 9.06),
+    ("lossless_jxl", 0.0, 0.03, 2.07, 0.32, 9.06),
+    ("lossy_jxl_0.5", 0.5, 0.18, 2.89, 0.35, 11.80),
+    ("lossy_jxl_1.0", 1.0, 0.19, 3.07, 0.35, 11.80),
+    ("lossy_jxl_2.0", 2.0, 0.24, 3.49, 0.37, 11.80),
+    ("lossy_jxl_4.0", 4.0, 0.21, 4.58, 0.37, 12.20),
+]
+
+def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh, bits_per_sample=None):
     """Test DNG write/decode fidelity for a specific dtype and compression combination.
     
     Tests both CFA (Bayer) and LINEAR_RAW (demosaiced RGB) photometric types.
@@ -105,7 +116,16 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
     for photometric in ["CFA", "LINEAR_RAW"]:
         for use_preview in [True, False]:
             # Generate test data in target dtype
-            rgb_ramp = generate_rgb_ramp(width, height, dtype=input_dtype)
+            rgb_ramp_original = generate_rgb_ramp(width, height, dtype=input_dtype)
+            
+            # Scale data for bit-packing if bits_per_sample is specified
+            # Tifffile/imagecodecs packs the LOWER N bits, so scale to [0, 2^N)
+            if bits_per_sample is not None:
+                dtype_bits = input_dtype(0).itemsize * 8
+                shift_amount = dtype_bits - bits_per_sample
+                rgb_ramp = rgb_ramp_original >> shift_amount  # Right-shift to scale down
+            else:
+                rgb_ramp = rgb_ramp_original
             
             # Add identity ProfileToneCurve to bypass tone adjustments
             # This makes the rendering pipeline nearly pass-through
@@ -116,9 +136,14 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             if photometric == "CFA":
                 # Sample as CFA
                 test_data = sample_as_cfa(rgb_ramp, pattern="RGGB")
+                if bits_per_sample is not None:
+                    # Also create reference data from original unscaled ramp
+                    ref_test_data = sample_as_cfa(rgb_ramp_original, pattern="RGGB")
             else:
                 # Use full RGB (LINEAR_RAW)
                 test_data = rgb_ramp
+                if bits_per_sample is not None:
+                    ref_test_data = rgb_ramp_original
             
             # Write to file for dng_validate
             preview_label = "with_preview" if use_preview else "no_preview"
@@ -146,6 +171,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                     subfiletype=0,  # Main image
                     compression=compression,
                     compression_args=compression_args,
+                    bits_per_sample=bits_per_sample,
                 )
                 write_dng(
                     destination_file=dng_path,
@@ -161,10 +187,40 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                     compression=compression,
                     compression_args=compression_args,
                     extratags=metadata,
+                    bits_per_sample=bits_per_sample,
                 )
                 write_dng_from_array(
                     destination_file=dng_path,
                     data_spec=data_spec,
+                )
+            
+            # Validate bit-packing data size reduction for uncompressed cases
+            if compression == COMPRESSION.NONE and bits_per_sample is not None:
+                # Open the DNG to get actual raw data size from databytecounts
+                with DngFile(dng_path) as dng:
+                    main_page = dng.get_main_page()
+                    actual_data_size = sum(main_page.databytecounts) if hasattr(main_page, 'databytecounts') else 0
+                
+                # Calculate expected data sizes based on image dimensions
+                dtype_bits = input_dtype(0).itemsize * 8
+                samples_per_pixel = 1 if photometric == "CFA" else 3
+                
+                # Expected size for full dtype width
+                expected_full_size = width * height * samples_per_pixel * (dtype_bits // 8)
+                
+                # Expected size for bit-packed data
+                expected_packed_size = width * height * samples_per_pixel * (bits_per_sample // 8)
+                
+                # Calculate ratio
+                expected_ratio = bits_per_sample / dtype_bits
+                actual_ratio = actual_data_size / expected_full_size
+                
+                # Validate ratio is exactly as expected (no tolerance needed for data size)
+                assert abs(actual_ratio - expected_ratio) < 0.001, (
+                    f"{dtype_label} {photometric} {comp_label}: Bit-packed data size ratio "
+                    f"{actual_ratio:.4f} does not match expected {expected_ratio:.4f} "
+                    f"(bits_per_sample={bits_per_sample}, dtype_bits={dtype_bits}). "
+                    f"Actual data size={actual_data_size}, Expected full size={expected_full_size}"
                 )
 
             # Extract raw data from DNG and validate rendering
@@ -186,6 +242,8 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                 assert rendered is not None, f"Failed to render {comp_label}"
             
             # Compare raw data against original
+            # For bit-packed data: get_cfa() returns data in the packed range (0-1023 for 10-bit),
+            # not scaled back to full dtype range, so compare against scaled data
             comparison_target = test_data
             
             # Compute diff stats for raw data
@@ -194,7 +252,9 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             # Compare rendered output against sRGB gamma-corrected reference
             # render() applies: identity ProfileToneCurve + sRGB gamma + uint8 conversion
             # Convert ramp to float [0,1], apply gamma, then convert to uint8
-            rgb_linear_normalized = convert_dtype(rgb_ramp, np.float32)
+            # Use original unscaled ramp for bit-packed data
+            ramp_for_render = rgb_ramp_original if bits_per_sample is not None else rgb_ramp
+            rgb_linear_normalized = convert_dtype(ramp_for_render, np.float32)
             rgb_srgb = _srgb_gamma(rgb_linear_normalized)
             rgb_ramp_u8 = convert_dtype(rgb_srgb, np.uint8)
             
@@ -275,6 +335,15 @@ def test_uint8(tmp_path, comp_label, jxl_distance, raw_mean_thresh, raw_max_thre
     """Test uint8 DNG compression fidelity."""
     _test_compression_fidelity(tmp_path, "uint8", np.uint8, comp_label, jxl_distance, 
                                raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh)
+
+@pytest.mark.parametrize("comp_label,jxl_distance,raw_mean_thresh,raw_max_thresh,render_mean_thresh,render_max_thresh", 
+                         UINT16_10BIT_CONFIGS,
+                         ids=[c[0] for c in UINT16_10BIT_CONFIGS])
+def test_uint16_10bit(tmp_path, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh):
+    """Test 10-bit data stored in uint16 arrays."""
+    _test_compression_fidelity(tmp_path, "uint16_10bit", np.uint16, comp_label, jxl_distance, 
+                               raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh,
+                               bits_per_sample=10)
 
 
 if __name__ == "__main__":

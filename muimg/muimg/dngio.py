@@ -1390,6 +1390,9 @@ class IfdDataSpec:
         compression: Compression to apply. None means COMPRESSION.NONE (uncompressed).
         compression_args: Args for compression (e.g., {'level': 90} for JPEG)
         extratags: Additional metadata tags to add
+        bits_per_sample: Bits per sample (e.g., 10, 12, 14 for raw data). None means
+            infer from dtype (uint8→8, uint16→16, float16→16, float32→32). Use this to
+            specify non-standard bit depths like 10-bit or 12-bit data stored in uint16 arrays.
     """
     data: np.ndarray
     photometric: str
@@ -1398,6 +1401,7 @@ class IfdDataSpec:
     compression: Optional[COMPRESSION] = None
     compression_args: Optional[dict] = None
     extratags: Optional[MetadataTags] = None
+    bits_per_sample: Optional[int] = None
     
     def requires_transcode(self) -> bool:
         """Check if this spec requires transcoding (always False for array data)."""
@@ -1706,12 +1710,35 @@ def write_dng(
                 samples_per_pixel = 3
         else:
             # IfdDataSpec: data from array
-            # Infer bits_per_sample from dtype
             if spec.data.dtype not in (np.uint8, np.uint16, np.float16, np.float32):
                 raise ValueError(
                     f"Unsupported dtype {spec.data.dtype}. Supported: uint8, uint16, float16, float32"
                 )
-            bits_per_sample = spec.data.dtype.itemsize * 8
+            
+            # Use explicit bits_per_sample if provided, otherwise infer from dtype
+            if spec.bits_per_sample is not None:
+                bits_per_sample = spec.bits_per_sample
+                
+                # Validate bits_per_sample is compatible with dtype
+                dtype_bits = spec.data.dtype.itemsize * 8
+                if spec.data.dtype in (np.float16, np.float32):
+                    # Float types: bits_per_sample must match dtype exactly
+                    if bits_per_sample != dtype_bits:
+                        raise ValueError(
+                            f"bits_per_sample={bits_per_sample} incompatible with float dtype "
+                            f"{spec.data.dtype} (must be {dtype_bits})"
+                        )
+                else:
+                    # Integer types: bits_per_sample must be <= dtype capacity
+                    if bits_per_sample > dtype_bits:
+                        raise ValueError(
+                            f"bits_per_sample={bits_per_sample} exceeds dtype {spec.data.dtype} "
+                            f"capacity ({dtype_bits} bits)"
+                        )
+                    if bits_per_sample < 1:
+                        raise ValueError(f"bits_per_sample must be >= 1, got {bits_per_sample}")
+            else:
+                bits_per_sample = spec.data.dtype.itemsize * 8
             
             data = spec.data
             
@@ -1724,18 +1751,7 @@ def write_dng(
             else:
                 # linear_raw, rgb, ycbcr all have 3 channels
                 samples_per_pixel = 3
-
-        # Ensure integer data is in a dtype tifffile can handle (uint8/uint16/uint32)
-        # Note: bits_per_sample can be intermediate values (e.g., 10, 12, 14) per DNG spec,
-        # but the data array must use standard NumPy dtypes. tifffile handles bit-packing.
-        if data.dtype not in (np.float16, np.float32):
-            if bits_per_sample > 16 and data.dtype != np.uint32:
-                data = data.astype(np.uint32)
-            elif bits_per_sample > 8 and data.dtype != np.uint16:
-                data = data.astype(np.uint16)
-            elif bits_per_sample <= 8 and data.dtype != np.uint8:
-                data = data.astype(np.uint8)
-
+        
         datasize = int((data.shape[0] * data.shape[1] * samples_per_pixel * bits_per_sample) / 8)
 
         # Write IFD with compression
@@ -1774,7 +1790,7 @@ def write_dng(
             # All other compression types - let tifffile handle encoding
             # Prepare tags after all additions are complete (including CFA tags)
             ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
-            writer.write(data, rowsperstrip=datasize, **ifd_args)
+            writer.write(data, bitspersample=bits_per_sample, rowsperstrip=datasize, **ifd_args)
 
     try:
         with TiffWriter(destination_file, bigtiff=False, byteorder='<') as tif:
@@ -1862,6 +1878,7 @@ def write_dng_from_array(
         photometric=data_spec.photometric,
         cfa_pattern=data_spec.cfa_pattern,
         extratags=data_spec.extratags,
+        bits_per_sample=data_spec.bits_per_sample,
     )
     
     # Create in-memory uncompressed DngFile from the temp spec
