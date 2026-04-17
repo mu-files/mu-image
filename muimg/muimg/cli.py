@@ -131,11 +131,12 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
         # Calculate compressed size
         compressed_size = sum(p.databytecounts) if hasattr(p, 'databytecounts') else 0
         
-        # Calculate uncompressed size
+        # Calculate uncompressed size (in bits to handle bit-packed data correctly)
         if width != "?" and length != "?":
             samples_per_pixel = p.samplesperpixel if hasattr(p, 'samplesperpixel') else 1
-            uncompressed_size = width * length * samples_per_pixel * (bits_per_sample // 8)
-            compression_ratio = compressed_size / uncompressed_size if uncompressed_size > 0 else 0
+            uncompressed_size_bits = width * length * samples_per_pixel * bits_per_sample
+            compressed_size_bits = compressed_size * 8
+            compression_ratio = compressed_size_bits / uncompressed_size_bits if uncompressed_size_bits > 0 else 0
         else:
             compression_ratio = 0
         

@@ -5,13 +5,22 @@ photometric interpretations (CFA vs LINEAR_RAW).
 """
 
 import io
+import logging
 import numpy as np
 import pytest
 import cv2
 from pathlib import Path
 from tifffile import COMPRESSION
 
-from muimg.dngio import write_dng_from_array, write_dng, DngFile, IfdDataSpec
+# Suppress tifffile warnings about "shaped series shape does not match page shape"
+# These are harmless warnings when reading dng_validate output TIFFs
+logging.getLogger('tifffile').setLevel(logging.CRITICAL)
+
+from muimg.dngio import write_dng_from_array, write_dng, DngFile, IfdDataSpec, decode_dng
+try:
+    from muimg._dngio_coreimage import core_image_available
+except ImportError:
+    core_image_available = False
 from muimg.tiff_metadata import MetadataTags
 from muimg.raw_render import _srgb_gamma, convert_dtype
 from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats, run_dng_validate
@@ -77,11 +86,12 @@ UINT8_CONFIGS = [
     ("lossy_jxl_4.0", 4.0, 0.22, 10.63, 0.43, 33.37),
 ]
 
-# uint16_10bit: 10-bit data stored in uint16 arrays (placeholder thresholds, TBD)
+# uint16_10bit: 10-bit data stored in uint16 arrays
 # Note: DNG spec requires BitsPerSample to be 8-32 bits, so 4-bit is not supported
+# Note: JXL uses left-shift workaround (9-15 bit → 16-bit) for decoder compatibility
 UINT16_10BIT_CONFIGS = [
     ("uncompressed", None, 0.0, 0.0, 0.32, 9.06),
-    ("lossless_jxl", 0.0, 0.03, 2.07, 0.32, 9.06),
+    ("lossless_jxl", 0.0, 0.03, 2.07, 0.35, 9.06),  # Higher render threshold due to left-shift
     ("lossy_jxl_0.5", 0.5, 0.18, 2.89, 0.35, 11.80),
     ("lossy_jxl_1.0", 1.0, 0.19, 3.07, 0.35, 11.80),
     ("lossy_jxl_2.0", 2.0, 0.24, 3.49, 0.37, 11.80),
@@ -113,7 +123,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
         compression_args = {'distance': jxl_distance, 'effort': 4}
     
     # Test both photometric types and preview configurations
-    for photometric in ["CFA", "LINEAR_RAW"]:
+    for photometric in ["LINEAR_RAW", "CFA"]:
         for use_preview in [True, False]:
             # Generate test data in target dtype
             rgb_ramp_original = generate_rgb_ramp(width, height, dtype=input_dtype)
@@ -124,6 +134,8 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                 dtype_bits = input_dtype(0).itemsize * 8
                 shift_amount = dtype_bits - bits_per_sample
                 rgb_ramp = rgb_ramp_original >> shift_amount  # Right-shift to scale down
+                # Explicitly mask to ensure upper bits are zero
+                rgb_ramp = rgb_ramp & ((1 << bits_per_sample) - 1)  # e.g., & 0x3FF for 10-bit
             else:
                 rgb_ramp = rgb_ramp_original
             
@@ -136,14 +148,9 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             if photometric == "CFA":
                 # Sample as CFA
                 test_data = sample_as_cfa(rgb_ramp, pattern="RGGB")
-                if bits_per_sample is not None:
-                    # Also create reference data from original unscaled ramp
-                    ref_test_data = sample_as_cfa(rgb_ramp_original, pattern="RGGB")
             else:
                 # Use full RGB (LINEAR_RAW)
                 test_data = rgb_ramp
-                if bits_per_sample is not None:
-                    ref_test_data = rgb_ramp_original
             
             # Write to file for dng_validate
             preview_label = "with_preview" if use_preview else "no_preview"
@@ -208,9 +215,6 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                 # Expected size for full dtype width
                 expected_full_size = width * height * samples_per_pixel * (dtype_bits // 8)
                 
-                # Expected size for bit-packed data
-                expected_packed_size = width * height * samples_per_pixel * (bits_per_sample // 8)
-                
                 # Calculate ratio
                 expected_ratio = bits_per_sample / dtype_bits
                 actual_ratio = actual_data_size / expected_full_size
@@ -241,10 +245,21 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
                 rendered = dng.render_raw(output_dtype=np.uint8, demosaic_algorithm="DNGSDK_BILINEAR")
                 assert rendered is not None, f"Failed to render {comp_label}"
             
+            # Write our rendered output to TIFF for debugging
+            import tifffile
+            our_render_path = output_path / f"{dng_filename}_our_render.tif"
+            tifffile.imwrite(our_render_path, rendered, photometric='rgb')
+            
             # Compare raw data against original
             # For bit-packed data: get_cfa() returns data in the packed range (0-1023 for 10-bit),
             # not scaled back to full dtype range, so compare against scaled data
             comparison_target = test_data
+            
+            # For 9-15 bit JXL: we left-shift data before encoding as a workaround for
+            # decoder bugs. Adjust comparison target to match the shifted data.
+            if compression == COMPRESSION.JPEGXL_DNG and bits_per_sample is not None and 9 <= bits_per_sample <= 15:
+                shift_amount = 16 - bits_per_sample
+                comparison_target = test_data << shift_amount
             
             # Compute diff stats for raw data
             stats = compute_diff_stats(decoded, comparison_target)
@@ -260,19 +275,58 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, comp_label, j
             
             render_stats = compute_diff_stats(rendered, rgb_ramp_u8)
             
-            # Print observed values for threshold tuning
-            preview_str = "with_preview" if use_preview else "no_preview"
-            print(f"\n  {dtype_label} {photometric} {comp_label} ({preview_str}):")
-            print(f"    Raw:    mean={stats['mean']:.4f}%, p99={stats['p99']:.4f}%, max={stats['max']:.4f}%")
-            print(f"    Render: mean={render_stats['mean']:.4f}%, max={render_stats['max']:.4f}%")
-            
-            # Run dng_validate if available (inline with test results)
+            # 1. Compare our rendering against dng_validate output
+            # dng_validate converts to TIFF, so we can read it back and compare
+            # Note: This runs BEFORE dng_validate is called below, so we need to run it first
             output_base = output_path / f"{dtype_label}_{photometric}_{preview_label}_{comp_label}"
             ignored_warnings = [
                 "too little padding",  # Matches all 4 edge padding warnings
             ]
             validated_tiff = run_dng_validate(dng_path, output_base, validate=True, ignored_warnings=ignored_warnings, indent="    ")
             assert validated_tiff is not None, f"dng_validate failed for {dng_filename}"
+            
+            
+            # Now read the validated TIFF and compare
+            # Note: output_base is the full path without extension, dng_validate adds .tif
+            validated_tiff_path = Path(str(output_base) + '.tif')
+            assert validated_tiff_path.exists(), f"dng_validate output TIFF not found: {validated_tiff_path}"
+            
+            from tifffile import imread
+            validated_render = imread(validated_tiff_path)
+            validate_stats = compute_diff_stats(rendered, validated_render)
+            print(f"    Validate: mean={validate_stats['mean']:.4f}%, max={validate_stats['max']:.4f}%")
+            # Allow small differences due to different rendering pipelines
+            assert validate_stats['mean'] < 1.0, (
+                f"{dtype_label} {photometric} {comp_label}: Render vs dng_validate diff "
+                f"{validate_stats['mean']:.4f}% exceeds 1.0%"
+            )
+
+            '''
+            # 2. Compare against CoreImage rendering (macOS only)
+            if core_image_available:
+                # CoreImage is available, so any exception is a real error
+                coreimage_render = decode_dng(
+                    dng_path,
+                    output_dtype=np.uint8,
+                    use_coreimage_if_available=True,
+                    use_xmp=True
+                )
+                coreimage_stats = compute_diff_stats(rendered, coreimage_render)
+                print(f"    CoreImage: mean={coreimage_stats['mean']:.4f}%, max={coreimage_stats['max']:.4f}%")
+                # Allow small differences due to different rendering pipelines
+                assert coreimage_stats['mean'] < 1.0, (
+                    f"{dtype_label} {photometric} {comp_label}: Render vs CoreImage diff "
+                    f"{coreimage_stats['mean']:.4f}% exceeds 1.0%"
+                )
+            else:
+                print(f"    CoreImage: not available (skipped)")
+            '''
+
+            # Print observed values for threshold tuning
+            preview_str = "with_preview" if use_preview else "no_preview"
+            print(f"\n  {dtype_label} {photometric} {comp_label} ({preview_str}):")
+            print(f"    Raw:    mean={stats['mean']:.4f}%, p99={stats['p99']:.4f}%, max={stats['max']:.4f}%")
+            print(f"    Render: mean={render_stats['mean']:.4f}%, max={render_stats['max']:.4f}%")
             
             # Assert raw data thresholds
             if raw_mean_thresh == 0.0:

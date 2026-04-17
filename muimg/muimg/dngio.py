@@ -1735,8 +1735,8 @@ def write_dng(
                             f"bits_per_sample={bits_per_sample} exceeds dtype {spec.data.dtype} "
                             f"capacity ({dtype_bits} bits)"
                         )
-                    if bits_per_sample < 1:
-                        raise ValueError(f"bits_per_sample must be >= 1, got {bits_per_sample}")
+                    if bits_per_sample < 8:
+                        raise ValueError(f"bits_per_sample must be >= 8, got {bits_per_sample}")
             else:
                 bits_per_sample = spec.data.dtype.itemsize * 8
             
@@ -1770,8 +1770,21 @@ def write_dng(
                 ifd_tags.add_tag("ColumnInterleaveFactor", 2)
                 ifd_tags.add_tag("RowInterleaveFactor", 2)
 
+            # JXL supports storing bitspersample in the bitstream, but dng_validate and Photoshop
+            # dont use this the way we'd expect. On decode, instead of using 
+            # JXL_BIT_DEPTH_FROM_CODESTREAM, they request that the jxl decoder return values scaled 
+            # to the container bitdepth (eg 16bits for 10bit data). This causes a disconnect
+            # with the bits_per_sample in the IFD.
+            # So we shift 9-15 bit data to 16-bit before encoding to avoid this. 
+            jxl_encode_bits = bits_per_sample
+            if 9 <= bits_per_sample <= 15:
+                shift_amount = 16 - bits_per_sample
+                data = data << shift_amount
+                jxl_encode_bits = 16
+                bits_per_sample = 16  # Update for TIFF tag
+
             encoded_bytes = imagecodecs.jpegxl_encode(
-                data, distance=jxl_distance, effort=jxl_effort
+                data, distance=jxl_distance, effort=jxl_effort, bitspersample=jxl_encode_bits
             )
             def encoded_data_iterator():
                 yield encoded_bytes
