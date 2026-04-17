@@ -715,8 +715,8 @@ class DngPage(TiffPage):
         
         # Get IFD0 for rendering (color profile tags are in IFD0)
         result = raw_render._render_camera_rgb(
-            ifd0_tags=self.ifd0.get_ifd0_tags(),
-            raw_ifd_tags=self.get_page_tags(),
+            ifd0_tags=self.ifd0,
+            raw_ifd_tags=self,
             rgb_camera=rgb_camera,
             output_dtype=output_dtype,
             rendering_params=rendering_params,
@@ -1014,8 +1014,8 @@ class DngFile(TiffFile):
         # Render camera RGB to final output
         # use main_page for raw_ifd in case there is a PGTM, nothing else uses raw_ifd tags in RGB render path
         rgb_image = raw_render._render_camera_rgb(
-            ifd0_tags=self.ifd0.get_ifd0_tags(),
-            raw_ifd_tags=main_page.get_page_tags(), 
+            ifd0_tags=self.ifd0,
+            raw_ifd_tags=main_page, 
             rgb_camera=rgb_camera,
             output_dtype=output_dtype,
             rendering_params=rendering_params,
@@ -1572,7 +1572,7 @@ def write_dng(
                 extratags = spec.page.get_page_tags()
                 if is_ifd0:
                     # For IFD0, merge both page tags and IFD0-specific tags
-                    extratags.extend(spec.page.get_ifd0_tags())
+                    extratags |= spec.page.get_ifd0_tags()
         else:
             # IfdDataSpec
             photometric = spec.photometric
@@ -1580,7 +1580,7 @@ def write_dng(
         
         # User-supplied extratags override - call this after copy above to ensure
         # spec tags take precedence
-        extratags.extend(spec.extratags)
+        extratags |= spec.extratags
         
         # Apply category filtering to all spec-supplied tags
         from .tiff_metadata import filter_tags_by_ifd_category
@@ -2094,8 +2094,8 @@ def write_dng_from_page(
         # main_page_tags: if page is IFD0, use extratags; else merge ifd0_tags with extratags
         main_page_tags = MetadataTags()
         if not source_page_spec.page.is_ifd0:
-            main_page_tags.extend(ifd0_tags)
-        main_page_tags.extend(source_page_spec.extratags)
+            main_page_tags |= ifd0_tags
+        main_page_tags |= source_page_spec.extratags
         
         # Create new spec with merged tags and explicit MAIN_IMAGE subfiletype
         main_spec = IfdPageSpec(
@@ -2156,7 +2156,7 @@ def write_dng_from_page(
     
     # Filter IFD0 tags
     _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
-    ifd0_tags.extend(source_page_spec.extratags)
+    ifd0_tags |= source_page_spec.extratags
 
     # Filter page tags
     main_page_tags = source_page_spec.page.get_page_tags()
@@ -2218,7 +2218,7 @@ def write_dng_from_page(
     if not generate_preview:
         # No preview: IFD0 = main, SubIFD0+ = pyramid
         # Main spec becomes IFD0, so merge filtered page tags, filtered ifd0_tags, and user extratags
-        ifd0_tags.extend(main_page_tags)
+        ifd0_tags |= main_page_tags
         main_spec.extratags = ifd0_tags
         write_dng(
             destination_file=dest_path,
@@ -2254,7 +2254,7 @@ def write_dng_from_page(
             logger.info(f"Resized rendered preview to {rendered_preview.shape[:2]}")
         
         # Create preview spec for IFD0 with ifd0_tags + preview_tags
-        ifd0_tags.extend(preview_tags)
+        ifd0_tags |= preview_tags
         preview_spec = IfdDataSpec(
             data=rendered_preview,
             photometric="RGB",

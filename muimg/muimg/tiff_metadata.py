@@ -1343,14 +1343,34 @@ class MetadataTags:
         logger.debug(f"Added XMP metadata with {len(xmp._attributes)} properties")
 
     def extend(self, other: Optional[MetadataTags]) -> None:
-        """Add all tags from another MetadataTags instance."""
+        """Add all tags from another MetadataTags instance.
+        
+        Args:
+            other: MetadataTags instance to add tags from
+            
+        Raises:
+            TypeError: If other is not a MetadataTags instance
+        """
         if other is None:
             return
         if not isinstance(other, MetadataTags):
             raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
         # Dict update - other's tags override existing
-        for code, tag in other._tags.items():
+        for _, tag in other._tags.items():
             self.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+
+    def __or__(self, other: Optional[MetadataTags]) -> MetadataTags:
+        """Combine two MetadataTags instances using the | operator.
+        """
+        result = self.copy()
+        result.extend(other)
+        return result
+
+    def __ior__(self, other: Optional[MetadataTags]) -> MetadataTags:
+        """In-place union using the |= operator.
+        """
+        self.extend(other)
+        return self
 
     def get_xmp(self) -> Optional['XmpMetadata']:
         """Return XMP metadata as an `XmpMetadata` object."""

@@ -2756,8 +2756,8 @@ def apply_post_rendering_operations(
     return result
 
 def _get_ifd0_tag(
-    ifd0_tags: "MetadataTags",
-    raw_ifd_tags: Optional["MetadataTags"],
+    ifd0_tags: Union["DngPage", "MetadataTags"],
+    raw_ifd_tags: Optional[Union["DngPage", "MetadataTags"]],
     tag: Union[str, int],
     return_type: Optional[type] = None
 ) -> Optional:
@@ -2768,7 +2768,7 @@ def _get_ifd0_tag(
     are requested.
     
     Args:
-        ifd0_tags: The IFD0 metadata tags
+        ifd0_tags: The IFD0 metadata tags (DngPage or MetadataTags)
         raw_ifd_tags: Optional raw IFD tags to check as fallback for ill-formed files
         tag: Tag name or code
         return_type: Optional type conversion
@@ -2800,10 +2800,10 @@ def _get_ifd0_tag(
     return value
 
 def _render_camera_rgb(
-    ifd0_tags: "MetadataTags",
+    ifd0_tags: Union["DngPage", "MetadataTags"],
     rgb_camera: np.ndarray,
     output_dtype: type,
-    raw_ifd_tags: Optional["MetadataTags"] = None,
+    raw_ifd_tags: Optional[Union["DngPage", "MetadataTags"]] = None,
     rendering_params: dict = None,
     use_xmp: bool = True,
 ) -> np.ndarray:
