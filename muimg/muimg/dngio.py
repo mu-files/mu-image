@@ -743,6 +743,44 @@ class DngFile(TiffFile):
         super().__init__(file, *args, **kwargs)
 
     @property
+    def file(self) -> io.BytesIO:
+        """Return the underlying BytesIO buffer for zero-copy access.
+        
+        This provides direct access to the in-memory buffer without copying,
+        which is important for large DNG files. While this accesses a private
+        attribute (_fh) of tifffile's FileHandle, it's a pragmatic choice to
+        avoid unnecessary memory copies.
+        
+        Returns:
+            BytesIO object containing the DNG file data
+            
+        Example:
+            >>> dng = create_dng_from_array(data_spec)
+            >>> bytes_data = dng.file.getvalue()  # Get bytes without copy
+        """
+        return self.filehandle._fh
+
+    def write_to(self, destination: Union[str, Path, io.IOBase]) -> None:
+        """Write the DNG file to a destination.
+        
+        Args:
+            destination: File path or file-like object to write to
+            
+        Example:
+            >>> dng = create_dng_from_array(data_spec)
+            >>> dng.write_to("output.dng")
+            >>> # Or to an open file
+            >>> with open("output.dng", "wb") as f:
+            ...     dng.write_to(f)
+        """
+        data = self.file.getvalue()
+        if isinstance(destination, (str, Path)):
+            with open(destination, 'wb') as f:
+                f.write(data)
+        else:
+            destination.write(data)
+
+    @property
     def ifd0(self) -> Optional[DngPage]:
         """Return IFD0 as a DngPage, or None if no pages exist."""
         return DngPage(self.pages[0]) if self.pages else None
@@ -1856,36 +1894,92 @@ def create_dng(
     buffer.seek(0)
     return DngFile(buffer)
 
+@dataclass
+class PreviewParams:
+    """Parameters for preview generation in DNG files.
+    
+    If this object is provided (not None), a preview will be generated.
+    If None, no preview is generated.
+    
+    Attributes:
+        max_dimension: Maximum dimension for preview (default: 1024)
+        compression: Compression type for preview (default: JPEG)
+        compression_args: Arguments for compression (default: {'level': 90} for JPEG)
+        rendering_params: Override rendering params (Temperature, Tint, etc.)
+        use_xmp: Use XMP metadata for preview rendering (default: True)
+    """
+    max_dimension: int = 1024
+    compression: Optional[COMPRESSION] = None
+    compression_args: Optional[dict] = None
+    rendering_params: Optional[dict] = None
+    use_xmp: bool = True
+
+
+@dataclass
+class PyramidParams:
+    """Parameters for pyramid level generation in DNG files.
+    
+    Attributes:
+        levels: Number of pyramid levels to generate (0=none)
+        compression: Compression type for pyramid levels (default: JPEGXL_DNG)
+        compression_args: Arguments for compression (default: {'distance': 0.5, 'effort': 5})
+    """
+    levels: int = 0
+    compression: Optional[COMPRESSION] = None
+    compression_args: Optional[dict] = None
+
+
+def create_dng_from_array(
+    data_spec: IfdDataSpec,
+    *,
+    preview: Optional[PreviewParams] = None,
+    pyramid: Optional[PyramidParams] = None,
+) -> "DngFile":
+    """Create a DNG file from array data in memory and return as DngFile object.
+    
+    This is a convenience wrapper around write_dng_from_array that writes to an
+    in-memory BytesIO stream and returns the result as a DngFile.
+    
+    Args:
+        data_spec: IfdDataSpec containing raw image data and metadata
+        preview: Optional preview generation parameters
+        pyramid: Optional pyramid level generation parameters
+        
+    Returns:
+        DngFile object loaded from the in-memory DNG
+        
+    Example:
+        >>> data_spec = IfdDataSpec(data=raw_array, photometric="CFA", ...)
+        >>> preview = PreviewParams(max_dimension=1024)  # Presence means generate preview
+        >>> dng = create_dng_from_array(data_spec, preview=preview)
+    """
+    buffer = io.BytesIO()
+    write_dng_from_array(
+        destination_file=buffer,
+        data_spec=data_spec,
+        preview=preview,
+        pyramid=pyramid,
+    )
+    buffer.seek(0)
+    return DngFile(buffer)
+
 
 def write_dng_from_array(
     destination_file: Union[str, Path, io.BytesIO],
     data_spec: IfdDataSpec,
     *,
-    generate_preview: bool = False,
-    preview_max_dimension: int = 1024,
-    preview_compression: Optional[COMPRESSION] = None,
-    preview_compression_args: Optional[dict] = None,
-    preview_rendering_params: dict = None,
-    preview_use_xmp: bool = True,
-    generate_pyramid_levels: int = 0,
-    pyramid_compression: Optional[COMPRESSION] = None,
-    pyramid_compression_args: Optional[dict] = None,
+    preview: Optional[PreviewParams] = None,
+    pyramid: Optional[PyramidParams] = None,
 ) -> None:
     """Write raw array data to a DNG file with optional preview and pyramid generation.
     
     Args:
         destination_file: Path or io.BytesIO object where to save the DNG file
         data_spec: IfdDataSpec containing raw image data and metadata
-        generate_preview: If True, generate rendered RGB preview
-        preview_max_dimension: Maximum dimension for preview (default: 1024)
-        preview_compression: Compression for preview (default: JPEG)
-        preview_compression_args: Args for preview compression (default: {'level': 90})
-        preview_rendering_params: Override rendering params for preview (Temperature, Tint, etc.)
-        preview_use_xmp: Use XMP metadata for preview rendering (default: True)
-        generate_pyramid_levels: Number of pyramid levels to generate (0=none)
-        pyramid_compression: Compression for pyramid levels (default: JPEGXL_DNG)
-        pyramid_compression_args: Args for pyramid compression (default: {'distance': 0.5, 'effort': 5})
+        preview: PreviewParams for preview generation (None = no preview)
+        pyramid: PyramidParams for pyramid generation (None = no pyramid)
     """
+    
     # Create uncompressed temporary page spec (compression removed)
     temp_data_spec = IfdDataSpec(
         data=data_spec.data,
@@ -1913,19 +2007,12 @@ def write_dng_from_array(
         extratags=None,  # Already in the page
     )
     
-    # Delegate to write_dng_from_page
+    # Delegate to write_dng_from_page with extracted values
     write_dng_from_page(
         destination_file=destination_file,
         page=page_spec,
-        generate_preview=generate_preview,
-        preview_max_dimension=preview_max_dimension,
-        preview_compression=preview_compression,
-        preview_compression_args=preview_compression_args,
-        preview_rendering_params=preview_rendering_params,
-        preview_use_xmp=preview_use_xmp,
-        generate_pyramid_levels=generate_pyramid_levels,
-        pyramid_compression=pyramid_compression,
-        pyramid_compression_args=pyramid_compression_args,
+        preview=preview,
+        pyramid=pyramid,
     )
 
 
@@ -2021,15 +2108,8 @@ def write_dng_from_page(
     scale: float = 1.0,
     demosaic: bool = False,
     demosaic_algorithm: str = "OPENCV_EA",
-    generate_preview: bool = False,
-    preview_max_dimension: int = 1024,
-    preview_compression: Optional[COMPRESSION] = None,
-    preview_compression_args: Optional[dict] = None,
-    preview_rendering_params: dict = None,
-    preview_use_xmp: bool = True,
-    generate_pyramid_levels: int = 0,
-    pyramid_compression: Optional[COMPRESSION] = None,
-    pyramid_compression_args: Optional[dict] = None,
+    preview: Optional[PreviewParams] = None,
+    pyramid: Optional[PyramidParams] = None,
 ) -> None:
     """Write a DNG file from a page with optional transformations and pyramid generation.
     
@@ -2039,20 +2119,20 @@ def write_dng_from_page(
         scale: Scale factor for image (default: 1.0)
         demosaic: If True, convert CFA to LINEAR_RAW
         demosaic_algorithm: Demosaic algorithm to use (default: OPENCV_EA)
-        generate_preview: If True, generate rendered RGB preview
-        preview_max_dimension: Maximum dimension for preview (default: 1024)
-        preview_compression: Compression for preview (default: JPEG)
-        preview_compression_args: Args for preview compression (default: {'level': 90})
-        preview_rendering_params: Override rendering params for preview (Temperature, Tint, etc.)
-        preview_use_xmp: Use XMP metadata for preview rendering (default: True)
-        generate_pyramid_levels: Number of pyramid levels to generate (0=none)
-        pyramid_compression: Compression for pyramid levels (default: JPEGXL_DNG)
-        pyramid_compression_args: Args for pyramid compression (default: {'distance': 0.5, 'effort': 5})
+        preview: PreviewParams for preview generation (None = no preview)
+        pyramid: PyramidParams for pyramid generation (None = no pyramid)
     
     Raises:
         ValueError: If input is invalid
         RuntimeError: If DNG processing fails
     """
+    
+    # Set default compression types if not specified
+    if preview and preview.compression is None:
+        preview.compression = COMPRESSION.JPEG
+    if pyramid and pyramid.compression is None:
+        pyramid.compression = COMPRESSION.JPEGXL_DNG
+    
     # Create IfdPageSpec if a DngPage was passed directly
     if isinstance(page, IfdPageSpec):
         source_page_spec = page
@@ -2072,18 +2152,10 @@ def write_dng_from_page(
     # Determine if we need to transform the image
     needs_transform = (
         (demosaic and source_page_spec.page.is_cfa) or
-        generate_preview or
-        generate_pyramid_levels > 0 or
+        preview is not None or
+        (pyramid and pyramid.levels > 0) or
         scale != 1.0
     )
-    
-    # Set default compression types for preview and pyramid (main uses source_page_spec.page_operation)
-    # Compression args defaults are handled by tifffile
-    if preview_compression is None:
-        preview_compression = COMPRESSION.JPEG
-    
-    if pyramid_compression is None:
-        pyramid_compression = COMPRESSION.JPEGXL_DNG
     
     # Extract IFD0 tags
     ifd0_tags = source_page_spec.page.get_ifd0_tags()
@@ -2132,24 +2204,25 @@ def write_dng_from_page(
     num_pyramid_levels = 1  # Level 0 is always the original
     preview_level_idx = 0  # Default to level 0 if no preview
     
-    if generate_preview or generate_pyramid_levels > 0:
+    if preview or (pyramid and pyramid.levels > 0):
         # Calculate levels needed for preview
-        if generate_preview:
+        if preview:
             h, w = camera_rgb.shape[:2]
             max_dim = max(h, w)
             levels_for_preview = 1
-            while max_dim / (2 ** levels_for_preview) > preview_max_dimension:
+            while max_dim / (2 ** levels_for_preview) > preview.max_dimension:
                 levels_for_preview += 1
-            # Best preview level is the one just larger than preview_max_dimension
+            # Best preview level is the one just larger than preview.max_dimension
             preview_level_idx = max(0, levels_for_preview - 1)
             num_pyramid_levels = max(num_pyramid_levels, levels_for_preview + 1)
         
         # Take max with requested pyramid levels
-        num_pyramid_levels = max(num_pyramid_levels, generate_pyramid_levels + 1)
+        if pyramid:
+            num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
     
     # Generate pyramid
-    pyramid = _generate_pyramid(camera_rgb, num_pyramid_levels)
-    logger.info(f"Generated {len(pyramid)} pyramid levels")
+    pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels)
+    logger.info(f"Generated {len(pyramid_images)} pyramid levels")
     
     # Prepare filtered tags (strip stage1/stage2/stage3 tags from both ifd0 and page metadata)
     tags_to_strip = (source_page_spec.strip_tags or set()) | STAGE1_STAGE2_TAGS | STAGE3_TAGS | _DIGEST_TAGS
@@ -2182,7 +2255,7 @@ def write_dng_from_page(
         )
     else:
         # Transformed data - extract compression from source
-        raw_uint16 = raw_render.convert_dtype(pyramid[0], np.uint16)
+        raw_uint16 = raw_render.convert_dtype(pyramid_images[0], np.uint16)
         if isinstance(source_page_spec.page_operation, tuple):
             # Explicit TRANSCODE mode - use specified compression
             _, main_compression = source_page_spec.page_operation
@@ -2201,21 +2274,21 @@ def write_dng_from_page(
     
     # Build pyramid level specs (levels 1+)
     pyramid_specs = []
-    if generate_pyramid_levels > 0:
-        for level_idx in range(1, len(pyramid)):
-            pyramid_uint16 = raw_render.convert_dtype(pyramid[level_idx], np.uint16)
+    if pyramid and pyramid.levels > 0:
+        for level_idx in range(1, len(pyramid_images)):
+            pyramid_uint16 = raw_render.convert_dtype(pyramid_images[level_idx], np.uint16)
             pyramid_spec = IfdDataSpec(
                 data=pyramid_uint16,
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
-                compression=pyramid_compression,
-                compression_args=pyramid_compression_args,
+                compression=pyramid.compression,
+                compression_args=pyramid.compression_args,
                 extratags=preview_tags,
             )
             pyramid_specs.append(pyramid_spec)
     
     # Generate rendered preview if requested
-    if not generate_preview:
+    if not preview:
         # No preview: IFD0 = main, SubIFD0+ = pyramid
         # Main spec becomes IFD0, so merge filtered page tags, filtered ifd0_tags, and user extratags
         ifd0_tags |= main_page_tags
@@ -2227,7 +2300,7 @@ def write_dng_from_page(
         )
     else:
         # Use pre-calculated best pyramid level
-        preview_rgb = pyramid[preview_level_idx]
+        preview_rgb = pyramid_images[preview_level_idx]
         
         logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({preview_rgb.shape[:2]})")
         
@@ -2237,15 +2310,15 @@ def write_dng_from_page(
             raw_ifd_tags=source_page_spec.page.get_page_tags(),
             rgb_camera=preview_rgb,
             output_dtype=np.uint8,
-            rendering_params=preview_rendering_params,
-            use_xmp=preview_use_xmp,
+            rendering_params=preview.rendering_params,
+            use_xmp=preview.use_xmp,
         )
         
         # Resize rendered preview if needed
         h, w = rendered_preview.shape[:2]
         max_dim = max(h, w)
-        if max_dim > preview_max_dimension:
-            scale_factor = preview_max_dimension / max_dim
+        if max_dim > preview.max_dimension:
+            scale_factor = preview.max_dimension / max_dim
             new_h = int(h * scale_factor)
             new_w = int(w * scale_factor)
             
@@ -2259,8 +2332,8 @@ def write_dng_from_page(
             data=rendered_preview,
             photometric="RGB",
             subfiletype=SubFileType.PREVIEW_IMAGE,
-            compression=preview_compression,
-            compression_args=preview_compression_args,
+            compression=preview.compression,
+            compression_args=preview.compression_args,
             extratags=ifd0_tags,
         )
         
@@ -2278,6 +2351,51 @@ def write_dng_from_page(
         logger.info("Successfully wrote DNG to stream")
     else:
         logger.info(f"Successfully wrote DNG to {dest_path}")
+
+
+def create_dng_from_page(
+    page: Union[IfdPageSpec, DngPage],
+    *,
+    scale: float = 1.0,
+    demosaic: bool = False,
+    demosaic_algorithm: str = "OPENCV_EA",
+    preview: Optional[PreviewParams] = None,
+    pyramid: Optional[PyramidParams] = None,
+) -> "DngFile":
+    """Create a DNG file from a page in memory and return as DngFile object.
+    
+    This is a convenience wrapper around write_dng_from_page that writes to an
+    in-memory BytesIO stream and returns the result as a DngFile.
+    
+    Args:
+        page: Source page (IfdPageSpec or DngPage)
+        scale: Scale factor for image (default: 1.0)
+        demosaic: If True, convert CFA to LINEAR_RAW
+        demosaic_algorithm: Demosaic algorithm to use (default: OPENCV_EA)
+        preview: Optional preview generation parameters
+        pyramid: Optional pyramid level generation parameters
+        
+    Returns:
+        DngFile object loaded from the in-memory DNG
+        
+    Example:
+        >>> page = dng_file.get_main_page()
+        >>> preview = PreviewParams(compression=COMPRESSION.JPEG)  # Presence means generate
+        >>> pyramid = PyramidParams(levels=2, compression=COMPRESSION.JPEGXL_DNG)
+        >>> new_dng = create_dng_from_page(page, scale=0.5, preview=preview, pyramid=pyramid)
+    """
+    buffer = io.BytesIO()
+    write_dng_from_page(
+        destination_file=buffer,
+        page=page,
+        scale=scale,
+        demosaic=demosaic,
+        demosaic_algorithm=demosaic_algorithm,
+        preview=preview,
+        pyramid=pyramid,
+    )
+    buffer.seek(0)
+    return DngFile(buffer)
 
 
 def decode_dng(
