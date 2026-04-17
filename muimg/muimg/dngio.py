@@ -1522,8 +1522,8 @@ def write_dng(
             tags: MetadataTags object with values in system byte order
             target_byteorder: Target file's byte order ('>' or '<')
             
-        Yields:
-            Tuples of (code, dtype, count, value, writeonce) ready for tifffile
+        Returns:
+            List of tuples (code, dtype, count, value, writeonce) ready for tifffile
         """
         import sys
         from .tiff_metadata import normalize_array_to_target_byteorder
@@ -1531,16 +1531,18 @@ def write_dng(
         
         system_byteorder = '<' if sys.byteorder == 'little' else '>'
         
-        for code in sorted(tags._tags.keys()):
-            tag = tags._tags[code]
-            
+        result = []
+        # Use public iterator which yields (code, dtype, count, value, writeonce)
+        for code, dtype, count, value, writeonce in tags:
             # Transcode PGTM if needed (no-op for non-PGTM tags)
-            value = transcode_pgtm_if_needed(code, tag.value, system_byteorder, target_byteorder)
+            value = transcode_pgtm_if_needed(code, value, system_byteorder, target_byteorder)
             
             # Normalize arrays if needed (no-op for non-arrays or PGTM bytes)
             value = normalize_array_to_target_byteorder(value, target_byteorder)
             
-            yield (tag.code, tag.dtype, tag.count, value, False)
+            result.append((code, dtype, count, value, writeonce))
+        
+        return result
 
     def _write_ifd_from_spec(
         writer: TiffWriter,
@@ -1631,31 +1633,32 @@ def write_dng(
         
         # ==== handle tifffile args for this IFD ====
         # Determine compression type for args preparation
+        # Copy compression_args from spec by default
+        compression_args = spec.compression_args
+        
         if isinstance(spec, IfdPageSpec):
             if not spec.requires_transcode():
                 # Fast path: COPY mode - use page's existing compression
                 compression = spec.page.compression
-                compression_args = None
+                compression_args = None  # Don't pass args when copying compressed data
             elif isinstance(spec.page_operation, tuple):
                 # TRANSCODE mode - use specified compression
                 _, compression = spec.page_operation
-                if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-                    compression = COMPRESSION.JPEGXL_DNG
-                    compression_args = None  # JXL args handled separately
-                else:
-                    compression_args = spec.compression_args
             else:
                 # Unsupported tile config forces transcode to uncompressed
                 compression = COMPRESSION.NONE
-                compression_args = None
         else:
             # IfdDataSpec
-            if spec.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-                compression = COMPRESSION.JPEGXL_DNG
-                compression_args = None  # JXL args handled separately
-            else:
-                compression = spec.compression if spec.compression is not None else COMPRESSION.NONE
-                compression_args = spec.compression_args
+            compression = spec.compression
+        
+        # Normalize compression type and args
+        if compression is None or compression == COMPRESSION.NONE:
+            # Uncompressed data doesn't need compression args
+            compression = COMPRESSION.NONE
+            compression_args = None
+        elif compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            # Normalize JXL compression variants to JPEGXL_DNG
+            compression = COMPRESSION.JPEGXL_DNG
         
         # Prepare IFD args once (shared by all write paths)
         # Only pass subifds_count for IFD0, not for SubIFDs
@@ -1672,7 +1675,7 @@ def write_dng(
         # Fast path: copy page data as-is (no transcode)
         if isinstance(spec, IfdPageSpec) and not spec.requires_transcode():
             # Prepare tags for write (convert arrays to target byte order)
-            ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
+            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
             _write_page_ifd(writer, spec.page, raw_ifd_args=ifd_args)
             return
 
@@ -1778,19 +1781,17 @@ def write_dng(
             # So we shift 9-15 bit data to 16-bit before encoding to avoid this. 
             jxl_encode_bits = bits_per_sample
             if 9 <= bits_per_sample <= 15:
-                shift_amount = 16 - bits_per_sample
-                data = data << shift_amount
-                jxl_encode_bits = 16
-                bits_per_sample = 16  # Update for TIFF tag
+                data = data << (16 - bits_per_sample)
+                bits_per_sample = 16  # Update for TIFF tag and JXL encoder
 
             encoded_bytes = imagecodecs.jpegxl_encode(
-                data, distance=jxl_distance, effort=jxl_effort, bitspersample=jxl_encode_bits
+                data, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
             )
             def encoded_data_iterator():
                 yield encoded_bytes
 
             # Prepare tags after all additions are complete
-            ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
+            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
             writer.write(
                 data=encoded_data_iterator(),
                 shape=data.shape,
@@ -1802,7 +1803,7 @@ def write_dng(
         else:
             # All other compression types - let tifffile handle encoding
             # Prepare tags after all additions are complete (including CFA tags)
-            ifd_args["extratags"] = list(_prepare_tags_for_write(ifd_tags, writer.tiff.byteorder))
+            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
             writer.write(data, bitspersample=bits_per_sample, rowsperstrip=datasize, **ifd_args)
 
     try:

@@ -29,19 +29,23 @@ def core_image_available_for_tests() -> bool:
 DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targets/mac/release64/dng_validate"
 
 
-def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16) -> np.ndarray:
-    """Generate synthetic RGB ramp test image.
+def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16, noise_stddev: float = 0.0) -> np.ndarray:
+    """Generate synthetic RGB ramp test image with optional noise.
     
     Args:
         width: Image width in pixels
         height: Image height in pixels
         dtype: Output data type (np.uint8, np.uint16, np.float32, etc.)
+        noise_stddev: Standard deviation of Gaussian noise in [0,1] range.
+                     Typical camera sensor noise is ~0.001-0.01 for good sensors.
+                     0.0 = no noise (default, smooth gradient)
         
     Returns:
         RGB image (H, W, 3) with specified dtype:
         - Red channel: gradient left to right
         - Blue channel: gradient top to bottom
         - Green channel: gradient on diagonal
+        - Optional: Gaussian noise added to simulate sensor noise
     """
     # Generate in float32 for highest precision
     img = np.zeros((height, width, 3), dtype=np.float32)
@@ -58,6 +62,35 @@ def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16) -> n
     xx, yy = np.meshgrid(x, y)
     diagonal = (xx / width + yy / height) / 2.0
     img[:, :, 1] = diagonal
+    
+    # Add Gaussian noise if requested (simulates camera sensor noise)
+    if noise_stddev > 0:
+        # Use fixed seed for reproducibility in tests
+        rng = np.random.RandomState(42)
+        
+        # 1. Gaussian noise (per-pixel sensor noise)
+        noise = rng.normal(0, noise_stddev, img.shape).astype(np.float32)
+        img = np.clip(img + noise, 0.0, 1.0)
+        
+        # 2. Random block noise (simulates compression artifacts, hot pixels, etc.)
+        # Add ~200 random blocks of varying sizes with random RGB offsets
+        block_count = 200
+        for _ in range(block_count):
+            # Random block size (4x4 to 32x32 for more visible blocks)
+            block_h = rng.randint(4, 33)
+            block_w = rng.randint(4, 33)
+            
+            # Random position
+            y = rng.randint(0, max(1, height - block_h))
+            x = rng.randint(0, max(1, width - block_w))
+            
+            # Random RGB offset for this block (±10x the Gaussian noise level for visibility)
+            block_offset = rng.uniform(-10*noise_stddev, 10*noise_stddev, 3).astype(np.float32)
+            
+            # Apply offset to block
+            img[y:y+block_h, x:x+block_w, :] = np.clip(
+                img[y:y+block_h, x:x+block_w, :] + block_offset, 0.0, 1.0
+            )
     
     # Convert to target dtype if needed
     if dtype != np.float32:
