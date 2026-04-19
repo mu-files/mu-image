@@ -489,7 +489,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "OpcodeList3": TagSpec("B", None, dng_ifd="dng_raw"),  # 51022
     # NoiseProfile: DNG spec says Raw IFD, but Adobe SDK writes to both main and raw IFDs
     # for legacy compatibility (dng_image_writer.cpp:8544). SDK reads from both locations.
-    "NoiseProfile": TagSpec("d", None, dng_ifd="dng_raw"),  # 51041
+    "NoiseProfile": TagSpec("d", None, dng_ifd="any"),  # 51041
     "TimeCodes": TagSpec("B", None, dng_ifd="any"),  # 51043
     "FrameRate": TagSpec("2I", 1, dng_ifd="any"),  # 51044
     "TStop": TagSpec("2I", None, dng_ifd="any"),  # 51058

@@ -12,9 +12,8 @@ from typing import Set
 
 import numpy as np
 import pytest
-import tifffile
-from tifffile import TIFF
 
+import muimg
 from muimg.tiff_metadata import (
     TIFF_TAG_TYPE_REGISTRY,
     TagSpec,
@@ -24,14 +23,24 @@ from muimg.tiff_metadata import (
 )
 
 
-DNGFILES_DIR = Path(__file__).parent / "dngfiles"
+DNGFILES_DIR = Path(__file__).parent.parent.parent.parent / "mu-image-testdata" / "dngtestfiles"
 
 
 def get_dng_files():
-    """Get list of DNG files for parametrized tests."""
+    """Get list of DNG files for parametrized tests (searches recursively)."""
     files = []
     if DNGFILES_DIR.exists():
-        files.extend(DNGFILES_DIR.glob("*.dng"))
+        files.extend(DNGFILES_DIR.rglob("*.dng"))
+    
+    # Warn if no files found
+    if not files:
+        import warnings
+        warnings.warn(
+            f"No DNG files found in {DNGFILES_DIR}. "
+            f"Tests will be skipped. Please ensure test files are available.",
+            UserWarning
+        )
+    
     return sorted(files)
 
 
@@ -76,8 +85,8 @@ class TestTagRegistryCompatibility:
         total_tags = 0
         validated_tags = 0
         
-        with tifffile.TiffFile(dng_path) as tif:
-            for page in tif.pages:
+        with muimg.DngFile(dng_path) as dng:
+            for page in dng.get_flattened_pages():
                 for tag in page.tags.values():
                     tag_name = tag.name
                     total_tags += 1
@@ -93,8 +102,7 @@ class TestTagRegistryCompatibility:
                     validated_tags += 1
                     spec = TIFF_TAG_TYPE_REGISTRY[tag_name]
                     
-                    # Get file's dtype - tifffile uses different format
-                    # Convert tifffile dtype code to our format
+                    # Get file's dtype
                     file_dtype = self._tifffile_dtype_to_string(tag.dtype)
                     
                     if not dtype_compatible(file_dtype, spec):
@@ -291,8 +299,8 @@ class TestMatrixTagCount:
         """Verify registry count matches actual tag count in DNG files."""
         mismatches = []
         
-        with tifffile.TiffFile(dng_path) as tif:
-            for page in tif.pages:
+        with muimg.DngFile(dng_path) as dng:
+            for page in dng.get_flattened_pages():
                 for tag in page.tags.values():
                     tag_name = tag.name
                     
