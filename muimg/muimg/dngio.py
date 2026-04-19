@@ -2253,9 +2253,14 @@ def write_dng_from_page(
             _, main_compression = source_page_spec.page_operation
             main_compression_args = source_page_spec.compression_args
         else:
-            # COPY mode - preserve source page's compression type
+            # COPY mode - preserve source compression with appropriate args
             main_compression = source_page_spec.page.compression
-            main_compression_args = source_page_spec.compression_args
+            
+            # JPEG compression needs lossless mode for LINEAR_RAW
+            if  main_compression == COMPRESSION.JPEG:
+                main_compression_args = {'lossless': True}  # Use default predictor (1)
+            else:
+                main_compression_args = source_page_spec.compression_args
         main_spec = IfdDataSpec(
             data=raw_uint16,
             photometric="LINEAR_RAW",

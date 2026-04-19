@@ -16,15 +16,50 @@ logging.getLogger('tifffile').setLevel(logging.CRITICAL)
 
 from muimg.dngio import (
     write_dng,
+    write_dng_from_page,
     DngFile,
     IfdPageSpec,
     PageOp,
     SubFileType,
+    create_dng_from_page,
+    PreviewParams,
+    PyramidParams,
 )
 from conftest import run_dng_validate, compute_diff_stats
+import cv2
 
 # Test output configuration
-USE_PERSISTENT_OUTPUT = True
+USE_PERSISTENT_OUTPUT = False
+
+
+def dump_comparison_images(img1: np.ndarray, img2: np.ndarray, output_dir: Path, prefix: str):
+    """Dump comparison images to TIFF for visual inspection.
+    
+    Args:
+        img1: First image (reference)
+        img2: Second image (to compare)
+        output_dir: Directory to save images
+        prefix: Prefix for filenames
+    """
+    import tifffile
+    
+    dump_dir = output_dir / "pixel_comparison_dumps"
+    dump_dir.mkdir(exist_ok=True, parents=True)
+    
+    img1_path = dump_dir / f"{prefix}_reference.tif"
+    img2_path = dump_dir / f"{prefix}_output.tif"
+    diff_path = dump_dir / f"{prefix}_diff.tif"
+    
+    # Save images and absolute difference
+    tifffile.imwrite(img1_path, img1)
+    tifffile.imwrite(img2_path, img2)
+    abs_diff = np.abs(img1.astype(np.int16) - img2.astype(np.int16)).astype(np.uint8)
+    tifffile.imwrite(diff_path, abs_diff)
+    
+    print(f"      ⚠ Comparison images dumped to {dump_dir}/")
+    print(f"        - {img1_path.name}")
+    print(f"        - {img2_path.name}")
+    print(f"        - {diff_path.name}")
 
 
 def compare_page_metadata(src, out_page, spec=None, extra_skip_tags=None):
@@ -345,10 +380,6 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
     makes it the IFD0 of a new DNG file, and generates a 3-level JXL pyramid.
     Validates metadata and pixel scaling.
     """
-    from muimg.dngio import write_dng_from_page, PyramidParams
-    from tifffile import COMPRESSION
-    import cv2
-    
     # Setup paths
     test_dir = Path(__file__).parent
     source_path = test_dir / "dngfiles" / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
@@ -513,25 +544,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
             max_failed = diff_stats['max'] >= max_threshold
             
             if mean_failed or max_failed:
-                # Dump comparison images to TIFF for inspection
-                import tifffile
-                dump_dir = output_dir / "pixel_comparison_dumps"
-                dump_dir.mkdir(exist_ok=True)
-                
-                src_path = dump_dir / f"level{i}_source_resized.tif"
-                out_path = dump_dir / f"level{i}_output.tif"
-                diff_path = dump_dir / f"level{i}_diff.tif"
-                
-                # Save source (resized), output, and absolute difference
-                tifffile.imwrite(src_path, src_resized)
-                tifffile.imwrite(out_path, out_decoded)
-                abs_diff = np.abs(src_resized.astype(np.int16) - out_decoded.astype(np.int16)).astype(np.uint8)
-                tifffile.imwrite(diff_path, abs_diff)
-                
-                print(f"      ⚠ Comparison images dumped to {dump_dir}/")
-                print(f"        - {src_path.name}")
-                print(f"        - {out_path.name}")
-                print(f"        - {diff_path.name}")
+                dump_comparison_images(src_resized, out_decoded, output_dir, f"level{i}")
             
             if mean_failed:
                 assert False, (
@@ -548,6 +561,203 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
     
     print(f"\n{'='*80}")
     print(f"✓ write_dng_from_page with pyramid test PASSED")
+    print(f"{'='*80}\n")
+
+
+def test_render_raw_scaling_consistency(tmp_path):
+    """Test render_raw consistency across different scaling and processing paths.
+    
+    Validates that:
+    1. render_raw with scale=0.25 returns SubIFD[2] exactly
+    2. Rendering SubIFD[2] directly matches scaled render
+    3. create_dng_from_page preserves rendering
+    4. create_dng_from_page with preview generates consistent renders
+    5. create_dng_from_page with demosaic+pyramid generates consistent renders
+    """
+    test_file = Path(__file__).parent / "dngfiles" / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    assert test_file.exists(), f"Test file not found: {test_file}"
+    
+    # Setup output directory
+    if USE_PERSISTENT_OUTPUT:
+        output_dir = Path(__file__).parent / "test_outputs" / "test_write_dng_functions"
+        output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir = tmp_path
+    
+    print(f"\n{'='*80}")
+    print(f"Testing render_raw scaling consistency")
+    print(f"Source: {test_file}")
+    print(f"{'='*80}\n")
+    
+    # Open source DNG
+    with DngFile(test_file) as dng:
+        # Get flattened pages
+        pages = dng.get_flattened_pages()
+        main_page = dng.get_main_page()
+        subifd2 = pages[3]  # SubIFD[2]
+        
+        print(f"Main page: {main_page.photometric_name}, {main_page.shape}")
+        print(f"SubIFD[2]: {subifd2.photometric_name}, {subifd2.shape}\n")
+        
+        # Test 1: render_raw with scale=0.25 should use SubIFD[2]
+        print("Test 1: render_raw(scale=0.25) should use SubIFD[2]...")
+        render_scaled = dng.render_raw(output_dtype=np.uint8, scale=0.25)
+        assert render_scaled is not None
+        print(f"  Scaled render shape: {render_scaled.shape}")
+        
+        # Test 2: Render SubIFD[2] directly
+        print("\nTest 2: Render SubIFD[2] directly...")
+        render_subifd2 = subifd2.render_raw(output_dtype=np.uint8)
+        assert render_subifd2 is not None
+        print(f"  SubIFD[2] render shape: {render_subifd2.shape}")
+        
+        # Compare Test 1 and Test 2 - should match exactly
+        print("\n  Comparing scaled render vs SubIFD[2] render...")
+        assert render_scaled.shape == render_subifd2.shape, \
+            f"Shape mismatch: {render_scaled.shape} != {render_subifd2.shape}"
+        
+        diff_stats = compute_diff_stats(render_scaled, render_subifd2)
+        print(f"    Mean diff: {diff_stats['mean']:.4f}%")
+        print(f"    Max diff:  {diff_stats['max']:.4f}%")
+        assert diff_stats['mean'] == 0.0 and diff_stats['max'] == 0.0, \
+            "Renders should match exactly"
+        print("  ✓ Renders match exactly")
+        
+        # Test 3: create_dng_from_page on SubIFD[2]
+        print("\nTest 3: create_dng_from_page(SubIFD[2])...")
+        dng_from_page = create_dng_from_page(subifd2)
+        
+        # Validate and save DNG
+        test3_path = output_dir / "test3_from_page.dng"
+        dng_from_page.write_to(test3_path)
+        print(f"  Saved to: {test3_path}")
+        run_dng_validate(test3_path, output_dir / "test3_from_page")
+        
+        render_from_page = dng_from_page.get_main_page().render_raw(output_dtype=np.uint8)
+        assert render_from_page is not None
+        print(f"  Render from page shape: {render_from_page.shape}")
+        
+        print("  Comparing with SubIFD[2] render...")
+        diff_stats = compute_diff_stats(render_subifd2, render_from_page)
+        print(f"    Mean diff: {diff_stats['mean']:.4f}%")
+        print(f"    Max diff:  {diff_stats['max']:.4f}%")
+        assert diff_stats['mean'] == 0.0 and diff_stats['max'] == 0.0, \
+            "Renders should match exactly"
+        print("  ✓ Renders match exactly")
+        
+        # Test 4: create_dng_from_page with scale=0.25 and preview
+        print("\nTest 4: create_dng_from_page(main, scale=0.25, preview)...")
+        preview_params = PreviewParams(max_dimension=512)
+        dng_with_preview = create_dng_from_page(
+            main_page,
+            scale=0.25,
+            preview=preview_params
+        )
+        
+        # Validate and save DNG
+        test4_path = output_dir / "test4_with_preview.dng"
+        dng_with_preview.write_to(test4_path)
+        print(f"  Saved to: {test4_path}")
+        run_dng_validate(test4_path, output_dir / "test4_with_preview")
+        
+        render_with_preview = dng_with_preview.render_raw(output_dtype=np.uint8)
+        assert render_with_preview is not None
+        print(f"  Render with preview shape: {render_with_preview.shape}")
+        
+        print("  Comparing with SubIFD[2] render...")
+        diff_stats = compute_diff_stats(render_subifd2, render_with_preview)
+        print(f"    Mean diff: {diff_stats['mean']:.4f}%")
+        print(f"    Max diff:  {diff_stats['max']:.4f}%")
+        # Allow differences due to compression (LJPEG vs JPEGXL_DNG)
+        mean_failed = diff_stats['mean'] >= 1.0
+        max_failed = diff_stats['max'] >= 32.0
+        if mean_failed or max_failed:
+            dump_comparison_images(render_subifd2, render_with_preview, output_dir, "test4_preview")
+            # Copy DNG to comparison folder
+            import shutil
+            dump_dir = output_dir / "pixel_comparison_dumps"
+            shutil.copy(test4_path, dump_dir / "test4_preview.dng")
+            print(f"        - test4_preview.dng")
+            assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%, max={diff_stats['max']:.2f}%"
+        print(f"  ✓ Renders match within threshold")
+        
+        # Test 5: create_dng_from_page with demosaic and pyramid
+        print("\nTest 5: create_dng_from_page(main, demosaic, pyramid)...")
+        pyramid_params = PyramidParams(levels=3, compression=COMPRESSION.JPEGXL_DNG)
+        dng_with_pyramid = create_dng_from_page(
+            main_page,
+            demosaic=True,
+            pyramid=pyramid_params
+        )
+        
+        # Validate and save DNG
+        test5_path = output_dir / "test5_with_pyramid.dng"
+        dng_with_pyramid.write_to(test5_path)
+        print(f"  Saved to: {test5_path}")
+        # Ignore SubIFD NextIFD warnings (harmless, appears when pyramid SubIFDs are chained)
+        run_dng_validate(
+            test5_path, 
+            output_dir / "test5_with_pyramid",
+            ignored_warnings=["unexpected non-zero NextIFD"]
+        )
+        
+        # Render main page and resize to 0.25
+        render_pyramid_main = dng_with_pyramid.render_raw(output_dtype=np.uint8)
+        assert render_pyramid_main is not None
+        print(f"  Pyramid main render shape: {render_pyramid_main.shape}")
+        
+        # Resize to match SubIFD[2] size
+        target_h, target_w = render_subifd2.shape[:2]
+        render_pyramid_resized = cv2.resize(
+            render_pyramid_main,
+            (target_w, target_h),
+            interpolation=cv2.INTER_AREA
+        )
+        print(f"  Resized to: {render_pyramid_resized.shape}")
+        
+        print("  Comparing resized render with SubIFD[2] render...")
+        diff_stats = compute_diff_stats(render_subifd2, render_pyramid_resized)
+        print(f"    Mean diff: {diff_stats['mean']:.4f}%")
+        print(f"    Max diff:  {diff_stats['max']:.4f}%")
+        # Allow differences due to compression (LJPEG vs JPEGXL_DNG)
+        mean_failed = diff_stats['mean'] >= 0.6
+        max_failed = diff_stats['max'] >= 30.0
+        if mean_failed or max_failed:
+            dump_comparison_images(render_subifd2, render_pyramid_resized, output_dir, "test5_pyramid_resized")
+            # Copy DNG to comparison folder
+            import shutil
+            dump_dir = output_dir / "pixel_comparison_dumps"
+            shutil.copy(test5_path, dump_dir / "test5_pyramid_resized.dng")
+            print(f"        - test5_pyramid_resized.dng")
+            assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%, max={diff_stats['max']:.2f}%"
+        print(f"  ✓ Resized render matches within threshold")
+        
+        # Also check pyramid level 2 (second pyramid level after main)
+        print("\n  Rendering pyramid level 2...")
+        pyramid_pages = dng_with_pyramid.get_flattened_pages()
+        pyramid_level2 = pyramid_pages[2]  # SubIFD[1]
+        render_pyramid_level2 = pyramid_level2.render_raw(output_dtype=np.uint8)
+        assert render_pyramid_level2 is not None
+        print(f"  Pyramid level 2 render shape: {render_pyramid_level2.shape}")
+        
+        print("  Comparing pyramid level 2 with SubIFD[2] render...")
+        diff_stats = compute_diff_stats(render_subifd2, render_pyramid_level2)
+        print(f"    Mean diff: {diff_stats['mean']:.4f}%")
+        print(f"    Max diff:  {diff_stats['max']:.4f}%")
+        mean_failed = diff_stats['mean'] >= 1.0
+        max_failed = diff_stats['max'] >= 37.0
+        if mean_failed or max_failed:
+            dump_comparison_images(render_subifd2, render_pyramid_level2, output_dir, "test5_pyramid_level2")
+            # Copy DNG to comparison folder
+            import shutil
+            dump_dir = output_dir / "pixel_comparison_dumps"
+            shutil.copy(test5_path, dump_dir / "test5_pyramid_level2.dng")
+            print(f"        - test5_pyramid_level2.dng")
+            assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%, max={diff_stats['max']:.2f}%"
+        print(f"  ✓ Pyramid level 2 matches within threshold")
+    
+    print(f"\n{'='*80}")
+    print(f"✓ All render_raw scaling consistency tests PASSED")
     print(f"{'='*80}\n")
 
 

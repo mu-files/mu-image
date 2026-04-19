@@ -183,7 +183,7 @@ def load_tiff(path: Path) -> np.ndarray | None:
         return None
 
 
-def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True, indent: str = "") -> np.ndarray | None:
+def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True, skip_dng_validate: bool = False, indent: str = "") -> np.ndarray | None:
     """Run dng_validate and muimg metadata validators on a DNG file.
     
     Args:
@@ -192,17 +192,18 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
         timeout: Timeout in seconds
         ignored_warnings: Optional list of warning patterns to ignore (case-insensitive)
         validate: If False, ignore all errors/warnings and just decode (for reference comparison)
+        skip_dng_validate: If True, skip external dng_validate tool but still run muimg metadata validation
         indent: String to prepend to validation messages (default: no indent)
         
     Returns:
         Loaded TIFF as numpy array, or None if dng_validate not available
         
     Raises:
-        RuntimeError: If dng_validate fails or produces errors (only when validate=True)
+        RuntimeError: If dng_validate fails or produces errors (only when validate=True and not skip_dng_validate)
         AssertionError: If either validator produces warnings (only when validate=True, except ignored ones)
     """
     # Warnings to ignore (add patterns here as needed)
-    IGNORED_WARNINGS = ignored_warnings or []
+    IGNORED_WARNINGS = [w.lower() for w in (ignored_warnings or [])]
     
     if not DNG_VALIDATE_PATH.exists():
         return None
@@ -211,33 +212,35 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
     all_warnings = []
     
     try:
-        # Run dng_validate (C++ SDK validator)
-        result = subprocess.run(
-            [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"dng_validate failed with return code {result.returncode}:\n{result.stderr}")
+        # Run dng_validate (C++ SDK validator) unless skipped
+        if not skip_dng_validate:
+            result = subprocess.run(
+                [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"dng_validate failed with return code {result.returncode}:\n{result.stderr}")
+            
+            # Only check for errors/warnings if validate=True
+            if validate:
+                # Check for errors or warnings in dng_validate output
+                combined = (result.stdout or "") + "\n" + (result.stderr or "")
+                
+                # Extract only error/warning lines for cleaner output
+                # Note: dng_validate uses "*** Error:" and "*** Warning:" (capital E/W)
+                error_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** error:')]
+                warning_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** warning:')]
+                
+                # Collect warnings and errors from dng_validate (errors can be ignored too)
+                if warning_lines:
+                    all_warnings.extend(warning_lines)
+                if error_lines:
+                    all_warnings.extend(error_lines)
         
-        # Only check for errors/warnings if validate=True
+        # Run muimg dng metadata validator (always run if validate=True)
         if validate:
-            # Check for errors or warnings in dng_validate output
-            combined = (result.stdout or "") + "\n" + (result.stderr or "")
-            
-            # Extract only error/warning lines for cleaner output
-            # Note: dng_validate uses "*** Error:" and "*** Warning:" (capital E/W)
-            error_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** error:')]
-            warning_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** warning:')]
-            
-            # Collect warnings and errors from dng_validate (errors can be ignored too)
-            if warning_lines:
-                all_warnings.extend(warning_lines)
-            if error_lines:
-                all_warnings.extend(error_lines)
-            
-            # Run muimg dng metadata validator
             import sys
             muimg_cmd = [sys.executable, "-m", "muimg.cli", "dng", "metadata", str(dng_path)]
             muimg_result = subprocess.run(
