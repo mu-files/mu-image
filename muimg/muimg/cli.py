@@ -70,6 +70,38 @@ def _parse_ifd_spec(ifd_spec):
         )
 
 
+def _get_page_from_ifd_spec(dng_file, ifd_spec):
+    """Get page from DNG file based on IFD specification.
+    
+    Args:
+        dng_file: DngFile instance
+        ifd_spec: String like 'ifd0', 'subifd0', 'subifd1', etc., or None for main page
+        
+    Returns:
+        Page object
+        
+    Raises:
+        click.ClickException: If IFD specification is invalid or page not found
+    """
+    ifd_index, _ = _parse_ifd_spec(ifd_spec)
+    
+    if ifd_index is None:
+        # Default: get main raw page
+        page = dng_file.get_main_page()
+        if page is None:
+            raise click.ClickException("No main raw page found")
+    else:
+        # Get specific IFD by index
+        pages = dng_file.get_flattened_pages()
+        if ifd_index >= len(pages):
+            raise click.ClickException(
+                f"IFD index {ifd_index} out of range. File has {len(pages)} IFD(s)."
+            )
+        page = pages[ifd_index]
+    
+    return page
+
+
 @dng.command(name="metadata")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
@@ -490,27 +522,12 @@ def dng_convert(
     if orientation is not None:
         params['orientation'] = orientation
     
-    # Parse IFD specification before opening file
-    ifd_index, ifd_name = _parse_ifd_spec(ifd)
-    
     # Convert DNG
     try:
         # Open DNG and select page
         with DngFile(input_file) as dng:
-            if ifd_index is None:
-                # Default: get main raw page
-                page = dng.get_main_page()
-                if page is None:
-                    click.echo("Error: No main raw page found", err=True)
-                    sys.exit(1)
-            else:
-                # Get specific IFD by index
-                pages = dng.get_flattened_pages()
-                if ifd_index >= len(pages):
-                    click.echo(f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).", err=True)
-                    sys.exit(1)
-                
-                page = pages[ifd_index]
+            page = _get_page_from_ifd_spec(dng, ifd)
+            _, ifd_name = _parse_ifd_spec(ifd)
             
             # Validate parameters before rendering
             if params and not (page.is_cfa or page.is_linear_raw):
@@ -549,12 +566,14 @@ def dng_convert(
 def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     """Extract raw image data at a specific pipeline stage.
     
+    \b
     Stages:
       raw                   - Raw sensor data (decoded, no processing)
       linearized            - After linearization and normalization
       linearized-plus-ops   - After OpcodeList2 (includes MapPolynomial)
       camera-rgb            - Demosaiced camera RGB
     
+    \b
     Examples:
       muimg dng raw-stage input.dng output.tif linearized
       muimg dng raw-stage input.dng output.tif camera-rgb --ifd subifd2
@@ -662,6 +681,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
 @dng.command(name="copy")
 @click.argument("input_dng", type=click.Path(exists=True))
 @click.argument("output_dng", type=click.Path())
+@click.option("--ifd", type=str, help="IFD to copy (ifd0, subifd0, subifd1, etc.). Default: main raw page")
 @click.option(
     "--scale",
     type=float,
@@ -706,9 +726,16 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     multiple=True,
     help="Tag name to strip (can be specified multiple times)",
 )
+@click.option(
+    "--pyramid-levels",
+    type=int,
+    default=0,
+    help="Number of pyramid levels to generate (default: 0 = none)",
+)
 def dng_copy(
     input_dng,
     output_dng,
+    ifd,
     scale,
     demosaic,
     demosaic_algorithm,
@@ -718,6 +745,7 @@ def dng_copy(
     jxl_distance,
     jxl_effort,
     tag,
+    pyramid_levels,
 ):
     """Copy DNG file with optional transformations.
     
@@ -729,15 +757,15 @@ def dng_copy(
     strip_tags_set = set(strip_tag) if strip_tag else None
     
     # Parse --tag NAME=VALUE options into MetadataTags
-    ifd0_tags = None
+    extra_tags = None
     if tag:
-        ifd0_tags = MetadataTags()
+        extra_tags = MetadataTags()
         for tag_spec in tag:
             if "=" not in tag_spec:
                 click.echo(f"Error: Invalid tag format '{tag_spec}'. Use NAME=VALUE", err=True)
                 sys.exit(1)
             name, value = tag_spec.split("=", 1)
-            ifd0_tags.add_tag(name.strip(), value.strip())
+            extra_tags.add_tag(name.strip(), value.strip())
     
     try:
         # Build compression args and determine compression type
@@ -754,39 +782,55 @@ def dng_copy(
             if jxl_effort is not None:
                 compression_args['effort'] = jxl_effort
         
-        # Open source DNG and get main page
-        dng_file = dngio.DngFile(input_dng)
-        main_page = dng_file.get_main_page()
-        if main_page is None:
-            raise ValueError("No main page found in source DNG")
-        
-        # Determine page_operation based on explicit compression request
-        if compression is not None:
-            # TRANSCODE mode - decompress and recompress with specified compression
-            page_operation = (dngio.PageOp.TRANSCODE, compression)
-        else:
-            # COPY mode - preserve source compression (even when demosaicing/scaling)
-            page_operation = dngio.PageOp.COPY
-        
-        # Create IfdPageSpec
-        page_spec = dngio.IfdPageSpec(
-            page=main_page,
-            page_operation=page_operation,
-            compression_args=compression_args,
-            extratags=ifd0_tags,
-            strip_tags=strip_tags_set,
-        )
-        
-        # Write using write_dng_from_page
-        dngio.write_dng_from_page(
-            destination_file=output_dng,
-            page=page_spec,
-            scale=scale,
-            demosaic=demosaic,
-            demosaic_algorithm=demosaic_algorithm,
-            generate_preview=preview,
-            preview_max_dimension=preview_max_dim,
-        )
+        # Open source DNG and get page based on IFD spec
+        with dngio.DngFile(input_dng) as dng_file:
+            page = _get_page_from_ifd_spec(dng_file, ifd)
+            
+            # Determine page_operation based on explicit compression request
+            if compression is not None:
+                # TRANSCODE mode - decompress and recompress with specified compression
+                page_operation = (dngio.PageOp.TRANSCODE, compression)
+            else:
+                # COPY mode - preserve source compression (even when demosaicing/scaling)
+                page_operation = dngio.PageOp.COPY
+            
+            # Create IfdPageSpec
+            page_spec = dngio.IfdPageSpec(
+                page=page,
+                page_operation=page_operation,
+                compression_args=compression_args,
+            )
+            
+            # Write using write_dng_from_page
+            preview_params = None
+            if preview:
+                from tifffile import COMPRESSION
+                preview_params = dngio.PreviewParams(
+                    max_dimension=preview_max_dim,
+                    compression=COMPRESSION.JPEG,
+                    compression_args={'level': 90}
+                )
+            
+            pyramid_params = None
+            if pyramid_levels > 0:
+                from tifffile import COMPRESSION
+                pyramid_params = dngio.PyramidParams(
+                    levels=pyramid_levels,
+                    compression=COMPRESSION.JPEGXL_DNG,
+                    compression_args={'distance': 1.0}
+                )
+            
+            dngio.write_dng_from_page(
+                destination_file=output_dng,
+                page=page_spec,
+                scale=scale,
+                demosaic=demosaic,
+                demosaic_algorithm=demosaic_algorithm,
+                preview=preview_params,
+                pyramid=pyramid_params,
+                ifd0_extratags=extra_tags,
+                ifd0_strip_tags=strip_tags_set,
+            )
         click.echo(f"Successfully copied DNG to {output_dng}")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
