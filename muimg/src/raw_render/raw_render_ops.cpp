@@ -2801,6 +2801,152 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
     return result;
 }
 
+//=============================================================================
+// FixBadPixelsConstant - Fix bad pixels marked with constant value (OpcodeList1)
+// SDK ref: dng_bad_pixels.cpp dng_opcode_FixBadPixelsConstant::ProcessArea
+//=============================================================================
+
+static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* args) {
+    PyArrayObject* data_array = NULL;
+    unsigned int constant;
+    unsigned int bayer_phase;
+    
+    if (!PyArg_ParseTuple(args, "O!II",
+            &PyArray_Type, &data_array,
+            &constant, &bayer_phase)) {
+        return NULL;
+    }
+    
+    if (PyArray_NDIM(data_array) != 2) {
+        PyErr_SetString(PyExc_ValueError, "data must be shape (H, W)");
+        return NULL;
+    }
+    if (PyArray_TYPE(data_array) != NPY_UINT16) {
+        PyErr_SetString(PyExc_TypeError, "data must be uint16");
+        return NULL;
+    }
+    
+    npy_intp height = PyArray_DIM(data_array, 0);
+    npy_intp width = PyArray_DIM(data_array, 1);
+    
+    PyArrayObject* data_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
+        (PyObject*)data_array, NPY_UINT16, 2, 2);
+    
+    if (!data_cont) {
+        return NULL;
+    }
+    
+    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
+    if (!result) {
+        Py_DECREF(data_cont);
+        return NULL;
+    }
+    
+    uint16_t* src_data = (uint16_t*)PyArray_DATA(data_cont);
+    uint16_t* dst_data = (uint16_t*)PyArray_DATA((PyArrayObject*)result);
+    uint16_t bad_pixel = (uint16_t)constant;
+    
+    // SDK ref: dng_bad_pixels.cpp lines 146-275
+    // IsGreen formula: ((row + col + bayer_phase + (bayer_phase >> 1)) & 1) == 0
+    
+    for (npy_intp row = 0; row < height; row++) {
+        for (npy_intp col = 0; col < width; col++) {
+            npy_intp idx = row * width + col;
+            
+            if (src_data[idx] == bad_pixel) {
+                uint32_t count = 0;
+                uint32_t total = 0;
+                
+                // Determine if this is a green pixel
+                bool is_green = (((uint32_t)row + (uint32_t)col + bayer_phase + (bayer_phase >> 1)) & 1) == 0;
+                
+                if (is_green) {
+                    // Green pixel: use 4 diagonal neighbors (2x2 Bayer repeat)
+                    // Top-left
+                    if (row > 0 && col > 0) {
+                        uint16_t val = src_data[(row - 1) * width + (col - 1)];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                    // Top-right
+                    if (row > 0 && col < width - 1) {
+                        uint16_t val = src_data[(row - 1) * width + (col + 1)];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                    // Bottom-left
+                    if (row < height - 1 && col > 0) {
+                        uint16_t val = src_data[(row + 1) * width + (col - 1)];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                    // Bottom-right
+                    if (row < height - 1 && col < width - 1) {
+                        uint16_t val = src_data[(row + 1) * width + (col + 1)];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                } else {
+                    // Red/Blue pixel: use 4 same-color neighbors (2 rows/cols apart)
+                    // Top (2 rows up)
+                    if (row >= 2) {
+                        uint16_t val = src_data[(row - 2) * width + col];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                    // Bottom (2 rows down)
+                    if (row < height - 2) {
+                        uint16_t val = src_data[(row + 2) * width + col];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                    // Left (2 cols left)
+                    if (col >= 2) {
+                        uint16_t val = src_data[row * width + (col - 2)];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                    // Right (2 cols right)
+                    if (col < width - 2) {
+                        uint16_t val = src_data[row * width + (col + 2)];
+                        if (val != bad_pixel) {
+                            count++;
+                            total += val;
+                        }
+                    }
+                }
+                
+                // Compute replacement value
+                if (count == 4) {
+                    // Most common case: all 4 neighbors available
+                    dst_data[idx] = (uint16_t)((total + 2) >> 2);
+                } else if (count > 0) {
+                    // Some neighbors available
+                    dst_data[idx] = (uint16_t)((total + (count >> 1)) / count);
+                }
+                // else: no valid neighbors, leave as bad pixel
+            }
+        }
+    }
+    
+    Py_DECREF(data_cont);
+    return result;
+}
+
 // GainMap opcode for CFA data (OpcodeList2, pre-demosaic)
 static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
     PyArrayObject* cfa_array = NULL;
@@ -3081,6 +3227,18 @@ static PyMethodDef DngColorMethods[] = {
      "    origin_v, origin_h (float): Map origin\n\n"
      "Returns:\n"
      "    ndarray: CFA with gain map applied"},
+    
+    {"op_fix_bad_pixels_constant", dng_color_op_fix_bad_pixels_constant, METH_VARARGS,
+     "Fix bad pixels marked with constant value (OpcodeList1).\n\n"
+     "SDK ref: dng_bad_pixels.cpp dng_opcode_FixBadPixelsConstant\n"
+     "Replaces pixels matching constant value with average of same-color neighbors.\n"
+     "Green pixels use 4 diagonal neighbors, R/B pixels use 4 orthogonal neighbors.\n\n"
+     "Args:\n"
+     "    data (ndarray): Raw sensor data, uint16, (H,W)\n"
+     "    constant (int): Bad pixel marker value\n"
+     "    bayer_phase (int): Bayer pattern phase (0-3)\n\n"
+     "Returns:\n"
+     "    ndarray: Data with bad pixels fixed"},
     
     {NULL, NULL, 0, NULL}
 };

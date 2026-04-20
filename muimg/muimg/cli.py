@@ -858,7 +858,7 @@ def convert_image(input_file, output_file, bit_depth):
     
     success = convert_imgformat(
         file=input_file,
-        output_path=output_file,
+        output=output_file,
         output_dtype=np.uint16 if bit_depth == "16" else np.uint8
     )
 

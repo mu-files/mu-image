@@ -720,9 +720,9 @@ def validate_dng_tags(page: "DngPage", strict: bool = True) -> list[str]:
         "ReductionMatrix2",
         "ReductionMatrix3",
         # Opcode lists (lens corrections, gain maps, warp, etc.)
-        # OpcodeList2/3 supported opcodes: WarpRectilinear, FixVignetteRadial,
-        # MapPolynomial, GainMap
-        "OpcodeList1",  # Pre-demosaic opcodes
+        # OpcodeList1 (pre-linearization CFA): SUPPORTED - FixBadPixelsConstant, MapPolynomial, GainMap
+        # OpcodeList2 (post-linearization CFA): SUPPORTED - MapPolynomial, GainMap
+        # OpcodeList3 (post-demosaic RGB): SUPPORTED - WarpRectilinear, FixVignetteRadial, MapPolynomial, GainMap
         # RGB Tables (DNG 1.6+)
         "RGBTables",
         # Semantic masks and depth maps (DNG 1.6+)
@@ -1505,6 +1505,8 @@ def parse_opcode_list(data: bytes) -> list[dict]:
             opcode.update(parse_warp_rectilinear(opcode_data))
         elif opcode_id == 3 and len(opcode_data) >= 56:  # FixVignetteRadial
             opcode.update(parse_fix_vignette_radial(opcode_data))
+        elif opcode_id == 4 and len(opcode_data) >= 8:  # FixBadPixelsConstant
+            opcode.update(parse_fix_bad_pixels_constant(opcode_data))
         elif opcode_id == 8 and len(opcode_data) >= 36:  # MapPolynomial
             opcode.update(parse_map_polynomial(opcode_data))
         elif opcode_id == 9 and len(opcode_data) >= 76:  # GainMap
@@ -1616,6 +1618,11 @@ def get_opcode_summary(opcode_list_data: bytes, detailed: bool = False) -> str:
                     f"{area.get('bottom', '?')}, {area.get('right', '?')}], "
                     f"plane={plane}, params={params_str}"
                 )
+            
+            elif op.get('type') == 'FixBadPixelsConstant':
+                constant = op.get('constant', '?')
+                bayer_phase = op.get('bayer_phase', '?')
+                lines.append(f"      constant={constant}, bayer_phase={bayer_phase}")
         
         return '\n'.join(lines)
     except Exception as e:
@@ -1712,6 +1719,22 @@ def parse_fix_vignette_radial(data: bytes) -> dict:
         'coefficients': np.array(k, dtype=np.float64),
         'center_x': center_x,
         'center_y': center_y,
+    }
+
+
+def parse_fix_bad_pixels_constant(data: bytes) -> dict:
+    """Parse FixBadPixelsConstant opcode data (opcode 4).
+    
+    SDK ref: dng_bad_pixels.cpp dng_opcode_FixBadPixelsConstant
+    """
+    import struct
+    constant = struct.unpack_from('>I', data, 0)[0]
+    bayer_phase = struct.unpack_from('>I', data, 4)[0]
+    
+    return {
+        'type': 'FixBadPixelsConstant',
+        'constant': constant,
+        'bayer_phase': bayer_phase,
     }
 
 
@@ -1854,27 +1877,69 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
 
 
 def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
-    """Apply parsed opcodes to CFA data (pre-demosaic).
+    """Apply parsed opcodes to CFA data.
     
-    DNG Spec: OpcodeList2 is "applied to the raw image, just after it has been
-    mapped to linear reference values" - i.e., to linear CFA before demosaic.
+    Handles both OpcodeList1 (pre-linearization, uint16) and OpcodeList2 
+    (post-linearization, float32).
+    
+    DNG Spec:
+    - OpcodeList1: Applied to raw sensor data before linearization (uint16)
+    - OpcodeList2: Applied after linearization, before demosaic (float32 [0,1])
     
     Supported opcodes:
-    - 9: GainMap (C++ op_gain_map_cfa)
+    - FixBadPixelsConstant (OpcodeList1 only, requires uint16)
+    - MapPolynomial (both lists)
+    - GainMap (both lists)
     
     Args:
-        data: CFA data (H, W), float32, range [0, 1]
+        data: CFA data (H, W)
+              - uint16 for OpcodeList1 (raw sensor values)
+              - float32 for OpcodeList2 (linearized [0,1])
         opcodes: List of parsed opcodes from parse_opcode_list
         
     Returns:
-        Processed CFA data
+        Processed CFA data (same dtype as input)
     """
-    result = data.astype(np.float32)
+    if data.ndim != 2:
+        logger.error(f"CFA opcodes require 2D data (H,W), got shape {data.shape}")
+        return data
+    
+    is_uint16 = data.dtype == np.uint16
+    
+    # For uint16 data, we may need to convert to float for some opcodes
+    if is_uint16:
+        result_uint16 = data.astype(np.uint16)
+        result_float = None
+    else:
+        result_uint16 = None
+        result_float = data.astype(np.float32)
     
     for opcode in opcodes:
         opcode_type = opcode.get('type')
         
-        if opcode_type == 'GainMap':
+        if opcode_type == 'FixBadPixelsConstant':
+            # Only works on uint16 data - convert back from float if needed
+            if is_uint16:
+                if result_float is not None:
+                    # We've already converted to float, need to go back to uint16
+                    result_uint16 = convert_dtype(result_float, np.uint16)
+                    result_float = None
+                constant = opcode['constant']
+                bayer_phase = opcode['bayer_phase']
+                logger.debug(f"FixBadPixelsConstant: constant={constant}, bayer_phase={bayer_phase}")
+                result_uint16 = _raw_render.op_fix_bad_pixels_constant(
+                    result_uint16,
+                    constant,
+                    bayer_phase
+                )
+            else:
+                logger.warning("FixBadPixelsConstant requires uint16 input data, skipping")
+        
+        elif opcode_type == 'GainMap':
+            # Works on float32 - convert uint16 if needed
+            if is_uint16 and result_float is None:
+                result_float = convert_dtype(result_uint16, np.float32)
+            
             area = opcode['area']
             logger.debug(f"GainMap CFA: area={area}, plane={opcode['plane']}, planes={opcode['planes']}, "
                         f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
@@ -1882,8 +1947,8 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
                         f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
                         f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
                         f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
-            result = _raw_render.op_gain_map_cfa(
-                result,
+            result_float = _raw_render.op_gain_map_cfa(
+                result_float,
                 opcode['gain_values'],
                 area['top'], area['left'], area['bottom'], area['right'],
                 opcode['row_pitch'], opcode['col_pitch'],
@@ -1892,11 +1957,15 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
             )
         
         elif opcode_type == 'MapPolynomial':
+            # Works on float32 - convert uint16 if needed
+            if is_uint16 and result_float is None:
+                result_float = convert_dtype(result_uint16, np.float32)
+            
             area = opcode['area']
             coefficients = np.asarray(opcode['coefficients'], dtype=np.float64)
             logger.debug(f"MapPolynomial CFA: area={area}, degree={opcode['degree']}, coeffs={coefficients}")
-            result = _raw_render.op_map_polynomial_cfa(
-                result,
+            result_float = _raw_render.op_map_polynomial_cfa(
+                result_float,
                 coefficients,
                 area['top'], area['left'], area['bottom'], area['right'],
                 opcode['row_pitch'], opcode['col_pitch'],
@@ -1907,7 +1976,14 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
             name = enum_display_name(DngOpcode, opcode['id'])
             logger.warning(f"Skipping unsupported CFA opcode: {name}")
     
-    return result
+    # Return in original dtype
+    if is_uint16:
+        if result_float is not None:
+            # Convert back to uint16
+            return convert_dtype(result_float, np.uint16)
+        return result_uint16
+    else:
+        return result_float
 
 def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure: bool = True) -> np.ndarray:
     """Apply exposure tone function.

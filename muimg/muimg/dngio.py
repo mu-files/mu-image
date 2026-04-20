@@ -369,7 +369,7 @@ class DngPage(TiffPage):
         return None
 
     def _stage2(
-        self, stage1: "DngPage._RawStage", apply_ops: bool = True
+        self, stage1: "DngPage._RawStage", apply_ops2: bool = True
     ) -> "DngPage._RawStage":
         photometric = self.photometric_name
         if photometric == "CFA":
@@ -446,8 +446,19 @@ class DngPage(TiffPage):
         if linearization_table is not None:
             linearization_table = np.asarray(linearization_table, dtype=np.uint16)
 
-        active_area = self.get_tag("ActiveArea")
+        # Apply OpcodeList1 to raw sensor data (before linearization)
+        # Note: OpcodeList1 is always applied (not gated by apply_ops2)
         data = stage1.data
+        opcode_list1 = self.get_tag("OpcodeList1")
+        if opcode_list1 is not None:
+            try:
+                opcodes = raw_render.parse_opcode_list(bytes(opcode_list1))
+                logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
+                data = raw_render.apply_opcodes_cfa(data, opcodes)
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList1: {e}")
+
+        active_area = self.get_tag("ActiveArea")
         if active_area is not None:
             aa_top, aa_left, aa_bottom, aa_right = active_area
             data = data[aa_top:aa_bottom, aa_left:aa_right]
@@ -466,7 +477,7 @@ class DngPage(TiffPage):
 
         stage2 = self._RawStage(data=normalized, cfa_pattern=stage1.cfa_pattern)
 
-        if not apply_ops:
+        if not apply_ops2:
             return stage2
 
         opcode_list2 = self.get_tag("OpcodeList2")
@@ -517,9 +528,9 @@ class DngPage(TiffPage):
         if stage == RawStageSelector.RAW:
             stage_out = stage1
         elif stage == RawStageSelector.LINEARIZED:
-            stage_out = self._stage2(stage1, apply_ops=False)
+            stage_out = self._stage2(stage1, apply_ops2=False)
         elif stage == RawStageSelector.LINEARIZED_PLUS_OPS:
-            stage_out = self._stage2(stage1, apply_ops=True)
+            stage_out = self._stage2(stage1, apply_ops2=True)
         else:
             raise ValueError(f"Unknown stage selector: {stage}")
 
@@ -555,9 +566,9 @@ class DngPage(TiffPage):
         if stage == RawStageSelector.RAW:
             return stage1.data
         if stage == RawStageSelector.LINEARIZED:
-            return self._stage2(stage1, apply_ops=False).data
+            return self._stage2(stage1, apply_ops2=False).data
         if stage == RawStageSelector.LINEARIZED_PLUS_OPS:
-            return self._stage2(stage1, apply_ops=True).data
+            return self._stage2(stage1, apply_ops2=True).data
         raise ValueError(f"Unknown stage selector: {stage}")
 
     def get_camera_rgb_raw(self, demosaic_algorithm: str = "OPENCV_EA") -> Optional[np.ndarray]:
@@ -2101,6 +2112,7 @@ def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
 # that must be stripped when extracting processed data via get_camera_rgb()
 STAGE1_STAGE2_TAGS = {
     # Stage1 tags (CFA-specific tags from registry with dng_ifd="dng_raw:cfa")
+    "OpcodeList1",
     *(tag_name for tag_name, tag_spec in TIFF_TAG_TYPE_REGISTRY.items() if tag_spec.dng_ifd == "dng_raw:cfa"),
     # Interleave factors (applied during CFA JXL encoding)
     "ColumnInterleaveFactor",
