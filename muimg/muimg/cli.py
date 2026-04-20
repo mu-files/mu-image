@@ -6,9 +6,6 @@ from pathlib import Path
 
 import click
 
-from .imgio import convert_imgformat
-from .google_photos import GooglePhotosClient
-
 logger = logging.getLogger(__name__)
 
 
@@ -580,7 +577,6 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
       muimg dng raw-stage input.dng output.tif linearized --demosaic OPENCV_EA
       muimg dng raw-stage input.dng output.tif linearized-plus-ops --demosaic RCD
     """
-    import sys
     import numpy as np
     import tifffile
     from .dngio import DngFile, RawStageSelector
@@ -804,7 +800,6 @@ def dng_copy(
             # Write using write_dng_from_page
             preview_params = None
             if preview:
-                from tifffile import COMPRESSION
                 preview_params = dngio.PreviewParams(
                     max_dimension=preview_max_dim,
                     compression=COMPRESSION.JPEG,
@@ -813,7 +808,6 @@ def dng_copy(
             
             pyramid_params = None
             if pyramid_levels > 0:
-                from tifffile import COMPRESSION
                 pyramid_params = dngio.PyramidParams(
                     levels=pyramid_levels,
                     compression=COMPRESSION.JPEGXL_DNG,
@@ -845,6 +839,7 @@ def dng_copy(
 def convert_image(input_file, output_file, bit_depth):
     """Convert image file to another format."""
     import numpy as np
+    from .imgio import convert_imgformat
     
     success = convert_imgformat(
         file=input_file,
@@ -999,6 +994,8 @@ def auth(credentials, token_path, force):
     This will open a browser window for OAuth2 authentication.
     The refresh token will be saved for future automated access.
     """
+    from .google_photos import GooglePhotosClient
+    
     creds_path = Path(credentials) if credentials else None
     token_path = Path(token_path) if token_path else None
 
@@ -1026,6 +1023,8 @@ def auth(credentials, token_path, force):
 )
 def upload(image_path, album, token_path):
     """Upload an image to Google Photos."""
+    from .google_photos import GooglePhotosClient
+    
     image_path = Path(image_path)
     token_path = Path(token_path) if token_path else None
 
@@ -1059,6 +1058,8 @@ def upload(image_path, album, token_path):
 )
 def list_albums(token_path):
     """List all albums in Google Photos."""
+    from .google_photos import GooglePhotosClient
+    
     token_path = Path(token_path) if token_path else None
 
     client = GooglePhotosClient(token_path=token_path)
