@@ -729,39 +729,30 @@ class DngFile(TiffFile):
     """A TIFF file with DNG-specific extensions and helper methods."""
 
     def __init__(self, file, *args, **kwargs):
-        # Normalize file input to BytesIO for consistent in-memory operation
-        if isinstance(file, (str, Path)):
-            # Read file into memory
-            with open(file, 'rb') as f:
-                file_data = f.read()
-            file = io.BytesIO(file_data)
-        elif isinstance(file, io.IOBase):
-            # Ensure we're at the beginning for consistent behavior
-            file.seek(0)
-        # For any other type, let TiffFile handle it and potentially fail with a clear error
-        
+        # Let TiffFile handle all file types - no eager conversion to BytesIO
         super().__init__(file, *args, **kwargs)
 
-    @property
-    def file(self) -> io.BytesIO:
-        """Return the underlying BytesIO buffer for zero-copy access.
+    def nbytes(self) -> int:
+        """Get size of DNG file in bytes without loading into memory.
         
-        This provides direct access to the in-memory buffer without copying,
-        which is important for large DNG files. While this accesses a private
-        attribute (_fh) of tifffile's FileHandle, it's a pragmatic choice to
-        avoid unnecessary memory copies.
+        For in-memory DNGs, returns the buffer size. For file-backed DNGs,
+        returns the file size without reading the entire file.
         
         Returns:
-            BytesIO object containing the DNG file data
-            
-        Example:
-            >>> dng = create_dng_from_array(data_spec)
-            >>> bytes_data = dng.file.getvalue()  # Get bytes without copy
+            Size in bytes
         """
-        return self.filehandle._fh
-
+        # If already BytesIO, get its size
+        if isinstance(self.filehandle._fh, io.BytesIO):
+            return len(self.filehandle._fh.getvalue())
+        
+        # For file-backed DNGs, use tifffile's FileHandle.size property (no read needed)
+        return self.filehandle.size
+    
     def write_to(self, destination: Union[str, Path, io.IOBase]) -> None:
         """Write the DNG file to a destination.
+        
+        For file-backed DNGs, copies directly from source file without loading
+        into memory. For in-memory DNGs, writes from the BytesIO buffer.
         
         Args:
             destination: File path or file-like object to write to
@@ -773,12 +764,27 @@ class DngFile(TiffFile):
             >>> with open("output.dng", "wb") as f:
             ...     dng.write_to(f)
         """
-        data = self.file.getvalue()
+        import shutil
+        
+        # Case 1: Already BytesIO (in-memory DNG) - use buffer directly
+        if isinstance(self.filehandle._fh, io.BytesIO):
+            data = self.filehandle._fh.getvalue()
+            if isinstance(destination, (str, Path)):
+                with open(destination, 'wb') as f:
+                    f.write(data)
+            else:
+                destination.write(data)
+            return
+        
+        # Case 2: File-backed DNG - optimize based on destination type
         if isinstance(destination, (str, Path)):
-            with open(destination, 'wb') as f:
-                f.write(data)
+            # File-to-file: use shutil.copyfile for optimal performance
+            source_path = self.filehandle.path
+            shutil.copyfile(source_path, destination)
         else:
-            destination.write(data)
+            # File-to-stream: read and write in chunks to avoid loading all into memory
+            self.filehandle._fh.seek(0)
+            shutil.copyfileobj(self.filehandle._fh, destination)
 
     @property
     def ifd0(self) -> Optional[DngPage]:

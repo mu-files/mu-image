@@ -422,21 +422,24 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
         # Decode source page for later pixel comparison
         source_decoded = source_page.decode_to_rgb()
         print(f"  Decoded source: shape={source_decoded.shape}, dtype={source_decoded.dtype}")
-    
-    # Step 2: Write new DNG with pyramid
-    print("\nStep 2: Writing new DNG with 3-level JXL pyramid...")
-    write_dng_from_page(
-        output_path,
-        IfdPageSpec(
-            page=source_page,
-            extratags=source_ifd0.get_page_tags()
-        ),
-        pyramid=PyramidParams(
-            levels=3,
-            compression=COMPRESSION.JPEGXL_DNG,
-            compression_args={'distance': 0.0, 'effort': 5}
+        
+        # Step 2: Write new DNG with pyramid
+        # Note: Must happen inside the with block while source_dng is still open
+        # because write_dng_from_page needs to read data from source_page
+        print("\nStep 2: Writing new DNG with 3-level JXL pyramid...")
+        write_dng_from_page(
+            output_path,
+            IfdPageSpec(
+                page=source_page,
+                extratags=source_ifd0.get_page_tags()
+            ),
+            pyramid=PyramidParams(
+                levels=3,
+                compression=COMPRESSION.JPEGXL_DNG,
+                compression_args={'distance': 0.0, 'effort': 5}
+            )
         )
-    )
+    
     print(f"  Successfully wrote {output_path}")
     print(f"  File size: {output_path.stat().st_size:,} bytes")
     
