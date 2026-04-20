@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # tifffile followups:
 # - dng_validate expects SubIFD NextIFD == 0, but tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero.
 # - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.
-# - We always write big-endian files but tiffwriter seems to try to byte swap in that case on the encoded jxl bitstream so we encode jxl oursleves.
 
 class RawStageSelector(str, Enum):
     RAW = "raw"
@@ -1637,33 +1636,40 @@ def write_dng(
         _filter_metadata_tags(ifd_tags, exclude_names=strip_tags)
         
         # ==== handle tifffile args for this IFD ====
-        # Determine compression type for args preparation
-        # Copy compression_args from spec by default
-        compression_args = spec.compression_args
-        
-        if isinstance(spec, IfdPageSpec):
-            if not spec.requires_transcode():
-                # Fast path: COPY mode - use page's existing compression
-                compression = spec.page.compression
-                compression_args = None  # Don't pass args when copying compressed data
-            elif isinstance(spec.page_operation, tuple):
-                # TRANSCODE mode - use specified compression
-                _, compression = spec.page_operation
-            else:
-                # Unsupported tile config forces transcode to uncompressed
-                compression = COMPRESSION.NONE
-        else:
-            # IfdDataSpec
-            compression = spec.compression
-        
-        # Normalize compression type and args
-        if compression is None or compression == COMPRESSION.NONE:
-            # Uncompressed data doesn't need compression args
-            compression = COMPRESSION.NONE
+        # Determine compression and args based on spec type
+        if isinstance(spec, IfdPageSpec) and not spec.requires_transcode():
+            # Fast path: COPY mode - use page's existing compression, no args
+            compression = spec.page.compression
             compression_args = None
-        elif compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            # Normalize JXL compression variants to JPEGXL_DNG
-            compression = COMPRESSION.JPEGXL_DNG
+        else:
+            # All other cases: determine compression, then normalize
+            if isinstance(spec, IfdPageSpec):
+                # IfdPageSpec with transcode required
+                if isinstance(spec.page_operation, tuple):
+                    # TRANSCODE mode - use specified compression
+                    _, compression = spec.page_operation
+                    compression_args = spec.compression_args
+                else:
+                    # Unsupported tile config - use default COMPRESSION.NONE
+                    compression = COMPRESSION.NONE
+                    compression_args = None
+            else:
+                # IfdDataSpec - use spec's compression
+                compression = spec.compression
+                compression_args = spec.compression_args
+            
+            # Normalize compression type and args
+            if compression is None or compression == COMPRESSION.NONE:
+                # Uncompressed data doesn't need compression args
+                compression = COMPRESSION.NONE
+                compression_args = None
+            elif compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+                # Normalize JXL compression variants to JPEGXL_DNG
+                compression = COMPRESSION.JPEGXL_DNG
+            elif compression == COMPRESSION.JPEG:
+                # Default to lossless JPEG for raw data if no args provided
+                if compression_args is None and photometric in ("LINEAR_RAW", "CFA"):
+                    compression_args = {'lossless': True}
         
         # Step 2: Extract tags for tifffile args (before filtering managed tags)
         # This extracts and removes Software, XResolution, YResolution, ResolutionUnit, PlanarConfiguration
@@ -2253,14 +2259,10 @@ def write_dng_from_page(
             _, main_compression = source_page_spec.page_operation
             main_compression_args = source_page_spec.compression_args
         else:
-            # COPY mode - preserve source compression with appropriate args
+            # COPY mode - preserve source compression unknown args so set to None
             main_compression = source_page_spec.page.compression
-            
-            # JPEG compression needs lossless mode for LINEAR_RAW
-            if  main_compression == COMPRESSION.JPEG:
-                main_compression_args = {'lossless': True}  # Use default predictor (1)
-            else:
-                main_compression_args = source_page_spec.compression_args
+            main_compression_args = None
+
         main_spec = IfdDataSpec(
             data=raw_uint16,
             photometric="LINEAR_RAW",
