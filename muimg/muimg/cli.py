@@ -153,6 +153,13 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
         width = p.imagewidth or "?"
         length = p.imagelength or "?"
         
+        # Get rendered size and format dimensions
+        rendered_size = p.get_rendered_size()
+        if rendered_size != (width, length) and width != "?" and length != "?":
+            size_str = f"{rendered_size[0]}x{rendered_size[1]} (from {width}x{length})"
+        else:
+            size_str = f"{width}x{length}"
+        
         # Get bit depth
         bits_per_sample = p.bitspersample if hasattr(p, 'bitspersample') else 16
         photometric_with_bits = f"{photometric}{bits_per_sample}"
@@ -181,8 +188,8 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             subfile_info = f" ({enum_display_name(SubFileType, subfile_type)})"
         
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
-        size_str = _format_bytes(compressed_size)
-        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {width}x{length}, {size_str} ({compression_ratio:.2f}x {compression_name})")
+        file_size_str = _format_bytes(compressed_size)
+        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {size_str}, {file_size_str} ({compression_ratio:.2f}x {compression_name})")
     
     # Show total file size
     total_size = os.path.getsize(input_file)
