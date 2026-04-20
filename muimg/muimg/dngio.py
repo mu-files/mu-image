@@ -10,22 +10,11 @@ from datetime import datetime
 
 from enum import Enum, IntEnum
 from pathlib import Path
-from tifffile import COMPRESSION, PHOTOMETRIC, TiffFile, TiffPage, TiffWriter, TIFF
+from tifffile import COMPRESSION, TiffFile, TiffPage, TiffWriter
 from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
 from dataclasses import dataclass, replace
 
 from . import raw_render
-
-logger = logging.getLogger(__name__)
-
-# tifffile followups:
-# - dng_validate expects SubIFD NextIFD == 0, but tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero.
-# - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.
-
-class RawStageSelector(str, Enum):
-    RAW = "raw"
-    LINEARIZED = "linearized"
-    LINEARIZED_PLUS_OPS = "linearized_plus_ops"
 
 # Import metadata classes from tiff_metadata module
 from .tiff_metadata import (
@@ -34,13 +23,24 @@ from .tiff_metadata import (
     XmpMetadata,
     convert_tag_value,
     resolve_tag,
-    LOCAL_TIFF_TAGS,
     filter_tags_by_ifd_category,
 )
+# tifffile followups:
+# - dng_validate expects SubIFD NextIFD == 0, but tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero.
+# - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.
+
+logger = logging.getLogger(__name__)
+
 
 # =============================================================================
-# Core DNG Classes
+# Constants
 # =============================================================================
+
+class RawStageSelector(str, Enum):
+    """Raw processing stage selectors."""
+    RAW = "raw"
+    LINEARIZED = "linearized"
+    LINEARIZED_PLUS_OPS = "linearized_plus_ops"
 
 class SubFileType(IntEnum):
     """NewSubFileType values from DNG spec."""
@@ -49,6 +49,12 @@ class SubFileType(IntEnum):
     TRANSPARENCY_MASK = 4
     DEPTH_MAP = 8
     ALT_PREVIEW_IMAGE = 65537
+
+
+
+# =============================================================================
+# Core DNG Classes
+# =============================================================================
 
 class DngPage(TiffPage):
     """TiffPage subclass with DNG-specific functionality.
@@ -1259,7 +1265,7 @@ def _add_required_ifd0_tags(tags: MetadataTags, *, needs_v1_7_1: bool = False) -
         tags.add_tag("ForwardMatrix1", forward_matrix1)
     
     if "CalibrationIlluminant1" not in tags:
-        tags.add_tag("CalibrationIlluminant1", 23)  # 23 = D50
+        tags.add_tag("CalibrationIlluminant1", raw_render.Illuminant.D50)
     
     if "AsShotWhiteXY" not in tags and "AsShotNeutral" not in tags:
         # D50 white point in xy chromaticity coordinates

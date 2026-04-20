@@ -1,9 +1,10 @@
 import numpy as np
 import logging
 
-from enum import Enum, auto
+from enum import Enum, IntEnum, auto
 from typing import Any, Union, Optional
 from .tiff_metadata import get_cfa_pattern_codes
+from .common import enum_display_name
 
 # DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
 from . import _raw_render
@@ -11,24 +12,26 @@ from . import _raw_render
 logger = logging.getLogger(__name__)
 
 
-# DNG Opcode IDs to friendly names (DNG Spec 1.7.1.0 section 5.2.4)
-OPCODE_NAMES = {
-    1: 'WarpRectilinear',
-    2: 'WarpFisheye',
-    3: 'FixVignetteRadial',
-    4: 'FixBadPixelsConstant',
-    5: 'FixBadPixelsList',
-    6: 'TrimBounds',
-    7: 'MapTable',
-    8: 'MapPolynomial',
-    9: 'GainMap',
-    10: 'DeltaPerRow',
-    11: 'DeltaPerColumn',
-    12: 'ScalePerRow',
-    13: 'ScalePerColumn',
-    14: 'WarpRectilinear2',
-}
+# =============================================================================
+# Constants
+# =============================================================================
 
+class DngOpcode(IntEnum):
+    """DNG Opcode IDs (DNG Spec 1.7.1.0 section 5.2.4)."""
+    WARP_RECTILINEAR = 1
+    WARP_FISHEYE = 2
+    FIX_VIGNETTE_RADIAL = 3
+    FIX_BAD_PIXELS_CONSTANT = 4
+    FIX_BAD_PIXELS_LIST = 5
+    TRIM_BOUNDS = 6
+    MAP_TABLE = 7
+    MAP_POLYNOMIAL = 8
+    GAIN_MAP = 9
+    DELTA_PER_ROW = 10
+    DELTA_PER_COLUMN = 11
+    SCALE_PER_ROW = 12
+    SCALE_PER_COLUMN = 13
+    WARP_RECTILINEAR2 = 14
 
 class ColorSpace(Enum):
     """Color space definitions with native gamma encoding.
@@ -44,6 +47,49 @@ class ColorSpace(Enum):
     ADOBERGB_GAMMA = auto()      # Gamma 2.2
     SRGB_LINEAR = auto()
     SRGB_GAMMA = auto()          # sRGB piecewise gamma
+
+class Illuminant(IntEnum):
+    """Light source enum values from DNG SDK dng_tag_values.h.
+    
+    Maps EXIF LightSource values (CalibrationIlluminant1/2/3) to temperature in Kelvin.
+    SDK ref: dng_camera_profile.cpp IlluminantToTemperature()
+    
+    Usage:
+        Illuminant.DAYLIGHT -> 1 (the enum value)
+        Illuminant.DAYLIGHT.temperature -> 5500.0 (the temperature in Kelvin)
+    """
+    def __new__(cls, value, temperature=None):
+        obj = int.__new__(cls, value)
+        obj._value_ = value
+        obj.temperature = temperature
+        return obj
+    
+    UNKNOWN = (0, None)                           # lsUnknown - use default
+    DAYLIGHT = (1, 5500.0)                        # lsDaylight
+    FLUORESCENT = (2, 4150.0)                     # lsFluorescent (3800+4500)/2
+    TUNGSTEN = (3, 2850.0)                        # lsTungsten
+    FLASH = (4, 5500.0)                           # lsFlash
+    FINE_WEATHER = (9, 5500.0)                    # lsFineWeather
+    CLOUDY_WEATHER = (10, 6500.0)                 # lsCloudyWeather
+    SHADE = (11, 7500.0)                          # lsShade
+    DAYLIGHT_FLUORESCENT = (12, 6400.0)           # lsDaylightFluorescent (5700+7100)/2
+    DAY_WHITE_FLUORESCENT = (13, 5050.0)          # lsDayWhiteFluorescent (4600+5500)/2
+    COOL_WHITE_FLUORESCENT = (14, 4150.0)         # lsCoolWhiteFluorescent (3800+4500)/2
+    WHITE_FLUORESCENT = (15, 3525.0)              # lsWhiteFluorescent (3250+3800)/2
+    WARM_WHITE_FLUORESCENT = (16, 2925.0)         # lsWarmWhiteFluorescent (2600+3250)/2
+    STANDARD_LIGHT_A = (17, 2850.0)               # lsStandardLightA
+    STANDARD_LIGHT_B = (18, 5500.0)               # lsStandardLightB
+    STANDARD_LIGHT_C = (19, 6500.0)               # lsStandardLightC
+    D55 = (20, 5500.0)                            # lsD55
+    D65 = (21, 6500.0)                            # lsD65
+    D75 = (22, 7500.0)                            # lsD75
+    D50 = (23, 5000.0)                            # lsD50
+    ISO_STUDIO_TUNGSTEN = (24, 3200.0)            # lsISOStudioTungsten
+    OTHER = (255, None)                           # lsOther - requires IlluminantData
+
+# =============================================================================
+# Helper Classes
+# =============================================================================
 
 
 class SplineCurve:
@@ -1131,83 +1177,6 @@ def XYZ_to_YuvUCS(image: np.ndarray) -> np.ndarray:
 # DNG Illuminant Handling (CalibrationIlluminant1/2/3)
 # =============================================================================
 
-# Light source enum values from DNG SDK dng_tag_values.h
-# Maps EXIF LightSource values to (name, temperature_kelvin)
-# SDK ref: dng_camera_profile.cpp IlluminantToTemperature()
-ILLUMINANT_INFO = {
-    0: ('Unknown', None),                    # lsUnknown - use default
-    1: ('Daylight', 5500.0),                 # lsDaylight
-    2: ('Fluorescent', 4150.0),              # lsFluorescent (3800+4500)/2
-    3: ('Tungsten', 2850.0),                 # lsTungsten
-    4: ('Flash', 5500.0),                    # lsFlash
-    9: ('Fine Weather', 5500.0),             # lsFineWeather
-    10: ('Cloudy Weather', 6500.0),          # lsCloudyWeather
-    11: ('Shade', 7500.0),                   # lsShade
-    12: ('Daylight Fluorescent', 6400.0),    # lsDaylightFluorescent (5700+7100)/2
-    13: ('Day White Fluorescent', 5050.0),   # lsDayWhiteFluorescent (4600+5500)/2
-    14: ('Cool White Fluorescent', 4150.0),  # lsCoolWhiteFluorescent (3800+4500)/2
-    15: ('White Fluorescent', 3525.0),       # lsWhiteFluorescent (3250+3800)/2
-    16: ('Warm White Fluorescent', 2925.0),  # lsWarmWhiteFluorescent (2600+3250)/2
-    17: ('Standard Light A', 2850.0),        # lsStandardLightA
-    18: ('Standard Light B', 5500.0),        # lsStandardLightB
-    19: ('Standard Light C', 6500.0),        # lsStandardLightC
-    20: ('D55', 5500.0),                     # lsD55
-    21: ('D65', 6500.0),                     # lsD65
-    22: ('D75', 7500.0),                     # lsD75
-    23: ('D50', 5000.0),                     # lsD50
-    24: ('ISO Studio Tungsten', 3200.0),     # lsISOStudioTungsten
-    255: ('Other', None),                    # lsOther - requires IlluminantData
-}
-
-
-def illuminant_name(illuminant: int) -> str:
-    """Get human-readable name for a DNG CalibrationIlluminant enum value.
-    
-    Args:
-        illuminant: CalibrationIlluminant enum value (EXIF LightSource)
-        
-    Returns:
-        Human-readable illuminant name, or 'Unknown (N)' if not recognized
-    """
-    info = ILLUMINANT_INFO.get(illuminant)
-    if info is None:
-        return f'Unknown ({illuminant})'
-    return info[0]
-
-
-def illuminant_to_xy(illuminant: int) -> tuple[float, float] | None:
-    """Convert DNG CalibrationIlluminant enum to CIE xy chromaticity.
-    
-    Uses the illuminant's color temperature to compute xy via the
-    Planckian locus (same method as SDK).
-    
-    Args:
-        illuminant: CalibrationIlluminant enum value (EXIF LightSource)
-        
-    Returns:
-        Tuple of (x, y) chromaticity, or None if illuminant is unknown/other
-    """
-    info = ILLUMINANT_INFO.get(illuminant)
-    if info is None or info[1] is None:
-        return None
-    
-    # Convert temperature to xy via Planckian locus (pure Python)
-    return temp_tint_to_xy(info[1], 0.0)
-
-
-def illuminant_to_temperature(illuminant: int) -> float | None:
-    """Convert DNG CalibrationIlluminant enum to color temperature (Kelvin).
-    
-    Args:
-        illuminant: CalibrationIlluminant enum value (EXIF LightSource)
-        
-    Returns:
-        Temperature in Kelvin, or None if illuminant is unknown/other
-    """
-    info = ILLUMINANT_INFO.get(illuminant)
-    return info[1] if info is not None else None
-
-
 def interpolate_color_matrix(
     color_matrix1: np.ndarray,
     color_matrix2: np.ndarray,
@@ -1564,7 +1533,7 @@ def get_opcode_summary(opcode_list_data: bytes, detailed: bool = False) -> str:
             return "0 opcodes"
         
         opcode_ids = [op.get('id', 0) for op in opcodes]
-        opcode_names = [OPCODE_NAMES.get(oid, f'Unknown({oid})') for oid in opcode_ids]
+        opcode_names = [enum_display_name(DngOpcode, oid) for oid in opcode_ids]
         
         count = len(opcodes)
         
@@ -1576,7 +1545,7 @@ def get_opcode_summary(opcode_list_data: bytes, detailed: bool = False) -> str:
         lines = [f"{count} opcode{'s' if count != 1 else ''}:"]
         for i, op in enumerate(opcodes):
             opcode_id = op.get('id', 0)
-            name = OPCODE_NAMES.get(opcode_id, f'Unknown({opcode_id})')
+            name = enum_display_name(DngOpcode, opcode_id)
             lines.append(f"  [{i}] {name}")
             
             # Add type-specific details
@@ -1878,7 +1847,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             )
             
         else:
-            name = OPCODE_NAMES.get(opcode['id'], f"Unknown({opcode['id']})")
+            name = enum_display_name(DngOpcode, opcode['id'])
             logger.warning(f"Skipping unsupported opcode: {name}")
     
     return result
@@ -1935,7 +1904,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
             )
             
         else:
-            name = OPCODE_NAMES.get(opcode['id'], f"Unknown({opcode['id']})")
+            name = enum_display_name(DngOpcode, opcode['id'])
             logger.warning(f"Skipping unsupported CFA opcode: {name}")
     
     return result
@@ -2868,8 +2837,8 @@ def _render_camera_rgb(
         # Get calibration illuminant temperatures
         illum1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "CalibrationIlluminant1")
         illum2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "CalibrationIlluminant2")
-        temp1 = illuminant_to_temperature(illum1) if illum1 is not None else None
-        temp2 = illuminant_to_temperature(illum2) if illum2 is not None else None
+        temp1 = Illuminant(illum1).temperature if illum1 is not None else None
+        temp2 = Illuminant(illum2).temperature if illum2 is not None else None
         
         # Get AsShotNeutral -> convert to white point XY
         # SDK ref: dng_render.cpp lines 889-908

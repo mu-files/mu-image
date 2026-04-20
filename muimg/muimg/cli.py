@@ -113,6 +113,17 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     from .dngio import DngFile, SubFileType
     from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY
     from .common import enum_display_name
+    from .raw_render import Illuminant
+    
+    # Map tag names to their enum classes for display
+    TAG_ENUM_MAP = {
+        'NewSubfileType': SubFileType,
+        'Compression': COMPRESSION,
+        'PhotometricInterpretation': PHOTOMETRIC,
+        'CalibrationIlluminant1': Illuminant,
+        'CalibrationIlluminant2': Illuminant,
+        'CalibrationIlluminant3': Illuminant,
+    }
     
     try:
         f = DngFile(input_file)
@@ -301,18 +312,15 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                         ))
             
             # Get the converted value using DngPage API
-            # Special handling for PhotometricInterpretation - use friendly name
-            if tag_name == "PhotometricInterpretation":
-                value = page.photometric_name or "Unknown"
-            # Special handling for NewSubfileType - use friendly name
-            elif tag_name == "NewSubfileType":
-                value = enum_display_name(SubFileType, newsubfiletype)
-            # Special handling for Compression - use friendly name
-            elif tag_name == "Compression":
-                numeric_value = page.get_tag(tag_code)
-                value = enum_display_name(COMPRESSION, numeric_value)
-            else:
-                value = page.get_tag(tag_code)
+            value = page.get_tag(tag_code)
+            
+            # Convert enum values to display names if applicable
+            if tag_name in TAG_ENUM_MAP and value is not None:
+                # Special case: PhotometricInterpretation has a custom name property
+                if tag_name == "PhotometricInterpretation":
+                    value = page.photometric_name or enum_display_name(TAG_ENUM_MAP[tag_name], value)
+                else:
+                    value = enum_display_name(TAG_ENUM_MAP[tag_name], value)
             
             # Display the tag with appropriate indentation
             _display_tag(tag_name, value, indent, tag_code, dtype, count, xmp_tracker, ifd_num, issue_number)
