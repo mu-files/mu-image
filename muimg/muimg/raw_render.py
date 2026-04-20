@@ -708,6 +708,9 @@ def validate_dng_tags(page: "DngPage", strict: bool = True) -> list[str]:
     # These tags would cause our output to differ from the SDK reference
     # Tag names match tifffile's tag name mapping
     unsupported_rendering_tags = {
+        # currently do not support illuminantdata
+        "IlluminantData1",
+        "IlluminantData2",
         # Triple illuminant support (DNG 1.6+) - we only support dual illuminant
         "ColorMatrix3",
         "CalibrationIlluminant3",

@@ -522,6 +522,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ForwardMatrix3": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 52532 - 3x3 matrix
     "IlluminantData1": TagSpec("B", None, dng_ifd="dng_profile"),  # 52533
     "IlluminantData2": TagSpec("B", None, dng_ifd="dng_profile"),  # 52534
+    "IlluminantData3": TagSpec("B", None, dng_ifd="dng_profile"),  # 52535
     "MaskSubArea": TagSpec("I", 4, dng_ifd="any"),  # 52536
     "ProfileHueSatMapData3": TagSpec("f", None, dng_ifd="dng_profile"),  # 52537
     "ReductionMatrix3": TagSpec("2i", None, dng_ifd="dng_profile"),  # 52538
@@ -536,7 +537,6 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "JXLDistance": TagSpec("f", 1, dng_ifd="any"),  # 52553
     "JXLEffort": TagSpec("I", 1, dng_ifd="any"),  # 52554
     "JXLDecodeSpeed": TagSpec("I", 1, dng_ifd="any"),  # 52555
-    "IlluminantData3": TagSpec("B", None, dng_ifd="dng_profile"),  # 53535
     "Padding": TagSpec("B", None, dng_ifd="any"),  # 59932
     "OffsetSchema": TagSpec("i", 1, dng_ifd="any"),  # 59933
 }
@@ -587,21 +587,25 @@ class LocalTiffTags:
         437: "JPEGTables-Alt",
         # DNG-specific not in tifffile
         52549: "ProfileToneMethod",
+        # Corrected tags (tifffile has wrong code)
+        52535: "IlluminantData3",  # tifffile incorrectly has 53535
     }
     
     def __init__(self):
         self._by_name: Dict[str, int] = {}
         self._by_code: Dict[int, str] = {}
         
-        # Copy from tifffile's registry
-        for code, name in TIFF.TAGS.items():
-            self._by_name[name] = code
-            self._by_code[code] = name
-        
-        # Add our extra tags
+        # Add our extra/corrected tags first (these take precedence)
         for code, name in self._EXTRA_TAGS.items():
             self._by_name[name] = code
             self._by_code[code] = name
+        
+        # Add from tifffile's registry, but don't overwrite our corrections
+        for code, name in TIFF.TAGS.items():
+            if code not in self._by_code:
+                self._by_code[code] = name
+            if name not in self._by_name:
+                self._by_name[name] = code
     
     def __contains__(self, key) -> bool:
         if isinstance(key, str):

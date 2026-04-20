@@ -88,15 +88,13 @@ class TestTagRegistryCompatibility:
         with muimg.DngFile(dng_path) as dng:
             for page in dng.get_flattened_pages():
                 for tag in page.tags.values():
-                    tag_name = tag.name
+                    tag_name = LOCAL_TIFF_TAGS.get(tag.code)
+                    if tag_name is None:
+                        tag_name = str(tag.code)
                     total_tags += 1
                     
-                    # Skip unknown numeric tags
-                    if tag_name.isdigit():
-                        continue
-                    
                     if tag_name not in TIFF_TAG_TYPE_REGISTRY:
-                        unknown_tags.add(tag_name)
+                        unknown_tags.add(f"{tag_name} ({tag.code})")
                         continue
                     
                     validated_tags += 1
@@ -302,7 +300,9 @@ class TestMatrixTagCount:
         with muimg.DngFile(dng_path) as dng:
             for page in dng.get_flattened_pages():
                 for tag in page.tags.values():
-                    tag_name = tag.name
+                    tag_name = LOCAL_TIFF_TAGS.get(tag.code)
+                    if tag_name is None:
+                        continue  # Skip truly unknown tags
                     
                     if tag_name not in TIFF_TAG_TYPE_REGISTRY:
                         continue

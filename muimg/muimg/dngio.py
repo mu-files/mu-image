@@ -292,8 +292,12 @@ class DngPage(TiffPage):
         
         return tags
     
-    def _decode_jpegxl(self) -> np.ndarray:
-        """Decode JPEG XL compressed image data, handling tiled images.
+    def _decode_tiled(self, decode_func) -> np.ndarray:
+        """Decode tiled compressed image data with error handling.
+        
+        Args:
+            decode_func: Function to decode tile data (e.g., imagecodecs.jpegxl_decode).
+                        Invalid tiles that fail to decode are filled with zeros.
         
         Returns:
             Decoded image array.
@@ -310,7 +314,7 @@ class DngPage(TiffPage):
         if len(segments) == 1:
             # Single tile/strip
             compressed_data, _ = segments[0]
-            return imagecodecs.jpegxl_decode(compressed_data)
+            return decode_func(compressed_data)
         else:
             # Multiple tiles - decode each and assemble
             tile_width = self.tilewidth
@@ -319,9 +323,22 @@ class DngPage(TiffPage):
             img_height = self.imagelength
             samples = self.samplesperpixel or 1
             
-            # Determine output dtype from first tile
-            first_tile = imagecodecs.jpegxl_decode(segments[0][0])
-            dtype = first_tile.dtype
+            # Determine output dtype from first valid tile
+            dtype = None
+            for i, (tile_data, _) in enumerate(segments):
+                try:
+                    first_tile = decode_func(tile_data)
+                    dtype = first_tile.dtype
+                    break
+                except Exception:
+                    continue
+            
+            # If no valid tiles found, cannot decode
+            if dtype is None:
+                raise ValueError(
+                    f"No valid tiles found in image. "
+                    f"All {len(segments)} tiles failed decoding."
+                )
             
             # Create output array - handle both 2D (single sample) and 3D (multi-sample)
             if samples == 1:
@@ -332,7 +349,12 @@ class DngPage(TiffPage):
             # Decode and place each tile
             tiles_x = (img_width + tile_width - 1) // tile_width
             for i, (tile_data, _) in enumerate(segments):
-                tile = imagecodecs.jpegxl_decode(tile_data)
+                try:
+                    tile = decode_func(tile_data)
+                except Exception as e:
+                    logger.warning(f"Failed to decode tile {i}: {e}, filling with zeros")
+                    # Skip failed tile - output array already zero-filled
+                    continue
                 
                 ty = (i // tiles_x) * tile_height
                 tx = (i % tiles_x) * tile_width
@@ -340,14 +362,66 @@ class DngPage(TiffPage):
                 # Handle edge tiles that may be smaller
                 th = min(tile_height, img_height - ty)
                 tw = min(tile_width, img_width - tx)
+                
                 output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
             
             return output
+    
+    def _decode_jpegxl(self) -> np.ndarray:
+        """Decode JPEG XL compressed image data, handling tiled images.
+        
+        Returns:
+            Decoded image array.
+        """
+        return self._decode_tiled(imagecodecs.jpegxl_decode)
+    
+    def _decode_jpeg(self) -> np.ndarray:
+        """Decode JPEG compressed image data, handling tiled images.
+        
+        Handles malformed DNG files (e.g., Google Pixel) that may have zero-filled
+        padding tiles instead of valid JPEG data. Invalid tiles are caught by the
+        JPEG decoder and filled with zeros.
+        
+        Also handles JPEG's unusual output shape for CFA data: (height, width/2, 2)
+        is reshaped to (height, width) to match expected tile dimensions.
+        
+        Returns:
+            Decoded image array.
+        """
+        tile_height = self.tilelength
+        tile_width = self.tilewidth
+        
+        def decode_jpeg_tile(tile_data: bytes) -> np.ndarray:
+            """Decode JPEG tile and reshape if needed.
+            
+            JPEG encodes CFA data as (height, width/2, 2) where pairs of pixels
+            are treated as a single pixel with 2 components. Reshape to expected
+            (height, width) tile dimensions.
+            """
+            tile = imagecodecs.jpeg_decode(tile_data, bitspersample=self.bitspersample)
+            
+            # Handle JPEG CFA format: (256, 128, 2) -> (256, 256)
+            if tile.shape != (tile_height, tile_width):
+                if tile.ndim == 3 and tile.shape[2] == 2:
+                    tile = tile.reshape(tile_height, tile_width)
+                else:
+                    # Unexpected shape - return zeros to avoid crashes
+                    logger.warning(
+                        f"JPEG tile has unexpected shape {tile.shape}, "
+                        f"expected ({tile_height}, {tile_width}), returning zeros"
+                    )
+                    return np.zeros((tile_height, tile_width), dtype=tile.dtype)
+            
+            return tile
+        
+        return self._decode_tiled(decode_jpeg_tile)
 
     def _stage1(self) -> Optional["DngPage._RawStage"]:
         if self.is_cfa:
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_cfa = self._decode_jpegxl()
+            elif self.compression == COMPRESSION.JPEG:
+                raw_cfa = self._decode_jpeg()
             else:
                 raw_cfa = self.asarray()
 
@@ -453,10 +527,16 @@ class DngPage(TiffPage):
         if opcode_list1 is not None:
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list1))
-                logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
-                data = raw_render.apply_opcodes_cfa(data, opcodes)
             except Exception as e:
-                logger.warning(f"Failed to apply OpcodeList1: {e}")
+                logger.warning(f"Failed to parse OpcodeList1: {e}")
+                opcodes = None
+            
+            if opcodes:
+                try:
+                    logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
+                    data = raw_render.apply_opcodes_cfa(data, opcodes)
+                except Exception as e:
+                    logger.warning(f"Failed to apply OpcodeList1: {e}")
 
         active_area = self.get_tag("ActiveArea")
         if active_area is not None:
@@ -481,27 +561,28 @@ class DngPage(TiffPage):
             return stage2
 
         opcode_list2 = self.get_tag("OpcodeList2")
-        if opcode_list2 is None:
-            return stage2
-
-        try:
-            opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
-        except Exception as e:
-            logger.warning(f"Failed to parse OpcodeList2: {e}")
-            return stage2
-
-        try:
-            if self.photometric_name == "LINEAR_RAW":
-                data_ops = raw_render.apply_opcodes(stage2.data, opcodes, use_bicubic=False)
-                data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
-                return self._RawStage(data=data_ops)
-            else:
-                data_ops = raw_render.apply_opcodes_cfa(stage2.data, opcodes)
-                data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
-                return self._RawStage(data=data_ops, cfa_pattern=stage2.cfa_pattern)
-        except Exception as e:
-            logger.warning(f"Failed to apply OpcodeList2: {e}")
-            return stage2
+        if opcode_list2 is not None:
+            try:
+                opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
+            except Exception as e:
+                logger.warning(f"Failed to parse OpcodeList2: {e}")
+                opcodes = None
+            
+            if opcodes:
+                try:
+                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes")
+                    if self.photometric_name == "LINEAR_RAW":
+                        data_ops = raw_render.apply_opcodes(stage2.data, opcodes, use_bicubic=False)
+                        data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
+                        return self._RawStage(data=data_ops)
+                    else:
+                        data_ops = raw_render.apply_opcodes_cfa(stage2.data, opcodes)
+                        data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
+                        return self._RawStage(data=data_ops, cfa_pattern=stage2.cfa_pattern)
+                except Exception as e:
+                    logger.warning(f"Failed to apply OpcodeList2: {e}")
+        
+        return stage2
 
     def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
@@ -622,10 +703,16 @@ class DngPage(TiffPage):
         if opcode_list3 is not None:
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list3))
-                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
-                rgb_camera = raw_render.apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
             except Exception as e:
-                logger.warning(f"Failed to apply OpcodeList3: {e}")
+                logger.warning(f"Failed to parse OpcodeList3: {e}")
+                opcodes = None
+            
+            if opcodes:
+                try:
+                    logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
+                    rgb_camera = raw_render.apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
+                except Exception as e:
+                    logger.warning(f"Failed to apply OpcodeList3: {e}")
 
         # Apply DefaultCrop
         crop_origin = self.get_tag("DefaultCropOrigin")
