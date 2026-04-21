@@ -37,8 +37,7 @@ logger = logging.getLogger(__name__)
 class TiffType(int, Enum):
     """TIFF data type codes with metadata.
     
-    Integer-based enum following the SubFileType pattern. Provides readable
-    type names with metadata access via properties.
+    Provides readable type names with metadata access via properties.
     
     Usage:
         TiffType.RATIONAL == 5  # True (int comparison)

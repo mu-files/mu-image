@@ -251,9 +251,6 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                               else "dng_raw" if page.photometric == PHOTOMETRIC.LINEAR_RAW else "other")
         click.echo(f"{header_indent}=== {ifd_label} (--ifd {ifd_num}) ===")
         
-        # Get all tags using DngPage API
-        page_tags = page.get_page_tags()
-        
         # Get NewSubfileType once for reuse in validation and display
         newsubfiletype = page.get_tag("NewSubfileType") or 0
         
@@ -262,8 +259,10 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                            newsubfiletype == SubFileType.MAIN_IMAGE and 
                            (page.photometric == PHOTOMETRIC.CFA or page.photometric == PHOTOMETRIC.LINEAR_RAW))
         
-        # Iterate through tags
-        for tag_code, dtype, count, _, _ in page_tags:
+        # Iterate through actual file tags (tifffile API)
+        for tag_code, tag in page.tags.items():
+            dtype = tag.dtype
+            count = tag.count
             # Get tag name from registry
             tag_name = LOCAL_TIFF_TAGS.get(tag_code)
             if tag_name is None:
@@ -313,8 +312,10 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                             tag_spec.dng_ifd  # Store original spec for display
                         ))
             
-            # Get the converted value using DngPage API
+            # Get value from page for proper formatting, fallback to raw tag value
             value = page.get_tag(tag_code)
+            if value is None:
+                value = tag.value
             
             # Convert enum values to display names if applicable
             if tag_name in TAG_ENUM_MAP and value is not None:
@@ -351,7 +352,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         issue_number: Validation issue number (if tag is in wrong IFD)
     """
     import numpy as np
-    from .tiff_metadata import XmpMetadata, TIFF_DTYPES
+    from .tiff_metadata import XmpMetadata, TiffType
     
     def echo(text):
         """Helper to echo with indentation."""
@@ -360,10 +361,11 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     # For unknown tags, show tag code and type info
     is_unknown = tag_name.startswith("Tag") and tag_code is not None
     if is_unknown and dtype is not None:
-        dtype_info = TIFF_DTYPES.get(dtype)
-        if dtype_info:
-            dtype_name = f"{dtype_info.name}({dtype})"
-        else:
+        # Try to get TiffType name from dtype code
+        try:
+            tiff_type = TiffType(dtype)
+            dtype_name = f"{tiff_type.name}({dtype})"
+        except ValueError:
             dtype_name = f'Type{dtype}'
         tag_display = f"{tag_name} ({tag_code}, {dtype_name})"
     else:
