@@ -175,7 +175,11 @@ def compare_page_metadata(src, out_page, spec=None, extra_skip_tags=None):
             elif not np.array_equal(src_val, out_val):
                 mismatches.append(f"{tag_name}: array mismatch")
         elif src_val != out_val:
-            mismatches.append(f"{tag_name}: {src_val} != {out_val}")
+            # For strings, show repr to see null terminators
+            if isinstance(src_val, str) and isinstance(out_val, str):
+                mismatches.append(f"{tag_name}: {repr(src_val)} != {repr(out_val)}")
+            else:
+                mismatches.append(f"{tag_name}: {src_val} != {out_val}")
     
     return compared_count, mismatches
 

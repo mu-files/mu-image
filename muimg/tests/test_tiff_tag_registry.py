@@ -17,7 +17,7 @@ import muimg
 from muimg.tiff_metadata import (
     TIFF_TAG_TYPE_REGISTRY,
     TagSpec,
-    DTYPE_CATEGORY,
+    TiffType,
     encode_tag_value,
     LOCAL_TIFF_TAGS,
 )
@@ -54,22 +54,42 @@ def dtype_compatible(file_dtype: str, spec: TagSpec) -> bool:
     Returns:
         True if compatible, False otherwise
     """
-    # Get allowed dtypes from spec
-    if isinstance(spec.dtype, str):
+    # Get allowed TiffTypes from spec
+    if isinstance(spec.dtype, TiffType):
         allowed = {spec.dtype}
     else:
         allowed = set(spec.dtype)
     
-    # Direct match
-    if file_dtype in allowed:
+    # Direct match by dtype_str
+    for tiff_type in allowed:
+        if tiff_type.dtype_str == file_dtype:
+            return True
+    
+    # Check if file dtype matches any allowed type by looking up in TiffType
+    # Find TiffType with matching dtype_str
+    file_tiff_type = None
+    for t in TiffType:
+        if t.dtype_str == file_dtype:
+            file_tiff_type = t
+            break
+    
+    if file_tiff_type is None:
+        return False  # Unknown dtype
+    
+    # Check if file type is in allowed set
+    if file_tiff_type in allowed:
         return True
     
-    # Check category compatibility (int types are interchangeable, float types are interchangeable)
-    file_category = DTYPE_CATEGORY.get(file_dtype)
-    if file_category:
-        for dt in allowed:
-            if DTYPE_CATEGORY.get(dt) == file_category:
-                return True
+    # Category compatibility: int types (BYTE, SHORT, LONG, etc.) are interchangeable
+    # float types (RATIONAL, SRATIONAL, FLOAT, DOUBLE) are interchangeable
+    INT_TYPES = {TiffType.BYTE, TiffType.SHORT, TiffType.LONG, TiffType.SBYTE, 
+                 TiffType.SSHORT, TiffType.SLONG, TiffType.LONG8, TiffType.SLONG8, TiffType.ASCII}
+    FLOAT_TYPES = {TiffType.RATIONAL, TiffType.SRATIONAL, TiffType.FLOAT, TiffType.DOUBLE}
+    
+    if file_tiff_type in INT_TYPES:
+        return any(t in INT_TYPES for t in allowed)
+    elif file_tiff_type in FLOAT_TYPES:
+        return any(t in FLOAT_TYPES for t in allowed)
     
     return False
 
@@ -178,30 +198,33 @@ class TestTagSpecTypeInference:
     
     def test_single_dtype_returns_itself(self):
         """Single dtype spec always returns that dtype."""
-        spec = TagSpec("H", 1)
-        assert spec.get_dtype_for_value(42) == "H"
-        assert spec.get_dtype_for_value(3.14) == "H"
-        assert spec.get_dtype_for_value([1, 2, 3]) == "H"
+        spec = TagSpec(TiffType.SHORT, 1)
+        assert spec.get_dtype_for_value(42) == TiffType.SHORT
+        assert spec.get_dtype_for_value(3.14) == TiffType.SHORT
+        assert spec.get_dtype_for_value([1, 2, 3]) == TiffType.SHORT
     
     def test_multi_dtype_int_value(self):
-        """Int value selects first int dtype from list."""
-        spec = TagSpec(["H", "I", "2I"], None)
-        assert spec.get_dtype_for_value(42) == "H"
-        assert spec.get_dtype_for_value(np.int32(100)) == "H"
-        assert spec.get_dtype_for_value([1, 2, 3]) == "H"
+        """Int value selects LONG from SHORT_OR_LONG list."""
+        from muimg.tiff_metadata import TIFFTYPE_SHORT_OR_LONG
+        spec = TagSpec(TIFFTYPE_SHORT_OR_LONG, None)
+        assert spec.get_dtype_for_value(42) == TiffType.LONG
+        assert spec.get_dtype_for_value(np.int32(100)) == TiffType.LONG
+        assert spec.get_dtype_for_value([1, 2, 3]) == TiffType.LONG
     
     def test_multi_dtype_float_value(self):
-        """Float value selects first float/rational dtype from list."""
-        spec = TagSpec(["H", "I", "2I"], None)
-        assert spec.get_dtype_for_value(3.14) == "2I"
-        assert spec.get_dtype_for_value(np.float64(1.5)) == "2I"
-        assert spec.get_dtype_for_value([1.0, 2.0]) == "2I"
+        """Float value selects RATIONAL from INT_OR_RATIONAL list."""
+        from muimg.tiff_metadata import TIFFTYPE_INT_OR_RATIONAL
+        spec = TagSpec(TIFFTYPE_INT_OR_RATIONAL, None)
+        assert spec.get_dtype_for_value(3.14) == TiffType.RATIONAL
+        assert spec.get_dtype_for_value(np.float64(1.5)) == TiffType.RATIONAL
+        assert spec.get_dtype_for_value([1.0, 2.0]) == TiffType.RATIONAL
     
     def test_fallback_to_first(self):
-        """Unknown value type falls back to first dtype."""
-        spec = TagSpec(["H", "2I"], None)
-        assert spec.get_dtype_for_value("string") == "H"
-        assert spec.get_dtype_for_value(None) == "H"
+        """Unknown value type uses SHORT_OR_LONG default (LONG)."""
+        from muimg.tiff_metadata import TIFFTYPE_SHORT_OR_LONG
+        spec = TagSpec(TIFFTYPE_SHORT_OR_LONG, None)
+        assert spec.get_dtype_for_value("string") == TiffType.LONG
+        assert spec.get_dtype_for_value(None) == TiffType.LONG
 
 
 class TestValueConversion:
@@ -209,25 +232,25 @@ class TestValueConversion:
     
     def test_string_conversion(self):
         """String values are null-terminated."""
-        spec = TagSpec("s", None)
+        spec = TagSpec(TiffType.ASCII, None)
         dtype, count, value = encode_tag_value("TestTag", "Hello", spec)
-        assert dtype == "s"
+        assert dtype == TiffType.ASCII
         assert value.endswith("\x00")
         assert count == 6  # "Hello" + null
     
     def test_int_to_short(self):
         """Integer converts to SHORT."""
-        spec = TagSpec("H", 1)
+        spec = TagSpec(TiffType.SHORT, 1)
         dtype, count, value = encode_tag_value("TestTag", 42, spec)
-        assert dtype == "H"
+        assert dtype == TiffType.SHORT
         assert count == 1
         assert value == 42
     
     def test_float_to_rational(self):
         """Float converts to rational tuple."""
-        spec = TagSpec("2I", 1)
+        spec = TagSpec(TiffType.RATIONAL, 1)
         dtype, count, value = encode_tag_value("TestTag", 0.5, spec)
-        assert dtype == "2I"
+        assert dtype == TiffType.RATIONAL
         assert count == 1
         # Value should be (numerator, denominator) representing 0.5
         assert isinstance(value, tuple)
@@ -236,28 +259,28 @@ class TestValueConversion:
     
     def test_array_to_rationals(self):
         """Float array converts to rational array."""
-        spec = TagSpec("2I", 3)
+        spec = TagSpec(TiffType.RATIONAL, 3)
         values = [1.0, 0.5, 0.25]
         dtype, count, result = encode_tag_value("TestTag", values, spec)
-        assert dtype == "2I"
+        assert dtype == TiffType.RATIONAL
         assert count == 3
         # Result should be flat tuple of (num, denom, num, denom, num, denom)
         assert len(result) == 6
     
     def test_numpy_array_handling(self):
         """NumPy arrays are flattened correctly."""
-        spec = TagSpec("2i", None)
+        spec = TagSpec(TiffType.SRATIONAL, None)
         matrix = np.array([[1.0, 0.0], [0.0, 1.0]])
         dtype, count, result = encode_tag_value("TestTag", matrix, spec)
-        assert dtype == "2i"
+        assert dtype == TiffType.SRATIONAL
         assert count == 4  # 2x2 matrix = 4 elements
     
     def test_bytes_passthrough(self):
         """Bytes pass through unchanged."""
-        spec = TagSpec("B", None)
+        spec = TagSpec(TiffType.BYTE, None)
         data = b"\x01\x02\x03\x04"
         dtype, count, value = encode_tag_value("TestTag", data, spec)
-        assert dtype == "B"
+        assert dtype == TiffType.BYTE
         assert value == data
 
 

@@ -9,6 +9,7 @@ import numpy as np
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from fractions import Fraction
 from tifffile import PHOTOMETRIC, TIFF
 from typing import Optional, Union, Dict, Any, Type, List, Tuple
@@ -33,34 +34,47 @@ logger = logging.getLogger(__name__)
 # Type inference order: int types first, then float/rational types.
 # Example: ["I", "2I"] means int→LONG, float→RATIONAL
 
-@dataclass
-class TiffDtype:
-    """TIFF data type specification."""
-    code: int
-    dtype_str: str
-    category: str  # 'int' or 'float'
-    name: str
-
-TIFF_DTYPES = {
-    1:  TiffDtype(1,  'B',  'int',   'BYTE'),
-    2:  TiffDtype(2,  's',  'int',   'ASCII'),
-    3:  TiffDtype(3,  'H',  'int',   'SHORT'),
-    4:  TiffDtype(4,  'I',  'int',   'LONG'),
-    5:  TiffDtype(5,  '2I', 'float', 'RATIONAL'),
-    6:  TiffDtype(6,  'b',  'int',   'SBYTE'),
-    7:  TiffDtype(7,  'B',  'int',   'UNDEFINED'),
-    8:  TiffDtype(8,  'h',  'int',   'SSHORT'),
-    9:  TiffDtype(9,  'i',  'int',   'SLONG'),
-    10: TiffDtype(10, '2i', 'float', 'SRATIONAL'),
-    11: TiffDtype(11, 'f',  'float', 'FLOAT'),
-    12: TiffDtype(12, 'd',  'float', 'DOUBLE'),
-    16: TiffDtype(16, 'Q',  'int',   'LONG8'),
-    17: TiffDtype(17, 'q',  'int',   'SLONG8'),
-}
+class TiffType(int, Enum):
+    """TIFF data type codes with metadata.
+    
+    Integer-based enum following the SubFileType pattern. Provides readable
+    type names with metadata access via properties.
+    
+    Usage:
+        TiffType.RATIONAL == 5  # True (int comparison)
+        TiffType.RATIONAL.dtype_str  # '2I'
+    """
+    
+    def __new__(cls, code: int, dtype_str: str):
+        obj = int.__new__(cls, code)
+        obj._value_ = code
+        obj.dtype_str = dtype_str
+        return obj
+    
+    # Type definitions with (code, dtype_str)
+    BYTE = (1, 'B')           # Unsigned 8-bit integer
+    ASCII = (2, 's')          # 8-bit byte containing 7-bit ASCII
+    SHORT = (3, 'H')          # Unsigned 16-bit integer
+    LONG = (4, 'I')           # Unsigned 32-bit integer
+    RATIONAL = (5, '2I')      # Two LONGs: numerator, denominator
+    SBYTE = (6, 'b')          # Signed 8-bit integer
+    UNDEFINED = (7, 'B')      # 8-bit byte (uninterpreted data)
+    SSHORT = (8, 'h')         # Signed 16-bit integer
+    SLONG = (9, 'i')          # Signed 32-bit integer
+    SRATIONAL = (10, '2i')    # Two SLONGs: numerator, denominator
+    FLOAT = (11, 'f')         # 32-bit IEEE floating point
+    DOUBLE = (12, 'd')        # 64-bit IEEE floating point
+    LONG8 = (16, 'Q')         # Unsigned 64-bit integer
+    SLONG8 = (17, 'q')        # Signed 64-bit integer
 
 # Derived lookups for convenience
-TIFF_DTYPE_TO_STR = {dt.code: dt.dtype_str for dt in TIFF_DTYPES.values()}
-DTYPE_CATEGORY = {dt.dtype_str: dt.category for dt in TIFF_DTYPES.values()}
+TIFFTYPE_TO_DTYPE_STR = {t.value: t.dtype_str for t in TiffType}
+
+# Multi-type dtype lists for tags that accept multiple types
+# Use these constants in TagSpec definitions to ensure consistency
+TIFFTYPE_SHORT_OR_LONG = [TiffType.SHORT, TiffType.LONG]        # SHORT or LONG (prefer LONG for ints)
+TIFFTYPE_ASCII_OR_BYTE = [TiffType.ASCII, TiffType.BYTE]        # ASCII or BYTE (ASCII for str, BYTE for bytes/UTF-8)
+TIFFTYPE_INT_OR_RATIONAL = [TiffType.SHORT, TiffType.LONG, TiffType.RATIONAL]   # SHORT, LONG, or RATIONAL (RATIONAL for floats, LONG for ints)
 
 # =============================================================================
 # CFA Pattern Constants
@@ -91,46 +105,54 @@ class TagSpec:
     """Specification for a TIFF/DNG tag.
     
     Attributes:
-        dtype: TIFF data type(s). Can be a single string or list for type inference.
+        dtype: TIFF data type(s). Can be a single TiffType or list for type inference.
                When a list, int values use first matching int type, floats use first
-               matching float/rational type. Signedness is encoded in dtype ('2i' vs '2I').
+               matching float/rational type. Examples: TiffType.BYTE, TiffType.RATIONAL, TiffType.UNDEFINED.
         count: Expected count, or None for variable length.
         shape: Target shape for array tags (e.g., (3, 3) for matrices). If specified,
                the returned np.ndarray will be reshaped to this shape.
         dng_ifd: IFD type where this tag should appear (see IFD Location Categories above).
     """
-    dtype: Union[str, List[str]]  # Single type or list for inference
+    dtype: Union[TiffType, List[TiffType]]  # Single type or list for inference
     count: Optional[int] = None
     shape: Optional[Tuple[int, ...]] = None
     dng_ifd: str = "any"
     
-    def get_dtype_for_value(self, value: Any) -> str:
-        """Select appropriate dtype based on value type."""
-        if isinstance(self.dtype, str):
+    def get_dtype_for_value(self, value: Any) -> TiffType:
+        """Select appropriate dtype based on value type.
+        
+        For single-type specs, returns that type.
+        For multi-type specs, selects based on value type using explicit case handling.
+        """
+        if isinstance(self.dtype, TiffType):
             return self.dtype
         
-        # For list/tuple, check first element
-        if isinstance(value, (list, tuple)) and len(value) > 0:
-            value = value[0]
-        
-        # Determine category from value
-        category = None
-        if isinstance(value, (int, np.integer)):
-            category = 'int'
-        elif isinstance(value, (float, np.floating)):
-            category = 'float'
-        elif isinstance(value, np.ndarray):
-            if np.issubdtype(value.dtype, np.integer):
-                category = 'int'
-            elif np.issubdtype(value.dtype, np.floating):
-                category = 'float'
-        
-        if category:
-            for dt in self.dtype:
-                if DTYPE_CATEGORY.get(dt) == category:
-                    return dt
-        
-        return self.dtype[0]  # Fallback to first
+        # Handle multi-type lists explicitly
+        if self.dtype == TIFFTYPE_SHORT_OR_LONG:
+            # SHORT or LONG: always use LONG for simplicity
+            return TiffType.LONG
+        elif self.dtype == TIFFTYPE_ASCII_OR_BYTE:
+            # ASCII or BYTE: ASCII for str, BYTE for bytes/UTF-8
+            return TiffType.ASCII if isinstance(value, str) else TiffType.BYTE
+        elif self.dtype == TIFFTYPE_INT_OR_RATIONAL:
+            # SHORT, LONG, or RATIONAL: RATIONAL for float or pre-formatted rational tuples
+            # Check for rational tuple (even-length flat tuple of ints: (num, denom) or (n1, d1, n2, d2, ...))
+            if (isinstance(value, tuple) and len(value) % 2 == 0 and len(value) >= 2 and
+                all(isinstance(x, (int, np.integer)) for x in value)):
+                return TiffType.RATIONAL
+            # Check for float scalar
+            if isinstance(value, (float, np.floating)):
+                return TiffType.RATIONAL
+            # Check for float array/list
+            if isinstance(value, (list, tuple)) and len(value) > 0:
+                if isinstance(value[0], (float, np.floating)):
+                    return TiffType.RATIONAL
+            if hasattr(value, 'dtype') and np.issubdtype(value.dtype, np.floating):
+                return TiffType.RATIONAL
+            return TiffType.LONG
+        else:
+            raise ValueError(f"Unknown multi-type dtype list: {self.dtype}. "
+                           f"Add explicit handling or use a defined constant.")
     
 def get_native_type(dtype: Union[int, str, list], count: Optional[int]) -> Optional[type]:
     """Determine the most appropriate Python type for a TIFF tag.
@@ -149,7 +171,7 @@ def get_native_type(dtype: Union[int, str, list], count: Optional[int]) -> Optio
     """
     # Normalize dtype to string
     if isinstance(dtype, int):
-        dtype_str = TIFF_DTYPE_TO_STR.get(dtype)
+        dtype_str = TIFFTYPE_TO_DTYPE_STR.get(dtype)
         if dtype_str is None:
             return None
     elif isinstance(dtype, list):
@@ -191,354 +213,354 @@ def get_native_type(dtype: Union[int, str, list], count: Optional[int]) -> Optio
 # Types verified against DNG SDK source and tifffile registry
 # For multi-type tags, first type is for integers, second for floats
 TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
-    "ProcessingSoftware": TagSpec("s", None, dng_ifd="any"),  # 11
-    "NewSubfileType": TagSpec("I", 1, dng_ifd="any"),  # 254
-    "SubfileType": TagSpec("H", 1, dng_ifd="any"),  # 255
-    "ImageWidth": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 256
-    "ImageLength": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 257
-    "BitsPerSample": TagSpec("H", None, dng_ifd="any"),  # 258
-    "Compression": TagSpec("H", 1, dng_ifd="any"),  # 259
-    "PhotometricInterpretation": TagSpec("H", 1, dng_ifd="any"),  # 262
-    "Thresholding": TagSpec("H", 1, dng_ifd="any"),  # 263
-    "CellWidth": TagSpec("H", 1, dng_ifd="any"),  # 264
-    "CellLength": TagSpec("H", 1, dng_ifd="any"),  # 265
-    "FillOrder": TagSpec("H", 1, dng_ifd="any"),  # 266
-    "DocumentName": TagSpec("s", None, dng_ifd="any"),  # 269
-    "ImageDescription": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 270
-    "Make": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 271
-    "Model": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 272
-    "StripOffsets": TagSpec(["H", "I"], None, dng_ifd="any"),  # 273
-    "Orientation": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 274
-    "SamplesPerPixel": TagSpec("H", 1, dng_ifd="any"),  # 277
-    "RowsPerStrip": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 278
-    "StripByteCounts": TagSpec(["H", "I"], None, dng_ifd="any"),  # 279
-    "MinSampleValue": TagSpec("H", None, dng_ifd="any"),  # 280
-    "MaxSampleValue": TagSpec("H", None, dng_ifd="any"),  # 281
-    "XResolution": TagSpec("2I", 1, dng_ifd="any"),  # 282
-    "YResolution": TagSpec("2I", 1, dng_ifd="any"),  # 283
-    "PlanarConfiguration": TagSpec("H", 1, dng_ifd="any"),  # 284
-    "PageName": TagSpec("s", None, dng_ifd="any"),  # 285
-    "XPosition": TagSpec("2I", 1, dng_ifd="any"),  # 286
-    "YPosition": TagSpec("2I", 1, dng_ifd="any"),  # 287
-    "FreeOffsets": TagSpec("I", None, dng_ifd="any"),  # 288
-    "FreeByteCounts": TagSpec("I", None, dng_ifd="any"),  # 289
-    "GrayResponseUnit": TagSpec("H", 1, dng_ifd="any"),  # 290
-    "GrayResponseCurve": TagSpec("H", None, dng_ifd="any"),  # 291
-    "T4Options": TagSpec("I", 1, dng_ifd="any"),  # 292
-    "T6Options": TagSpec("I", 1, dng_ifd="any"),  # 293
-    "ResolutionUnit": TagSpec("H", 1, dng_ifd="any"),  # 296
-    "PageNumber": TagSpec("H", 2, dng_ifd="any"),  # 297
-    "TransferFunction": TagSpec("H", None, dng_ifd="any"),  # 301
-    "Software": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 305
-    "DateTime": TagSpec("s", 20, dng_ifd="dng_ifd0"),  # 306
-    "Artist": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 315
-    "HostComputer": TagSpec("s", None, dng_ifd="any"),  # 316
-    "Predictor": TagSpec("H", 1, dng_ifd="any"),  # 317
-    "WhitePoint": TagSpec("2I", 2, dng_ifd="any"),  # 318
-    "PrimaryChromaticities": TagSpec("2I", 6, dng_ifd="any"),  # 319
-    "ColorMap": TagSpec("H", None, dng_ifd="any"),  # 320
-    "HalftoneHints": TagSpec("H", 2, dng_ifd="any"),  # 321
-    "TileWidth": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 322
-    "TileLength": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 323
-    "TileOffsets": TagSpec("I", None, dng_ifd="any"),  # 324
-    "TileByteCounts": TagSpec(["H", "I"], None, dng_ifd="any"),  # 325
-    "SubIFDs": TagSpec("I", None, dng_ifd="any"),  # 330
-    "InkSet": TagSpec("H", 1, dng_ifd="any"),  # 332
-    "InkNames": TagSpec("s", None, dng_ifd="any"),  # 333
-    "NumberOfInks": TagSpec("H", 1, dng_ifd="any"),  # 334
-    "DotRange": TagSpec("H", None, dng_ifd="any"),  # 336
-    "TargetPrinter": TagSpec("s", None, dng_ifd="any"),  # 337
-    "ExtraSamples": TagSpec("H", None, dng_ifd="any"),  # 338
-    "SampleFormat": TagSpec("H", None, dng_ifd="any"),  # 339
-    "SMinSampleValue": TagSpec("d", None, dng_ifd="any"),  # 340
-    "SMaxSampleValue": TagSpec("d", None, dng_ifd="any"),  # 341
-    "TransferRange": TagSpec("H", 6, dng_ifd="any"),  # 342
-    "ClipPath": TagSpec("B", None, dng_ifd="any"),  # 343
-    "XClipPathUnits": TagSpec("I", 1, dng_ifd="any"),  # 344
-    "YClipPathUnits": TagSpec("I", 1, dng_ifd="any"),  # 345
-    "Indexed": TagSpec("H", 1, dng_ifd="any"),  # 346
-    "JPEGTables": TagSpec("B", None, dng_ifd="any"),  # 347
-    "OPIProxy": TagSpec("H", 1, dng_ifd="any"),  # 351
-    "VersionYear": TagSpec("B", 4, dng_ifd="any"),  # 404
-    "Decode": TagSpec("2i", None, dng_ifd="any"),  # 433
-    "DefaultImageColor": TagSpec("H", None, dng_ifd="any"),  # 434
-    "JPEGInterchangeFormat": TagSpec("I", 1, dng_ifd="any"),  # 513
-    "JPEGInterchangeFormatLength": TagSpec("I", 1, dng_ifd="any"),  # 514
-    "JPEGRestartInterval": TagSpec("H", 1, dng_ifd="any"),  # 515
-    "JPEGLosslessPredictors": TagSpec("H", None, dng_ifd="any"),  # 517
-    "JPEGPointTransforms": TagSpec("H", None, dng_ifd="any"),  # 518
-    "JPEGQTables": TagSpec("I", None, dng_ifd="any"),  # 519
-    "JPEGDCTables": TagSpec("I", None, dng_ifd="any"),  # 520
-    "JPEGACTables": TagSpec("I", None, dng_ifd="any"),  # 521
-    "YCbCrCoefficients": TagSpec("2I", 3, dng_ifd="any"),  # 529
-    "YCbCrSubSampling": TagSpec("H", 2, dng_ifd="any"),  # 530
-    "YCbCrPositioning": TagSpec("H", 1, dng_ifd="any"),  # 531
-    "ReferenceBlackWhite": TagSpec("2I", 6, dng_ifd="any"),  # 532
-    "StripRowCounts": TagSpec("I", None, dng_ifd="any"),  # 559
-    "XMP": TagSpec("B", None, dng_ifd="any"),  # 700
-    "ICCProfileDescriptor": TagSpec("s", None, dng_ifd="any"),  # 770
-    "Rating": TagSpec("H", 1, dng_ifd="any"),  # 18246
-    "RatingPercent": TagSpec("H", 1, dng_ifd="any"),  # 18249
-    "PrintFlags": TagSpec("B", None, dng_ifd="any"),  # 20485
-    "PrintFlagsVersion": TagSpec("H", 1, dng_ifd="any"),  # 20486
-    "PrintFlagsCrop": TagSpec("I", 1, dng_ifd="any"),  # 20487
-    "PrintFlagsBleedWidth": TagSpec("I", 1, dng_ifd="any"),  # 20488
-    "PrintFlagsBleedWidthScale": TagSpec("H", 1, dng_ifd="any"),  # 20489
-    "InteroperabilityIndex": TagSpec("s", None, dng_ifd="any"),  # 20545
-    "InteroperabilityVersion": TagSpec("B", 4, dng_ifd="any"),  # 20546
-    "FrameDelay": TagSpec("I", None, dng_ifd="any"),  # 20736
-    "LoopCount": TagSpec("H", 1, dng_ifd="any"),  # 20737
-    "VignettingCorrParams": TagSpec("2i", None, dng_ifd="any"),  # 28722
-    "ChromaticAberrationCorrParams": TagSpec("2i", None, dng_ifd="any"),  # 28725
-    "DistortionCorrParams": TagSpec("2i", None, dng_ifd="any"),  # 28727
+    "ProcessingSoftware": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 11
+    "NewSubfileType": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 254
+    "SubfileType": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 255
+    "ImageWidth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 256
+    "ImageLength": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 257
+    "BitsPerSample": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 258
+    "Compression": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 259
+    "PhotometricInterpretation": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 262
+    "Thresholding": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 263
+    "CellWidth": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 264
+    "CellLength": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 265
+    "FillOrder": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 266
+    "DocumentName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 269
+    "ImageDescription": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 270
+    "Make": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 271
+    "Model": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 272
+    "StripOffsets": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 273
+    "Orientation": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 274
+    "SamplesPerPixel": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 277
+    "RowsPerStrip": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 278
+    "StripByteCounts": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 279
+    "MinSampleValue": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 280
+    "MaxSampleValue": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 281
+    "XResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 282
+    "YResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 283
+    "PlanarConfiguration": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 284
+    "PageName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 285
+    "XPosition": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 286
+    "YPosition": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 287
+    "FreeOffsets": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 288
+    "FreeByteCounts": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 289
+    "GrayResponseUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 290
+    "GrayResponseCurve": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 291
+    "T4Options": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 292
+    "T6Options": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 293
+    "ResolutionUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 296
+    "PageNumber": TagSpec(TiffType.SHORT, 2, dng_ifd="any"),  # 297
+    "TransferFunction": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 301
+    "Software": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 305
+    "DateTime": TagSpec(TiffType.ASCII, 20, dng_ifd="dng_ifd0"),  # 306
+    "Artist": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 315
+    "HostComputer": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 316
+    "Predictor": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 317
+    "WhitePoint": TagSpec(TiffType.RATIONAL, 2, dng_ifd="any"),  # 318
+    "PrimaryChromaticities": TagSpec(TiffType.RATIONAL, 6, dng_ifd="any"),  # 319
+    "ColorMap": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 320
+    "HalftoneHints": TagSpec(TiffType.SHORT, 2, dng_ifd="any"),  # 321
+    "TileWidth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 322
+    "TileLength": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 323
+    "TileOffsets": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 324
+    "TileByteCounts": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 325
+    "SubIFDs": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 330
+    "InkSet": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 332
+    "InkNames": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 333
+    "NumberOfInks": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 334
+    "DotRange": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 336
+    "TargetPrinter": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 337
+    "ExtraSamples": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 338
+    "SampleFormat": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 339
+    "SMinSampleValue": TagSpec(TiffType.DOUBLE, None, dng_ifd="any"),  # 340
+    "SMaxSampleValue": TagSpec(TiffType.DOUBLE, None, dng_ifd="any"),  # 341
+    "TransferRange": TagSpec(TiffType.SHORT, 6, dng_ifd="any"),  # 342
+    "ClipPath": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 343
+    "XClipPathUnits": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 344
+    "YClipPathUnits": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 345
+    "Indexed": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 346
+    "JPEGTables": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 347
+    "OPIProxy": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 351
+    "VersionYear": TagSpec(TiffType.BYTE, 4, dng_ifd="any"),  # 404
+    "Decode": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 433
+    "DefaultImageColor": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 434
+    "JPEGInterchangeFormat": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 513
+    "JPEGInterchangeFormatLength": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 514
+    "JPEGRestartInterval": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 515
+    "JPEGLosslessPredictors": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 517
+    "JPEGPointTransforms": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 518
+    "JPEGQTables": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 519
+    "JPEGDCTables": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 520
+    "JPEGACTables": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 521
+    "YCbCrCoefficients": TagSpec(TiffType.RATIONAL, 3, dng_ifd="any"),  # 529
+    "YCbCrSubSampling": TagSpec(TiffType.SHORT, 2, dng_ifd="any"),  # 530
+    "YCbCrPositioning": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 531
+    "ReferenceBlackWhite": TagSpec(TiffType.RATIONAL, 6, dng_ifd="any"),  # 532
+    "StripRowCounts": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 559
+    "XMP": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 700
+    "ICCProfileDescriptor": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 770
+    "Rating": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 18246
+    "RatingPercent": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 18249
+    "PrintFlags": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 20485
+    "PrintFlagsVersion": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 20486
+    "PrintFlagsCrop": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 20487
+    "PrintFlagsBleedWidth": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 20488
+    "PrintFlagsBleedWidthScale": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 20489
+    "InteroperabilityIndex": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 20545
+    "InteroperabilityVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="any"),  # 20546
+    "FrameDelay": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 20736
+    "LoopCount": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 20737
+    "VignettingCorrParams": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 28722
+    "ChromaticAberrationCorrParams": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 28725
+    "DistortionCorrParams": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 28727
     
     # Private tags >= 32768
-    "ImageID": TagSpec("s", None, dng_ifd="any"),  # 32781
-    "Matteing": TagSpec("H", 1, dng_ifd="any"),  # 32995
-    "DataType": TagSpec("H", None, dng_ifd="any"),  # 32996
-    "ImageDepth": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 32997
-    "TileDepth": TagSpec(["H", "I"], 1, dng_ifd="any"),  # 32998
-    "Model2": TagSpec("s", None, dng_ifd="any"),  # 33405
-    "CFARepeatPatternDim": TagSpec("H", 2, dng_ifd="dng_raw:cfa"),  # 33421
-    "CFAPattern": TagSpec("B", None, dng_ifd="dng_raw:cfa"),  # 33422
-    "BatteryLevel": TagSpec("2I", 1, dng_ifd="exif"),  # 33423
-    "Copyright": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 33432
-    "ExposureTime": TagSpec("2I", 1, dng_ifd="exif"),  # 33434
-    "FNumber": TagSpec("2I", 1, dng_ifd="exif"),  # 33437
-    "ModelPixelScaleTag": TagSpec("d", 3, dng_ifd="dng_ifd0"),  # 33550
-    "IPTCNAA": TagSpec("B", None, dng_ifd="any"),  # 33723
-    "ModelTiepointTag": TagSpec("d", None, dng_ifd="dng_ifd0"),  # 33922
-    "ModelTransformationTag": TagSpec("d", 16, dng_ifd="dng_ifd0"),  # 34264
-    "WB_GRGBLevels": TagSpec("2I", 4, dng_ifd="any"),  # 34306
-    "ImageResources": TagSpec("B", None, dng_ifd="any"),  # 34377
-    "ExifTag": TagSpec("I", 1, dng_ifd="dng_ifd0"),  # 34665
-    "InterColorProfile": TagSpec("B", None, dng_ifd="any"),  # 34675
-    "GeoKeyDirectoryTag": TagSpec("H", None, dng_ifd="dng_ifd0"),  # 34735
-    "GeoDoubleParamsTag": TagSpec("d", None, dng_ifd="dng_ifd0"),  # 34736
-    "GeoAsciiParamsTag": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 34737
-    "ExposureProgram": TagSpec("H", 1, dng_ifd="exif"),  # 34850
-    "SpectralSensitivity": TagSpec("s", None, dng_ifd="exif"),  # 34852
-    "GPSTag": TagSpec("I", 1, dng_ifd="dng_ifd0"),  # 34853
-    "ISOSpeedRatings": TagSpec("H", None, dng_ifd="exif"),  # 34855
-    "OECF": TagSpec("B", None, dng_ifd="exif"),  # 34856
-    "Interlace": TagSpec("H", 1, dng_ifd="exif"),  # 34857
-    "TimeZoneOffset": TagSpec("h", None, dng_ifd="exif"),  # 34858
-    "SelfTimerMode": TagSpec("H", 1, dng_ifd="exif"),  # 34859
-    "SensitivityType": TagSpec("H", 1, dng_ifd="exif"),  # 34864
-    "StandardOutputSensitivity": TagSpec("I", 1, dng_ifd="exif"),  # 34865
-    "RecommendedExposureIndex": TagSpec("I", 1, dng_ifd="exif"),  # 34866
-    "ISOSpeed": TagSpec("I", 1, dng_ifd="exif"),  # 34867
-    "ISOSpeedLatitudeyyy": TagSpec("I", 1, dng_ifd="exif"),  # 34868
-    "ISOSpeedLatitudezzz": TagSpec("I", 1, dng_ifd="exif"),  # 34869
-    "ExifVersion": TagSpec("B", 4, dng_ifd="exif"),  # 36864
-    "DateTimeOriginal": TagSpec("s", 20, dng_ifd="exif"),  # 36867
-    "DateTimeDigitized": TagSpec("s", 20, dng_ifd="exif"),  # 36868
-    "OffsetTime": TagSpec("s", None, dng_ifd="exif"),  # 36880
-    "OffsetTimeOriginal": TagSpec("s", None, dng_ifd="exif"),  # 36881
-    "OffsetTimeDigitized": TagSpec("s", None, dng_ifd="exif"),  # 36882
-    "ComponentsConfiguration": TagSpec("B", 4, dng_ifd="exif"),  # 37121
-    "CompressedBitsPerPixel": TagSpec("2I", 1, dng_ifd="exif"),  # 37122
-    "ShutterSpeedValue": TagSpec("2i", 1, dng_ifd="exif"),  # 37377
-    "ApertureValue": TagSpec("2I", 1, dng_ifd="exif"),  # 37378
-    "BrightnessValue": TagSpec("2i", 1, dng_ifd="exif"),  # 37379
-    "ExposureBiasValue": TagSpec("2i", 1, dng_ifd="exif"),  # 37380
-    "MaxApertureValue": TagSpec("2I", 1, dng_ifd="exif"),  # 37381
-    "SubjectDistance": TagSpec("2I", 1, dng_ifd="exif"),  # 37382
-    "MeteringMode": TagSpec("H", 1, dng_ifd="exif"),  # 37383
-    "LightSource": TagSpec("H", 1, dng_ifd="exif"),  # 37384
-    "Flash": TagSpec("H", 1, dng_ifd="exif"),  # 37385
-    "FocalLength": TagSpec("2I", 1, dng_ifd="exif"),  # 37386
-    "FlashEnergy": TagSpec("2I", 1, dng_ifd="exif"),  # 37387
-    "SpatialFrequencyResponse": TagSpec("B", None, dng_ifd="exif"),  # 37388
-    "Noise": TagSpec("B", None, dng_ifd="exif"),  # 37389
-    "FocalPlaneXResolution": TagSpec("2I", 1, dng_ifd="exif"),  # 37390
-    "FocalPlaneYResolution": TagSpec("2I", 1, dng_ifd="exif"),  # 37391
-    "FocalPlaneResolutionUnit": TagSpec("H", 1, dng_ifd="exif"),  # 37392
-    "ImageNumber": TagSpec(["H", "I"], 1, dng_ifd="exif"),  # 37393
-    "SecurityClassification": TagSpec("s", None, dng_ifd="exif"),  # 37394
-    "ImageHistory": TagSpec("s", None, dng_ifd="exif"),  # 37395
-    "SubjectLocation": TagSpec("H", 2, dng_ifd="exif"),  # 37396
-    "ExposureIndex": TagSpec("2I", 1, dng_ifd="exif"),  # 37397
-    "TIFFEPStandardID": TagSpec("B", 4, dng_ifd="exif"),  # 37398
-    "SensingMethod": TagSpec("H", 1, dng_ifd="exif"),  # 37399
-    "MakerNote": TagSpec("B", None, dng_ifd="exif"),  # 37500
-    "UserComment": TagSpec("B", None, dng_ifd="exif"),  # 37510
-    "SubsecTime": TagSpec("s", None, dng_ifd="exif"),  # 37520
-    "SubsecTimeOriginal": TagSpec("s", None, dng_ifd="exif"),  # 37521
-    "SubsecTimeDigitized": TagSpec("s", None, dng_ifd="exif"),  # 37522
-    "ImageSourceData": TagSpec("B", None, dng_ifd="exif"),  # 37724
-    "Temperature": TagSpec("2i", 1, dng_ifd="exif"),  # 37888
-    "Humidity": TagSpec("2I", 1, dng_ifd="exif"),  # 37889
-    "Pressure": TagSpec("2I", 1, dng_ifd="exif"),  # 37890
-    "WaterDepth": TagSpec("2i", 1, dng_ifd="exif"),  # 37891
-    "Acceleration": TagSpec("2I", 1, dng_ifd="exif"),  # 37892
-    "CameraElevationAngle": TagSpec("2i", 1, dng_ifd="exif"),  # 37893
-    "FlashpixVersion": TagSpec("B", 4, dng_ifd="exif"),  # 40960
-    "ColorSpace": TagSpec("H", 1, dng_ifd="exif"),  # 40961
-    "PixelXDimension": TagSpec(["H", "I"], 1, dng_ifd="exif"),  # 40962
-    "PixelYDimension": TagSpec(["H", "I"], 1, dng_ifd="exif"),  # 40963
-    "RelatedSoundFile": TagSpec("s", None, dng_ifd="exif"),  # 40964
-    "InteroperabilityTag": TagSpec("I", 1, dng_ifd="exif"),  # 40965
-    "TIFF-EPStandardID": TagSpec("B", 4, dng_ifd="exif"),  # 41494
-    "FileSource": TagSpec("B", 1, dng_ifd="exif"),  # 41728
-    "SceneType": TagSpec("B", 1, dng_ifd="exif"),  # 41729
-    "CustomRendered": TagSpec("H", 1, dng_ifd="exif"),  # 41985
-    "ExposureMode": TagSpec("H", 1, dng_ifd="exif"),  # 41986
-    "WhiteBalance": TagSpec("H", 1, dng_ifd="exif"),  # 41987
-    "DigitalZoomRatio": TagSpec("2I", 1, dng_ifd="exif"),  # 41988
-    "FocalLengthIn35mmFilm": TagSpec("H", 1, dng_ifd="exif"),  # 41989
-    "SceneCaptureType": TagSpec("H", 1, dng_ifd="exif"),  # 41990
-    "GainControl": TagSpec("H", 1, dng_ifd="exif"),  # 41991
-    "Contrast": TagSpec("H", 1, dng_ifd="exif"),  # 41992
-    "Saturation": TagSpec("H", 1, dng_ifd="exif"),  # 41993
-    "Sharpness": TagSpec("H", 1, dng_ifd="exif"),  # 41994
-    "DeviceSettingDescription": TagSpec("B", None, dng_ifd="exif"),  # 41995
-    "SubjectDistanceRange": TagSpec("H", 1, dng_ifd="exif"),  # 41996
-    "ImageUniqueID": TagSpec("s", None, dng_ifd="exif"),  # 42016
-    "CameraOwnerName": TagSpec("s", None, dng_ifd="exif"),  # 42032
-    "BodySerialNumber": TagSpec("s", None, dng_ifd="exif"),  # 42033
-    "LensSpecification": TagSpec("2I", 4, dng_ifd="exif"),  # 42034
-    "LensMake": TagSpec("s", None, dng_ifd="exif"),  # 42035
-    "LensModel": TagSpec("s", None, dng_ifd="exif"),  # 42036
-    "LensSerialNumber": TagSpec("s", None, dng_ifd="exif"),  # 42037
-    "CompositeImage": TagSpec("H", 1, dng_ifd="exif"),  # 42080
-    "SourceImageNumberCompositeImage": TagSpec("H", None, dng_ifd="exif"),  # 42081
-    "SourceExposureTimesCompositeImage": TagSpec("B", None, dng_ifd="exif"),  # 42082
-    "Gamma": TagSpec("2I", 1, dng_ifd="exif"),  # 42240
-    "PixelFormat": TagSpec("B", 16, dng_ifd="any"),  # 48129
-    "ImageType": TagSpec("H", 1, dng_ifd="any"),  # 48132
-    "OriginalFileName": TagSpec("s", None, dng_ifd="any"),  # 50547
-    "DNGVersion": TagSpec("B", 4, dng_ifd="dng_ifd0"),  # 50706
-    "DNGBackwardVersion": TagSpec("B", 4, dng_ifd="dng_ifd0"),  # 50707
-    "UniqueCameraModel": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 50708
-    "LocalizedCameraModel": TagSpec(["s", "B"], None, dng_ifd="dng_ifd0"),  # 50709
-    "CFAPlaneColor": TagSpec("B", None, dng_ifd="dng_raw:cfa"),  # 50710
-    "CFALayout": TagSpec("H", 1, dng_ifd="dng_raw:cfa"),  # 50711
-    "LinearizationTable": TagSpec("H", None, dng_ifd="dng_raw"),  # 50712
-    "BlackLevelRepeatDim": TagSpec("H", 2, dng_ifd="dng_raw"),  # 50713
-    "BlackLevel": TagSpec(["H", "I", "2I"], None, dng_ifd="dng_raw"),  # 50714
-    "BlackLevelDeltaH": TagSpec("2i", None, dng_ifd="dng_raw"),  # 50715
-    "BlackLevelDeltaV": TagSpec("2i", None, dng_ifd="dng_raw"),  # 50716
-    "WhiteLevel": TagSpec(["H", "I"], None, dng_ifd="dng_raw"),  # 50717
-    "DefaultScale": TagSpec("2I", 2, dng_ifd="dng_raw"),  # 50718
-    "DefaultCropOrigin": TagSpec(["H", "I", "2I"], 2, dng_ifd="dng_raw"),  # 50719
-    "DefaultCropSize": TagSpec(["H", "I", "2I"], 2, dng_ifd="dng_raw"),  # 50720
-    "ColorMatrix1": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 50721 - 3x3 matrix
-    "ColorMatrix2": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 50722 - 3x3 matrix
-    "CameraCalibration1": TagSpec("2i", 9, (3, 3), dng_ifd="dng_ifd0"),  # 50723 - 3x3 matrix
-    "CameraCalibration2": TagSpec("2i", 9, (3, 3), dng_ifd="dng_ifd0"),  # 50724 - 3x3 matrix
-    "ReductionMatrix1": TagSpec("2i", None, dng_ifd="dng_profile"),  # 50725
-    "ReductionMatrix2": TagSpec("2i", None, dng_ifd="dng_profile"),  # 50726
-    "AnalogBalance": TagSpec("2I", None, dng_ifd="dng_ifd0"),  # 50727
-    "AsShotNeutral": TagSpec("2I", None, dng_ifd="dng_ifd0"),  # 50728
-    "AsShotWhiteXY": TagSpec("2I", 2, dng_ifd="dng_ifd0"),  # 50729
-    "BaselineExposure": TagSpec("2i", 1, dng_ifd="dng_ifd0"),  # 50730
-    "BaselineNoise": TagSpec("2I", 1, dng_ifd="dng_ifd0"),  # 50731
-    "BaselineSharpness": TagSpec("2I", 1, dng_ifd="dng_ifd0"),  # 50732
-    "BayerGreenSplit": TagSpec("I", 1, dng_ifd="dng_raw:cfa"),  # 50733
-    "LinearResponseLimit": TagSpec("2I", 1, dng_ifd="dng_ifd0"),  # 50734
-    "CameraSerialNumber": TagSpec("s", None, dng_ifd="dng_ifd0"),  # 50735
-    "LensInfo": TagSpec("2I", 4, dng_ifd="dng_ifd0"),  # 50736
-    "ChromaBlurRadius": TagSpec("2I", 1, dng_ifd="dng_raw"),  # 50737
-    "AntiAliasStrength": TagSpec("2I", 1, dng_ifd="dng_raw"),  # 50738
-    "ShadowScale": TagSpec("2I", 1, dng_ifd="dng_ifd0"),  # 50739
-    "DNGPrivateData": TagSpec("B", None, dng_ifd="dng_ifd0"),  # 50740
-    "MakerNoteSafety": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 50741
-    "RawImageSegmentation": TagSpec("H", 3, dng_ifd="any"),  # 50752
-    "CalibrationIlluminant1": TagSpec("H", 1, dng_ifd="dng_profile"),  # 50778
-    "CalibrationIlluminant2": TagSpec("H", 1, dng_ifd="dng_profile"),  # 50779
-    "BestQualityScale": TagSpec("2I", 1, dng_ifd="dng_raw"),  # 50780
-    "RawDataUniqueID": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 50781
-    "OriginalRawFileName": TagSpec(["s", "B"], None, dng_ifd="dng_ifd0"),  # 50827
-    "OriginalRawFileData": TagSpec("B", None, dng_ifd="dng_ifd0"),  # 50828
-    "ActiveArea": TagSpec(["H", "I"], 4, dng_ifd="dng_raw"),  # 50829
-    "MaskedAreas": TagSpec(["H", "I"], None, dng_ifd="dng_raw"),  # 50830
-    "AsShotICCProfile": TagSpec("B", None, dng_ifd="dng_ifd0"),  # 50831
-    "AsShotPreProfileMatrix": TagSpec("2i", None, dng_ifd="dng_ifd0"),  # 50832
-    "CurrentICCProfile": TagSpec("B", None, dng_ifd="dng_ifd0"),  # 50833
-    "CurrentPreProfileMatrix": TagSpec("2i", None, dng_ifd="dng_ifd0"),  # 50834
-    "ColorimetricReference": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 50879
-    "CameraCalibrationSignature": TagSpec(["s", "B"], None, dng_ifd="dng_ifd0"),  # 50931
-    "ProfileCalibrationSignature": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 50932
-    "ProfileIFD": TagSpec("I", None, dng_ifd="dng_ifd0"),  # 50933 - variable count (can have multiple profiles)
-    "AsShotProfileName": TagSpec(["s", "B"], None, dng_ifd="dng_ifd0"),  # 50934
-    "NoiseReductionApplied": TagSpec("2I", 1, dng_ifd="dng_raw"),  # 50935
-    "ProfileName": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 50936
-    "ProfileHueSatMapDims": TagSpec("I", None, dng_ifd="dng_profile"),  # 50937
-    "ProfileHueSatMapData1": TagSpec("f", None, dng_ifd="dng_profile"),  # 50938
-    "ProfileHueSatMapData2": TagSpec("f", None, dng_ifd="dng_profile"),  # 50939
-    "ProfileToneCurve": TagSpec("f", None, dng_ifd="dng_profile"),  # 50940
-    "ProfileEmbedPolicy": TagSpec("I", 1, dng_ifd="dng_profile"),  # 50941
-    "ProfileCopyright": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 50942
-    "ForwardMatrix1": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 50964 - 3x3 matrix
-    "ForwardMatrix2": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 50965 - 3x3 matrix
-    "PreviewApplicationName": TagSpec("s", None, dng_ifd="dng_preview"),  # 50966
-    "PreviewApplicationVersion": TagSpec("s", None, dng_ifd="dng_preview"),  # 50967
-    "PreviewSettingsName": TagSpec("s", None, dng_ifd="dng_preview"),  # 50968
-    "PreviewSettingsDigest": TagSpec("B", 16, dng_ifd="dng_preview"),  # 50969
-    "PreviewColorSpace": TagSpec("I", 1, dng_ifd="dng_preview"),  # 50970
-    "PreviewDateTime": TagSpec("s", None, dng_ifd="dng_preview"),  # 50971
-    "RawImageDigest": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 50972
-    "OriginalRawFileDigest": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 50973
-    "SubTileBlockSize": TagSpec("H", 2, dng_ifd="dng_raw"),  # 50974
-    "RowInterleaveFactor": TagSpec("H", 1, dng_ifd="dng_raw"),  # 50975
-    "ProfileLookTableDims": TagSpec("I", None, dng_ifd="dng_profile"),  # 50981
-    "ProfileLookTableData": TagSpec("f", None, dng_ifd="dng_profile"),  # 50982
-    "OpcodeList1": TagSpec("B", None, dng_ifd="dng_raw"),  # 51008
-    "OpcodeList2": TagSpec("B", None, dng_ifd="dng_raw"),  # 51009
-    "OpcodeList3": TagSpec("B", None, dng_ifd="dng_raw"),  # 51022
+    "ImageID": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 32781
+    "Matteing": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 32995
+    "DataType": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 32996
+    "ImageDepth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 32997
+    "TileDepth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 32998
+    "Model2": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 33405
+    "CFARepeatPatternDim": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw:cfa"),  # 33421
+    "CFAPattern": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw:cfa"),  # 33422
+    "BatteryLevel": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33423
+    "Copyright": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 33432
+    "ExposureTime": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33434
+    "FNumber": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33437
+    "ModelPixelScaleTag": TagSpec(TiffType.DOUBLE, 3, dng_ifd="dng_ifd0"),  # 33550
+    "IPTCNAA": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 33723
+    "ModelTiepointTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="dng_ifd0"),  # 33922
+    "ModelTransformationTag": TagSpec(TiffType.DOUBLE, 16, dng_ifd="dng_ifd0"),  # 34264
+    "WB_GRGBLevels": TagSpec(TiffType.RATIONAL, 4, dng_ifd="any"),  # 34306
+    "ImageResources": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 34377
+    "ExifTag": TagSpec(TiffType.LONG, 1, dng_ifd="dng_ifd0"),  # 34665
+    "InterColorProfile": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 34675
+    "GeoKeyDirectoryTag": TagSpec(TiffType.SHORT, None, dng_ifd="dng_ifd0"),  # 34735
+    "GeoDoubleParamsTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="dng_ifd0"),  # 34736
+    "GeoAsciiParamsTag": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 34737
+    "ExposureProgram": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34850
+    "SpectralSensitivity": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 34852
+    "GPSTag": TagSpec(TiffType.LONG, 1, dng_ifd="dng_ifd0"),  # 34853
+    "ISOSpeedRatings": TagSpec(TiffType.SHORT, None, dng_ifd="exif"),  # 34855
+    "OECF": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 34856
+    "Interlace": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34857
+    "TimeZoneOffset": TagSpec(TiffType.SSHORT, None, dng_ifd="exif"),  # 34858
+    "SelfTimerMode": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34859
+    "SensitivityType": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34864
+    "StandardOutputSensitivity": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34865
+    "RecommendedExposureIndex": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34866
+    "ISOSpeed": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34867
+    "ISOSpeedLatitudeyyy": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34868
+    "ISOSpeedLatitudezzz": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34869
+    "ExifVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 36864
+    "DateTimeOriginal": TagSpec(TiffType.ASCII, 20, dng_ifd="exif"),  # 36867
+    "DateTimeDigitized": TagSpec(TiffType.ASCII, 20, dng_ifd="exif"),  # 36868
+    "OffsetTime": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 36880
+    "OffsetTimeOriginal": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 36881
+    "OffsetTimeDigitized": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 36882
+    "ComponentsConfiguration": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 37121
+    "CompressedBitsPerPixel": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37122
+    "ShutterSpeedValue": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37377
+    "ApertureValue": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37378
+    "BrightnessValue": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37379
+    "ExposureBiasValue": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37380
+    "MaxApertureValue": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37381
+    "SubjectDistance": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37382
+    "MeteringMode": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37383
+    "LightSource": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37384
+    "Flash": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37385
+    "FocalLength": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37386
+    "FlashEnergy": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37387
+    "SpatialFrequencyResponse": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37388
+    "Noise": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37389
+    "FocalPlaneXResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37390
+    "FocalPlaneYResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37391
+    "FocalPlaneResolutionUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37392
+    "ImageNumber": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 37393
+    "SecurityClassification": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37394
+    "ImageHistory": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37395
+    "SubjectLocation": TagSpec(TiffType.SHORT, 2, dng_ifd="exif"),  # 37396
+    "ExposureIndex": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37397
+    "TIFFEPStandardID": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 37398
+    "SensingMethod": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37399
+    "MakerNote": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37500
+    "UserComment": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37510
+    "SubsecTime": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37520
+    "SubsecTimeOriginal": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37521
+    "SubsecTimeDigitized": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37522
+    "ImageSourceData": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37724
+    "Temperature": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37888
+    "Humidity": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37889
+    "Pressure": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37890
+    "WaterDepth": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37891
+    "Acceleration": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37892
+    "CameraElevationAngle": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37893
+    "FlashpixVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 40960
+    "ColorSpace": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 40961
+    "PixelXDimension": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 40962
+    "PixelYDimension": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 40963
+    "RelatedSoundFile": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 40964
+    "InteroperabilityTag": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 40965
+    "TIFF-EPStandardID": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 41494
+    "FileSource": TagSpec(TiffType.UNDEFINED, 1, dng_ifd="exif"),  # 41728 - UNDEFINED type
+    "SceneType": TagSpec(TiffType.UNDEFINED, 1, dng_ifd="exif"),  # 41729 - UNDEFINED type
+    "CustomRendered": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41985
+    "ExposureMode": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41986
+    "WhiteBalance": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41987
+    "DigitalZoomRatio": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 41988
+    "FocalLengthIn35mmFilm": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41989
+    "SceneCaptureType": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41990
+    "GainControl": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41991
+    "Contrast": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41992
+    "Saturation": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41993
+    "Sharpness": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41994
+    "DeviceSettingDescription": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 41995
+    "SubjectDistanceRange": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41996
+    "ImageUniqueID": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42016
+    "CameraOwnerName": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42032
+    "BodySerialNumber": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42033
+    "LensSpecification": TagSpec(TiffType.RATIONAL, 4, dng_ifd="exif"),  # 42034
+    "LensMake": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42035
+    "LensModel": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42036
+    "LensSerialNumber": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42037
+    "CompositeImage": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 42080
+    "SourceImageNumberCompositeImage": TagSpec(TiffType.SHORT, None, dng_ifd="exif"),  # 42081
+    "SourceExposureTimesCompositeImage": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 42082
+    "Gamma": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 42240
+    "PixelFormat": TagSpec(TiffType.BYTE, 16, dng_ifd="any"),  # 48129
+    "ImageType": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 48132
+    "OriginalFileName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 50547
+    "DNGVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="dng_ifd0"),  # 50706
+    "DNGBackwardVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="dng_ifd0"),  # 50707
+    "UniqueCameraModel": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 50708
+    "LocalizedCameraModel": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50709
+    "CFAPlaneColor": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw:cfa"),  # 50710
+    "CFALayout": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw:cfa"),  # 50711
+    "LinearizationTable": TagSpec(TiffType.SHORT, None, dng_ifd="dng_raw"),  # 50712
+    "BlackLevelRepeatDim": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw"),  # 50713
+    "BlackLevel": TagSpec(TIFFTYPE_INT_OR_RATIONAL, None, dng_ifd="dng_raw"),  # 50714
+    "BlackLevelDeltaH": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_raw"),  # 50715
+    "BlackLevelDeltaV": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_raw"),  # 50716
+    "WhiteLevel": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="dng_raw"),  # 50717
+    "DefaultScale": TagSpec(TiffType.RATIONAL, 2, dng_ifd="dng_raw"),  # 50718
+    "DefaultCropOrigin": TagSpec(TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="dng_raw"),  # 50719
+    "DefaultCropSize": TagSpec(TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="dng_raw"),  # 50720
+    "ColorMatrix1": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50721 - 3x3 matrix
+    "ColorMatrix2": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50722 - 3x3 matrix
+    "CameraCalibration1": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 50723 - 3x3 matrix
+    "CameraCalibration2": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 50724 - 3x3 matrix
+    "ReductionMatrix1": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_profile"),  # 50725
+    "ReductionMatrix2": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_profile"),  # 50726
+    "AnalogBalance": TagSpec(TiffType.RATIONAL, None, dng_ifd="dng_ifd0"),  # 50727
+    "AsShotNeutral": TagSpec(TiffType.RATIONAL, None, dng_ifd="dng_ifd0"),  # 50728
+    "AsShotWhiteXY": TagSpec(TiffType.RATIONAL, 2, dng_ifd="dng_ifd0"),  # 50729
+    "BaselineExposure": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="dng_ifd0"),  # 50730
+    "BaselineNoise": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50731
+    "BaselineSharpness": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50732
+    "BayerGreenSplit": TagSpec(TiffType.LONG, 1, dng_ifd="dng_raw:cfa"),  # 50733
+    "LinearResponseLimit": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50734
+    "CameraSerialNumber": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 50735
+    "LensInfo": TagSpec(TiffType.RATIONAL, 4, dng_ifd="dng_ifd0"),  # 50736
+    "ChromaBlurRadius": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50737
+    "AntiAliasStrength": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50738
+    "ShadowScale": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50739
+    "DNGPrivateData": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50740
+    "MakerNoteSafety": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 50741
+    "RawImageSegmentation": TagSpec(TiffType.SHORT, 3, dng_ifd="any"),  # 50752
+    "CalibrationIlluminant1": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile"),  # 50778
+    "CalibrationIlluminant2": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile"),  # 50779
+    "BestQualityScale": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50780
+    "RawDataUniqueID": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50781
+    "OriginalRawFileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50827
+    "OriginalRawFileData": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50828
+    "ActiveArea": TagSpec(TIFFTYPE_SHORT_OR_LONG, 4, dng_ifd="dng_raw"),  # 50829
+    "MaskedAreas": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="dng_raw"),  # 50830
+    "AsShotICCProfile": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50831
+    "AsShotPreProfileMatrix": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_ifd0"),  # 50832
+    "CurrentICCProfile": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50833
+    "CurrentPreProfileMatrix": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_ifd0"),  # 50834
+    "ColorimetricReference": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 50879
+    "CameraCalibrationSignature": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50931
+    "ProfileCalibrationSignature": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50932
+    "ProfileIFD": TagSpec(TiffType.LONG, None, dng_ifd="dng_ifd0"),  # 50933 - variable count (can have multiple profiles)
+    "AsShotProfileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50934
+    "NoiseReductionApplied": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50935
+    "ProfileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50936
+    "ProfileHueSatMapDims": TagSpec(TiffType.LONG, None, dng_ifd="dng_profile"),  # 50937
+    "ProfileHueSatMapData1": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50938
+    "ProfileHueSatMapData2": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50939
+    "ProfileToneCurve": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50940
+    "ProfileEmbedPolicy": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 50941
+    "ProfileCopyright": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50942
+    "ForwardMatrix1": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50964 - 3x3 matrix
+    "ForwardMatrix2": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50965 - 3x3 matrix
+    "PreviewApplicationName": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50966
+    "PreviewApplicationVersion": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50967
+    "PreviewSettingsName": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50968
+    "PreviewSettingsDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_preview"),  # 50969
+    "PreviewColorSpace": TagSpec(TiffType.LONG, 1, dng_ifd="dng_preview"),  # 50970
+    "PreviewDateTime": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50971
+    "RawImageDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50972
+    "OriginalRawFileDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50973
+    "SubTileBlockSize": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw"),  # 50974
+    "RowInterleaveFactor": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw"),  # 50975
+    "ProfileLookTableDims": TagSpec(TiffType.LONG, None, dng_ifd="dng_profile"),  # 50981
+    "ProfileLookTableData": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50982
+    "OpcodeList1": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51008
+    "OpcodeList2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51009
+    "OpcodeList3": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51022
     # NoiseProfile: DNG spec says Raw IFD, but Adobe SDK writes to both main and raw IFDs
     # for legacy compatibility (dng_image_writer.cpp:8544). SDK reads from both locations.
-    "NoiseProfile": TagSpec("d", None, dng_ifd="any"),  # 51041
-    "TimeCodes": TagSpec("B", None, dng_ifd="any"),  # 51043
-    "FrameRate": TagSpec("2I", 1, dng_ifd="any"),  # 51044
-    "TStop": TagSpec("2I", None, dng_ifd="any"),  # 51058
-    "ReelName": TagSpec("s", None, dng_ifd="any"),  # 51081
-    "OriginalDefaultFinalSize": TagSpec(["H", "I"], 2, dng_ifd="any"),  # 51089
-    "OriginalBestQualitySize": TagSpec(["H", "I"], 2, dng_ifd="any"),  # 51090
-    "OriginalDefaultCropSize": TagSpec(["H", "I", "2I"], 2, dng_ifd="any"),  # 51091
-    "CameraLabel": TagSpec("s", None, dng_ifd="any"),  # 51105
-    "ProfileHueSatMapEncoding": TagSpec("I", 1, dng_ifd="dng_profile"),  # 51107
-    "ProfileLookTableEncoding": TagSpec("I", 1, dng_ifd="dng_profile"),  # 51108
-    "BaselineExposureOffset": TagSpec("2i", 1, dng_ifd="dng_ifd0"),  # 51109
-    "DefaultBlackRender": TagSpec("I", 1, dng_ifd="dng_ifd0"),  # 51110
-    "NewRawImageDigest": TagSpec("B", 16, dng_ifd="dng_ifd0"),  # 51111
-    "RawToPreviewGain": TagSpec("d", 1, dng_ifd="dng_preview"),  # 51112
-    "CacheBlob": TagSpec("B", None, dng_ifd="dng_preview"),  # 51113
-    "CacheVersion": TagSpec("I", 1, dng_ifd="dng_preview"),  # 51114
-    "DefaultUserCrop": TagSpec("2I", 4, dng_ifd="dng_raw"),  # 51125
-    "DepthFormat": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 51177
-    "DepthNear": TagSpec("2I", 1, dng_ifd="dng_ifd0"),  # 51178
-    "DepthFar": TagSpec("2I", 1, dng_ifd="dng_ifd0"),  # 51179
-    "DepthUnits": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 51180
-    "DepthMeasureType": TagSpec("H", 1, dng_ifd="dng_ifd0"),  # 51181
-    "EnhanceParams": TagSpec("s", None, dng_ifd="any"),  # 51182
-    "ProfileGainTableMap": TagSpec("B", None, dng_ifd="dng_raw"),  # 52525
-    "SemanticName": TagSpec("s", None, dng_ifd="any"),  # 52526
-    "SemanticInstanceID": TagSpec("s", None, dng_ifd="any"),  # 52528
-    "CalibrationIlluminant3": TagSpec("H", 1, dng_ifd="dng_profile"),  # 52529
-    "CameraCalibration3": TagSpec("2i", 9, (3, 3), dng_ifd="dng_ifd0"),  # 52530 - 3x3 matrix
-    "ColorMatrix3": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 52531 - 3x3 matrix
-    "ForwardMatrix3": TagSpec("2i", 9, (3, 3), dng_ifd="dng_profile"),  # 52532 - 3x3 matrix
-    "IlluminantData1": TagSpec("B", None, dng_ifd="dng_profile"),  # 52533
-    "IlluminantData2": TagSpec("B", None, dng_ifd="dng_profile"),  # 52534
-    "IlluminantData3": TagSpec("B", None, dng_ifd="dng_profile"),  # 52535
-    "MaskSubArea": TagSpec("I", 4, dng_ifd="any"),  # 52536
-    "ProfileHueSatMapData3": TagSpec("f", None, dng_ifd="dng_profile"),  # 52537
-    "ReductionMatrix3": TagSpec("2i", None, dng_ifd="dng_profile"),  # 52538
-    "RGBTables": TagSpec("B", None, dng_ifd="dng_profile"),  # 52543
-    "ProfileGainTableMap2": TagSpec("B", None, dng_ifd="dng_profile"),  # 52544
-    "ColumnInterleaveFactor": TagSpec("H", 1, dng_ifd="dng_raw"),  # 52547
-    "ImageSequenceInfo": TagSpec("B", None, dng_ifd="dng_ifd0"),  # 52548
-    "ProfileToneMethod": TagSpec("I", 1, dng_ifd="dng_profile"),  # 52549 (not in tifffile)
-    "ImageStats": TagSpec("B", None, dng_ifd="dng_raw"),  # 52550
-    "ProfileDynamicRange": TagSpec("d", 1, dng_ifd="dng_profile"),  # 52551
-    "ProfileGroupName": TagSpec(["s", "B"], None, dng_ifd="dng_profile"),  # 52552
-    "JXLDistance": TagSpec("f", 1, dng_ifd="any"),  # 52553
-    "JXLEffort": TagSpec("I", 1, dng_ifd="any"),  # 52554
-    "JXLDecodeSpeed": TagSpec("I", 1, dng_ifd="any"),  # 52555
-    "Padding": TagSpec("B", None, dng_ifd="any"),  # 59932
-    "OffsetSchema": TagSpec("i", 1, dng_ifd="any"),  # 59933
+    "NoiseProfile": TagSpec(TiffType.DOUBLE, None, dng_ifd="any"),  # 51041
+    "TimeCodes": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 51043
+    "FrameRate": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 51044
+    "TStop": TagSpec(TiffType.RATIONAL, None, dng_ifd="any"),  # 51058
+    "ReelName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51081
+    "OriginalDefaultFinalSize": TagSpec(TIFFTYPE_SHORT_OR_LONG, 2, dng_ifd="any"),  # 51089
+    "OriginalBestQualitySize": TagSpec(TIFFTYPE_SHORT_OR_LONG, 2, dng_ifd="any"),  # 51090
+    "OriginalDefaultCropSize": TagSpec(TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="any"),  # 51091
+    "CameraLabel": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51105
+    "ProfileHueSatMapEncoding": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 51107
+    "ProfileLookTableEncoding": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 51108
+    "BaselineExposureOffset": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="dng_ifd0"),  # 51109
+    "DefaultBlackRender": TagSpec(TiffType.LONG, 1, dng_ifd="dng_ifd0"),  # 51110
+    "NewRawImageDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 51111
+    "RawToPreviewGain": TagSpec(TiffType.DOUBLE, 1, dng_ifd="dng_preview"),  # 51112
+    "CacheBlob": TagSpec(TiffType.BYTE, None, dng_ifd="dng_preview"),  # 51113
+    "CacheVersion": TagSpec(TiffType.LONG, 1, dng_ifd="dng_preview"),  # 51114
+    "DefaultUserCrop": TagSpec(TiffType.RATIONAL, 4, dng_ifd="dng_raw"),  # 51125
+    "DepthFormat": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 51177
+    "DepthNear": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 51178
+    "DepthFar": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 51179
+    "DepthUnits": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 51180
+    "DepthMeasureType": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 51181
+    "EnhanceParams": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51182
+    "ProfileGainTableMap": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 52525
+    "SemanticName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52526
+    "SemanticInstanceID": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52528
+    "CalibrationIlluminant3": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile"),  # 52529
+    "CameraCalibration3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 52530 - 3x3 matrix
+    "ColorMatrix3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 52531 - 3x3 matrix
+    "ForwardMatrix3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 52532 - 3x3 matrix
+    "IlluminantData1": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52533
+    "IlluminantData2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52534
+    "IlluminantData3": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52535
+    "MaskSubArea": TagSpec(TiffType.LONG, 4, dng_ifd="any"),  # 52536
+    "ProfileHueSatMapData3": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 52537
+    "ReductionMatrix3": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_profile"),  # 52538
+    "RGBTables": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52543
+    "ProfileGainTableMap2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52544
+    "ColumnInterleaveFactor": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw"),  # 52547
+    "ImageSequenceInfo": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 52548
+    "ProfileToneMethod": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 52549 (not in tifffile)
+    "ImageStats": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 52550
+    "ProfileDynamicRange": TagSpec(TiffType.DOUBLE, 1, dng_ifd="dng_profile"),  # 52551
+    "ProfileGroupName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 52552
+    "JXLDistance": TagSpec(TiffType.FLOAT, 1, dng_ifd="any"),  # 52553
+    "JXLEffort": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 52554
+    "JXLDecodeSpeed": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 52555
+    "Padding": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 59932
+    "OffsetSchema": TagSpec(TiffType.SLONG, 1, dng_ifd="any"),  # 59933
 }
 
 # =============================================================================
@@ -650,7 +672,7 @@ def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Opt
     return tag_id, tag_name, spec
 
 
-def decode_tag_value(
+def _decode_tag_value(
     tag_name: str,
     tag_value: Any,
     tag_dtype: int,
@@ -658,6 +680,8 @@ def decode_tag_value(
     return_type: Optional[type] = None,
 ) -> Any:
     """Decode a raw TIFF value to a Python type (TIFF → Python).
+    
+    Internal function - use get_tag() or convert_tag_value() instead.
     
     Pure conversion function - takes raw value and dtype, returns converted value.
     
@@ -673,7 +697,7 @@ def decode_tag_value(
     """
     # Validate tag dtype against spec if available
     if spec is not None:
-        file_dtype_str = TIFF_DTYPE_TO_STR.get(tag_dtype)
+        file_dtype_str = TIFFTYPE_TO_DTYPE_STR.get(tag_dtype)
         expected_dtypes = spec.dtype if isinstance(spec.dtype, list) else [spec.dtype]
         if file_dtype_str and file_dtype_str not in expected_dtypes:
             name_str = f"Tag '{tag_name}'" if tag_name else "Tag"
@@ -682,26 +706,28 @@ def decode_tag_value(
                 f"but spec expects {expected_dtypes}"
             )
     
+    # Helper to decode and strip null terminators from string-like values
+    def _decode_string(val):
+        if isinstance(val, bytes):
+            return val.decode('utf-8', errors='replace').rstrip('\x00')
+        elif isinstance(val, np.ndarray):
+            return val.tobytes().decode('utf-8', errors='replace').rstrip('\x00')
+        elif isinstance(val, str):
+            return val.rstrip('\x00')
+        return str(val)
+    
     # If no return_type specified, return raw value
+    # ASCII strings: strip null terminators to provide clean Python strings
+    # (encode_tag_value will add them back when writing to TIFF)
     if return_type is None:
+        # ASCII strings - remove TIFF null terminator
+        if tag_dtype == TiffType.ASCII:
+            return _decode_string(tag_value)
         return tag_value
     
     # Handle string conversion
     if return_type is str:
-        # PhotometricInterpretation: enum → name string
-        if tag_name == "PhotometricInterpretation":
-            photometric_names = {
-                PHOTOMETRIC.CFA: "CFA",
-                PHOTOMETRIC.LINEAR_RAW: "LINEAR_RAW",
-            }
-            return photometric_names.get(tag_value, str(tag_value))
-        # Handle bytes and numpy arrays (e.g., XMP)
-        if isinstance(tag_value, bytes):
-            return tag_value.decode('utf-8', errors='replace').rstrip('\x00')
-        if isinstance(tag_value, np.ndarray):
-            # Numpy array of bytes - extract and decode
-            return tag_value.tobytes().decode('utf-8', errors='replace').rstrip('\x00')
-        return str(tag_value)
+        return _decode_string(tag_value)
     
     # Handle datetime conversion (EXIF datetime strings → datetime)
     if return_type is datetime:
@@ -796,14 +822,14 @@ def convert_tag_value(
     # Special formatting applies when return_type is None (auto) or matches the special type
     # XMP: return XmpMetadata object
     if tag_name == "XMP" and (return_type is None or return_type is XmpMetadata):
-        xmp_string = decode_tag_value(tag_name, tag_value, tag_dtype, None, str)
+        xmp_string = _decode_tag_value(tag_name, tag_value, tag_dtype, None, str)
         if xmp_string is None:
             xmp_string = ""
         return XmpMetadata(xmp_string)
     
     # DNG Version tags: return 4-tuple (major, minor, patch, build)
     if tag_name in ("DNGVersion", "DNGBackwardVersion") and (return_type is None or return_type is tuple):
-        version_bytes = decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
+        version_bytes = _decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
         if version_bytes is None:
             return None
         # Pad to 4 bytes if needed (null bytes may be stripped)
@@ -812,10 +838,18 @@ def convert_tag_value(
     
     # CFAPattern: return friendly pattern string (e.g., "RGGB")
     if tag_name == "CFAPattern" and (return_type is None or return_type is str):
-        pattern_bytes = decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
+        pattern_bytes = _decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
         if pattern_bytes is None:
             return None
         return CFA_CODES_TO_PATTERN.get(tuple(pattern_bytes), str(pattern_bytes))
+    
+    # PhotometricInterpretation: convert enum to readable name
+    if tag_name == "PhotometricInterpretation" and (return_type is None or return_type is str):
+        photometric_names = {
+            PHOTOMETRIC.CFA: "CFA",
+            PHOTOMETRIC.LINEAR_RAW: "LINEAR_RAW",
+        }
+        return photometric_names.get(tag_value, str(tag_value))
     
     # Validate count against registry spec
     if registry_spec and registry_spec.count is not None and tag_count != registry_spec.count:
@@ -831,10 +865,10 @@ def convert_tag_value(
     shape_spec = None
     if registry_spec and registry_spec.shape and registry_spec.count == tag_count:
         shape_spec = TagSpec(
-            TIFF_DTYPE_TO_STR.get(tag_dtype, 'B'), tag_count, registry_spec.shape
+            TIFFTYPE_TO_DTYPE_STR.get(tag_dtype, 'B'), tag_count, registry_spec.shape
         )
     
-    return decode_tag_value(tag_name, tag_value, tag_dtype, shape_spec, effective_type)
+    return _decode_tag_value(tag_name, tag_value, tag_dtype, shape_spec, effective_type)
 
 
 def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
@@ -856,16 +890,16 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
             logger.warning(f"Unknown CFAPattern '{value}', using default 'RGGB'")
             value = bytes(CFA_PATTERN_TO_CODES["RGGB"])
     
-    # UTF-8 string tags: tags with ["s", "B"] dtype support UTF-8 encoding
+    # UTF-8 string tags: tags with [ASCII, BYTE] dtype support UTF-8 encoding
     # Includes: LocalizedCameraModel, ProfileName, ProfileCopyright, etc.
-    if isinstance(value, str) and isinstance(spec.dtype, list) and "B" in spec.dtype:
+    if isinstance(value, str) and isinstance(spec.dtype, list) and TiffType.BYTE in spec.dtype:
         value = value.encode("utf-8") + b"\x00"
     
     # Select appropriate dtype based on value type (handles multi-type TagSpecs)
     dtype = spec.get_dtype_for_value(value)
     
-    # === String handling ===
-    if dtype == 's':
+    # === String handling (ASCII) ===
+    if dtype == TiffType.ASCII:
         if hasattr(value, 'strftime'):
             # Convert datetime-like objects to TIFF format
             value = value.strftime("%Y:%m:%d %H:%M:%S")
@@ -876,8 +910,8 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
             value = value + '\x00'
         return (dtype, len(value), value)
     
-    # === Byte array handling ===
-    if dtype == 'B':
+    # === Byte array handling (BYTE, UNDEFINED) ===
+    if dtype in (TiffType.BYTE, TiffType.UNDEFINED):
         if isinstance(value, bytes):
             return (dtype, len(value), value)
         if isinstance(value, (list, tuple)):
@@ -890,8 +924,8 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
         # Single byte
         return (dtype, 1, bytes([int(value)]))
     
-    # === Rational handling (2I or 2i) ===
-    if dtype in ('2I', '2i'):
+    # === Rational handling (RATIONAL, SRATIONAL) ===
+    if dtype in (TiffType.RATIONAL, TiffType.SRATIONAL):
         max_denom = 10000
         
         # Check if value is already in rational format by comparing with spec.count
@@ -925,15 +959,15 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
             frac = Fraction(float(value)).limit_denominator(max_denom)
             return (dtype, 1, (frac.numerator, frac.denominator))
     
-    # === Integer handling ===
-    if dtype in ('H', 'I', 'h', 'i', 'Q', 'q'):
+    # === Integer handling (SHORT, LONG, SSHORT, SLONG, LONG8, SLONG8) ===
+    if dtype in (TiffType.SHORT, TiffType.LONG, TiffType.SSHORT, TiffType.SLONG, TiffType.LONG8, TiffType.SLONG8):
         if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
             arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
             return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
         return (dtype, 1, int(value))
     
-    # === Float handling ===
-    if dtype in ('f', 'd'):
+    # === Float handling (FLOAT, DOUBLE) ===
+    if dtype in (TiffType.FLOAT, TiffType.DOUBLE):
         if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
             arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
             return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
@@ -1175,9 +1209,7 @@ class MetadataTags:
         """Create a deep copy of this MetadataTags instance.
         
         Args:
-            convert_exif: If True (default), convert ExifTag dictionary to individual
-                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
-                         cannot write ExifIFD structures.
+            convert_exif: If True (default), convert ExifTag dictionary to individual TIFF tags. 
         
         Returns:
             New MetadataTags instance with copied tags.
@@ -1233,7 +1265,7 @@ class MetadataTags:
     def add_raw_tag(
         self, 
         name_or_code: Union[str, int], 
-        dtype: Union[str, int], 
+        dtype: Union[TiffType, int], 
         count: int, 
         value: Any
     ) -> None:
@@ -1244,7 +1276,7 @@ class MetadataTags:
         
         Args:
             name_or_code: Tag name string or numeric code
-            dtype: TIFF data type string ('s', 'H', 'I', '2I', etc.) or int
+            dtype: TIFF data type (TiffType enum or int code, e.g., TiffType.RATIONAL or 5)
             count: Number of values
             value: The tag value (numpy arrays will be normalized to system byte order)
         """
@@ -1252,11 +1284,8 @@ class MetadataTags:
         if tag_code is None:
             raise KeyError(f"Tag '{name_or_code}' not found in LOCAL_TIFF_TAGS.")
 
-        # Handle dtype parameter - can be string key, int, or DATATYPE enum value
-        if isinstance(dtype, str):
-            tag_dtype = TIFF.DATA_DTYPES[dtype]
-        else:
-            tag_dtype = int(dtype)  # Convert enum or any numeric type to int
+        # TiffType is int, Enum, so int() works for both TiffType and plain int
+        tag_dtype = int(dtype)
 
         # Normalize value to system byte order for internal storage
         normalized_value = normalize_array_to_target_byteorder(value, '=')

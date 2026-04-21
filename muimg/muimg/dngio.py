@@ -286,9 +286,7 @@ class DngPage(TiffPage):
         """Return a copy of IFD0 tags as a MetadataTags object.
         
         Args:
-            convert_exif: If True (default), convert ExifTag dictionary to individual
-                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
-                         cannot write ExifIFD structures.
+            convert_exif: If True (default), convert ExifTag dictionary to individual TIFF tags.
         """
         return self.ifd0.get_page_tags(convert_exif=convert_exif)
     
@@ -301,9 +299,7 @@ class DngPage(TiffPage):
         - ProfileGainTableMap/ProfileGainTableMap2 binary blobs
         
         Args:
-            convert_exif: If True (default), convert ExifTag dictionary to individual
-                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
-                         cannot write ExifIFD structures.
+            convert_exif: If True (default), convert ExifTag dictionary to individual TIFF tags. 
         """
         tags = MetadataTags()
         
@@ -1049,9 +1045,7 @@ class DngFile(TiffFile):
         """Return a copy of IFD0 tags as a MetadataTags object.
         
         Args:
-            convert_exif: If True (default), convert ExifTag dictionary to individual
-                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
-                         cannot write ExifIFD structures.
+            convert_exif: If True (default), convert ExifTag dictionary to individual TIFF tags.
         """
         return self.ifd0.get_ifd0_tags(convert_exif=convert_exif) if self.ifd0 else MetadataTags()
 
@@ -1371,7 +1365,7 @@ def _prepare_ifd_args(
     # Note: extratags is set by caller after this function returns
     return ifd_args
 
-def _add_required_ifd0_tags(tags: MetadataTags, *, needs_v1_7_1: bool = False) -> None:
+def _add_required_ifd0_tags(tags: MetadataTags, needs_v1_7_1: bool = False) -> None:
     """Add required DNG IFD0 tags to existing tags in-place.
     
     Tag names are from tifffile.py TiffTagRegistry.
@@ -1472,7 +1466,7 @@ _DIGEST_TAGS = {
     'NewRawImageDigest', 'RawImageDigest', 'OriginalRawFileDigest', 'RawDataUniqueID',
 }
 
-# Tags invalidated when decompressing or recompressing
+# Tags invalidated when transcoding
 _COMPRESSION_INVALIDATED_TAGS = {
     'YCbCrCoefficients', 'YCbCrSubSampling', 'YCbCrPositioning',
     'ReferenceBlackWhite', 'JPEGInterchangeFormat',
@@ -1484,8 +1478,7 @@ _COMPRESSION_INVALIDATED_TAGS = {
 
 def _filter_metadata_tags(
     tags: MetadataTags,
-    *,
-    exclude_names: Optional[set[str]],
+    exclude_names: Optional[set[str]] = None,
 ) -> None:
     """Filter tags in-place by removing tags in the exclude set.
     

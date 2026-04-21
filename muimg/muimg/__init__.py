@@ -7,7 +7,6 @@ This module provides functionality for working with DNG files and raw image data
 from .tiff_metadata import (
     MetadataTags,
     XmpMetadata,
-    decode_tag_value,
     get_cfa_pattern_codes,
     xmp_packet_to_metadata,
     xmp_metadata_to_packet,
@@ -60,7 +59,6 @@ __all__ = [
     'DngPage',
     'MetadataTags',
     'XmpMetadata',
-    'decode_tag_value',
     'get_cfa_pattern_codes',
     'xmp_packet_to_metadata',
     'xmp_metadata_to_packet',
