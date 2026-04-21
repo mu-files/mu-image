@@ -817,6 +817,13 @@ def convert_tag_value(
             return None
         return CFA_CODES_TO_PATTERN.get(tuple(pattern_bytes), str(pattern_bytes))
     
+    # Validate count against registry spec
+    if registry_spec and registry_spec.count is not None and tag_count != registry_spec.count:
+        name_str = f"Tag '{tag_name}'" if tag_name else "Tag"
+        logger.warning(
+            f"{name_str} has count {tag_count} but spec expects {registry_spec.count}"
+        )
+    
     # Determine effective return type (auto-convert if None)
     effective_type = return_type or get_native_type(tag_dtype, tag_count)
     
@@ -887,6 +894,15 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
     if dtype in ('2I', '2i'):
         max_denom = 10000
         
+        # Check if value is already in rational format by comparing with spec.count
+        # For EXIF tags: spec.count=1 with 2-element tuple means pre-formatted (num, denom)
+        # For arrays: spec.count=N with 2N-element tuple means N pre-formatted rationals
+        if isinstance(value, tuple) and len(value) % 2 == 0:
+            expected_count = spec.count if spec.count is not None else len(value) // 2
+            # If tuple length matches expected rational count, treat as pre-formatted
+            if len(value) == expected_count * 2:
+                return (dtype, expected_count, value)
+        
         # Handle array-like objects (numpy, pandas, xarray, etc.)
         if hasattr(value, '__array__'):
             flat = np.asarray(value).flatten()
@@ -896,7 +912,7 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
                 rationals.extend([frac.numerator, frac.denominator])
             return (dtype, len(flat), tuple(rationals))
         
-        # Handle lists/tuples of floats
+        # Handle lists/tuples of floats - convert each to rational
         if isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], (int, float)):
             rationals = []
             for v in value:
@@ -908,10 +924,6 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
         if isinstance(value, (int, float)):
             frac = Fraction(float(value)).limit_denominator(max_denom)
             return (dtype, 1, (frac.numerator, frac.denominator))
-        
-        # Already in rational tuple format (num, denom, num, denom, ...)
-        if isinstance(value, tuple) and len(value) % 2 == 0:
-            return (dtype, len(value) // 2, value)
     
     # === Integer handling ===
     if dtype in ('H', 'I', 'h', 'i', 'Q', 'q'):
@@ -1072,6 +1084,43 @@ def _get_time_impl(
     
     return dt_obj
 
+
+def _convert_exif_dict_to_tags(tags: MetadataTags) -> None:
+    """Convert ExifTag dictionary to individual TIFF tags.
+    
+    Since TiffWriter cannot write ExifIFD structures, this function converts
+    EXIF tags from the dictionary format (as read by tifffile) to individual
+    TIFF tags that can be written as regular tags. The ExifTag dict itself
+    remains in the tags instance.
+    
+    Args:
+        tags: MetadataTags instance containing ExifTag to convert.
+              Individual EXIF tags are added. Existing tags are not overwritten.
+        
+    Example:
+        tags = MetadataTags()
+        tags.add_raw_tag('ExifTag', ...)  # Contains {"ExposureTime": [1, 400], ...}
+        convert_exif_dict_to_tags(tags)
+        # tags now contains ExposureTime and FNumber as regular TIFF tags
+        # plus the original ExifTag dict
+    """
+    exif_dict = tags.get_tag('ExifTag', dict)
+    if not exif_dict:
+        return
+    
+    for tag_name, value in exif_dict.items():
+        # Skip ExifVersion - it's already converted to string by tifffile and not useful as TIFF tag
+        if tag_name == 'ExifVersion':
+            continue
+        
+        # Check if tag has a type spec and is not already present
+        if tag_name in TIFF_TAG_TYPE_REGISTRY and tag_name not in tags:
+            try:
+                tags.add_tag(tag_name, value)
+            except (ValueError, TypeError) as e:
+                # Value format doesn't match tag spec
+                logger.debug(f"Skipping EXIF tag '{tag_name}': {e}")
+
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
     
@@ -1122,8 +1171,13 @@ class MetadataTags:
             return True
         return False
 
-    def copy(self) -> MetadataTags:
+    def copy(self, convert_exif: bool = True) -> MetadataTags:
         """Create a deep copy of this MetadataTags instance.
+        
+        Args:
+            convert_exif: If True (default), convert ExifTag dictionary to individual
+                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
+                         cannot write ExifIFD structures.
         
         Returns:
             New MetadataTags instance with copied tags.
@@ -1132,6 +1186,11 @@ class MetadataTags:
         new_instance = MetadataTags()
         # Deep copy the tags dict to avoid shared mutable objects
         new_instance._tags = copy.deepcopy(self._tags)
+        
+        # Convert EXIF dict to individual tags if requested
+        if convert_exif:
+            _convert_exif_dict_to_tags(new_instance)
+    
         return new_instance
 
     def add_tag(self, tag_name: str, value: Any) -> None:
@@ -1940,3 +1999,4 @@ def xmp_metadata_to_packet(xmp: XmpMetadata) -> bytes:
     
     xmp_string = '\n'.join(xmp_lines)
     return xmp_string.encode('utf-8')
+

@@ -378,6 +378,34 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         echo(f"{tag_display}: None")
         return
     
+    # Special handling for EXIF/GPS dictionaries - enumerate fields
+    if tag_name in ("ExifTag", "GPSTag") and isinstance(value, dict):
+        echo(f"{tag_display}: {len(value)} fields")
+        # Display each EXIF field with extra indentation
+        for key, val in value.items():
+            # Recursively display each field
+            _display_tag(str(key), val, indent + "  ", None, None, None)
+        return
+
+    # Special formatting for DNG version tags (4-tuple from get_tag)
+    if tag_name in ("DNGVersion", "DNGBackwardVersion") and isinstance(value, tuple) and len(value) == 4:
+        version_str = f"{value[0]}.{value[1]}.{value[2]}.{value[3]}"
+        echo(f"{tag_display}: {version_str}")
+        return
+    
+    # Special handling for OpcodeList tags - show opcode names
+    if tag_name in ('OpcodeList1', 'OpcodeList2', 'OpcodeList3'):
+        from . import raw_render
+        summary = raw_render.get_opcode_summary(bytes(value), detailed=True)
+        num_bytes = len(bytes(value))
+        
+        # Display multi-line summary
+        lines = summary.split('\n')
+        echo(f"{tag_display}: {lines[0]} ({num_bytes} bytes)")
+        for line in lines[1:]:
+            echo(f"  {line}")
+        return
+
     # Special handling for XMP - show raw XML with duplicate detection
     if isinstance(value, XmpMetadata):
         # Get the formatted XMP string for comparison and display
@@ -403,41 +431,13 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             size = len(str(value))
             echo(f"{tag_display}: XML metadata, {size} bytes")
         return
-    
-    # Special handling for EXIF/GPS dictionaries - enumerate fields
-    if isinstance(value, dict) and tag_name in ("ExifTag", "GPSTag"):
-        echo(f"{tag_display}: {len(value)} fields")
-        # Display each EXIF field with extra indentation
-        for key, val in value.items():
-            # Recursively display each field
-            _display_tag(str(key), val, indent + "  ", None, None, None)
-        return
-    
+
     # Strings
     if isinstance(value, str):
         display_str = f"{value[:200]}... ({len(value)} chars)" if len(value) > 200 else value
         echo(f"{tag_display}: {display_str}")
         return
-    
-    # Special formatting for DNG version tags (4-tuple from get_tag)
-    if tag_name in ("DNGVersion", "DNGBackwardVersion") and isinstance(value, tuple) and len(value) == 4:
-        version_str = f"{value[0]}.{value[1]}.{value[2]}.{value[3]}"
-        echo(f"{tag_display}: {version_str}")
-        return
-    
-    # Special handling for OpcodeList tags - show opcode names
-    if tag_name in ('OpcodeList1', 'OpcodeList2', 'OpcodeList3'):
-        from . import raw_render
-        summary = raw_render.get_opcode_summary(bytes(value), detailed=True)
-        num_bytes = len(bytes(value))
-        
-        # Display multi-line summary
-        lines = summary.split('\n')
-        echo(f"{tag_display}: {lines[0]} ({num_bytes} bytes)")
-        for line in lines[1:]:
-            echo(f"  {line}")
-        return
-    
+
     # Bytes (binary data) - handle both bytes and numpy byte arrays
     byte_value = None
     if isinstance(value, bytes):
@@ -458,14 +458,17 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     
     # Simple scalars
     if value.size == 1:
-        echo(f"{tag_display}: {value.item()}")
+        scalar = value.item()
+        if isinstance(scalar, float):
+            scalar = round(scalar, 4)
+        echo(f"{tag_display}: {scalar}")
         return
     
     # 2D arrays (matrices) - display in matrix format
     if value.ndim == 2:
         echo(f"{tag_display}:")
         for i in range(min(value.shape[0], 3)):  # Max 3 lines
-            row_str = "  " + "  ".join(f"{v:8.4f}" for v in value[i])
+            row_str = "  " + "  ".join(f"{round(v, 4):8.4f}" for v in value[i])
             echo(row_str)
         if value.shape[0] > 3:
             echo(f"  ... ({value.shape[0]} rows total)")
@@ -475,9 +478,8 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     def format_value(v):
         """Format a value with appropriate precision."""
         val = v.item() if isinstance(v, (np.integer, np.floating)) else v
-        # Use Python's 'g' format for floats (4 significant figures, auto-chooses notation)
         if isinstance(val, float):
-            return float(f"{val:.4g}")
+            return round(val, 4)
         return val
     
     # 1D arrays

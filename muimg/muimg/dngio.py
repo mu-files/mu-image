@@ -282,17 +282,28 @@ class DngPage(TiffPage):
         return _get_time_impl(self, time_type)
 
 
-    def get_ifd0_tags(self) -> MetadataTags:
-        """Return a copy of IFD0 tags as a MetadataTags object."""
-        return self.ifd0.get_page_tags()
+    def get_ifd0_tags(self, convert_exif: bool = True) -> MetadataTags:
+        """Return a copy of IFD0 tags as a MetadataTags object.
+        
+        Args:
+            convert_exif: If True (default), convert ExifTag dictionary to individual
+                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
+                         cannot write ExifIFD structures.
+        """
+        return self.ifd0.get_page_tags(convert_exif=convert_exif)
     
-    def get_page_tags(self) -> MetadataTags:
+    def get_page_tags(self, convert_exif: bool = True) -> MetadataTags:
         """Return a copy of all page-level tags as a MetadataTags object.
         
         All multi-byte arrays are normalized to system byte order for consistent
         internal representation. This includes:
         - Multi-byte typed arrays (SHORT, LONG, FLOAT, etc.)
         - ProfileGainTableMap/ProfileGainTableMap2 binary blobs
+        
+        Args:
+            convert_exif: If True (default), convert ExifTag dictionary to individual
+                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
+                         cannot write ExifIFD structures.
         """
         tags = MetadataTags()
         
@@ -302,6 +313,11 @@ class DngPage(TiffPage):
             if tag_info is not None:
                 _, _, _, raw_tag, normalized_value = tag_info
                 tags.add_raw_tag(tag_code, raw_tag.dtype, raw_tag.count, normalized_value)
+        
+        # Apply EXIF conversion if requested
+        if convert_exif:
+            from .tiff_metadata import _convert_exif_dict_to_tags
+            _convert_exif_dict_to_tags(tags)
         
         return tags
     
@@ -1029,9 +1045,15 @@ class DngFile(TiffFile):
         
         return optimal_page, (target_w, target_h)
 
-    def get_ifd0_tags(self) -> MetadataTags:
-        """Return a copy of IFD0 tags as a MetadataTags object."""
-        return self.ifd0.get_ifd0_tags() if self.ifd0 else MetadataTags()
+    def get_ifd0_tags(self, convert_exif: bool = True) -> MetadataTags:
+        """Return a copy of IFD0 tags as a MetadataTags object.
+        
+        Args:
+            convert_exif: If True (default), convert ExifTag dictionary to individual
+                         TIFF tags. The ExifTag entry itself is removed since TiffWriter
+                         cannot write ExifIFD structures.
+        """
+        return self.ifd0.get_ifd0_tags(convert_exif=convert_exif) if self.ifd0 else MetadataTags()
 
     def get_tag(
         self,
