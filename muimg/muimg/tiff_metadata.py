@@ -688,9 +688,6 @@ def decode_tag_value(
     
     # Handle string conversion
     if return_type is str:
-        # CFAPattern: bytes → pattern string (e.g., "RGGB")
-        if tag_name == "CFAPattern" and isinstance(tag_value, bytes):
-            return CFA_CODES_TO_PATTERN.get(tuple(tag_value), str(tag_value))
         # PhotometricInterpretation: enum → name string
         if tag_name == "PhotometricInterpretation":
             photometric_names = {
@@ -796,23 +793,29 @@ def convert_tag_value(
     Returns:
         Converted value with special formatting applied if applicable.
     """
-    # Special formatting only applies when return_type is None (auto)
-    if return_type is None:
-        # XMP: return XmpMetadata object
-        if tag_name == "XMP":
-            xmp_string = decode_tag_value(tag_name, tag_value, tag_dtype, None, str)
-            if xmp_string is None:
-                xmp_string = ""
-            return XmpMetadata(xmp_string)
-        
-        # DNG Version tags: return 4-tuple (major, minor, patch, build)
-        if tag_name in ("DNGVersion", "DNGBackwardVersion"):
-            version_bytes = decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
-            if version_bytes is None:
-                return None
-            # Pad to 4 bytes if needed (null bytes may be stripped)
-            padded = version_bytes + b'\x00' * (4 - len(version_bytes))
-            return (padded[0], padded[1], padded[2], padded[3])
+    # Special formatting applies when return_type is None (auto) or matches the special type
+    # XMP: return XmpMetadata object
+    if tag_name == "XMP" and (return_type is None or return_type is XmpMetadata):
+        xmp_string = decode_tag_value(tag_name, tag_value, tag_dtype, None, str)
+        if xmp_string is None:
+            xmp_string = ""
+        return XmpMetadata(xmp_string)
+    
+    # DNG Version tags: return 4-tuple (major, minor, patch, build)
+    if tag_name in ("DNGVersion", "DNGBackwardVersion") and (return_type is None or return_type is tuple):
+        version_bytes = decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
+        if version_bytes is None:
+            return None
+        # Pad to 4 bytes if needed (null bytes may be stripped)
+        padded = version_bytes + b'\x00' * (4 - len(version_bytes))
+        return (padded[0], padded[1], padded[2], padded[3])
+    
+    # CFAPattern: return friendly pattern string (e.g., "RGGB")
+    if tag_name == "CFAPattern" and (return_type is None or return_type is str):
+        pattern_bytes = decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
+        if pattern_bytes is None:
+            return None
+        return CFA_CODES_TO_PATTERN.get(tuple(pattern_bytes), str(pattern_bytes))
     
     # Determine effective return type (auto-convert if None)
     effective_type = return_type or get_native_type(tag_dtype, tag_count)

@@ -538,20 +538,24 @@ def dng_convert(
     try:
         # Open DNG and select page
         with DngFile(input_file) as dng:
-            page = _get_page_from_ifd_spec(dng, ifd)
-            _, ifd_name = _parse_ifd_spec(ifd)
-            
-            # Validate parameters before rendering
-            if params and not (page.is_cfa or page.is_linear_raw):
-                click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
-                sys.exit(1)
+            # Pass dng if no specific IFD, otherwise pass page
+            if ifd is None:
+                file_arg = dng
+            else:
+                file_arg = _get_page_from_ifd_spec(dng, ifd)
+                _, ifd_name = _parse_ifd_spec(ifd)
+                
+                # Validate parameters before rendering
+                if params and not (file_arg.is_cfa or file_arg.is_linear_raw):
+                    click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
+                    sys.exit(1)
             
             # Use convert_dng to handle rendering and saving
             success = convert_dng(
-                file=page,
+                file=file_arg,
                 output=output_file,
                 output_dtype=output_dtype,
-                demosaic_algorithm='RCD',
+                demosaic_algorithm='OPENCV_EA',
                 strict=False,
                 use_xmp=not no_xmp,
                 rendering_params=params,
@@ -559,10 +563,14 @@ def dng_convert(
             )
             
             if not success:
-                click.echo(f"Error: Failed to convert {ifd_name}", err=True)
+                click.echo(f"Error: Failed to convert {input_file}", err=True)
                 sys.exit(1)
             
-            click.echo(f"Converted {ifd_name} ({page.photometric_name}, {page.imagewidth}x{page.imagelength}) to {output_file}")
+            if ifd is None:
+                click.echo(f"Converted {input_file} to {output_file}")
+            else:
+                w, h = file_arg.get_rendered_size()
+                click.echo(f"Converted {ifd_name} ({file_arg.photometric_name}, {w}x{h}) to {output_file}")
             
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -765,7 +773,16 @@ def dng_copy(
     from . import dngio
     from .tiff_metadata import MetadataTags
     
-    strip_tags_set = set(strip_tag) if strip_tag else None
+    # Parse --strip-tag options, supporting comma-separated lists
+    strip_tags_set = None
+    if strip_tag:
+        strip_tags_set = set()
+        for tag_spec in strip_tag:
+            # Split by comma and strip whitespace from each tag name
+            for tag_name in tag_spec.split(','):
+                tag_name = tag_name.strip()
+                if tag_name:  # Skip empty strings
+                    strip_tags_set.add(tag_name)
     
     # Parse --tag NAME=VALUE options into MetadataTags
     extra_tags = None
@@ -810,6 +827,7 @@ def dng_copy(
                 page=page,
                 page_operation=page_operation,
                 compression_args=compression_args,
+                strip_tags=strip_tags_set,
             )
             
             # Write using write_dng_from_page
@@ -940,7 +958,7 @@ def convert_dngs_to_video(
             img = decode_dng(
                 file=io.BytesIO(blob),
                 output_dtype=output_dtype,
-                demosaic_algorithm='RCD',
+                demosaic_algorithm='OPENCV_EA',
                 use_coreimage_if_available=use_coreimage,
                 use_xmp=not no_xmp,
                 rendering_params=rendering_params,

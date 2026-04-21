@@ -334,11 +334,11 @@ static PyObject* py_vng_demosaic(PyObject* self, PyObject* args, PyObject* kwarg
     if (strcmp(pattern_str, "RGGB") == 0) {
         filters = 0x94949494;
     } else if (strcmp(pattern_str, "BGGR") == 0) {
-        filters = 0x49494949;
-    } else if (strcmp(pattern_str, "GRBG") == 0) {
-        filters = 0x61616161;
-    } else if (strcmp(pattern_str, "GBRG") == 0) {
         filters = 0x16161616;
+    } else if (strcmp(pattern_str, "GRBG") == 0) {
+        filters = 0x49494949;
+    } else if (strcmp(pattern_str, "GBRG") == 0) {
+        filters = 0x61616161;
     } else {
         PyErr_SetString(PyExc_ValueError, "Invalid pattern. Must be RGGB, BGGR, GRBG, or GBRG");
         return NULL;
