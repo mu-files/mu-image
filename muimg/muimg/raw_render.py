@@ -32,6 +32,12 @@ class DngOpcode(IntEnum):
     SCALE_PER_ROW = 12
     SCALE_PER_COLUMN = 13
     WARP_RECTILINEAR2 = 14
+    
+    @classmethod
+    def lookup(cls, value: int) -> Optional["DngOpcode"]:
+        """Look up enum member by integer value."""
+        from .common import enum_from_value
+        return enum_from_value(cls, value)
 
 class ColorSpace(Enum):
     """Color space definitions with native gamma encoding.
@@ -47,6 +53,19 @@ class ColorSpace(Enum):
     ADOBERGB_GAMMA = auto()      # Gamma 2.2
     SRGB_LINEAR = auto()
     SRGB_GAMMA = auto()          # sRGB piecewise gamma
+
+class DemosaicAlgorithm(str, Enum):
+    """Demosaic algorithm selectors."""
+    VNG = "VNG"
+    RCD = "RCD"
+    OPENCV_EA = "OPENCV_EA"
+    DNGSDK_BILINEAR = "DNGSDK_BILINEAR"
+    
+    @classmethod
+    def lookup(cls, value: str) -> "DemosaicAlgorithm":
+        """Look up enum member by string value."""
+        from .common import enum_from_string
+        return enum_from_string(cls, value)
 
 class Illuminant(IntEnum):
     """Light source enum values from DNG SDK dng_tag_values.h.
@@ -86,6 +105,12 @@ class Illuminant(IntEnum):
     D50 = (23, 5000.0)                            # lsD50
     ISO_STUDIO_TUNGSTEN = (24, 3200.0)            # lsISOStudioTungsten
     OTHER = (255, None)                           # lsOther - requires IlluminantData
+    
+    @classmethod
+    def lookup(cls, value: int) -> Optional["Illuminant"]:
+        """Look up enum member by integer value."""
+        from .common import enum_from_value
+        return enum_from_value(cls, value)
 
 # =============================================================================
 # Helper Classes
@@ -546,7 +571,7 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 def demosaic(
     image_data: np.ndarray, 
     cfa_pattern: str,
-    algorithm: str = "OPENCV_EA",
+    algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
 ) -> np.ndarray:
     """Demosaic CFA data to RGB.
     
@@ -558,10 +583,10 @@ def demosaic(
         image_data: 2D raw CFA data array (uint8, uint16, or float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         algorithm: Demosaic algorithm:
-            - "OPENCV_EA" (default): Fastest, uint8/uint16 only
-            - "VNG": Variable Number of Gradients, uint16 only
-            - "RCD": Best quality/speed, supports float32 natively (optional dependency)
-            - "DNGSDK_BILINEAR": DNG SDK bilinear, float32 only
+            - DemosaicAlgorithm.OPENCV_EA (default): Fastest, uint8/uint16 only
+            - DemosaicAlgorithm.VNG: Variable Number of Gradients, uint16 only
+            - DemosaicAlgorithm.RCD: Best quality/speed, supports float32 natively (optional dependency)
+            - DemosaicAlgorithm.DNGSDK_BILINEAR: DNG SDK bilinear, float32 only
     Returns:
         RGB array with same dtype as input
     """
@@ -589,11 +614,10 @@ def demosaic(
         )
     
     # Validate algorithm
-    valid_algorithms = ["VNG", "RCD", "OPENCV_EA", "DNGSDK_BILINEAR"]
-    if algorithm not in valid_algorithms:
-        raise ValueError(
-            f"Invalid algorithm: '{algorithm}'. "
-            f"Supported algorithms are: {valid_algorithms}."
+    if not isinstance(algorithm, DemosaicAlgorithm):
+        raise TypeError(
+            f"algorithm must be a DemosaicAlgorithm enum, but got {type(algorithm).__name__}. "
+            f"Supported algorithms are: {list(DemosaicAlgorithm)}."
         )
     
     # Track input dtype for output conversion
@@ -602,7 +626,7 @@ def demosaic(
     start_time = time.perf_counter()
     
     # DNGSDK_BILINEAR: float32 kernel, outputs float32
-    if algorithm == "DNGSDK_BILINEAR":
+    if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
         cfa_codes = get_cfa_pattern_codes(cfa_pattern)
         # Convert to float32 for processing
         data_f32 = convert_dtype(image_data, np.float32)
@@ -614,7 +638,7 @@ def demosaic(
     
     # RCD: float32 kernel (expects 0-1 normalized data)
     # RCD is GPL-licensed and optional - see README for setup instructions
-    elif algorithm == "RCD":
+    elif algorithm == DemosaicAlgorithm.RCD:
         try:
             from . import _rcd
         except ImportError:
@@ -630,7 +654,7 @@ def demosaic(
         rgb = convert_dtype(rgb, input_dtype)
     
     # VNG: uint16 only kernel
-    elif algorithm == "VNG":
+    elif algorithm == DemosaicAlgorithm.VNG:
         # Only warn for lossy conversions (float to uint16)
         if input_dtype in (np.float32, np.float64):
             logger.debug(f"VNG requires uint16; converting from {input_dtype}")
@@ -643,7 +667,7 @@ def demosaic(
         rgb = convert_dtype(rgb, input_dtype)
     
     # OPENCV_EA: uint8 or uint16 kernel
-    elif algorithm == "OPENCV_EA":
+    elif algorithm == DemosaicAlgorithm.OPENCV_EA:
         import cv2
         bayer_map = {
             "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,

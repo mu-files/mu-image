@@ -12,6 +12,7 @@ import imagecodecs
 import logging
 
 import muimg
+from muimg.raw_render import DemosaicAlgorithm
 from conftest import compute_diff_stats, core_image_available_for_tests, run_dng_validate, DNG_VALIDATE_PATH
 
 # Suppress tifffile logging about Photoshop TIFF metadata inconsistencies
@@ -105,7 +106,7 @@ def test_muimg_vs_photoshop(
     with muimg.DngFile(dng_path) as dng:
         result = dng.render_raw(
             output_dtype=np.uint16,
-            demosaic_algorithm="DNGSDK_BILINEAR",
+            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
             strict=False,
             use_xmp=True,
             rendering_params={"highlight_preserving_exposure": True},
@@ -224,7 +225,7 @@ def test_muimg_vs_dng_validate(
     with muimg.DngFile(dng_path) as dng:
         muimg_result = dng.render_raw(
             output_dtype=np.uint16,
-            demosaic_algorithm="DNGSDK_BILINEAR",
+            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
             strict=False,
             use_xmp=False,
             rendering_params={"highlight_preserving_exposure": False},

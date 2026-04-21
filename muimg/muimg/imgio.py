@@ -6,6 +6,7 @@ from typing import IO, Union
 import numpy as np
 
 from .dngio import DngFile, DngPage, decode_dng
+from .raw_render import DemosaicAlgorithm
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ def convert_dng(
     file: Union[str, Path, IO[bytes], "DngFile", "DngPage"],
     output: Union[str, Path, IO[bytes]],
     output_dtype: type = np.uint16,
-    demosaic_algorithm: str = "OPENCV_EA",
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     strict: bool = True,
     use_xmp: bool = True,
     rendering_params: dict = None,
@@ -272,7 +273,7 @@ def convert_dng_to_stream(
     file: Union[str, Path, IO[bytes], "DngFile", "DngPage"],
     output_format: str = "jpg",
     output_dtype: type = np.uint16,
-    demosaic_algorithm: str = "OPENCV_EA",
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     strict: bool = True,
     use_xmp: bool = True,
     rendering_params: dict = None,

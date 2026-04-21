@@ -46,6 +46,30 @@ def enum_from_value(enum_class: Type[Enum], value: int) -> Optional[Enum]:
         return None
 
 
+def enum_from_string(enum_class: Type[Enum], value: str) -> Enum:
+    """
+    Get enum member from string value.
+    
+    For string enums (inheriting from str and Enum), this looks up the member
+    by its string value. Raises KeyError if not found.
+    
+    Args:
+        enum_class: The enum class to look up
+        value: The string value to find
+        
+    Returns:
+        Enum member
+        
+    Raises:
+        KeyError: If value not found in enum
+    """
+    # For str enums, we can iterate and compare values
+    for member in enum_class:
+        if member.value == value:
+            return member
+    raise KeyError(f"'{value}' is not a valid {enum_class.__name__}")
+
+
 def setup_logging(verbosity: int = 0) -> None:
     """
     Set up logging configuration based on verbosity level.

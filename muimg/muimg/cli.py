@@ -6,6 +6,8 @@ from pathlib import Path
 
 import click
 
+from .raw_render import DemosaicAlgorithm
+
 logger = logging.getLogger(__name__)
 
 
@@ -555,7 +557,7 @@ def dng_convert(
                 file=file_arg,
                 output=output_file,
                 output_dtype=output_dtype,
-                demosaic_algorithm='OPENCV_EA',
+                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
                 strict=False,
                 use_xmp=not no_xmp,
                 rendering_params=params,
@@ -638,7 +640,10 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
             if stage == "camera-rgb":
                 # Special case: camera-rgb uses get_camera_rgb_raw()
                 # Use specified demosaic algorithm or default to OPENCV_EA
-                algorithm = demosaic if demosaic is not None else "OPENCV_EA"
+                if demosaic is not None:
+                    algorithm = DemosaicAlgorithm.lookup(demosaic)
+                else:
+                    algorithm = DemosaicAlgorithm.OPENCV_EA
                 data = page.get_camera_rgb_raw(demosaic_algorithm=algorithm)
                 if data is None:
                     click.echo("Error: Failed to extract camera RGB", err=True)
@@ -660,7 +665,10 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                     
                     # Apply demosaic if requested
                     if demosaic is not None:
-                        data = raw_render.demosaic(data, cfa_pattern, algorithm=demosaic)
+                        algorithm = DemosaicAlgorithm.lookup(demosaic)
+                        data = raw_render.demosaic(
+                            data, cfa_pattern, algorithm=algorithm
+                        )
                 else:
                     # LINEAR_RAW: use get_linear_raw() with stage selector
                     if demosaic is not None:
@@ -773,6 +781,9 @@ def dng_copy(
     from . import dngio
     from .tiff_metadata import MetadataTags
     
+    # Map algorithm string to enum
+    demosaic_algorithm_enum = DemosaicAlgorithm.lookup(demosaic_algorithm)
+    
     # Parse --strip-tag options, supporting comma-separated lists
     strip_tags_set = None
     if strip_tag:
@@ -852,7 +863,7 @@ def dng_copy(
                 page=page_spec,
                 scale=scale,
                 demosaic=demosaic,
-                demosaic_algorithm=demosaic_algorithm,
+                demosaic_algorithm=demosaic_algorithm_enum,
                 preview=preview_params,
                 pyramid=pyramid_params,
                 ifd0_extratags=extra_tags,
@@ -958,7 +969,7 @@ def convert_dngs_to_video(
             img = decode_dng(
                 file=io.BytesIO(blob),
                 output_dtype=output_dtype,
-                demosaic_algorithm='OPENCV_EA',
+                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
                 use_coreimage_if_available=use_coreimage,
                 use_xmp=not no_xmp,
                 rendering_params=rendering_params,

@@ -10,6 +10,7 @@ import pytest
 
 import muimg
 from muimg.dngio import IfdPageSpec, IfdDataSpec, SubFileType
+from muimg.raw_render import DemosaicAlgorithm
 from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
 
@@ -89,7 +90,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
                 interpolation=cv2.INTER_AREA,
             )
 
-        camera_rgb = dng.get_camera_rgb_raw(demosaic_algorithm="OPENCV_EA")
+        camera_rgb = dng.get_camera_rgb_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
         assert camera_rgb is not None
 
         camera_rgb_u16 = np.clip((camera_rgb * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
@@ -184,7 +185,8 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         crop_top = (cfa_u16_full.shape[0] - crop_h) // 2
         crop_left = (cfa_u16_full.shape[1] - crop_w) // 2
-        cfa_u16_crop = cfa_u16_full[crop_top : crop_top + crop_h, crop_left : crop_left + crop_w].copy()
+        cfa_u16_crop = cfa_u16_full[
+            crop_top : crop_top + crop_h, crop_left : crop_left + crop_w].copy()
 
         aa_top, aa_left = 16, 38
         aa_bottom, aa_right = aa_top + 768, aa_left + 1024
@@ -195,7 +197,8 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         from muimg import raw_render
 
-        rgb_u16_active = raw_render.demosaic(cfa_u16_active, cfa_pattern, algorithm="OPENCV_EA")
+        rgb_u16_active = raw_render.demosaic(
+            cfa_u16_active, cfa_pattern, algorithm=DemosaicAlgorithm.OPENCV_EA)
         assert rgb_u16_active.dtype == np.uint16
         pyramid_levels = _build_pyramid_rgb_u16(rgb_u16_active)
         if not pyramid_levels:

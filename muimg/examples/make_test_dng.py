@@ -22,6 +22,8 @@ import io
 import sys
 from pathlib import Path
 
+from muimg.raw_render import DemosaicAlgorithm
+
 
 def make_test_dng(
     input_file: Path,
@@ -99,7 +101,7 @@ def make_test_dng(
             destination_file=stream,
             scale=scale,
             demosaic=True,
-            demosaic_algorithm="DNGSDK_BILINEAR",
+            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
             compression_args={'distance': jxl_distance, 'effort': jxl_effort},
             generate_preview=generate_preview,
             extratags=extratags,

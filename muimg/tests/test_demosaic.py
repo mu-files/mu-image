@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from muimg import DngFile
-from muimg.raw_render import demosaic, convert_dtype
+from muimg.raw_render import demosaic, convert_dtype, DemosaicAlgorithm
 from conftest import compute_diff_stats
 
 
@@ -31,12 +31,12 @@ def test_demosaic_uint8_consistency(cfa_data):
     cfa_u8 = convert_dtype(cfa, np.uint8)
     
     # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(cfa_u8, cfa_pattern, algorithm="DNGSDK_BILINEAR")
+    reference = demosaic(cfa_u8, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
     assert reference.dtype == np.uint8
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
-    for algorithm in ["VNG", "RCD", "OPENCV_EA"]:
+    for algorithm in [DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, DemosaicAlgorithm.OPENCV_EA]:
         result = demosaic(cfa_u8, cfa_pattern, algorithm=algorithm)
         
         # Check dtype preservation
@@ -68,12 +68,12 @@ def test_demosaic_uint16_consistency(cfa_data):
     cfa_u16 = convert_dtype(cfa, np.uint16)
     
     # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(cfa_u16, cfa_pattern, algorithm="DNGSDK_BILINEAR")
+    reference = demosaic(cfa_u16, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
     assert reference.dtype == np.uint16
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
-    for algorithm in ["VNG", "RCD", "OPENCV_EA"]:
+    for algorithm in [DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, DemosaicAlgorithm.OPENCV_EA]:
         result = demosaic(cfa_u16, cfa_pattern, algorithm=algorithm)
         
         # Check dtype preservation
@@ -104,12 +104,12 @@ def test_demosaic_float32_consistency(cfa_data):
     cfa_f32 = convert_dtype(cfa, np.float32)
     
     # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(cfa_f32, cfa_pattern, algorithm="DNGSDK_BILINEAR")
+    reference = demosaic(cfa_f32, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
     assert reference.dtype == np.float32
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
-    for algorithm in ["VNG", "RCD", "OPENCV_EA"]:
+    for algorithm in [DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, DemosaicAlgorithm.OPENCV_EA]:
         result = demosaic(cfa_f32, cfa_pattern, algorithm=algorithm)
         
         # Check dtype preservation
@@ -138,11 +138,11 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     
     # Get float32 reference
     cfa_f32 = convert_dtype(cfa, np.float32)
-    result_f32 = demosaic(cfa_f32, cfa_pattern, algorithm="DNGSDK_BILINEAR")
+    result_f32 = demosaic(cfa_f32, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
     
     # Convert to uint16 and demosaic
     cfa_u16 = convert_dtype(cfa, np.uint16)
-    result_u16 = demosaic(cfa_u16, cfa_pattern, algorithm="DNGSDK_BILINEAR")
+    result_u16 = demosaic(cfa_u16, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
     
     # Convert uint16 result back to float32 for comparison
     result_u16_as_f32 = convert_dtype(result_u16, np.float32)
@@ -154,7 +154,7 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     
     # Same test for uint8
     cfa_u8 = convert_dtype(cfa, np.uint8)
-    result_u8 = demosaic(cfa_u8, cfa_pattern, algorithm="DNGSDK_BILINEAR")
+    result_u8 = demosaic(cfa_u8, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
     result_u8_as_f32 = convert_dtype(result_u8, np.float32)
     
     # uint8 has only 256 levels, so allow larger error
@@ -166,7 +166,7 @@ def test_demosaic_invalid_algorithm(cfa_data):
     """Test that invalid algorithm raises ValueError."""
     cfa, cfa_pattern = cfa_data
     
-    with pytest.raises(ValueError, match="Invalid algorithm"):
+    with pytest.raises(TypeError, match="algorithm must be a DemosaicAlgorithm enum"):
         demosaic(cfa, cfa_pattern, algorithm="INVALID_ALGO")
 
 
@@ -175,4 +175,4 @@ def test_demosaic_invalid_pattern(cfa_data):
     cfa, _ = cfa_data
     
     with pytest.raises(ValueError, match="Invalid CFA pattern"):
-        demosaic(cfa, "INVALID_PATTERN", algorithm="DNGSDK_BILINEAR")
+        demosaic(cfa, "INVALID_PATTERN", algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)

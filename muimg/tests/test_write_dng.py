@@ -17,6 +17,7 @@ from tifffile import COMPRESSION
 logging.getLogger('tifffile').setLevel(logging.CRITICAL)
 
 from muimg.dngio import write_dng_from_array, write_dng, DngFile, IfdDataSpec, decode_dng
+from muimg.raw_render import DemosaicAlgorithm
 try:
     from muimg._dngio_coreimage import core_image_available
 except ImportError:
@@ -283,7 +284,8 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 # Test render pipeline: with identity ProfileToneCurve, 
                 # render should apply sRGB gamma to linear RGB
                 # Use DNGSDK_BILINEAR for consistent demosaic comparison
-                rendered = dng.render_raw(output_dtype=np.uint8, demosaic_algorithm="DNGSDK_BILINEAR")
+                rendered = dng.render_raw(
+                    output_dtype=np.uint8, demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
                 assert rendered is not None, f"Failed to render {comp_label}"
             
             '''

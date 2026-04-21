@@ -15,6 +15,7 @@ from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
 from dataclasses import dataclass, replace
 
 from . import raw_render
+from .raw_render import DemosaicAlgorithm
 
 # Import metadata classes from tiff_metadata module
 from .tiff_metadata import (
@@ -41,6 +42,12 @@ class RawStageSelector(str, Enum):
     RAW = "raw"
     LINEARIZED = "linearized"
     LINEARIZED_PLUS_OPS = "linearized_plus_ops"
+    
+    @classmethod
+    def lookup(cls, value: str) -> "RawStageSelector":
+        """Look up enum member by string value."""
+        from .common import enum_from_string
+        return enum_from_string(cls, value)
 
 class SubFileType(IntEnum):
     """NewSubFileType values from DNG spec."""
@@ -49,6 +56,12 @@ class SubFileType(IntEnum):
     TRANSPARENCY_MASK = 4
     DEPTH_MAP = 8
     ALT_PREVIEW_IMAGE = 65537
+    
+    @classmethod
+    def lookup(cls, value: int) -> Optional["SubFileType"]:
+        """Look up enum member by integer value."""
+        from .common import enum_from_value
+        return enum_from_value(cls, value)
 
 
 
@@ -652,7 +665,10 @@ class DngPage(TiffPage):
             return self._stage2(stage1, apply_ops2=True).data
         raise ValueError(f"Unknown stage selector: {stage}")
 
-    def get_camera_rgb_raw(self, demosaic_algorithm: str = "OPENCV_EA") -> Optional[np.ndarray]:
+    def get_camera_rgb_raw(
+        self, 
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA
+        ) -> Optional[np.ndarray]:
         """Extract the camera-RGB intermediate from a raw page for the color pipeline.
 
         This corresponds to the `rgb_camera` input passed into
@@ -765,7 +781,7 @@ class DngPage(TiffPage):
     def render_raw(
         self,
         output_dtype: type = np.uint16,
-        demosaic_algorithm: str = "OPENCV_EA",
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict = None,
@@ -1069,7 +1085,7 @@ class DngFile(TiffFile):
 
     def get_camera_rgb_raw(
         self,
-        demosaic_algorithm: str = "OPENCV_EA",
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     ) -> Optional[np.ndarray]:
         """Extract camera-RGB from main raw page with optional scaling.
         
@@ -1092,7 +1108,7 @@ class DngFile(TiffFile):
     def render_raw(
         self,
         output_dtype: type = np.uint16,
-        demosaic_algorithm: str = "OPENCV_EA",
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict = None,
@@ -1463,6 +1479,12 @@ class PageOp(str, Enum):
     """Page operation mode for DNG writing."""
     COPY = "copy"        # Copy page data as-is, preserving source compression
     TRANSCODE = "transcode"  # Decompress and re-compress with specified compression
+    
+    @classmethod
+    def lookup(cls, value: str) -> "PageOp":
+        """Look up enum member by string value."""
+        from .common import enum_from_string
+        return enum_from_string(cls, value)
 
 @dataclass
 class IfdPageSpec:
@@ -2230,7 +2252,7 @@ def write_dng_from_page(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: str = "OPENCV_EA",
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     preview: Optional[PreviewParams] = None,
     pyramid: Optional[PyramidParams] = None,
     copy_ifd0_tags: bool = True,
@@ -2465,7 +2487,7 @@ def create_dng_from_page(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: str = "OPENCV_EA",
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     preview: Optional[PreviewParams] = None,
     pyramid: Optional[PyramidParams] = None,
     copy_ifd0_tags: bool = True,
@@ -2517,7 +2539,7 @@ def create_dng_from_page(
 def decode_dng(
     file: Union[str, Path, IO[bytes], DngFile, DngPage],
     output_dtype: type = np.uint16,
-    demosaic_algorithm: str = "OPENCV_EA",
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
     rendering_params: dict = None,
