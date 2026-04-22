@@ -92,8 +92,9 @@ CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {v: k for k, v in CFA_PATTERN
 # =============================================================================
 # Specifies which IFD type a tag should appear in (per DNG specification):
 # - "any": Can appear in any IFD (default for basic TIFF structure tags)
-# - "dng_ifd0": Must only be in IFD 0 (main metadata, not in SubIFDs)
-# - "exif": Can be in IFD 0 or EXIF IFD (not in preview/thumbnail SubIFDs)
+# - "ifd0": Standard TIFF/EXIF tags that go in IFD0 
+# - "dng_ifd0": DNG-specific tags that must only be in IFD 0 (not in output)
+# - "exif": EXIF sub-IFD tags (camera settings, for metadata export)
 # - "dng_raw": Must be in IFD containing raw image data (CFA or LINEAR_RAW)
 # - "dng_raw:cfa": A raw IFD with PhotometricInterpretation = CFA
 # - "dng_profile": Can be in IFD 0 or Camera Profile IFDs
@@ -225,11 +226,11 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "CellLength": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 265
     "FillOrder": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 266
     "DocumentName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 269
-    "ImageDescription": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 270
-    "Make": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 271
-    "Model": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 272
+    "ImageDescription": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 270
+    "Make": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 271
+    "Model": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 272
     "StripOffsets": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 273
-    "Orientation": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 274
+    "Orientation": TagSpec(TiffType.SHORT, 1, dng_ifd="ifd0"),  # 274
     "SamplesPerPixel": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 277
     "RowsPerStrip": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 278
     "StripByteCounts": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 279
@@ -250,9 +251,9 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ResolutionUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 296
     "PageNumber": TagSpec(TiffType.SHORT, 2, dng_ifd="any"),  # 297
     "TransferFunction": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 301
-    "Software": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 305
-    "DateTime": TagSpec(TiffType.ASCII, 20, dng_ifd="dng_ifd0"),  # 306
-    "Artist": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 315
+    "Software": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 305
+    "DateTime": TagSpec(TiffType.ASCII, 20, dng_ifd="ifd0"),  # 306
+    "Artist": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 315
     "HostComputer": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 316
     "Predictor": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 317
     "WhitePoint": TagSpec(TiffType.RATIONAL, 2, dng_ifd="any"),  # 318
@@ -323,23 +324,23 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "CFARepeatPatternDim": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw:cfa"),  # 33421
     "CFAPattern": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw:cfa"),  # 33422
     "BatteryLevel": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33423
-    "Copyright": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 33432
+    "Copyright": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 33432
     "ExposureTime": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33434
     "FNumber": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33437
-    "ModelPixelScaleTag": TagSpec(TiffType.DOUBLE, 3, dng_ifd="dng_ifd0"),  # 33550
+    "ModelPixelScaleTag": TagSpec(TiffType.DOUBLE, 3, dng_ifd="ifd0"),  # 33550
     "IPTCNAA": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 33723
-    "ModelTiepointTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="dng_ifd0"),  # 33922
-    "ModelTransformationTag": TagSpec(TiffType.DOUBLE, 16, dng_ifd="dng_ifd0"),  # 34264
+    "ModelTiepointTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="ifd0"),  # 33922
+    "ModelTransformationTag": TagSpec(TiffType.DOUBLE, 16, dng_ifd="ifd0"),  # 34264
     "WB_GRGBLevels": TagSpec(TiffType.RATIONAL, 4, dng_ifd="any"),  # 34306
     "ImageResources": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 34377
-    "ExifTag": TagSpec(TiffType.LONG, 1, dng_ifd="dng_ifd0"),  # 34665
+    "ExifTag": TagSpec(TiffType.LONG, 1, dng_ifd="ifd0"),  # 34665
     "InterColorProfile": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 34675
-    "GeoKeyDirectoryTag": TagSpec(TiffType.SHORT, None, dng_ifd="dng_ifd0"),  # 34735
-    "GeoDoubleParamsTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="dng_ifd0"),  # 34736
-    "GeoAsciiParamsTag": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 34737
+    "GeoKeyDirectoryTag": TagSpec(TiffType.SHORT, None, dng_ifd="ifd0"),  # 34735
+    "GeoDoubleParamsTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="ifd0"),  # 34736
+    "GeoAsciiParamsTag": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 34737
     "ExposureProgram": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34850
     "SpectralSensitivity": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 34852
-    "GPSTag": TagSpec(TiffType.LONG, 1, dng_ifd="dng_ifd0"),  # 34853
+    "GPSTag": TagSpec(TiffType.LONG, 1, dng_ifd="ifd0"),  # 34853
     "ISOSpeedRatings": TagSpec(TiffType.SHORT, None, dng_ifd="exif"),  # 34855
     "OECF": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 34856
     "Interlace": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34857
@@ -372,16 +373,16 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "FlashEnergy": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37387
     "SpatialFrequencyResponse": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37388
     "Noise": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37389
-    "FocalPlaneXResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37390
-    "FocalPlaneYResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37391
-    "FocalPlaneResolutionUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37392
+    "FocalPlaneXResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="ifd0"),  # 37390
+    "FocalPlaneYResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="ifd0"),  # 37391
+    "FocalPlaneResolutionUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="ifd0"),  # 37392
     "ImageNumber": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 37393
     "SecurityClassification": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37394
     "ImageHistory": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37395
     "SubjectLocation": TagSpec(TiffType.SHORT, 2, dng_ifd="exif"),  # 37396
     "ExposureIndex": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37397
     "TIFFEPStandardID": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 37398
-    "SensingMethod": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37399
+    "SensingMethod": TagSpec(TiffType.SHORT, 1, dng_ifd="ifd0"),  # 37399
     "MakerNote": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37500
     "UserComment": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37510
     "SubsecTime": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37520
@@ -705,34 +706,23 @@ def _decode_tag_value(
                 f"but spec expects {expected_dtypes}"
             )
     
-    # Helper to decode and strip null terminators from string-like values
-    def _decode_string(val):
-        if isinstance(val, bytes):
-            return val.decode('utf-8', errors='replace').rstrip('\x00')
-        elif isinstance(val, np.ndarray):
-            return val.tobytes().decode('utf-8', errors='replace').rstrip('\x00')
-        elif isinstance(val, str):
-            return val.rstrip('\x00')
-        return str(val)
-    
     # If no return_type specified, return raw value
-    # ASCII strings: strip null terminators to provide clean Python strings
-    # (encode_tag_value will add them back when writing to TIFF)
     if return_type is None:
-        # ASCII strings - remove TIFF null terminator
-        if tag_dtype == TiffType.ASCII:
-            return _decode_string(tag_value)
         return tag_value
     
     # Handle string conversion
     if return_type is str:
-        return _decode_string(tag_value)
+        if isinstance(tag_value, bytes):
+            return tag_value.decode('utf-8', errors='replace')
+        elif isinstance(tag_value, np.ndarray):
+            return tag_value.tobytes().decode('utf-8', errors='replace')
+        return str(tag_value)
     
     # Handle datetime conversion (EXIF datetime strings → datetime)
     if return_type is datetime:
         if isinstance(tag_value, bytes):
             tag_value = tag_value.decode('utf-8', errors='replace')
-        dt_str = str(tag_value).strip('\x00').strip()
+        dt_str = str(tag_value).strip()
         if not dt_str:
             return None
         # Parse common datetime formats
@@ -1288,6 +1278,11 @@ class MetadataTags:
 
         # Normalize value to system byte order for internal storage
         normalized_value = normalize_array_to_target_byteorder(value, '=')
+        
+        # Strip null terminators from ASCII strings for cleaner internal representation
+        # (encode_tag_value will add them back when writing to TIFF)
+        if tag_dtype == TiffType.ASCII and isinstance(normalized_value, str):
+            normalized_value = normalized_value.rstrip('\x00')
 
         self._tags[tag_code] = self.StoredTag(code=tag_code, dtype=tag_dtype, count=count, value=normalized_value)
 
