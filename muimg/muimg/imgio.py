@@ -1,14 +1,90 @@
 import io
 import logging
 from pathlib import Path
-from typing import IO, Union
+from typing import IO, Optional, Union
 
 import numpy as np
+import tifffile
 
 from .dngio import DngFile, DngPage, decode_dng
 from .raw_render import DemosaicAlgorithm
+from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, resolve_tag, TiffType
 
 logger = logging.getLogger(__name__)
+
+def write_image(
+    image: np.ndarray,
+    output: Union[str, Path, IO[bytes]],
+    output_format: str = "jpg",
+    metadata: Optional[MetadataTags] = None,
+) -> bool:
+    """
+    Save a decoded RGB image to file or stream with optional metadata.
+    
+    Helper function used by convert_imgformat and convert_dng.
+    
+    Args:
+        image: RGB image array with shape (height, width, 3)
+        output: Output file path (str/Path) or stream (IO[bytes])
+        output_format: Output format for stream output ("jpg", "png", "tiff", etc.)
+            Ignored when output is a file path (format determined by extension)
+        metadata: Optional metadata tags to embed in output (for JPG/TIFF)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Determine output format
+    if isinstance(output, (str, Path)):
+        output_path = Path(output)
+        format_ext = output_path.suffix.lower()
+    else:
+        format_ext = f".{output_format.lstrip('.')}"
+    
+    # Handle TIFF using tifffile
+    if format_ext in ('.tif', '.tiff'):
+        
+        # Prepare metadata if provided
+        extratags = None
+        if metadata is not None:
+            # Filter to only ifd0 and exif tags
+            filtered_metadata = filter_tags_by_ifd_category(metadata, ["ifd0", "exif"])
+            
+            # Remove SubIFD pointer tags that tifffile manages itself
+            for tag_name in ("ExifTag", "GPSTag", "ProfileIFD", "Software"):
+                filtered_metadata.remove_tag(tag_name)
+        
+        # Write TIFF directly to output
+        tifffile.imwrite(output, image, extratags=filtered_metadata, software="muimg", metadata=None)
+        msg = "with metadata" if extratags is not None else "without metadata"
+        if isinstance(output, (str, Path)):
+            logger.info(f"Successfully saved image {msg} to {output}")
+        else:
+            logger.info(f"Successfully wrote image {msg} to stream")
+        return True
+    
+    # Handle non-TIFF formats with OpenCV
+    else:
+        # Convert RGB to BGR for OpenCV
+        import cv2
+        bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        
+        # Encode with OpenCV
+        success, encoded_buffer = cv2.imencode(format_ext, bgr_image)
+        if not success:
+            logger.error(f"Failed to encode image as {format_ext}")
+            return False
+        image_bytes = encoded_buffer.tobytes()
+    
+        # Write to output
+        if isinstance(output, (str, Path)):
+            with open(output_path, 'wb') as f:
+                f.write(image_bytes)
+            logger.info(f"Successfully saved image to {output_path}")
+        else:
+            output.write(image_bytes)
+            logger.info(f"Successfully wrote {len(image_bytes)} bytes to stream")
+    
+    return True
 
 def _coerce_decoded_image(img: np.ndarray, output_dtype: type) -> np.ndarray:
     import cv2
@@ -40,7 +116,6 @@ def _coerce_decoded_image(img: np.ndarray, output_dtype: type) -> np.ndarray:
         return img
 
     raise ValueError(f"Unsupported output_dtype: {output_dtype}")
-
 
 def decode_image(
     file: Union[str, Path, IO[bytes]],
@@ -75,7 +150,8 @@ def decode_image(
     if is_dng:
         # Use default decode_dng parameters
         # For advanced control with custom parameters, use 'muimg dng convert' CLI command
-        return decode_dng(file=dng_file, output_dtype=output_dtype)
+        image, _ = decode_dng(file=dng_file, output_dtype=output_dtype)
+        return image
     
     # Fall back to cv2 for other formats (processing_params ignored)
     import cv2
@@ -92,56 +168,6 @@ def decode_image(
         raise ValueError("Failed to decode image")
 
     return _coerce_decoded_image(img, output_dtype=output_dtype)
-
-
-def write_image(
-    image: np.ndarray,
-    output: Union[str, Path, IO[bytes]],
-    output_format: str = "jpg",
-) -> bool:
-    """
-    Save a decoded RGB image to file or stream.
-    
-    Helper function used by convert_imgformat and convert_dng.
-    
-    Args:
-        image: RGB image array with shape (height, width, 3)
-        output: Output file path (str/Path) or stream (IO[bytes])
-        output_format: Output format for stream output ("jpg", "png", "tiff", etc.)
-            Ignored when output is a file path (format determined by extension)
-    
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    # Convert RGB to BGR for OpenCV
-    import cv2
-    bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    
-    if isinstance(output, (str, Path)):
-        # Save to file
-        output_path = Path(output)
-        success = cv2.imwrite(str(output_path), bgr_image)
-        
-        if success:
-            logger.info(f"Successfully saved image to {output_path}")
-            return True
-        else:
-            logger.error(f"Failed to save file: {output_path}")
-            return False
-    else:
-        # Write to stream
-        format_ext = f".{output_format.lstrip('.')}"
-        success, encoded_buffer = cv2.imencode(format_ext, bgr_image)
-        
-        if success:
-            encoded_bytes = encoded_buffer.tobytes()
-            output.write(encoded_bytes)
-            logger.info(f"Successfully wrote {len(encoded_bytes)} bytes to stream as {output_format}")
-            return True
-        else:
-            logger.error(f"Failed to encode image as {output_format}")
-            return False
-
 
 def convert_imgformat(
     file: Union[str, Path, IO[bytes]],
@@ -246,8 +272,8 @@ def convert_dng(
         Core Image is not available when passing a DngPage instance.
     """
     try:
-        # Decode DNG to numpy array
-        image = decode_dng(
+        # Decode DNG to numpy array with metadata
+        image, metadata = decode_dng(
             file=file,
             output_dtype=output_dtype,
             demosaic_algorithm=demosaic_algorithm,
@@ -257,8 +283,8 @@ def convert_dng(
             strict=strict,
         )
         
-        # Save using shared helper
-        return write_image(image, output, output_format)
+        # Save using shared helper with metadata
+        return write_image(image, output, output_format, metadata=metadata)
                 
     except ValueError as e:
         # Handle validation errors (e.g., rendering params on preview pages)

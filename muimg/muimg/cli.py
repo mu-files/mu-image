@@ -286,8 +286,8 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                 if tag_spec.dng_ifd != "any":
                     # Normalize expected DNG IFD
                     expected_dng_ifd = tag_spec.dng_ifd
-                    # exif/dng_profile -> dng_ifd0
-                    if expected_dng_ifd in ("exif", "dng_profile"):
+                    # ifd0/exif/dng_profile -> dng_ifd0
+                    if expected_dng_ifd in ("ifd0", "exif", "dng_profile"):
                         expected_dng_ifd = "dng_ifd0"
                     # When IFD0 is main raw, also normalize dng_raw -> dng_ifd0
                     elif ifd0_is_main_raw and expected_dng_ifd == "dng_raw":
@@ -321,7 +321,7 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             if tag_name in TAG_ENUM_MAP and value is not None:
                 # Special case: PhotometricInterpretation has a custom name property
                 if tag_name == "PhotometricInterpretation":
-                    value = page.photometric_name or enum_display_name(TAG_ENUM_MAP[tag_name], value)
+                    value = page.photometric_name
                 else:
                     value = enum_display_name(TAG_ENUM_MAP[tag_name], value)
             
@@ -970,7 +970,7 @@ def convert_dngs_to_video(
         """Custom consumer: decodes DNG blob using decode_dng with rendering params."""
         index, file_path, blob = task
         try:
-            img = decode_dng(
+            img, _ = decode_dng(
                 file=io.BytesIO(blob),
                 output_dtype=output_dtype,
                 demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,

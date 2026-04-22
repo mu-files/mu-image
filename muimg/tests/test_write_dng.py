@@ -350,7 +350,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
             # 2. Compare against CoreImage rendering (macOS only)
             if core_image_available:
             # CoreImage is available, so any exception is a real error
-            coreimage_render = decode_dng(
+            coreimage_render, _ = decode_dng(
                 dng_path,
                 output_dtype=np.uint8,
                 use_coreimage_if_available=True,

@@ -1743,7 +1743,7 @@ def write_dng(
         
         # Apply category filtering to all spec-supplied tags
         # Build filter categories based on IFD type and photometric
-        filter_categories = ["any", "dng_ifd0", "exif", "dng_profile"] if is_ifd0 else ["any"]
+        filter_categories = ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"] if is_ifd0 else ["any"]
         
         # Add preview category if this is a preview IFD
         if subfiletype in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE):
@@ -2313,7 +2313,7 @@ def write_dng_from_page(
     ifd0_tags = MetadataTags()
     if copy_ifd0_tags:
         ifd0_tags = source_page_spec.page.get_ifd0_tags()
-        filter_tags_by_ifd_category(ifd0_tags, ["any", "dng_ifd0", "exif", "dng_profile"])
+        filter_tags_by_ifd_category(ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
     if preview:
         ifd0_tags |= preview_tags
     _filter_metadata_tags(ifd0_tags, exclude_names=ifd0_strip_tags)
@@ -2559,9 +2559,9 @@ def decode_dng(
     use_xmp: bool = True,
     rendering_params: dict = None,
     strict: bool = True,
-) -> np.ndarray:
+) -> tuple[np.ndarray, "MetadataTags"]:
     """
-    Decode a DNG file or page to a numpy array.
+    Decode a DNG file or page to a numpy array with metadata.
     
     Renders raw pages (CFA or LINEAR_RAW) or decodes preview pages (RGB/YCBCR).
     When passed a file path/DngFile, renders the main raw page.
@@ -2575,7 +2575,6 @@ def decode_dng(
         output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
         demosaic_algorithm: Demosaic algorithm for Python pipeline - "RCD" (default), "VNG", etc.
         use_coreimage_if_available: If True, use (MacOS) Core Image pipeline when available
-            Note: Not supported for DngPage input
         use_xmp: Whether to read XMP metadata for processing defaults (both pipelines)
         rendering_params: Optional dict to override rendering parameters. Supported keys:
             - 'Temperature': White balance temperature in Kelvin (float)
@@ -2590,38 +2589,19 @@ def decode_dng(
             - 'orientation': EXIF orientation code (Core Image only)
     
     Returns:
-        RGB image array with shape (height, width, 3) and specified dtype
+        Tuple of (image, metadata):
+            - image: RGB image array with shape (height, width, 3) and specified dtype
+            - metadata: MetadataTags containing IFD0 tags
     """
-    # Handle DngPage input
+    # Normalize DngPage to DngFile for consistent handling
     if isinstance(file, DngPage):
-        page = file
-        
-        # Warn if Core Image was requested but not available for DngPage
-        # TODO: when copy_dng function is done we can create a DngFile with requested subifd as main page
-        if use_coreimage_if_available:
-            logger.warning("Core Image not supported for DngPage rendering it does not have a subifd option")
-        
-        # Check if page is raw or preview
-        if page.is_cfa or page.is_linear_raw:
-            # Raw page - render with parameters
-            result = page.render_raw(
-                output_dtype=output_dtype,
-                use_xmp=use_xmp,
-                rendering_params=rendering_params,
-                strict=strict,
-            )
-        else:
-            # Preview page - validate no rendering params
-            if rendering_params:
-                raise ValueError("Rendering parameters not allowed for preview pages (RGB/YCBCR)")
-            
-            # Decode page (handles any page type)
-            result = page.decode_to_rgb(output_dtype=output_dtype)
-        
-        if result is None:
-            raise RuntimeError("Failed to decode DNG page")
-        
-        return result
+        file = create_dng_from_page(file)
+    
+    # Create or use DngFile
+    dng_file = file if isinstance(file, DngFile) else DngFile(file)
+    
+    # Extract metadata
+    metadata = dng_file.get_ifd0_tags()
     
     # Try Core Image path if requested
     if use_coreimage_if_available:
@@ -2629,12 +2609,13 @@ def decode_dng(
             from ._dngio_coreimage import core_image_available, decode_dng_coreimage
 
             if core_image_available:
-                return decode_dng_coreimage(
-                    file=file,
+                image = decode_dng_coreimage(
+                    file=dng_file,
                     use_xmp=use_xmp,
                     output_dtype=output_dtype,
                     rendering_params=rendering_params,
                 )
+                return image, metadata
 
             logger.warning(
                 "Core Image requested but not available; falling back to Python pipeline."
@@ -2646,9 +2627,6 @@ def decode_dng(
             )
     
     # Python SDK pipeline
-    # Create or use DngFile
-    dng_file = file if isinstance(file, DngFile) else DngFile(file)
-
     result = dng_file.render_raw(
         output_dtype=output_dtype,
         demosaic_algorithm=demosaic_algorithm,
@@ -2658,4 +2636,4 @@ def decode_dng(
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")
     
-    return result
+    return result, metadata

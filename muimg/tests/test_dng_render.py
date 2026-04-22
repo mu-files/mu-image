@@ -166,7 +166,7 @@ def test_coreimage_vs_photoshop(
         pytest.skip(f"Photoshop reference not found: {jxl_path}")
 
     # Render with Core Image (use_xmp=True, no highlight preservation)
-    result = muimg.decode_dng(
+    result, _ = muimg.decode_dng(
         file=str(dng_path),
         output_dtype=np.uint16,
         use_coreimage_if_available=True,
@@ -282,7 +282,7 @@ def test_coreimage_vs_dng_validate(
         pytest.skip(f"Test DNG not found: {dng_path}")
 
     # Render with Core Image (use_xmp=False, no highlight preservation)
-    ci_result = muimg.decode_dng(
+    ci_result, _ = muimg.decode_dng(
         file=str(dng_path),
         output_dtype=np.uint16,
         use_coreimage_if_available=True,

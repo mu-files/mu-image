@@ -2859,7 +2859,7 @@ def _get_ifd0_tag(
     # Assert tag is known and is IFD0 or profile tag (coding error check)
     assert spec is not None, \
         f"Tag '{tag_name or tag}' is not in TIFF_TAG_TYPE_REGISTRY"
-    assert spec.dng_ifd in ("dng_ifd0", "dng_profile", "any"), \
+    assert spec.dng_ifd in ("ifd0", "dng_ifd0", "dng_profile", "any"), \
         f"Tag '{tag_name}' (dng_ifd={spec.dng_ifd}) is not an IFD0/profile tag"
     
     # Try IFD0 first
