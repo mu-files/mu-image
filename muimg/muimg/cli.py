@@ -77,12 +77,15 @@ def _get_page_from_ifd_spec(dng_file, ifd_spec):
         ifd_spec: String like 'ifd0', 'subifd0', 'subifd1', etc., or None for main page
         
     Returns:
-        Page object
+        Tuple of (page, index, name) where:
+            - page: Page object
+            - index: Flattened page index (or None for main page)
+            - name: IFD name string (e.g., "ifd0", "subifd0", "main raw page")
         
     Raises:
         click.ClickException: If IFD specification is invalid or page not found
     """
-    ifd_index, _ = _parse_ifd_spec(ifd_spec)
+    ifd_index, ifd_name = _parse_ifd_spec(ifd_spec)
     
     if ifd_index is None:
         # Default: get main raw page
@@ -98,7 +101,7 @@ def _get_page_from_ifd_spec(dng_file, ifd_spec):
             )
         page = pages[ifd_index]
     
-    return page
+    return page, ifd_index, ifd_name
 
 
 @dng.command(name="metadata")
@@ -520,7 +523,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 def dng_convert(
     input_file, output_file, ifd, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
 ):
-    """Convert DNG file to image file with processing options."""
+    """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
     import numpy as np
     import re
     from .dngio import DngFile
@@ -547,36 +550,56 @@ def dng_convert(
             # Pass dng if no specific IFD, otherwise pass page
             if ifd is None:
                 file_arg = dng
+                ifd_name = "main raw page"
             else:
-                file_arg = _get_page_from_ifd_spec(dng, ifd)
-                _, ifd_name = _parse_ifd_spec(ifd)
-                
+                file_arg, _, ifd_name = _get_page_from_ifd_spec(dng, ifd)
+            
+            # Handle preview pages differently from raw pages
+            if ifd is not None and not (file_arg.is_cfa or file_arg.is_linear_raw):
                 # Validate parameters before rendering
-                if params and not (file_arg.is_cfa or file_arg.is_linear_raw):
+                if params:
                     click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
                     sys.exit(1)
-            
-            # Use convert_dng to handle rendering and saving
-            success = convert_dng(
-                file=file_arg,
-                output=output_file,
-                output_dtype=output_dtype,
-                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
-                strict=False,
-                use_xmp=not no_xmp,
-                rendering_params=params,
-                use_coreimage_if_available=use_coreimage,
-            )
-            
-            if not success:
-                click.echo(f"Error: Failed to convert {input_file}", err=True)
-                sys.exit(1)
-            
-            if ifd is None:
-                click.echo(f"Converted {input_file} to {output_file}")
+                
+                # Preview page: decode directly to RGB
+                from .imgio import write_image
+                rgb = file_arg.decode_to_rgb(output_dtype=output_dtype)
+                if rgb is None:
+                    click.echo(f"Error: Failed to decode preview page", err=True)
+                    sys.exit(1)
+
+                # Write with metadata
+                success = write_image(rgb, output_file, metadata=dng.get_ifd0_tags())
+                if not success:
+                    click.echo(f"Error: Failed to write output file", err=True)
+                    sys.exit(1)
             else:
-                w, h = file_arg.get_rendered_size()
-                click.echo(f"Converted {ifd_name} ({file_arg.photometric_name}, {w}x{h}) to {output_file}")
+                # Raw page: use convert_dng for full rendering pipeline
+                success = convert_dng(
+                    file=file_arg,
+                    output=output_file,
+                    output_dtype=output_dtype,
+                    demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                    strict=False,
+                    use_xmp=not no_xmp,
+                    rendering_params=params,
+                    use_coreimage_if_available=use_coreimage,
+                )
+                
+                if not success:
+                    click.echo(f"Error: Failed to convert {input_file}", err=True)
+                    sys.exit(1)
+            
+            # Shared output message
+            # Get photometric from page (file_arg is either DngPage or DngFile)
+            if isinstance(file_arg, DngFile):
+                page = file_arg.get_main_page()
+                photometric = page.photometric_name if page else "unknown"
+            else:
+                photometric = file_arg.photometric_name
+            w, h = file_arg.get_rendered_size()
+            
+            click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file}")
             
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -778,7 +801,7 @@ def dng_copy(
     tag,
     pyramid_levels,
 ):
-    """Copy DNG file with optional transformations.
+    """Create a new DNG file with optional transformations.
     
     Apply scale, demosaic (CFA to LINEAR_RAW), strip tags, and/or generate preview.
     """
@@ -827,7 +850,7 @@ def dng_copy(
         
         # Open source DNG and get page based on IFD spec
         with dngio.DngFile(input_dng) as dng_file:
-            page = _get_page_from_ifd_spec(dng_file, ifd)
+            page, _, _ = _get_page_from_ifd_spec(dng_file, ifd)
             
             # Determine page_operation based on explicit compression request
             if compression is not None:

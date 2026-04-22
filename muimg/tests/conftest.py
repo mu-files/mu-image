@@ -12,6 +12,48 @@ import tifffile
 from muimg.raw_render import convert_dtype
 
 
+# =============================================================================
+# Test Output Configuration
+# =============================================================================
+
+# Base output directory for all tests
+TEST_OUTPUTS_DIR = Path(__file__).parent / "test_outputs"
+
+
+class OutputPathManager:
+    """Manages test output paths with optional persistence.
+    
+    Allows per-test-file control over whether outputs are saved to a persistent
+    directory or pytest's temporary directory.
+    """
+    
+    def __init__(self, persistent: bool):
+        """Initialize output path manager.
+        
+        Args:
+            persistent: If True, use persistent test_outputs folder. 
+                       If False, use pytest's tmp_path.
+        """
+        self.persistent = persistent
+    
+    def get_path(self, tmp_path: Path, test_name: str) -> Path:
+        """Get output path for a test.
+        
+        Args:
+            tmp_path: pytest tmp_path fixture
+            test_name: Name of the test (used as subdirectory name)
+        
+        Returns:
+            Path to use for test outputs
+        """
+        if self.persistent:
+            output_path = TEST_OUTPUTS_DIR / test_name
+            output_path.mkdir(parents=True, exist_ok=True)
+            return output_path
+        else:
+            return tmp_path
+
+
 def core_image_available_for_tests() -> bool:
     try:
         from muimg._dngio_coreimage import core_image_available

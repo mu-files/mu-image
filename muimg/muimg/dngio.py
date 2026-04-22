@@ -161,8 +161,11 @@ class DngPage(TiffPage):
             return False
         return value in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE)
 
-    def get_rendered_size(self) -> Tuple[int, int]:
+    def get_rendered_size(self, apply_orientation: bool = True) -> Tuple[int, int]:
         """Get the final dimensions after DefaultCrop is applied.
+        
+        Args:
+            apply_orientation: If True, swap width/height for 90° rotations (orientation 6 or 8)
         
         Returns:
             Tuple of (width, height) after crop is applied.
@@ -170,8 +173,18 @@ class DngPage(TiffPage):
         """
         crop_size = self.get_tag("DefaultCropSize")
         if crop_size is not None:
-            return int(crop_size[0]), int(crop_size[1])
-        return self.imagewidth or 0, self.imagelength or 0
+            w, h = int(crop_size[0]), int(crop_size[1])
+        else:
+            w, h = self.imagewidth or 0, self.imagelength or 0
+        
+        # Swap dimensions for 90° rotations if requested
+        if apply_orientation:
+            # Orientation is an IFD0 tag
+            orientation = self.ifd0.get_tag("Orientation") if self.ifd0 else None
+            if orientation in (6, 8):  # 90° CW or CCW
+                w, h = h, w
+        
+        return w, h
 
     def get_xmp(self) -> Optional[XmpMetadata]:
         """Return XMP metadata as an `XmpMetadata` object."""
@@ -1003,7 +1016,7 @@ class DngFile(TiffFile):
             return None
         
         # Calculate target max dimension using cropped dimensions
-        main_w, main_h = main_page.get_rendered_size()
+        main_w, main_h = main_page.get_rendered_size(apply_orientation=False)
         main_max_dim = max(main_w, main_h)
         target_max_dim = main_max_dim * scale
         
@@ -1018,7 +1031,7 @@ class DngFile(TiffFile):
         # Find pages that meet or exceed the target dimension (using cropped dimensions)
         candidates = []
         for page in raw_pages:
-            page_w, page_h = page.get_rendered_size()
+            page_w, page_h = page.get_rendered_size(apply_orientation=False)
             max_dim = max(page_w, page_h)
             if max_dim >= target_max_dim:
                 candidates.append((page, max_dim))
@@ -1065,10 +1078,10 @@ class DngFile(TiffFile):
         """See `DngPage.get_time_from_tags`."""
         return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
     
-    def get_rendered_size(self) -> Optional[Tuple[int, int]]:
+    def get_rendered_size(self, apply_orientation: bool = True) -> Optional[Tuple[int, int]]:
         """See `DngPage.get_rendered_size`."""
         main_page = self.get_main_page()
-        return main_page.get_rendered_size() if main_page else None
+        return main_page.get_rendered_size(apply_orientation=apply_orientation) if main_page else None
 
     def _forward_main_page(self, method_name: str, *args, require=None, **kwargs):
         page = self.get_main_page()
@@ -1187,7 +1200,7 @@ class DngFile(TiffFile):
         
         # Apply resize if needed (when scaling and dimensions don't match)
         if target_w is not None and target_h is not None:
-            render_w, render_h = render_page.get_rendered_size()
+            render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
             if render_w != target_w or render_h != target_h:
                 import cv2
                 rgb_camera = cv2.resize(
@@ -2618,12 +2631,11 @@ def decode_dng(
                 return image, metadata
 
             logger.warning(
-                "Core Image requested but not available; falling back to Python pipeline."
+                "Core Image requested but not supported on this platform; falling back to Python pipeline."
             )
-        except ImportError:
+        except Exception as e:
             logger.warning(
-                "Core Image requested but PyObjC/Core Image dependencies are not installed; "
-                "falling back to Python pipeline."
+                f"Core Image processing failed ({type(e).__name__}): {e}; falling back to Python pipeline."
             )
     
     # Python SDK pipeline
@@ -2632,6 +2644,7 @@ def decode_dng(
         demosaic_algorithm=demosaic_algorithm,
         use_xmp=use_xmp,
         rendering_params=rendering_params,
+        strict=strict,
     )
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")

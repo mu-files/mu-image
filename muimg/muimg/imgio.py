@@ -7,7 +7,7 @@ import numpy as np
 import tifffile
 
 from .dngio import DngFile, DngPage, decode_dng
-from .raw_render import DemosaicAlgorithm
+from .raw_render import DemosaicAlgorithm, convert_dtype
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, resolve_tag, TiffType
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def write_image(
     image: np.ndarray,
     output: Union[str, Path, IO[bytes]],
-    output_format: str = "jpg",
+    output_format_stream: str = "jpg",
     metadata: Optional[MetadataTags] = None,
 ) -> bool:
     """
@@ -26,7 +26,7 @@ def write_image(
     Args:
         image: RGB image array with shape (height, width, 3)
         output: Output file path (str/Path) or stream (IO[bytes])
-        output_format: Output format for stream output ("jpg", "png", "tiff", etc.)
+        output_format_stream: Output format for stream output ("jpg", "png", "tiff", etc.)
             Ignored when output is a file path (format determined by extension)
         metadata: Optional metadata tags to embed in output (for JPG/TIFF)
     
@@ -38,7 +38,7 @@ def write_image(
         output_path = Path(output)
         format_ext = output_path.suffix.lower()
     else:
-        format_ext = f".{output_format.lstrip('.')}"
+        format_ext = f".{output_format_stream.lstrip('.')}"
     
     # Handle TIFF using tifffile
     if format_ext in ('.tif', '.tiff'):
@@ -50,11 +50,13 @@ def write_image(
             filtered_metadata = filter_tags_by_ifd_category(metadata, ["ifd0", "exif"])
             
             # Remove SubIFD pointer tags that tifffile manages itself
-            for tag_name in ("ExifTag", "GPSTag", "ProfileIFD", "Software"):
+            for tag_name in ("ExifTag", "GPSTag", "ProfileIFD", "Software", "ImageDescription"):
                 filtered_metadata.remove_tag(tag_name)
+            
+            extratags = filtered_metadata
         
         # Write TIFF directly to output
-        tifffile.imwrite(output, image, extratags=filtered_metadata, software="muimg", metadata=None)
+        tifffile.imwrite(output, image, extratags=extratags, software="muimg", metadata=None)
         msg = "with metadata" if extratags is not None else "without metadata"
         if isinstance(output, (str, Path)):
             logger.info(f"Successfully saved image {msg} to {output}")
@@ -62,7 +64,28 @@ def write_image(
             logger.info(f"Successfully wrote image {msg} to stream")
         return True
     
-    # Handle non-TIFF formats with OpenCV
+    # Handle JXL format
+    elif format_ext in ('.jxl',):
+        import imagecodecs
+        
+        # Encode to JXL with lossless compression
+        jxl_data = imagecodecs.jpegxl_encode(
+            image,
+            distance=0.0,  # Lossless
+            effort=5,
+        )
+        
+        # Write to output
+        if isinstance(output, (str, Path)):
+            with open(output_path, 'wb') as f:
+                f.write(jxl_data)
+            logger.info(f"Successfully saved image to {output_path} (metadata not saved)")
+        else:
+            output.write(jxl_data)
+            logger.info(f"Successfully wrote {len(jxl_data)} bytes to stream (metadata not saved)")
+        return True
+    
+    # Handle other formats with OpenCV
     else:
         # Convert RGB to BGR for OpenCV
         import cv2
@@ -79,43 +102,13 @@ def write_image(
         if isinstance(output, (str, Path)):
             with open(output_path, 'wb') as f:
                 f.write(image_bytes)
-            logger.info(f"Successfully saved image to {output_path}")
+            logger.info(f"Successfully saved image to {output_path} (metadata not saved)")
         else:
             output.write(image_bytes)
-            logger.info(f"Successfully wrote {len(image_bytes)} bytes to stream")
+            logger.info(f"Successfully wrote {len(image_bytes)} bytes to stream (metadata not saved)")
     
     return True
 
-def _coerce_decoded_image(img: np.ndarray, output_dtype: type) -> np.ndarray:
-    import cv2
-    if img.ndim == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    elif img.ndim == 3 and img.shape[2] == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
-    elif img.ndim == 3 and img.shape[2] == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    else:
-        raise ValueError(f"Unsupported decoded image shape: {img.shape}")
-
-    if output_dtype is np.uint8:
-        if img.dtype == np.uint16:
-            img = (img >> 8).astype(np.uint8, copy=False)
-        elif img.dtype != np.uint8:
-            raise ValueError(
-                f"Unsupported decoded dtype {img.dtype} for output_dtype=np.uint8"
-            )
-        return img
-
-    if output_dtype is np.uint16:
-        if img.dtype == np.uint8:
-            return (img.astype(np.uint16) << 8)
-        if img.dtype != np.uint16:
-            raise ValueError(
-                f"Unsupported decoded dtype {img.dtype} for output_dtype=np.uint16"
-            )
-        return img
-
-    raise ValueError(f"Unsupported output_dtype: {output_dtype}")
 
 def decode_image(
     file: Union[str, Path, IO[bytes]],
@@ -148,12 +141,38 @@ def decode_image(
         pass
     
     if is_dng:
-        # Use default decode_dng parameters
         # For advanced control with custom parameters, use 'muimg dng convert' CLI command
-        image, _ = decode_dng(file=dng_file, output_dtype=output_dtype)
-        return image
+        return dng_file.get_main_page().decode_to_rgb(output_dtype)
     
-    # Fall back to cv2 for other formats (processing_params ignored)
+    # Check if it's a JXL file
+    if isinstance(file, (str, Path)) and str(file).lower().endswith('.jxl'):
+        # Decode JXL using imagecodecs
+        import imagecodecs
+        if isinstance(file, (str, Path)):
+            with open(file, 'rb') as f:
+                jxl_data = f.read()
+        else:
+            file.seek(0)
+            jxl_data = file.read()
+        
+        img = imagecodecs.jpegxl_decode(jxl_data)
+        if img is None:
+            raise ValueError("Failed to decode JXL image")
+        
+        # JXL already returns RGB, just convert dtype if needed
+        return convert_dtype(img, output_dtype)
+    
+    # Check if it's a TIFF file - use tifffile to avoid OpenCV warnings about EXIF tags
+    if isinstance(file, (str, Path)) and str(file).lower().endswith(('.tif', '.tiff')):
+        import tifffile
+        img = tifffile.imread(file)
+        if img is None:
+            raise ValueError("Failed to decode TIFF image")
+        
+        # tifffile returns RGB, just convert dtype if needed
+        return convert_dtype(img, output_dtype)
+    
+    # Fall back to cv2 for other formats
     import cv2
     if isinstance(file, (str, Path)):
         img = cv2.imread(str(file), cv2.IMREAD_UNCHANGED)
@@ -166,14 +185,24 @@ def decode_image(
     
     if img is None:
         raise ValueError("Failed to decode image")
+    
+    # OpenCV returns BGR, convert to RGB and handle grayscale/alpha
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    elif img.ndim == 3 and img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+    elif img.ndim == 3 and img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    else:
+        raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
-    return _coerce_decoded_image(img, output_dtype=output_dtype)
+    return convert_dtype(img, output_dtype)
 
 def convert_imgformat(
     file: Union[str, Path, IO[bytes]],
     output: Union[str, Path, IO[bytes]],
     output_dtype: type = np.uint8,
-    output_format: str = "jpg",
+    output_format_stream: str = "jpg",
 ) -> bool:
     """
     Convert an image file to another format, saving to file or stream.
@@ -185,7 +214,7 @@ def convert_imgformat(
         file: Path to image file or file-like object
         output: Output file path (str/Path) or stream (IO[bytes])
         output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
-        output_format: Output format for stream output ("jpg", "png", "tiff", etc.)
+        output_format_stream: Output format for stream output ("jpg", "png", "tiff", etc.)
             Ignored when output is a file path (format determined by extension)
         
     Returns:
@@ -196,7 +225,7 @@ def convert_imgformat(
         image = decode_image(file=file, output_dtype=output_dtype)
         
         # Save using shared helper
-        return write_image(image, output, output_format)
+        return write_image(image, output, output_format_stream)
                 
     except Exception as e:
         logger.error(f"Error converting {file}: {e}", exc_info=True)
@@ -205,26 +234,28 @@ def convert_imgformat(
 
 def convert_imgformat_to_stream(
     file: Union[str, Path, IO[bytes]],
-    output_format: str = "jpg",
+    output_format_stream: str = "jpg",
     output_dtype: type = np.uint8,
-) -> bytes:
+) -> IO[bytes]:
     """
-    Encode an image file to bytes.
+    Encode an image file to a BytesIO stream.
     
-    Deprecated: Use convert_imgformat(file, output=BytesIO(), output_format=...) instead.
+    Helper function that creates a BytesIO stream and calls convert_imgformat.
     
     Args:
         file: Path to image file or file-like object
-        output_format: Output format ("jpg", "png", "tiff", etc.)
+        output_format_stream: Output format ("jpg", "png", "tiff", etc.)
         output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
         
     Returns:
-        bytes: Encoded image data
+        BytesIO: Stream containing encoded image data
     """
     from io import BytesIO
     stream = BytesIO()
-    convert_imgformat(file=file, output=stream, output_dtype=output_dtype, output_format=output_format)
-    return stream.getvalue()
+    convert_imgformat(
+        file=file, output=stream, output_dtype=output_dtype, output_format_stream=output_format_stream)
+    stream.seek(0)
+    return stream
 
 
 def convert_dng(
@@ -236,7 +267,7 @@ def convert_dng(
     use_xmp: bool = True,
     rendering_params: dict = None,
     use_coreimage_if_available: bool = False,
-    output_format: str = "jpg",
+    output_format_stream: str = "jpg",
 ) -> bool:
     """
     Convert a DNG file or page to an image file or stream with custom rendering parameters.
@@ -260,7 +291,7 @@ def convert_dng(
             See decode_dng() for full list of supported parameters.
         use_coreimage_if_available: Use Core Image pipeline on macOS if available.
             Note: Only supported when passing file path/IO/DngFile, not DngPage.
-        output_format: Output format for stream output ("jpg", "png", "tiff", etc.)
+        output_format_stream: Output format for stream output ("jpg", "png", "tiff", etc.)
             Ignored when output is a file path (format determined by extension)
         
     Returns:
@@ -284,7 +315,7 @@ def convert_dng(
         )
         
         # Save using shared helper with metadata
-        return write_image(image, output, output_format, metadata=metadata)
+        return write_image(image, output, output_format_stream, metadata=metadata)
                 
     except ValueError as e:
         # Handle validation errors (e.g., rendering params on preview pages)
@@ -297,22 +328,22 @@ def convert_dng(
 
 def convert_dng_to_stream(
     file: Union[str, Path, IO[bytes], "DngFile", "DngPage"],
-    output_format: str = "jpg",
+    output_format_stream: str = "jpg",
     output_dtype: type = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     strict: bool = True,
     use_xmp: bool = True,
     rendering_params: dict = None,
     use_coreimage_if_available: bool = False,
-) -> bytes:
+) -> IO[bytes]:
     """
-    Encode a DNG file to bytes with custom rendering parameters.
+    Encode a DNG file to a BytesIO stream with custom rendering parameters.
     
-    Deprecated: Use convert_dng(file, output=BytesIO(), output_format=...) instead.
+    Helper function that creates a BytesIO stream and calls convert_dng.
     
     Args:
         file: DNG file path, file-like object, DngFile instance, or DngPage instance
-        output_format: Output format ("jpg", "png", "tiff", etc.)
+        output_format_stream: Output format ("jpg", "png", "tiff", etc.)
         output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
         demosaic_algorithm: Demosaic algorithm for CFA pages ("RCD", "VNG", etc.)
         strict: If True, raise error on unsupported DNG tags
@@ -321,7 +352,7 @@ def convert_dng_to_stream(
         use_coreimage_if_available: Use Core Image pipeline on macOS if available
         
     Returns:
-        bytes: Encoded image data
+        BytesIO: Stream containing encoded image data
     """
     from io import BytesIO
     stream = BytesIO()
@@ -334,6 +365,7 @@ def convert_dng_to_stream(
         use_xmp=use_xmp,
         rendering_params=rendering_params,
         use_coreimage_if_available=use_coreimage_if_available,
-        output_format=output_format,
+        output_format_stream=output_format_stream,
     )
-    return stream.getvalue()
+    stream.seek(0)
+    return stream
