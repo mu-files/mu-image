@@ -56,7 +56,7 @@ def write_image(
             extratags = filtered_metadata
         
         # Write TIFF directly to output
-        tifffile.imwrite(output, image, extratags=extratags, software="muimg", metadata=None)
+        tifffile.imwrite(output, image, extratags=extratags, software="muimg")
         msg = "with metadata" if extratags is not None else "without metadata"
         if isinstance(output, (str, Path)):
             logger.info(f"Successfully saved image {msg} to {output}")

@@ -1351,8 +1351,7 @@ def _prepare_ifd_args(
     # DNG spec: these tags only appear in IFD0, not in SubIFDs
     if is_ifd0:
         # IFD0: Extract Software from metadata if present
-        if 'Software' in metadata:
-            ifd_args['software'] = metadata.get_tag('Software')
+        ifd_args['software'] = metadata.get_tag('Software') or "muimg"
     else:
         # SubIFDs: Prevent tifffile from adding these tags
         ifd_args['software'] = False  # Prevents tifffile default value 'tifffile.py'
@@ -1487,6 +1486,7 @@ _COMPRESSION_INVALIDATED_TAGS = {
     'JPEGLosslessPredictors', 'JPEGPointTransforms',
     'JPEGQTables', 'JPEGDCTables', 'JPEGACTables',
     'JXLDistance', 'JXLEffort', 'JXLDecodeSpeed',
+    'Software' # if we are not doing a pure copy of the image bits then replace software with muimg
 }
 
 def _filter_metadata_tags(

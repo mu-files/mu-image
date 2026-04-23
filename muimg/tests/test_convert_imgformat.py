@@ -213,6 +213,12 @@ def test_exif_metadata_preservation(tmp_path):
         with tifffile.TiffFile(output_tif) as tif:
             tif_tags = tif.pages[0].tags
             
+            # Verify Software tag is set to 'muimg'
+            assert 'Software' in tif_tags, "Software tag missing from output TIFF"
+            software_value = tif_tags['Software'].value
+            assert software_value == 'muimg', f"Expected Software='muimg', got '{software_value}'"
+            print(f"Software tag: {software_value}")
+            
             # Check that each EXIF dict key is present as a TIFF tag in output
             # ExifVersion is intentionally skipped by _convert_exif_dict_to_tags
             missing_tags = []
