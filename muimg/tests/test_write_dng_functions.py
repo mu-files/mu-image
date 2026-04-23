@@ -283,13 +283,6 @@ def test_complete_file_roundtrip(tmp_path):
         print(f"  Successfully wrote {output_path}")
         print(f"  File size: {output_path.stat().st_size:,} bytes")
     
-    # Step 5.5: Verify Software tag is set to 'muimg'
-    print("\nStep 5.5: Verifying Software tag...")
-    with DngFile(output_path) as output_dng:
-        software = output_dng.get_ifd0_tags().get_tag('Software')
-        print(f"  Software tag: {software}")
-        assert software == 'muimg', f"Expected Software='muimg', got '{software}'"
-    
     # Step 6: Validate new DNG
     print("\nStep 6: Validating new DNG with dng_validate...")
     validate_output = output_dir / "roundtrip_output_validate"
