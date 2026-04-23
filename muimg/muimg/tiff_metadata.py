@@ -1176,6 +1176,16 @@ class MetadataTags:
         if tag_id is None:
             return False
         return tag_id in self._tags
+    
+    def __getitem__(self, tag: Union[int, str]) -> Any:
+        """Get raw tag value using [] operator, like tifffile.tags.
+        
+        Raises KeyError if not found.
+        """
+        result = self.get_raw_tag(tag)
+        if result is None:
+            raise KeyError(tag)
+        return result
 
     def remove_tag(self, tag: Union[int, str]) -> bool:
         """Remove a tag by code (int) or name (str).
