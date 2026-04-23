@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 from pathlib import Path
+import tifffile
 
 from muimg import DngFile
 from muimg.raw_render import demosaic, convert_dtype, DemosaicAlgorithm
@@ -176,3 +177,122 @@ def test_demosaic_invalid_pattern(cfa_data):
     
     with pytest.raises(ValueError, match="Invalid CFA pattern"):
         demosaic(cfa, "INVALID_PATTERN", algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+
+
+def test_demosaic_cfa_pattern_consistency(cfa_data):
+    """Test that demosaic works correctly for all four CFA patterns.
+    
+    The four Bayer patterns are:
+    RGGB:  RG    GRBG:  GR    GBRG:  GB    BGGR:  BG
+           GB           BG           RG           GR
+    
+    We can create the other three patterns from RGGB by cropping by (x,y):
+    - GRBG: crop by (1,0) - shift left by 1 column
+    - GBRG: crop by (0,1) - shift up by 1 row
+    - BGGR: crop by (1,1) - shift left 1 column and up 1 row
+    
+    For each pattern, we demosaic the cropped CFA and compare against the
+    corresponding crop of the original demosaic result.
+    """
+    cfa, cfa_pattern = cfa_data
+    
+    # Ensure we start with RGGB pattern
+    assert cfa_pattern == "RGGB", f"Test expects RGGB pattern, got {cfa_pattern}"
+    
+    # Convert to uint16 for testing
+    cfa_u16 = convert_dtype(cfa, np.uint16)
+    
+    # Pattern transformations: (crop_x, crop_y) -> new_pattern
+    pattern_crops = {
+        "RGGB": (0, 0),  # Original, no crop
+        "BGGR": (1, 1),  # Shift left 1 column and up 1 row
+        "GBRG": (0, 1),  # Shift up by 1 row
+        "GRBG": (1, 0),  # Shift left by 1 column
+    }
+    
+    # Test each algorithm for the reference
+    algorithms = [DemosaicAlgorithm.DNGSDK_BILINEAR, DemosaicAlgorithm.OPENCV_EA,
+                  DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, ]
+    
+    for ref_algorithm in algorithms:
+        # Demosaic the original RGGB pattern with reference algorithm
+        reference_rgb = demosaic(cfa_u16, "RGGB", algorithm=ref_algorithm)
+        
+        # Test each pattern variant
+        for pattern_name, (crop_x, crop_y) in pattern_crops.items():
+            # Crop the CFA to create the new pattern
+            cropped_cfa = cfa_u16[crop_y:, crop_x:]
+            
+            # Make dimensions even (required for demosaic)
+            h, w = cropped_cfa.shape
+            if h % 2 == 1:
+                cropped_cfa = cropped_cfa[:-1, :]
+            if w % 2 == 1:
+                cropped_cfa = cropped_cfa[:, :-1]
+            
+            # Make contiguous copy (C extensions may assume contiguous memory)
+            cropped_cfa = np.ascontiguousarray(cropped_cfa)
+            
+            # Crop the reference RGB to match (include color channel dimension)
+            expected_rgb = reference_rgb[crop_y:, crop_x:, :]
+            h, w = cropped_cfa.shape
+            expected_rgb = expected_rgb[:h, :w, :]
+            
+            # Test demosaicing the cropped pattern with all algorithms
+            for test_algorithm in algorithms:
+                # Demosaic the cropped CFA with the test algorithm
+                cropped_rgb = demosaic(cropped_cfa, pattern_name, algorithm=test_algorithm)
+                
+                # Results should have correct shape
+                assert cropped_rgb.shape == expected_rgb.shape, \
+                    f"{ref_algorithm}->{test_algorithm} {pattern_name}: shape mismatch"
+                
+                # Compare results - allow small differences at edges due to interpolation
+                diff = np.abs(cropped_rgb.astype(np.int32) - expected_rgb.astype(np.int32))
+                
+                # Exclude 2-pixel border where edge effects may occur
+                if diff.shape[0] > 4 and diff.shape[1] > 4:
+                    diff_interior = diff[2:-2, 2:-2]
+                    max_interior_diff = diff_interior.max()
+                    mean_interior_diff = diff_interior.mean()
+                    
+                    print(f"\n{ref_algorithm}->{test_algorithm} {pattern_name}: max_interior={max_interior_diff}, mean_interior={mean_interior_diff:.2f}")
+                    
+                    # Always verify non-zero output
+                    assert not np.all(cropped_rgb == 0), \
+                        f"{ref_algorithm}->{test_algorithm} {pattern_name}: produced all zeros"
+                    
+                    # When using same algorithm, interior should be nearly identical
+                    if ref_algorithm == test_algorithm:
+                        # RCD has localized interpolation differences, use relaxed thresholds
+                        if test_algorithm == DemosaicAlgorithm.RCD:
+                            max_threshold = 2000
+                            mean_threshold = 0.6
+                        else:
+                            max_threshold = 1
+                            mean_threshold = 0.1
+                        
+                        if max_interior_diff > max_threshold or mean_interior_diff >= mean_threshold:
+                            # Save debug output
+                            output_dir = Path(__file__).parent / "test_outputs" / "test_demosaic"
+                            output_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            ref_file = output_dir / f"{ref_algorithm.name}_{pattern_name}_reference.tif"
+                            test_file = output_dir / f"{ref_algorithm.name}_{pattern_name}_test.tif"
+                            diff_file = output_dir / f"{ref_algorithm.name}_{pattern_name}_diff.tif"
+                            
+                            tifffile.imwrite(ref_file, expected_rgb)
+                            tifffile.imwrite(test_file, cropped_rgb)
+                            tifffile.imwrite(diff_file, diff.astype(np.uint16))
+                            
+                            print(f"Saved debug output to {output_dir}")
+                        
+                        assert max_interior_diff <= max_threshold, \
+                            f"{ref_algorithm}->{test_algorithm} {pattern_name}: interior max diff {max_interior_diff} > {max_threshold}"
+                        assert mean_interior_diff < mean_threshold, \
+                            f"{ref_algorithm}->{test_algorithm} {pattern_name}: interior mean diff {mean_interior_diff:.2f} > {mean_threshold}"
+                    else:
+                        # Cross-algorithm: algorithms differ but should be reasonably similar
+                        # Mean difference should be < 96 (out of 65535, ~0.15%)
+                        assert mean_interior_diff < 96, \
+                            f"{ref_algorithm}->{test_algorithm} {pattern_name}: cross-algorithm mean diff {mean_interior_diff:.2f} > 100"
