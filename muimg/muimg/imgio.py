@@ -45,7 +45,11 @@ def write_image(
         
         # Prepare metadata if provided
         extratags = None
+        software = "muimg"  # Default
         if metadata is not None:
+            # Extract Software tag before filtering (if present, use it; otherwise use default)
+            software = metadata.get_tag('Software') or "muimg"
+            
             # Filter to only ifd0 and exif tags
             filtered_metadata = filter_tags_by_ifd_category(metadata, ["ifd0", "exif"])
             
@@ -56,7 +60,7 @@ def write_image(
             extratags = filtered_metadata
         
         # Write TIFF directly to output
-        tifffile.imwrite(output, image, extratags=extratags, software="muimg")
+        tifffile.imwrite(output, image, extratags=extratags, software=software)
         msg = "with metadata" if extratags is not None else "without metadata"
         if isinstance(output, (str, Path)):
             logger.info(f"Successfully saved image {msg} to {output}")
