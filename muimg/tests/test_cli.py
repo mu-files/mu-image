@@ -27,14 +27,14 @@ from conftest import (
 MUIMG_CLI = [sys.executable, "-m", "muimg.cli"]
 
 # Output directory for comparison files
-OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_convert_imgformat"
+OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_cli"
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 # Test file
 TEST_DNG = DNGFILES_DIR / "asi676mc.cfa.jxl_lossy.2ifds.dng"
 
 # Test output path manager - set persistent=True to keep outputs, False for tmp_path
-output_path_manager = OutputPathManager(persistent=True)
+output_path_manager = OutputPathManager(persistent=False)
 
 # Threshold for comparing SDK vs Core Image output (percentage difference)
 # The two pipelines use different algorithms so some difference is expected
@@ -94,9 +94,39 @@ def test_convert_imgformat_sdk_vs_coreimage():
     print(f"Core Image output: {png_path}")
     
     # 3. Decode both images using decode_image()
-    # This uses tifffile for TIFF (avoiding OpenCV EXIF warnings) and handles PNG correctly
+    # This uses tifffile for TIFF and handles PNG correctly
     tiff_rgb = decode_image(tiff_path, output_dtype=np.uint8)
     assert tiff_rgb is not None, "Failed to decode TIFF"
+    
+    # 3b. Test convert-image CLI: convert TIFF to JPEG
+    jpeg_path = OUTPUT_DIR / f"{basename}_converted.jpg"
+    result = subprocess.run(
+        MUIMG_CLI + [
+            "convert-image",
+            str(tiff_path),
+            str(jpeg_path),
+            "--bit-depth", "8",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"convert-image CLI failed: {result.stderr}"
+    assert jpeg_path.exists(), "JPEG file not created by convert-image"
+    assert jpeg_path.stat().st_size > 0, "JPEG file is empty"
+    print(f"convert-image output: {jpeg_path}")
+    
+    # Verify JPEG is valid and matches TIFF dimensions
+    jpeg_rgb = decode_image(jpeg_path, output_dtype=np.uint8)
+    assert jpeg_rgb is not None, "Failed to decode JPEG from convert-image"
+    assert jpeg_rgb.shape == tiff_rgb.shape, f"JPEG shape {jpeg_rgb.shape} != TIFF shape {tiff_rgb.shape}"
+    
+    # Compare JPEG vs TIFF pixels (JPEG has lossy compression, so allow some difference)
+    jpeg_stats = compute_diff_stats(tiff_rgb, jpeg_rgb)
+    print(f"JPEG vs TIFF - Mean diff: {jpeg_stats['mean']:.2f}%, P99 diff: {jpeg_stats['p99']:.2f}%, Max diff: {jpeg_stats['max']:.2f}%")
+    
+    # JPEG compression should still be reasonably close (observed: mean ~1%, P99 ~4%)
+    assert jpeg_stats['mean'] < 1.25, f"JPEG mean difference {jpeg_stats['mean']:.2f}% too high (lossy compression artifact)"
+    assert jpeg_stats['p99'] < 6.0, f"JPEG P99 difference {jpeg_stats['p99']:.2f}% too high (lossy compression artifact)"
     
     # Decode PNG from stream
     png_stream.seek(0)
@@ -387,6 +417,93 @@ def test_orientation_handling(tmp_path):
         # Images should match exactly (or very close due to rounding)
         assert stats['mean'] < 0.015, \
             f"Images differ after orientation roundtrip: mean diff {stats['mean']:.4f}%"
+
+
+def test_raw_stage(tmp_path):
+    """Test dng raw-stage CLI command for all stages.
+    
+    Tests all 4 stages: raw, linearized, linearized-plus-ops, camera-rgb
+    Compares CLI output with direct API calls.
+    """
+    test_dng = DNGFILES_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    if not test_dng.exists():
+        pytest.skip(f"Test DNG not found: {test_dng}")
+    
+    tmpdir = output_path_manager.get_path(tmp_path, "test_raw_stage")
+    
+    # Load DNG for API comparison
+    with DngFile(test_dng) as dng:
+        # Get main page (SubIFD 0)
+        page = dng.get_main_page()
+        assert page is not None, "No main page found"
+        assert page.is_cfa, "Main page is not CFA"
+        
+        print(f"\nTesting raw-stage on: {page.photometric_name}, size={page.imagewidth}x{page.imagelength}")
+        
+        # Import needed for API calls
+        from muimg.dngio import RawStageSelector
+        from muimg.raw_render import DemosaicAlgorithm, convert_dtype
+        import tifffile
+        
+        # Test each stage
+        stages = ["raw", "linearized", "linearized-plus-ops", "camera-rgb"]
+        
+        for stage in stages:
+            print(f"\n  Testing stage: {stage}")
+            
+            # 1. Run CLI command
+            cli_output = tmpdir / f"{stage}_cli.tif"
+            result = subprocess.run(
+                MUIMG_CLI + [
+                    "dng",
+                    "raw-stage",
+                    str(test_dng),
+                    str(cli_output),
+                    stage,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"CLI failed for {stage}: {result.stderr}"
+            assert cli_output.exists(), f"CLI output not created for {stage}"
+            
+            # 2. Get data via API
+            if stage == "camera-rgb":
+                # Use get_camera_rgb_raw() with default demosaic
+                api_data = page.get_camera_rgb_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
+            else:
+                # Look up stage selector (convert hyphens to underscores for enum)
+                stage_enum_value = stage.replace("-", "_")
+                stage_selector = RawStageSelector.lookup(stage_enum_value)
+                
+                # Get CFA data
+                cfa_data, _ = page.get_cfa(stage_selector)
+                api_data = cfa_data
+            
+            assert api_data is not None, f"API returned None for {stage}"
+            
+            # 3. Convert API data from float to uint16
+            api_data_uint16 = convert_dtype(api_data, np.uint16)
+            
+            # 4. Load CLI output
+            cli_data = tifffile.imread(cli_output)
+            
+            # 5. Compare shapes
+            print(f"    CLI shape: {cli_data.shape}, API shape: {api_data_uint16.shape}")
+            assert cli_data.shape == api_data_uint16.shape, \
+                f"Shape mismatch for {stage}: CLI={cli_data.shape}, API={api_data_uint16.shape}"
+            
+            # 6. Compare pixel values
+            stats = compute_diff_stats(api_data_uint16, cli_data)
+            print(f"    Mean diff: {stats['mean']:.4f}%, Max diff: {stats['max']:.4f}%")
+            
+            # Should match exactly
+            assert stats['mean'] < 0.001, \
+                f"CLI and API outputs differ for {stage}: mean diff {stats['mean']:.4f}%"
+            assert stats['max'] < 0.001, \
+                f"CLI and API outputs differ for {stage}: max diff {stats['max']:.4f}%"
+        
+        print(f"\n✓ All {len(stages)} stages passed")
 
 
 if __name__ == "__main__":

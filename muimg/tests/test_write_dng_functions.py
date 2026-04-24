@@ -4,10 +4,10 @@ Validates complete DNG file roundtrip by enumerating all pages from a source DNG
 creating IfdPageSpecs, writing to a new DNG, and comparing metadata and pixels.
 """
 
-import io
 import logging
 import numpy as np
-import pytest
+import subprocess
+import sys
 from pathlib import Path
 from tifffile import COMPRESSION
 
@@ -371,6 +371,86 @@ def test_complete_file_roundtrip(tmp_path):
             )
             
             print(f"      ✓ Pixels match exactly (0.0% difference)")
+    
+    # Step 9: Test CLI metadata command
+    print("\nStep 9: Testing 'dng metadata' CLI command...")
+    
+    # Run metadata command on source file
+    source_metadata_result = subprocess.run(
+        [sys.executable, "-m", "muimg.cli", "dng", "metadata", str(source_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert source_metadata_result.returncode == 0, f"Source metadata CLI failed: {source_metadata_result.stderr}"
+    assert len(source_metadata_result.stdout) > 0, "Source metadata output is empty"
+    
+    # Run metadata command on output file
+    output_metadata_result = subprocess.run(
+        [sys.executable, "-m", "muimg.cli", "dng", "metadata", str(output_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert output_metadata_result.returncode == 0, f"Output metadata CLI failed: {output_metadata_result.stderr}"
+    assert len(output_metadata_result.stdout) > 0, "Output metadata output is empty"
+    
+    # Read EXIF tag names from source DNG file
+    exif_tags = set()
+    exif_dict = source_dng.get_tag('ExifTag')
+    if exif_dict:
+        for tag_name in exif_dict.keys():
+            exif_tags.add(tag_name + ':')
+    
+    print(f"  EXIF tags to skip: {sorted(exif_tags)[:10]}... ({len(exif_tags)} total)")
+    
+    # Compare metadata outputs
+    def normalize_metadata(text, exif_tags_to_skip):
+        """Strip tags that differ, skip summary lines 4-5, stop at detailed SubIFD 3 section."""
+        lines = []
+        for line in text.split('\n'):
+            # Stop at detailed SubIFD 3 section (which is IFD 4 in the CLI output)
+            if '=== SubIFD 3 (--ifd 4) ===' in line:
+                break
+            # Skip summary lines for IFDs 4 and 5
+            if line.startswith('4:') or line.startswith('5:'):
+                continue
+            # Skip EXIF tags
+            if any(tag in line for tag in exif_tags_to_skip):
+                continue
+            # Skip tags that are added/changed by write process
+            if any(x in line for x in ['ImageDescription:', 'XResolution:', 'YResolution:', 'ResolutionUnit:',
+                                        'StripOffsets:', 'TileOffsets:', 'SubIFDs:', 'PlanarConfiguration:', 
+                                        'Total file size:', 'DNGVersion:', 'DNGBackwardVersion:',
+                                        'FocalPlaneXResolution:', 'FocalPlaneYResolution:',
+                                        'ExifTag:']):
+                continue
+            lines.append(line)
+        return '\n'.join(lines)
+    
+    source_normalized = normalize_metadata(source_metadata_result.stdout, exif_tags)
+    output_normalized = normalize_metadata(output_metadata_result.stdout, exif_tags)
+    
+    if source_normalized == output_normalized:
+        print(f"  ✓ CLI metadata matches (excluding ImageDescription and IFDs 4-5)")
+    else:
+        print(f"  ✗ CLI metadata mismatch - ALL DIFFERENCES:")
+        src_lines = source_normalized.split('\n')
+        out_lines = output_normalized.split('\n')
+        
+        # Show ALL differences
+        diffs = []
+        for i, (src, out) in enumerate(zip(src_lines, out_lines)):
+            if src != out:
+                diffs.append((i, src, out))
+        
+        for i, src, out in diffs:
+            print(f"    Line {i}:")
+            print(f"      Source: '{src}'")
+            print(f"      Output: '{out}'")
+        
+        if len(src_lines) != len(out_lines):
+            print(f"    Line count: source={len(src_lines)}, output={len(out_lines)}")
+        
+        assert False, f"CLI metadata comparison failed: {len(diffs)} differences found"
     
     print(f"\n{'='*80}")
     print(f"✓ Complete file roundtrip test PASSED")

@@ -39,7 +39,7 @@ TEST_FILES = {
     },
     "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": {
         "ignored_warnings": ["columninterleavefactor tag not allowed"],
-        "strip_tags": ["NewRawImageDigest"],  # Original file has bad digest from Adobe DNG Converter 16.1
+        "strip_tags": ["NewRawImageDigest"],  
     },
 }
 
