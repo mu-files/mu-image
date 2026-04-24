@@ -125,4 +125,4 @@ muimg/tests/test_outputs/
 muimg/tests/fixtures/
 
 # GPL-licensed RCD demosaic (user-enabled, not distributed)
-muimg/src/demosaic/rcd.c
+muimg/c-src/demosaic/rcd.c

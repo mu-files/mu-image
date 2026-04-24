@@ -22,14 +22,14 @@ common_link_args = [
 # Demosaic C extensions with ARM optimizations
 vng_extension = Extension(
     'muimg._vng',
-    sources=['src/demosaic/vng.c'],
+    sources=['c-src/demosaic/vng.c'],
     include_dirs=[np.get_include()],
     extra_compile_args=common_compile_args,
     extra_link_args=common_link_args,
 )
 
 # RCD extension - only built if user has renamed rcd.txt to rcd.c (GPL code)
-rcd_source = 'src/demosaic/rcd.c'
+rcd_source = 'c-src/demosaic/rcd.c'
 rcd_extension = None
 if os.path.exists(rcd_source):
     rcd_extension = Extension(
@@ -44,7 +44,7 @@ if os.path.exists(rcd_source):
 # Standalone implementation of DNG SDK color algorithms (no SDK dependencies)
 raw_render_extension = Extension(
     'muimg._raw_render',
-    sources=['src/raw_render/raw_render_ops.cpp'],
+    sources=['c-src/raw_render/raw_render_ops.cpp'],
     include_dirs=[np.get_include()],
     extra_compile_args=common_compile_args + ['-std=c++17'],
     extra_link_args=common_link_args,

@@ -15,7 +15,7 @@ The RCD (Ratio Corrected Demosaicing) algorithm provides the best balance of qua
 
 RCD is disabled by default. To enable it:
 
-1. Rename `src/demosaic/rcd.txt` to `src/demosaic/rcd.c`
+1. Rename `c-src/demosaic/rcd.txt` to `c-src/demosaic/rcd.c`
 2. Rebuild: `pip install -e .`
 
 By enabling RCD, you accept the GPL v3 license terms for that component. The RCD source is based on [Luis Sanz Rodríguez's implementation](https://github.com/LuisSR/RCD-Demosaicing).
