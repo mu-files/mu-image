@@ -94,7 +94,7 @@ ENV/
 
 # IDE / Editor specific files
 .idea/
-# .vscode/  # Allow .vscode for launch configurations
+.vscode/  # Allow .vscode for launch configurations
 *.project
 *.pydevproject
 *.sublime-workspace
@@ -112,17 +112,8 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# Optional local configurations
-local.cfg
-
 # Test output files
-muimg/tests/test_output/
-muimg/tests/output_comparison/
-muimg/tests/output_subifd/
 muimg/tests/test_outputs/
-
-# Test fixtures (cloned on demand from mu-test-fixtures repo)
-muimg/tests/fixtures/
 
 # GPL-licensed RCD demosaic (user-enabled, not distributed)
 muimg/c-src/demosaic/rcd.c
