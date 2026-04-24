@@ -4,34 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260423.2115"
+version = "0.1.20260424.0831"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "mu-files@users.noreply.github.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
 dependencies = [
-    "av",
-    "click",
-    "defusedxml",
-    "google-auth>=2.0.0",
-    "google-auth-oauthlib>=1.0.0",
-    "imagecodecs[all]",
-    "numpy",
-    "opencv-python-headless",
-    "requests>=2.25.0",
-    "scipy>=1.9.0",
-    "setproctitle",
-    "tifffile",
+    "av",                               # 22 MB
+    "click",                            # 108 KB
+    "defusedxml",                       # 25 KB
+    "google-auth>=2.0.0",               # 235 KB
+    "google-auth-oauthlib>=1.0.0",      # 19 KB
+    "imagecodecs",                      # 13 MB
+    "numpy",                            # 6.2 MB
+    "opencv-python-headless",           # 31 MB
+    "requests>=2.25.0",                 # 63 KB
+    "scipy>=1.9.0",                     # 22 MB
+    "setproctitle",                     # 18 KB
+    "tifffile",                         # 242 KB
 ]
 
 [project.optional-dependencies]
 coreimage = [
-    "pyobjc-framework-Cocoa",
-    "pyobjc-framework-Quartz",
+    "pyobjc-framework-Cocoa",           # 376 KB
+    "pyobjc-framework-Quartz",          # 214 KB
 ]
 test = [
-    "pytest",
+    "pytest",                           # 366 KB
 ]
 
 [project.scripts]
