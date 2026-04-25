@@ -82,29 +82,52 @@ def make_test_dng(
     # If source is already small enough - still need to copy to inject new metadata and generate preview
     if source_size <= target_size:
         if not dry_run:
-            dngio.copy_dng(
-                source_file=input_file,
+            dng = dngio.DngFile(input_file)
+            main_page = dng.get_main_page()
+            if main_page is None:
+                raise RuntimeError(f"No main page found in {input_file}")
+            
+            preview_params = dngio.PreviewParams(max_dimension=1024) if generate_preview else None
+            
+            dngio.write_dng_from_page(
                 destination_file=output_file,
-                generate_preview=generate_preview,
-                extratags=extratags,
+                page=main_page,
+                preview=preview_params,
+                ifd0_extratags=extratags,
             )
         return source_size, 1.0, False
     
     # Source is too large - use JXL compression with iterative power-of-2 scaling
+    # Load source DNG once
+    dng = dngio.DngFile(input_file)
+    main_page = dng.get_main_page()
+    if main_page is None:
+        raise RuntimeError(f"No main page found in {input_file}")
+    
+    from tifffile import COMPRESSION
+    
+    # Create page spec with JXL compression
+    page_spec = dngio.IfdPageSpec(
+        page=main_page,
+        page_operation=(dngio.PageOp.TRANSCODE, COMPRESSION.JPEGXL),
+        compression_args={'distance': jxl_distance, 'effort': jxl_effort},
+        extratags=extratags,
+    )
+    
+    preview_params = dngio.PreviewParams(max_dimension=1024) if generate_preview else None
+    
     scale = 1.0
     
     while scale >= min_scale:
         stream = io.BytesIO()
         
-        dngio.copy_dng(
-            source_file=input_file,
+        dngio.write_dng_from_page(
             destination_file=stream,
+            page=page_spec,
             scale=scale,
             demosaic=True,
             demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
-            compression_args={'distance': jxl_distance, 'effort': jxl_effort},
-            generate_preview=generate_preview,
-            extratags=extratags,
+            preview=preview_params,
         )
         
         size = stream.tell()

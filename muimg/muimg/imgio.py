@@ -323,10 +323,10 @@ def convert_dng(
                 
     except ValueError as e:
         # Handle validation errors (e.g., rendering params on preview pages)
-        logger.error(f"Validation error: {e}")
+        logger.error(f"Validation error: ({type(e).__name__}): {e}")
         return False
     except Exception as e:
-        logger.error(f"Error converting DNG: {e}", exc_info=True)
+        logger.error(f"Error converting DNG:  ({type(e).__name__}): {e}", exc_info=True)
         raise
 
 

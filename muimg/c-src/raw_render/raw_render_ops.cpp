@@ -458,9 +458,9 @@ static void warp_rectilinear(
             npy_intp dst_idx = (y * width + x) * channels;
             
             // SDK applies different warp per color plane for lateral CA correction
-            for (int c = 0; c < channels && c < num_planes; c++) {
-                const double* plane_radial = radial_params + c * num_coeffs;
-                const double* plane_tan = tangential_params ? tangential_params + c * 2 : NULL;
+            for (int plane = 0; plane < num_planes && plane < channels; plane++) {
+                const double* plane_radial = radial_params + plane * num_coeffs;
+                const double* plane_tan = tangential_params ? tangential_params + plane * 2 : NULL;
                 
                 // SDK ref: WarpRectilinear v1 stores coeffs for EVEN powers (r^0, r^2, r^4, r^6)
                 // dng_lens_correction.cpp lines 1908-1911: fData[0], fData[2], fData[4], fData[6]
@@ -530,13 +530,13 @@ static void warp_rectilinear(
                         for (int32_t j = 0; j < (int32_t)kBicubicWidth; j++) {
                             int32_t sy = sInt_v + i;
                             int32_t sx = sInt_h + j;
-                            total += w[wIdx] * src[(sy * width + sx) * channels + c];
+                            total += w[wIdx] * src[(sy * width + sx) * channels + plane];
                             wIdx++;
                         }
                     }
                     
                     // SDK ref: line 1581 - Pin_real32
-                    dst[dst_idx + c] = std::max(0.0f, std::min(1.0f, total));
+                    dst[dst_idx + plane] = std::max(0.0f, std::min(1.0f, total));
                 } else {
                     // Bilinear interpolation (fallback)
                     int x0 = (int)std::floor(src_x);
@@ -546,12 +546,12 @@ static void warp_rectilinear(
                     double fx = src_x - x0;
                     double fy = src_y - y0;
                     
-                    double v00 = src[(y0 * width + x0) * channels + c];
-                    double v01 = src[(y0 * width + x1) * channels + c];
-                    double v10 = src[(y1 * width + x0) * channels + c];
-                    double v11 = src[(y1 * width + x1) * channels + c];
+                    double v00 = src[(y0 * width + x0) * channels + plane];
+                    double v01 = src[(y0 * width + x1) * channels + plane];
+                    double v10 = src[(y1 * width + x0) * channels + plane];
+                    double v11 = src[(y1 * width + x1) * channels + plane];
                     
-                    dst[dst_idx + c] = (float)(
+                    dst[dst_idx + plane] = (float)(
                         v00 * (1-fx) * (1-fy) +
                         v01 * fx * (1-fy) +
                         v10 * (1-fx) * fy +
@@ -595,10 +595,10 @@ static void fix_vignette_radial(
                 r2p *= r2;
             }
             
-            // Apply gain
+            // Apply gain and clip to [0,1]
             npy_intp idx = (y * width + x) * channels;
-            for (int c = 0; c < channels; c++) {
-                data[idx + c] *= (float)gain;
+            for (int plane = 0; plane < channels; plane++) {
+                data[idx + plane] = std::max(0.0f, std::min(1.0f, data[idx + plane] * (float)gain));
             }
         }
     }
@@ -2013,6 +2013,53 @@ static PyObject* dng_color_op_fix_vignette(PyObject* self, PyObject* args) {
     return result;
 }
 
+// Fix vignette radial for CFA data (OpcodeList1/2)
+static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
+    PyArrayObject* cfa_array = NULL;
+    PyArrayObject* params_array = NULL;
+    double center_x = 0.5, center_y = 0.5;
+    
+    if (!PyArg_ParseTuple(args, "O!O!dd",
+            &PyArray_Type, &cfa_array,
+            &PyArray_Type, &params_array,
+            &center_x, &center_y)) {
+        return NULL;
+    }
+    
+    // Validate CFA array (H, W)
+    if (PyArray_NDIM(cfa_array) != 2) {
+        PyErr_SetString(PyExc_ValueError, "cfa must be shape (H, W)");
+        return NULL;
+    }
+    if (PyArray_TYPE(cfa_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "cfa must be float32");
+        return NULL;
+    }
+    
+    PyArrayObject* cfa_cont = (PyArrayObject*)PyArray_GETCONTIGUOUS(cfa_array);
+    PyArrayObject* params_cont = (PyArrayObject*)PyArray_GETCONTIGUOUS(params_array);
+    
+    npy_intp height = PyArray_DIM(cfa_cont, 0);
+    npy_intp width = PyArray_DIM(cfa_cont, 1);
+    
+    PyObject* result = PyArray_NewLikeArray(cfa_cont, NPY_ANYORDER, NULL, 0);
+    PyArrayObject* result_array = (PyArrayObject*)result;
+    
+    float* data = (float*)PyArray_DATA(result_array);
+    const float* src = (const float*)PyArray_DATA(cfa_cont);
+    memcpy(data, src, height * width * sizeof(float));
+    
+    const double* params = (const double*)PyArray_DATA(params_cont);
+    int num_params = (int)PyArray_SIZE(params_cont);
+    
+    // Apply vignette correction to single-channel CFA data
+    fix_vignette_radial(data, height, width, 1, params, num_params, center_x, center_y);
+    
+    Py_DECREF(cfa_cont);
+    Py_DECREF(params_cont);
+    return result;
+}
+
 //=============================================================================
 // Bilinear Demosaic (from dng_mosaic_info.cpp dng_bilinear_interpolator)
 //
@@ -2422,9 +2469,11 @@ static void apply_map_polynomial_impl(
     int area_height = bottom - top;
     int area_width = right - left;
     
-    for (int p = start_plane; p < start_plane + num_planes && p < num_channels; p++) {
+    for (int plane = start_plane; 
+         plane < start_plane + num_planes && plane < num_channels; 
+         plane++) {
         // Get pointer to start of area for this plane
-        float* plane_ptr = data + (top * width + left) * num_channels + p;
+        float* plane_ptr = data + (top * width + left) * num_channels + plane;
         
         // rowStep: elements to advance per row (width * num_channels)
         int32_t rowStep = (int32_t)(width * num_channels * row_pitch);
@@ -2687,6 +2736,7 @@ static void apply_gain_map_impl(
     const float* gain_values,
     npy_intp points_v, npy_intp points_h, npy_intp map_planes,
     int32_t top, int32_t left, int32_t bottom, int32_t right,
+    int start_plane, int num_planes,
     int row_pitch, int col_pitch,
     double spacing_v, double spacing_h, double origin_v, double origin_h
 ) {
@@ -2702,32 +2752,36 @@ static void apply_gain_map_impl(
     
     uint32_t cols = overlap_r - overlap_l;
     uint32_t colPitch = std::min((uint32_t)col_pitch, cols);
-    uint32_t mapPlane = 0;
     
-    // SDK: for row in overlap.t to overlap.b by rowPitch
-    for (int32_t row = overlap_t; row < overlap_b; row += row_pitch) {
+    // SDK ref: dng_gain_map.cpp:1337-1340 - loop over planes
+    for (int plane = start_plane; 
+         plane < start_plane + num_planes && plane < num_channels; 
+         plane++) {
         
-        // SDK: dng_gain_map_interpolator interp(*fGainMap, imageBounds, row, overlap.l, mapPlane)
-        dng_gain_map_interpolator interp(
-            gain_values, points_v, points_h, map_planes,
-            origin_v, origin_h, spacing_v, spacing_h,
-            0, 0, height, width,  // imageBounds: t=0, l=0, h=height, w=width
-            row, overlap_l, mapPlane
-        );
+        uint32_t mapPlane = std::min((uint32_t)plane, (uint32_t)(map_planes - 1));
         
-        // SDK: for col in 0 to cols by colPitch
-        for (uint32_t col = 0; col < cols; col += colPitch) {
-            float gain = interp.Interpolate();
+        // SDK: for row in overlap.t to overlap.b by rowPitch
+        for (int32_t row = overlap_t; row < overlap_b; row += row_pitch) {
             
-            // Apply gain to pixel at (row, overlap_l + col)
-            npy_intp pixel_idx = (row * width + overlap_l + col) * num_channels;
+            // SDK: dng_gain_map_interpolator interp(*fGainMap, imageBounds, row, overlap.l, mapPlane)
+            dng_gain_map_interpolator interp(
+                gain_values, points_v, points_h, map_planes,
+                origin_v, origin_h, spacing_v, spacing_h,
+                0, 0, height, width,  // imageBounds: t=0, l=0, h=height, w=width
+                row, overlap_l, mapPlane
+            );
             
-            for (int c = 0; c < num_channels; c++) {
-                data[pixel_idx + c] = std::min(data[pixel_idx + c] * gain, 1.0f);
-            }
-            
-            for (uint32_t j = 0; j < colPitch; j++) {
-                interp.Increment();
+            // SDK: for col in 0 to cols by colPitch
+            for (uint32_t col = 0; col < cols; col += colPitch) {
+                float gain = interp.Interpolate();
+                
+                // Apply gain and clip to [0,1]
+                npy_intp pixel_idx = (row * width + overlap_l + col) * num_channels + plane;
+                data[pixel_idx] = std::max(0.0f, std::min(data[pixel_idx] * gain, 1.0f));
+                
+                for (uint32_t j = 0; j < colPitch; j++) {
+                    interp.Increment();
+                }
             }
         }
     }
@@ -2793,6 +2847,7 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
     apply_gain_map_impl(data, height, width, 3,
                         gain_values, points_v, points_h, map_planes,
                         top, left, bottom, right,
+                        start_plane, num_planes,
                         row_pitch, col_pitch,
                         spacing_v, spacing_h, origin_v, origin_h);
     
@@ -3007,6 +3062,7 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
     apply_gain_map_impl(data, height, width, 1,
                         gain_values, points_v, points_h, map_planes,
                         top, left, bottom, right,
+                        0, 1,  // CFA: start_plane=0, num_planes=1
                         row_pitch, col_pitch,
                         spacing_v, spacing_h, origin_v, origin_h);
     
@@ -3164,6 +3220,17 @@ static PyMethodDef DngColorMethods[] = {
      "    center_y (float): Optical center y in [0,1]\n\n"
      "Returns:\n"
      "    ndarray: Vignette-corrected RGB image"},
+    
+    {"op_fix_vignette_cfa", dng_cfa_op_fix_vignette, METH_VARARGS,
+     "Apply radial vignette correction to CFA data (OpcodeList1/2).\n\n"
+     "Applies gain = 1 + k0*r^2 + k1*r^4 + k2*r^6 + ...\n\n"
+     "Args:\n"
+     "    cfa (ndarray): Input CFA data, float32, (H,W)\n"
+     "    params (ndarray): Vignette polynomial coefficients [k0,k1,k2,...]\n"
+     "    center_x (float): Optical center x in [0,1]\n"
+     "    center_y (float): Optical center y in [0,1]\n\n"
+     "Returns:\n"
+     "    ndarray: Vignette-corrected CFA data"},
     
     {"bilinear_demosaic", (PyCFunction)dng_color_bilinear_demosaic, METH_VARARGS | METH_KEYWORDS,
      "Demosaic CFA data using DNG SDK bilinear interpolation.\n\n"

@@ -568,8 +568,10 @@ def dng_convert(
                     click.echo(f"Error: Failed to decode preview page", err=True)
                     sys.exit(1)
 
-                # Write with metadata
-                success = write_image(rgb, output_file, metadata=dng.get_ifd0_tags())
+                # Write with metadata (set Orientation=1 since preview is already rotated)
+                metadata = dng.get_ifd0_tags()
+                metadata.add_tag("Orientation", 1)
+                success = write_image(rgb, output_file, metadata=metadata)
                 if not success:
                     click.echo(f"Error: Failed to write output file", err=True)
                     sys.exit(1)

@@ -330,12 +330,15 @@ class DngPage(TiffPage):
         
         return tags
     
-    def _decode_tiled(self, decode_func) -> np.ndarray:
-        """Decode tiled compressed image data with error handling.
+    def _decode_segmented(self, decode_func) -> np.ndarray:
+        """Decode segmented compressed image data with error handling.
+        
+        Handles both tiled images (2D grid of tiles) and strip-based images
+        (vertical stack of strips).
         
         Args:
-            decode_func: Function to decode tile data (e.g., imagecodecs.jpegxl_decode).
-                        Invalid tiles that fail to decode are filled with zeros.
+            decode_func: Function to decode segment data (e.g., imagecodecs.jpegxl_decode).
+                        Invalid segments that fail to decode are filled with zeros.
         
         Returns:
             Decoded image array.
@@ -348,60 +351,80 @@ class DngPage(TiffPage):
             self.databytecounts,
             sort=True
         ))
-        
+
         if len(segments) == 1:
             # Single tile/strip
             compressed_data, _ = segments[0]
             return decode_func(compressed_data)
         else:
-            # Multiple tiles - decode each and assemble
-            tile_width = self.tilewidth
-            tile_height = self.tilelength
+            # Multiple segments - decode each and assemble
             img_width = self.imagewidth
             img_height = self.imagelength
             samples = self.samplesperpixel or 1
             
-            # Determine output dtype from first valid tile
+            # Will be set from first successful decode
+            output = None
             dtype = None
-            for i, (tile_data, _) in enumerate(segments):
-                try:
-                    first_tile = decode_func(tile_data)
-                    dtype = first_tile.dtype
-                    break
-                except Exception:
-                    continue
             
-            # If no valid tiles found, cannot decode
-            if dtype is None:
-                raise ValueError(
-                    f"No valid tiles found in image. "
-                    f"All {len(segments)} tiles failed decoding."
-                )
-            
-            # Create output array - handle both 2D (single sample) and 3D (multi-sample)
-            if samples == 1:
-                output = np.zeros((img_height, img_width), dtype=dtype)
+            # Handle tiled vs strip-based layouts
+            if self.is_tiled:
+                # Tiled layout: 2D grid of tiles
+                tile_width = self.tilewidth
+                tile_height = self.tilelength
+                tiles_x = (img_width + tile_width - 1) // tile_width
+                
+                for i, (tile_data, _) in enumerate(segments):
+                    try:
+                        tile = decode_func(tile_data)
+                        
+                        # Create output array on first successful decode
+                        if output is None:
+                            dtype = tile.dtype
+                            if samples == 1:
+                                output = np.zeros((img_height, img_width), dtype=dtype)
+                            else:
+                                output = np.zeros((img_height, img_width, samples), dtype=dtype)
+                    except Exception as e:
+                        logger.warning(f"Failed to decode tile {i}: {e}, filling with zeros")
+                        continue
+                    
+                    ty = (i // tiles_x) * tile_height
+                    tx = (i % tiles_x) * tile_width
+                    
+                    # Handle edge tiles that may be smaller
+                    th = min(tile_height, img_height - ty)
+                    tw = min(tile_width, img_width - tx)
+                    
+                    output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
             else:
-                output = np.zeros((img_height, img_width, samples), dtype=dtype)
+                # Strip-based layout: vertical stack of strips
+                y_offset = 0
+                for i, (strip_data, _) in enumerate(segments):
+                    try:
+                        strip = decode_func(strip_data)
+                        
+                        # Create output array on first successful decode
+                        if output is None:
+                            dtype = strip.dtype
+                            if samples == 1:
+                                output = np.zeros((img_height, img_width), dtype=dtype)
+                            else:
+                                output = np.zeros((img_height, img_width, samples), dtype=dtype)
+                    except Exception as e:
+                        logger.warning(f"Failed to decode strip {i}: {e}, filling with zeros")
+                        continue
+                    
+                    # Handle last strip which may be shorter
+                    sh = min(strip.shape[0], img_height - y_offset)
+                    output[y_offset:y_offset+sh, :] = strip[:sh, :]
+                    y_offset += sh
             
-            # Decode and place each tile
-            tiles_x = (img_width + tile_width - 1) // tile_width
-            for i, (tile_data, _) in enumerate(segments):
-                try:
-                    tile = decode_func(tile_data)
-                except Exception as e:
-                    logger.warning(f"Failed to decode tile {i}: {e}, filling with zeros")
-                    # Skip failed tile - output array already zero-filled
-                    continue
-                
-                ty = (i // tiles_x) * tile_height
-                tx = (i % tiles_x) * tile_width
-                
-                # Handle edge tiles that may be smaller
-                th = min(tile_height, img_height - ty)
-                tw = min(tile_width, img_width - tx)
-                
-                output[ty:ty+th, tx:tx+tw] = tile[:th, :tw]
+            # If all segments failed, raise error
+            if output is None:
+                raise ValueError(
+                    f"No valid segments found in image. "
+                    f"All {len(segments)} segments failed decoding."
+                )
             
             return output
     
@@ -411,55 +434,69 @@ class DngPage(TiffPage):
         Returns:
             Decoded image array.
         """
-        return self._decode_tiled(imagecodecs.jpegxl_decode)
+        return self._decode_segmented(imagecodecs.jpegxl_decode)
     
-    def _decode_jpeg(self) -> np.ndarray:
-        """Decode JPEG compressed image data, handling tiled images.
+    def _decode_jpeg_cfa(self) -> np.ndarray:
+        """Decode JPEG-compressed CFA data.
         
         Handles malformed DNG files (e.g., Google Pixel) that may have zero-filled
-        padding tiles instead of valid JPEG data. Invalid tiles are caught by the
-        JPEG decoder and filled with zeros.
+        padding tiles. Invalid tiles are caught by the JPEG decoder and filled with zeros.
         
-        Also handles JPEG's unusual output shape for CFA data: (height, width/2, 2)
-        is reshaped to (height, width) to match expected tile dimensions.
+        JPEG encodes CFA data as (height, width/2, 2) where pairs of pixels are treated
+        as a single pixel with 2 components. This is reshaped to (height, width).
         
         Returns:
-            Decoded image array.
+            Decoded CFA image array.
         """
-        tile_height = self.tilelength
-        tile_width = self.tilewidth
+        # Determine segment dimensions based on layout type
+        if self.is_tiled:
+            segment_height = self.tilelength
+            segment_width = self.tilewidth
+        else:
+            # Strip-based: full width, height from rowsperstrip (or full image for single strip)
+            segment_height = self.rowsperstrip or self.imagelength
+            segment_width = self.imagewidth
         
-        def decode_jpeg_tile(tile_data: bytes) -> np.ndarray:
-            """Decode JPEG tile and reshape if needed.
-            
-            JPEG encodes CFA data as (height, width/2, 2) where pairs of pixels
-            are treated as a single pixel with 2 components. Reshape to expected
-            (height, width) tile dimensions.
-            """
-            tile = imagecodecs.jpeg_decode(tile_data, bitspersample=self.bitspersample)
-            
-            # Handle JPEG CFA format: (256, 128, 2) -> (256, 256)
-            if tile.shape != (tile_height, tile_width):
-                if tile.ndim == 3 and tile.shape[2] == 2:
-                    tile = tile.reshape(tile_height, tile_width)
-                else:
-                    # Unexpected shape - return zeros to avoid crashes
-                    logger.warning(
-                        f"JPEG tile has unexpected shape {tile.shape}, "
-                        f"expected ({tile_height}, {tile_width}), returning zeros"
-                    )
-                    return np.zeros((tile_height, tile_width), dtype=tile.dtype)
-            
+        logger.debug(f"_decode_jpeg_cfa: is_tiled={self.is_tiled}, segment=({segment_height}, {segment_width}), image=({self.imagelength}, {self.imagewidth})")
+
+        def decode_tile(tile_data: bytes) -> np.ndarray:
+            tile = imagecodecs.jpeg_decode(
+                tile_data,
+                bitspersample=self.bitspersample
+            )
+            # Handle JPEG CFA format: (height, width/2, 2) -> (height, width)
+            if tile.ndim == 3 and tile.shape[2] == 2:
+                tile = tile.reshape(segment_height, segment_width)
+
             return tile
         
-        return self._decode_tiled(decode_jpeg_tile)
+        return self._decode_segmented(decode_tile)
+    
+    def _decode_jpeg_linear_raw(self) -> np.ndarray:
+        """Decode JPEG-compressed LINEAR_RAW (RGB) data with proper colorspace.
+        
+        Specifies colorspace=2 (RGB) and outcolorspace=2 (RGB) to avoid R/B channel swap.
+        Following tifffile's approach for JPEG LINEAR_RAW decoding.
+        
+        Returns:
+            Decoded LINEAR_RAW image array with shape (height, width, 3).
+        """
+        def decode_tile(tile_data: bytes) -> np.ndarray:
+            return imagecodecs.jpeg_decode(
+                tile_data,
+                bitspersample=self.bitspersample,
+                colorspace=2,  # PHOTOMETRIC.RGB
+                outcolorspace=2  # PHOTOMETRIC.RGB
+            )
+        
+        return self._decode_segmented(decode_tile)
 
     def _stage1(self) -> Optional["DngPage._RawStage"]:
         if self.is_cfa:
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_cfa = self._decode_jpegxl()
             elif self.compression == COMPRESSION.JPEG:
-                raw_cfa = self._decode_jpeg()
+                raw_cfa = self._decode_jpeg_cfa()
             else:
                 raw_cfa = self.asarray()
 
@@ -474,6 +511,8 @@ class DngPage(TiffPage):
         if self.is_linear_raw:
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_linear = self._decode_jpegxl()
+            elif self.compression == COMPRESSION.JPEG:
+                raw_linear = self._decode_jpeg_linear_raw()
             else:
                 raw_linear = self.asarray()
             return self._RawStage(data=raw_linear)
@@ -572,7 +611,7 @@ class DngPage(TiffPage):
             if opcodes:
                 try:
                     logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
-                    data = raw_render.apply_opcodes_cfa(data, opcodes)
+                    data = raw_render.apply_opcodes_cfa(data, opcodes, "OpcodeList1")
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList1: {e}")
 
@@ -608,15 +647,24 @@ class DngPage(TiffPage):
             
             if opcodes:
                 try:
-                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes")
-                    if self.photometric_name == "LINEAR_RAW":
-                        data_ops = raw_render.apply_opcodes(stage2.data, opcodes, use_bicubic=False)
-                        data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
+                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes, "
+                                f"is_linear_raw={self.is_linear_raw}, is_cfa={self.is_cfa}, "
+                                f"data.shape={stage2.data.shape}")
+                    if self.is_linear_raw:
+                        data_ops = raw_render.apply_opcodes(
+                            stage2.data, opcodes,
+                            use_bicubic=False,
+                            opcode_list_name="OpcodeList2"
+                        )
                         return self._RawStage(data=data_ops)
                     else:
-                        data_ops = raw_render.apply_opcodes_cfa(stage2.data, opcodes)
-                        data_ops = np.clip(data_ops, 0.0, 1.0).astype(np.float32, copy=False)
-                        return self._RawStage(data=data_ops, cfa_pattern=stage2.cfa_pattern)
+                        # CFA data
+                        data_ops = raw_render.apply_opcodes_cfa(
+                            stage2.data, opcodes, "OpcodeList2"
+                        )
+                        return self._RawStage(
+                            data=data_ops, cfa_pattern=stage2.cfa_pattern
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList2: {e}")
         
@@ -751,7 +799,11 @@ class DngPage(TiffPage):
             if opcodes:
                 try:
                     logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
-                    rgb_camera = raw_render.apply_opcodes(rgb_camera, opcodes, use_bicubic=False)
+                    rgb_camera = raw_render.apply_opcodes(
+                        rgb_camera, opcodes,
+                        use_bicubic=False,
+                        opcode_list_name="OpcodeList3"
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList3: {e}")
 
@@ -796,6 +848,11 @@ class DngPage(TiffPage):
                 f"Failed to decode page (photometric={self.photometric_name}): {e}"
             )
             return None
+        
+        # Apply orientation rotation
+        orientation = self.get_tag("Orientation")
+        if orientation is not None:
+            image = raw_render.apply_tiff_orientation(image, orientation)
         
         # Convert dtype if needed
         if image.dtype != output_dtype:
@@ -1869,6 +1926,12 @@ def write_dng(
                     tile_shape,
                 )
             bits_per_sample = int(spec.page.bitspersample)
+            
+            # Compressed data (JPEG, JXL, etc.) decoders return values scaled to container bitdepth
+            # (e.g., 10-bit data comes back as 16-bit range). Normalize bits_per_sample to reflect this.
+            if spec.page.compression != COMPRESSION.NONE:
+                # Round up to next multiple of 8
+                bits_per_sample = ((bits_per_sample + 7) // 8) * 8
 
             if photometric == "CFA":
                 cfa_result = spec.page.get_cfa()
@@ -1956,7 +2019,6 @@ def write_dng(
             # to the container bitdepth (eg 16bits for 10bit data). This causes a disconnect
             # with the bits_per_sample in the IFD.
             # So we shift 9-15 bit data to 16-bit before encoding to avoid this. 
-            jxl_encode_bits = bits_per_sample
             if 9 <= bits_per_sample <= 15:
                 data = data << (16 - bits_per_sample)
                 bits_per_sample = 16  # Update for TIFF tag and JXL encoder
@@ -2326,7 +2388,7 @@ def write_dng_from_page(
     ifd0_tags = MetadataTags()
     if copy_ifd0_tags:
         ifd0_tags = source_page_spec.page.get_ifd0_tags()
-        filter_tags_by_ifd_category(ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
+        ifd0_tags = filter_tags_by_ifd_category(ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
     if preview:
         ifd0_tags |= preview_tags
     _filter_metadata_tags(ifd0_tags, exclude_names=ifd0_strip_tags)
@@ -2342,7 +2404,7 @@ def write_dng_from_page(
             main_page_categories += ["dng_raw"]
         elif source_page_spec.page.is_cfa:
             main_page_categories += ["dng_raw", "dng_raw:cfa"]
-        filter_tags_by_ifd_category(main_page_tags, main_page_categories)
+        main_page_tags = filter_tags_by_ifd_category(main_page_tags, main_page_categories)
         _filter_metadata_tags(main_page_tags, exclude_names=source_page_spec.strip_tags)
     if not preview:
         main_page_tags |= ifd0_tags
@@ -2465,9 +2527,14 @@ def write_dng_from_page(
         
         logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({preview_rgb.shape[:2]})")
         
+        # Create copy of ifd0_tags with Orientation equal to none 
+        # since the Orientation tag is persisted across the copy
+        ifd0_tags_no_orientation = ifd0_tags.copy()
+        ifd0_tags_no_orientation.add_tag("Orientation", 1)
+        
         # Render with color transforms
         rendered_preview = raw_render._render_camera_rgb(
-            ifd0_tags=ifd0_tags,
+            ifd0_tags=ifd0_tags_no_orientation,
             raw_ifd_tags=source_page_spec.page.get_page_tags(),
             rgb_camera=preview_rgb,
             output_dtype=np.uint8,
@@ -2599,7 +2666,6 @@ def decode_dng(
             - 'ToneCurvePV2012Blue': Blue channel tone curve
             - 'crlcp:PerspectiveModel': Lens correction profile
             - 'highlight_preserving_exposure': Use highlight preservation (Python pipeline only)
-            - 'orientation': EXIF orientation code (Core Image only)
     
     Returns:
         Tuple of (image, metadata):
@@ -2628,6 +2694,8 @@ def decode_dng(
                     output_dtype=output_dtype,
                     rendering_params=rendering_params,
                 )
+                # Image has been rotated during rendering, set Orientation to 1 (normal)
+                metadata.add_tag("Orientation", 1)
                 return image, metadata
 
             logger.warning(
@@ -2649,4 +2717,6 @@ def decode_dng(
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")
     
+    # Image has been rotated during rendering, set Orientation to 1 (normal)
+    metadata.add_tag("Orientation", 1)
     return result, metadata

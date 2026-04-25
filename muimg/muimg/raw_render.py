@@ -1811,8 +1811,12 @@ def parse_gain_map(data: bytes) -> dict:
         'gain_values': gain_values,
     }
 
-
-def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = True) -> np.ndarray:
+def apply_opcodes(
+    data: np.ndarray,
+    opcodes: list[dict],
+    use_bicubic: bool = True,
+    opcode_list_name: str = "RGB"
+) -> np.ndarray:
     """Apply parsed opcodes to image data.
     
     Supported opcodes:
@@ -1826,6 +1830,7 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
         opcodes: List of parsed opcodes from parse_opcode_list
         use_bicubic: If True, use SDK bicubic interpolation for WarpRectilinear;
                      if False, use bilinear (default: True)
+        opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList3")
         
     Returns:
         Processed image data
@@ -1838,7 +1843,16 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
         if opcode_type == 'WarpRectilinear':
             # SDK applies different warp per color plane for lateral CA correction
             planes = opcode['planes']
-            num_planes = min(len(planes), 3)  # RGB
+            num_planes = len(planes)
+            
+            # DNG SDK spec (dng_lens_correction.h:40-44): if num_planes==1,
+            # apply same warp to all image planes
+            if num_planes == 1 and result.shape[2] > 1:
+                logger.debug(f"WarpRectilinear: Replicating single plane params for {result.shape[2]} channels")
+                planes = [planes[0]] * result.shape[2]
+                num_planes = result.shape[2]
+            
+            num_planes = min(num_planes, 3)  # RGB
             logger.debug(f"WarpRectilinear: center=({opcode['center_x']:.4f}, {opcode['center_y']:.4f})")
             # Build per-plane radial/tangential arrays (num_planes x 4, num_planes x 2)
             radial_list = []
@@ -1898,12 +1912,16 @@ def apply_opcodes(data: np.ndarray, opcodes: list[dict], use_bicubic: bool = Tru
             
         else:
             name = enum_display_name(DngOpcode, opcode['id'])
-            logger.warning(f"Skipping unsupported opcode: {name}")
+            logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
     
     return result
 
 
-def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
+def apply_opcodes_cfa(
+    data: np.ndarray,
+    opcodes: list[dict],
+    opcode_list_name: str = "CFA"
+) -> np.ndarray:
     """Apply parsed opcodes to CFA data.
     
     Handles both OpcodeList1 (pre-linearization, uint16) and OpcodeList2 
@@ -1915,6 +1933,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
     
     Supported opcodes:
     - FixBadPixelsConstant (OpcodeList1 only, requires uint16)
+    - FixVignetteRadial (both lists)
     - MapPolynomial (both lists)
     - GainMap (both lists)
     
@@ -1923,6 +1942,7 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
               - uint16 for OpcodeList1 (raw sensor values)
               - float32 for OpcodeList2 (linearized [0,1])
         opcodes: List of parsed opcodes from parse_opcode_list
+        opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList1")
         
     Returns:
         Processed CFA data (same dtype as input)
@@ -1998,10 +2018,25 @@ def apply_opcodes_cfa(data: np.ndarray, opcodes: list[dict]) -> np.ndarray:
                 opcode['row_pitch'], opcode['col_pitch'],
                 opcode['degree']
             )
+        
+        elif opcode_type == 'FixVignetteRadial':
+            # Works on float32 - convert uint16 if needed
+            if is_uint16 and result_float is None:
+                result_float = convert_dtype(result_uint16, np.float32)
+            
+            logger.debug(f"FixVignetteRadial CFA: center=({opcode['center_x']:.4f}, {opcode['center_y']:.4f}), "
+                        f"coeffs={opcode['coefficients']}")
+            
+            result_float = _raw_render.op_fix_vignette_cfa(
+                result_float,
+                opcode['coefficients'],
+                opcode['center_x'],
+                opcode['center_y']
+            )
             
         else:
             name = enum_display_name(DngOpcode, opcode['id'])
-            logger.warning(f"Skipping unsupported CFA opcode: {name}")
+            logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
     
     # Return in original dtype
     if is_uint16:
