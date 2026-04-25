@@ -2023,9 +2023,15 @@ def write_dng(
                 data = data << (16 - bits_per_sample)
                 bits_per_sample = 16  # Update for TIFF tag and JXL encoder
 
-            encoded_bytes = imagecodecs.jpegxl_encode(
-                data, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
-            )
+            # Use lossless mode when distance is 0
+            if jxl_distance == 0.0:
+                encoded_bytes = imagecodecs.jpegxl_encode(
+                    data, lossless=True, effort=jxl_effort, bitspersample=bits_per_sample
+                )
+            else:
+                encoded_bytes = imagecodecs.jpegxl_encode(
+                    data, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
+                )
             def encoded_data_iterator():
                 yield encoded_bytes
 

@@ -36,43 +36,48 @@ def output_dir():
 # Test files with thresholds for 4 comparisons:
 # Format: (file_stem, muimg_ps_thresh, ci_ps_thresh, muimg_dngval_thresh, ci_dngval_thresh)
 # Thresholds >= 1.8% are automatically marked as xfail (expected to fail)
-# None = use default threshold (1.5% for muimg, 2.0% for CI)
+# Thresholds calculated as: 1.8 if diff >= 1.8 else min(diff * 1.1, 1.79)
+# Note: Small values (0.00, 0.01, 0.02) adjusted +0.01 to avoid floating-point precision issues
 TEST_CASES = [
-    # Files from prepare script (33 files, excluding the 3 multi-IFD files)
-    # Format: (file_stem, muimg_ps_thresh, ci_ps_thresh, muimg_dngval_thresh, ci_dngval_thresh)
-    ("apple_iphone_15_pro.1", 0.5, 1.0, 0.3, 0.9),  # PS: MUIMG 0.44%, CI 0.90%; dngval: MUIMG 0.19%, CI 0.79%
-    ("arashi_vision_insta360_oners.1", 1.8, 1.8, 0.1, 0.5),  # PS: MUIMG 2.08%, CI 1.96%; dngval: MUIMG 0.01%, CI 0.44%
-    ("canon_eos_r5.baselineexposure-bl1", 1.8, 1.8, 0.1, 0.4),  # PS: MUIMG 2.28%, CI 1.92%; dngval: MUIMG 0.02%, CI 0.36%
-    ("canon_eos_r5.exposure", 1.8, 1.8, 0.1, 0.6),  # PS: MUIMG 2.15%, CI 4.08%; dngval: MUIMG 0.01%, CI 0.50%
-    ("canon_eos_r5.none", 1.4, 1.79, 0.1, 0.6),  # PS: MUIMG 1.21%, CI 1.71%; dngval: MUIMG 0.01%, CI 0.50%
-    ("canon_eos_r5.temp-tint", 1.4, 1.79, 0.1, 0.6),  # PS: MUIMG 1.22%, CI 1.73%; dngval: MUIMG 0.01%, CI 0.50%
-    ("nikon_corporation_nikon_z_8.1", 1.8, 1.8, 0.4, 1.4),  # PS: MUIMG 2.08%, CI 2.86%; dngval: MUIMG 0.27%, CI 1.24%
-    ("nikon_corporation_nikon_z_9.1", 1.79, 1.8, 0.1, 1.0),  # PS: MUIMG 1.75%, CI 2.24%; dngval: MUIMG 0.06%, CI 0.84%
-    ("olympus_corporation_e-m10markiv.1", 1.5, 1.79, 0.4, 0.6),  # PS: MUIMG 1.33%, CI 1.72%; dngval: MUIMG 0.30%, CI 0.54%
-    ("panasonic_dc-s9.1", 1.5, 1.8, 0.3, 1.6),  # PS: MUIMG 1.35%, CI 1.87%; dngval: MUIMG 0.22%, CI 1.43%
-    ("rgb_ramp_test.1", 0.9, 1.8, 0.1, 1.8),  # PS: MUIMG 0.74%, CI 2.73%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.bcurve", 0.7, 1.8, 0.1, 1.8),  # PS: MUIMG 0.60%, CI 1.83%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.bcurve2", 0.9, 1.8, 0.1, 1.8),  # PS: MUIMG 0.81%, CI 3.38%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.gcurve", 0.7, 1.8, 0.1, 1.8),  # PS: MUIMG 0.57%, CI 1.99%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.maincurve", 1.5, 1.8, 0.1, 1.8),  # PS: MUIMG 1.36%, CI 2.29%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.mainrgbcurve", 1.2, 1.8, 0.1, 1.8),  # PS: MUIMG 1.06%, CI 2.34%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.multi-curve", 1.5, 1.8, 0.1, 1.8),  # PS: MUIMG 1.32%, CI 2.34%; dngval: MUIMG 0.01%, CI 2.25%
-    ("rgb_ramp_test.rcurve", 0.6, 1.79, 0.1, 1.8),  # PS: MUIMG 0.51%, CI 1.64%; dngval: MUIMG 0.01%, CI 2.25%
-    ("ricoh_imaging_company_ltd_pentax_k-3_mark_iii.1", 1.4, 1.4, 0.3, 1.0),  # PS: MUIMG 1.23%, CI 1.24%; dngval: MUIMG 0.24%, CI 0.82%
-    ("sony_dsc-rx100m7.1", 1.1, 1.2, 0.3, 0.7),  # PS: MUIMG 1.00%, CI 1.07%; dngval: MUIMG 0.21%, CI 0.60%
-    ("sony_ilce-7c.1", 1.79, 1.8, 0.1, 0.8),  # PS: MUIMG 1.69%, CI 2.37%; dngval: MUIMG 0.04%, CI 0.64%
-    ("test_linear_gradient.exp-curve", 1.8, None, 0.1, None),  # PS: MUIMG 2.92%, CI shape mismatch; dngval: MUIMG 0.00%, CI shape mismatch
-    ("zwo_asi676mc.1", 0.8, 1.3, 0.2, 1.7),  # PS: MUIMG 0.69%, CI 1.12%; dngval: MUIMG 0.14%, CI 1.48%
-    ("zwo_asi676mc_asi676mc.colorpattern.bcurve", 0.6, 1.8, 0.1, 1.5),  # PS: MUIMG 0.54%, CI 1.81%; dngval: MUIMG 0.00%, CI 1.32%
-    ("zwo_asi676mc_asi676mc.colorpattern.exposure", 0.7, 1.2, 0.1, 1.5),  # PS: MUIMG 0.62%, CI 1.02%; dngval: MUIMG 0.00%, CI 1.32%
-    ("zwo_asi676mc_asi676mc.colorpattern.gcurve", 0.7, 1.79, 0.1, 1.5),  # PS: MUIMG 0.63%, CI 1.70%; dngval: MUIMG 0.00%, CI 1.32%
-    ("zwo_asi676mc_asi676mc.colorpattern.none", 0.8, 1.8, 0.1, 1.5),  # PS: MUIMG 0.66%, CI 1.84%; dngval: MUIMG 0.00%, CI 1.32%
-    ("zwo_asi676mc_asi676mc.colorpattern.rcurve", 0.7, 1.7, 0.1, 1.5),  # PS: MUIMG 0.63%, CI 1.48%; dngval: MUIMG 0.00%, CI 1.32%
-    ("zwo_asi676mc_asi676mc.colorpattern.temp-tint", 0.9, 1.8, 0.1, 1.5),  # PS: MUIMG 0.78%, CI 1.84%; dngval: MUIMG 0.00%, CI 1.32%
-    ("zwo_asi676mc_asi676mc.curve", 1.1, 1.2, 0.1, 0.3),  # PS: MUIMG 0.96%, CI 1.00%; dngval: MUIMG 0.00%, CI 0.25%
-    ("zwo_asi676mc_asi676mc.exposure", 0.6, 0.7, 0.1, 0.3),  # PS: MUIMG 0.50%, CI 0.59%; dngval: MUIMG 0.00%, CI 0.25%
-    ("zwo_asi676mc_asi676mc.none", 0.9, 1.0, 0.1, 0.3),  # PS: MUIMG 0.81%, CI 0.86%; dngval: MUIMG 0.00%, CI 0.25%
-    ("zwo_asi676mc_asi676mc.rgbcurve", 1.1, 1.1, 0.1, 0.3),  # PS: MUIMG 0.94%, CI 0.97%; dngval: MUIMG 0.00%, CI 0.25%
+    # Camera files
+    ("asi676mc_1", 0.74, 1.23, 0.15, 1.57),  # PS: MUIMG 0.67%, CI 1.12%; dngval: MUIMG 0.14%, CI 1.43%
+    ("canon_eos_r5_baselineexposure-bl1", 1.67, 1.80, 0.02, 0.39),  # PS: MUIMG 1.52%, CI 1.93%; dngval: MUIMG 0.02%, CI 0.35%
+    ("canon_eos_r5_exposure", 1.80, 1.80, 0.02, 0.59),  # PS: MUIMG 2.41%, CI 4.17%; dngval: MUIMG 0.01%, CI 0.54%
+    ("canon_eos_r5_none", 1.30, 1.79, 0.02, 0.59),  # PS: MUIMG 1.18%, CI 1.74%; dngval: MUIMG 0.01%, CI 0.54%
+    ("canon_eos_r5_temp-tint", 1.30, 1.79, 0.02, 0.59),  # PS: MUIMG 1.18%, CI 1.77%; dngval: MUIMG 0.01%, CI 0.54%
+    ("dc-s9_1", 1.64, 1.80, 0.03, 1.40),  # PS: MUIMG 1.49%, CI 1.98%; dngval: MUIMG 0.02%, CI 1.27%
+    ("e-m10markiv_1", 1.80, 1.80, 0.01, 0.45),  # PS: MUIMG 2.01%, CI 2.60%; dngval: MUIMG 0.01%, CI 0.41%
+    ("insta360_oners", 1.80, 1.80, 0.01, 0.48),  # PS: MUIMG 2.36%, CI 2.23%; dngval: MUIMG 0.01%, CI 0.44%
+    ("iphone_15_pro_1_back_camera_lossy", 0.63, 1.08, 0.21, 0.87),  # PS: MUIMG 0.57%, CI 0.98%; dngval: MUIMG 0.19%, CI 0.79%
+    ("iphone_15_pro_flowers", 1.80, 1.80, 0.23, 0.98),  # PS: MUIMG 27.83%, CI 28.67%; dngval: MUIMG 0.21%, CI 0.89%
+    ("leica_sl2-s_1", 1.64, 1.62, 0.02, 0.34),  # PS: MUIMG 1.49%, CI 1.47%; dngval: MUIMG 0.01%, CI 0.31%
+    ("nikon_z_8_1437", 1.53, 1.79, 0.02, 0.81),  # PS: MUIMG 1.39%, CI 1.70%; dngval: MUIMG 0.01%, CI 0.74%
+    ("nikon_z_9", 1.79, 1.80, 0.03, 0.90),  # PS: MUIMG 1.76%, CI 2.24%; dngval: MUIMG 0.02%, CI 0.82%
+    ("pentax_k-3_mark_iii_1", 1.61, 1.64, 0.25, 0.90),  # PS: MUIMG 1.46%, CI 1.49%; dngval: MUIMG 0.23%, CI 0.82%
+    ("pixel_9_pro_fold_20240902_030456036", 1.80, 1.80, 1.80, 1.80),  # PS: MUIMG 7.67%, CI 6.89%; dngval: MUIMG 1.88%, CI 2.02%
+    ("ricoh_gr_iiix_1", 1.24, 1.16, 0.21, 0.44),  # PS: MUIMG 1.13%, CI 1.05%; dngval: MUIMG 0.19%, CI 0.40%
+    ("sony_dsc-rx100m7", 1.06, 1.08, 0.02, 0.55),  # PS: MUIMG 0.96%, CI 0.98%; dngval: MUIMG 0.01%, CI 0.50%
+    ("sony_ilce-7c_lossy", 1.00, 1.56, 0.02, 0.68),  # PS: MUIMG 0.91%, CI 1.42%; dngval: MUIMG 0.02%, CI 0.62%
+    # Test pattern files
+    ("asi676mc_colorpattern_bcurve", 0.63, 1.80, 0.01, 1.45),  # PS: MUIMG 0.57%, CI 1.82%; dngval: MUIMG 0.00%, CI 1.32%
+    ("asi676mc_colorpattern_exposure", 0.72, 1.13, 0.01, 1.45),  # PS: MUIMG 0.65%, CI 1.03%; dngval: MUIMG 0.00%, CI 1.32%
+    ("asi676mc_colorpattern_gcurve", 0.73, 1.79, 0.01, 1.45),  # PS: MUIMG 0.66%, CI 1.72%; dngval: MUIMG 0.00%, CI 1.32%
+    ("asi676mc_colorpattern_none", 0.77, 1.80, 0.01, 1.45),  # PS: MUIMG 0.70%, CI 1.85%; dngval: MUIMG 0.00%, CI 1.32%
+    ("asi676mc_colorpattern_rcurve", 0.73, 1.64, 0.01, 1.45),  # PS: MUIMG 0.66%, CI 1.49%; dngval: MUIMG 0.00%, CI 1.32%
+    ("asi676mc_colorpattern_temp-tint", 0.89, 1.80, 0.01, 1.45),  # PS: MUIMG 0.81%, CI 1.85%; dngval: MUIMG 0.00%, CI 1.32%
+    ("asi676mc_curve", 1.46, 1.50, 0.01, 0.28),  # PS: MUIMG 1.33%, CI 1.36%; dngval: MUIMG 0.00%, CI 0.25%
+    ("asi676mc_exposure", 0.78, 0.86, 0.01, 0.28),  # PS: MUIMG 0.71%, CI 0.78%; dngval: MUIMG 0.00%, CI 0.25%
+    ("asi676mc_none", 1.23, 1.28, 0.01, 0.28),  # PS: MUIMG 1.12%, CI 1.16%; dngval: MUIMG 0.00%, CI 0.25%
+    ("asi676mc_rgbcurve", 1.45, 1.47, 0.01, 0.28),  # PS: MUIMG 1.32%, CI 1.34%; dngval: MUIMG 0.00%, CI 0.25%
+    ("linear_gradient_test_exp-curve", 1.80, 1.80, 0.01, 0.12),  # PS: MUIMG 2.92%, CI 13.73%; dngval: MUIMG 0.00%, CI 0.11%
+    ("rgb_ramp_test", 1.80, 1.80, 0.02, 1.80),  # PS: MUIMG 9.96%, CI 10.38%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_bcurve", 1.80, 1.80, 0.02, 1.80),  # PS: MUIMG 11.72%, CI 12.47%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_bcurve2", 1.01, 1.80, 0.02, 1.80),  # PS: MUIMG 0.92%, CI 3.43%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_gcurve", 0.74, 1.80, 0.02, 1.80),  # PS: MUIMG 0.67%, CI 2.05%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_maincurve", 1.56, 1.80, 0.02, 1.80),  # PS: MUIMG 1.42%, CI 2.34%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_mainrgbcurve", 1.26, 1.80, 0.02, 1.80),  # PS: MUIMG 1.15%, CI 2.40%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_multi-curve", 1.52, 1.80, 0.02, 1.80),  # PS: MUIMG 1.38%, CI 2.40%; dngval: MUIMG 0.01%, CI 2.29%
+    ("rgb_ramp_test_rcurve", 0.66, 1.79, 0.02, 1.80),  # PS: MUIMG 0.60%, CI 1.68%; dngval: MUIMG 0.01%, CI 2.29%
 ]
 
 

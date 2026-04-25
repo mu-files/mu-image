@@ -8,7 +8,7 @@ import muimg
 
 
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
-DNG_FILENAME = "asi676mc.cfa.jxl_lossy.2ifds.dng"
+DNG_FILENAME = "asi676mc_1.dng"
 
 
 @pytest.mark.parametrize("filename", [DNG_FILENAME])

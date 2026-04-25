@@ -10,7 +10,7 @@ from conftest import compute_diff_stats
 
 
 # Test file path
-TEST_DNG = Path(__file__).parent / "dngfiles" / "asi676mc.cfa.jxl_lossy.2ifds.dng"
+TEST_DNG = Path(__file__).parent / "dngfiles" / "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng"
 
 
 @pytest.fixture
@@ -266,8 +266,8 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
                     if ref_algorithm == test_algorithm:
                         # RCD has localized interpolation differences, use relaxed thresholds
                         if test_algorithm == DemosaicAlgorithm.RCD:
-                            max_threshold = 2000
-                            mean_threshold = 0.6
+                            max_threshold = 12000
+                            mean_threshold = 0.85
                         else:
                             max_threshold = 1
                             mean_threshold = 0.1

@@ -764,7 +764,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     "--jxl-distance",
     type=float,
     default=None,
-    help="JXL compression distance (0=lossless, >0=lossy). None=uncompressed.",
+    help="JXL compression distance (0=lossless mode, >0=lossy with specified quality). None=uncompressed.",
 )
 @click.option(
     "--jxl-effort",

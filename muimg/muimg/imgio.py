@@ -75,7 +75,7 @@ def write_image(
         # Encode to JXL with lossless compression
         jxl_data = imagecodecs.jpegxl_encode(
             image,
-            distance=0.0,  # Lossless
+            lossless=True,
             effort=5,
         )
         

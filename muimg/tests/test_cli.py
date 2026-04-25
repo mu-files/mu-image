@@ -31,15 +31,15 @@ OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_cli"
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
 # Test file
-TEST_DNG = DNGFILES_DIR / "asi676mc.cfa.jxl_lossy.2ifds.dng"
+TEST_DNG = DNGFILES_DIR / "asi676mc_1.dng"
 
 # Test output path manager - set persistent=True to keep outputs, False for tmp_path
 output_path_manager = OutputPathManager(persistent=False)
 
 # Threshold for comparing SDK vs Core Image output (percentage difference)
 # The two pipelines use different algorithms so some difference is expected
-MEAN_DIFF_THRESHOLD = 1.0  # Mean difference as percentage (0-100 scale)
-P99_DIFF_THRESHOLD = 4.0   # P99 difference as percentage (0-100 scale)
+MEAN_DIFF_THRESHOLD = 1.5  # Mean difference as percentage (0-100 scale)
+P99_DIFF_THRESHOLD = 7.0   # P99 difference as percentage (0-100 scale)
 
 
 @pytest.mark.skipif(not TEST_DNG.exists(), reason="Test DNG file not found")

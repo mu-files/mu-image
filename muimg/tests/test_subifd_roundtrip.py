@@ -29,7 +29,7 @@ ROUNDTRIP_THRESHOLD = 0.01  # Should be nearly identical
 # Multi-IFD test files with validation warning ignores and strip_tags
 # Format: {filename: {"ignored_warnings": [...], "strip_tags": [...]}}
 TEST_FILES = {
-    "asi676mc.cfa.jxl_lossy.2ifds.dng": {
+    "asi676mc_1.dng": {
         "ignored_warnings": ["makernote has unexpected type", "too little padding"],
         "strip_tags": [],
     },

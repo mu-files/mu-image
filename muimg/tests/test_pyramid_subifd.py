@@ -22,7 +22,7 @@ DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 # Ignored warnings are for known issues that should be suppressed
 # strip_tags are tags to remove from source (e.g., invalid digest)
 TEST_FILES = {
-    "asi676mc.cfa.jxl_lossy.2ifds.dng": (True, ["makernote has unexpected type", "non-zero nextifd", "too little padding"], None),
+    "asi676mc_1.dng": (True, ["makernote has unexpected type", "non-zero nextifd", "too little padding"], None),
     "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": (False, ["non-zero nextifd"], None),
     "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": (True, ["non-zero nextifd", "columninterleavefactor tag not allowed"], {"NewRawImageDigest"}),
 }
@@ -157,7 +157,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
 
 
 def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path):
-    filename = "asi676mc.cfa.jxl_lossy.2ifds.dng"
+    filename = "asi676mc_1.dng"
     _, ignored_warnings, _ = TEST_FILES[filename]
     dng_path = DNGFILES_DIR / filename
     if not dng_path.exists():
