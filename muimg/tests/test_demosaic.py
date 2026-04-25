@@ -10,7 +10,7 @@ from conftest import compute_diff_stats
 
 
 # Test file path
-TEST_DNG = Path(__file__).parent / "dngfiles" / "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng"
+TEST_DNG = Path(__file__).parent / "dngfiles" / "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng"
 
 
 @pytest.fixture

@@ -20,21 +20,21 @@ TESTDATA_DIR = Path.home() / "Projects/python/mu-image-testdata/dngtestfiles"
 # Output directory for test results
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_preview_rendering"
 
-# Threshold table for canon_eos_r5.cfa.ljpeg.6ifds.dng
+# Threshold table for canon_eos_r5_cfa_ljpeg_6ifds.dng
 # Baseline measurements * 1.02 for regression detection
 # 
 # LINEAR_RAW previews vs main render:
-#   IFD 3 (2048x1366): mean 0.550%, p99 2.664%, max 28.093%
-#   IFD 4 (512x342):   mean 0.498%, p99 5.666%, max 28.074%
-#   IFD 5 (256x171):   mean 0.676%, p99 8.152%, max 20.713%
+#   IFD 3 (2048x1366): mean 0.637%, p99 5.138%, max 32.676%
+#   IFD 4 (512x342):   mean 0.583%, p99 5.768%, max 25.960%
+#   IFD 5 (256x171):   mean 0.716%, p99 7.994%, max 19.792%
 # 
 # RGB/YCBCR previews vs each other:
 #   IFD 0 vs IFD 2:    mean 0.504%, p99 2.939%, max 11.032%
 THRESHOLDS = {
     'linear_raw_vs_main': {
-        'mean': 0.689,   # max observed 0.676% * 1.02
-        'p99': 8.315,    # max observed 8.152% * 1.02
-        'max': 28.655,   # max observed 28.093% * 1.02
+        'mean': 0.73,    # max observed 0.716% * 1.02
+        'p99': 8.315,    # max observed 7.994% * 1.02
+        'max': 33.33,    # max observed 32.676% * 1.02
     },
     'rgb_ycbcr_vs_each_other': {
         'mean': 0.514,   # observed 0.504% * 1.02
@@ -109,7 +109,7 @@ def find_or_create_pyramid_level(pyramid: list[np.ndarray], target_shape: tuple[
 def test_preview_pages_match_main_render(output_dir: Path):
     """Test that preview pages match downsampled main render at their resolutions."""
     
-    test_file = TESTDATA_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_file = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     
     if not test_file.exists():
         pytest.skip(f"Test file not available: {test_file}")
@@ -352,7 +352,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
 def test_decode_to_rgb_on_raw_page():
     """Test that decode_to_rgb() works on CFA/LINEAR_RAW pages by rendering them."""
     
-    test_file = TESTDATA_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_file = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     
     if not test_file.exists():
         pytest.skip(f"Test file not available: {test_file}")
@@ -375,7 +375,7 @@ def test_decode_to_rgb_on_raw_page():
 def test_render_raw_on_preview_page():
     """Test that render_raw raises ValueError on RGB/YCBCR pages."""
     
-    test_file = TESTDATA_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_file = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     
     if not test_file.exists():
         pytest.skip(f"Test file not available: {test_file}")

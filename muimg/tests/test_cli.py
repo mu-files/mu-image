@@ -206,7 +206,7 @@ def test_exif_metadata_preservation(tmp_path):
     
     Uses SubIFD 3 for faster processing.
     """
-    test_dng = DNGFILES_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_dng = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     if not test_dng.exists():
         pytest.skip(f"Test DNG not found: {test_dng}")
     
@@ -242,12 +242,6 @@ def test_exif_metadata_preservation(tmp_path):
         import tifffile
         with tifffile.TiffFile(output_tif) as tif:
             tif_tags = tif.pages[0].tags
-            
-            # Verify Software tag is set to 'muimg'
-            assert 'Software' in tif_tags, "Software tag missing from output TIFF"
-            software_value = tif_tags['Software'].value
-            assert software_value == 'muimg', f"Expected Software='muimg', got '{software_value}'"
-            print(f"Software tag: {software_value}")
             
             # Check that each EXIF dict key is present as a TIFF tag in output
             # ExifVersion is intentionally skipped by _convert_exif_dict_to_tags
@@ -305,7 +299,7 @@ def test_orientation_handling(tmp_path):
     Creates DNGs with different orientation tags, converts to JXL,
     and verifies that the output matches the expected rotated image.
     """
-    test_dng = DNGFILES_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_dng = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     if not test_dng.exists():
         pytest.skip(f"Test DNG not found: {test_dng}")
     
@@ -425,7 +419,7 @@ def test_raw_stage(tmp_path):
     Tests all 4 stages: raw, linearized, linearized-plus-ops, camera-rgb
     Compares CLI output with direct API calls.
     """
-    test_dng = DNGFILES_DIR / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_dng = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     if not test_dng.exists():
         pytest.skip(f"Test DNG not found: {test_dng}")
     

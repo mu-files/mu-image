@@ -33,11 +33,11 @@ TEST_FILES = {
         "ignored_warnings": ["makernote has unexpected type", "too little padding"],
         "strip_tags": [],
     },
-    "canon_eos_r5_mark_ii.linearraw.jxl_lossy.6ifds.dng": {
+    "canon_eos_r5_mark_ii_linearraw_jxl_lossy_6ifds.dng": {
         "ignored_warnings": [],
         "strip_tags": [],
     },
-    "sony_ilce-7c.cfa.jxl_lossy.4ifds.dng": {
+    "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng": {
         "ignored_warnings": ["columninterleavefactor tag not allowed"],
         "strip_tags": ["NewRawImageDigest"],  
     },

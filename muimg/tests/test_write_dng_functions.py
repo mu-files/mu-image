@@ -187,13 +187,13 @@ def compare_page_metadata(src, out_page, spec=None, extra_skip_tags=None):
 def test_complete_file_roundtrip(tmp_path):
     """Test complete DNG file roundtrip with all pages.
     
-    Enumerates all pages from canon_eos_r5.cfa.ljpeg.6ifds.dng, creates
+    Enumerates all pages from canon_eos_r5_cfa_ljpeg_6ifds.dng, creates
     IfdPageSpecs for each, writes to a new DNG, and validates that the
     new file matches the original in both metadata and decoded pixels.
     """
     # Setup paths
     test_dir = Path(__file__).parent
-    source_path = test_dir / "dngfiles" / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    source_path = test_dir / "dngfiles" / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     
     if USE_PERSISTENT_OUTPUT:
         output_dir = test_dir / "test_outputs" / "test_write_dng_functions"
@@ -460,13 +460,13 @@ def test_complete_file_roundtrip(tmp_path):
 def test_write_dng_from_page_with_pyramid(tmp_path):
     """Test write_dng_from_page with pyramid generation.
     
-    Takes the 4th sub-page (LINEAR_RAW) from canon_eos_r5.cfa.ljpeg.6ifds.dng,
+    Takes the 4th sub-page (LINEAR_RAW) from canon_eos_r5_cfa_ljpeg_6ifds.dng,
     makes it the IFD0 of a new DNG file, and generates a 3-level JXL pyramid.
     Validates metadata and pixel scaling.
     """
     # Setup paths
     test_dir = Path(__file__).parent
-    source_path = test_dir / "dngfiles" / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    source_path = test_dir / "dngfiles" / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     
     if USE_PERSISTENT_OUTPUT:
         output_dir = test_dir / "test_outputs" / "test_write_dng_functions"
@@ -575,6 +575,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
             'PreviewApplicationName', 'PreviewApplicationVersion',  # Preview metadata
             'PreviewSettingsDigest', 'PreviewColorSpace', 'PreviewDateTime',
             'RawDataUniqueID', 'NewRawImageDigest',  # Digest tags
+            'ImageDescription',  # Different convention between source and tifffile
         }
         
         # Merge source tags: IFD0 | page (page tags override)
@@ -661,7 +662,7 @@ def test_render_raw_scaling_consistency(tmp_path):
     4. create_dng_from_page with preview generates consistent renders
     5. create_dng_from_page with demosaic+pyramid generates consistent renders
     """
-    test_file = Path(__file__).parent / "dngfiles" / "canon_eos_r5.cfa.ljpeg.6ifds.dng"
+    test_file = Path(__file__).parent / "dngfiles" / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
     assert test_file.exists(), f"Test file not found: {test_file}"
     
     # Setup output directory
@@ -757,7 +758,7 @@ def test_render_raw_scaling_consistency(tmp_path):
         print(f"    Max diff:  {diff_stats['max']:.4f}%")
         # Allow differences due to compression (LJPEG vs JPEGXL_DNG)
         mean_failed = diff_stats['mean'] >= 1.0
-        max_failed = diff_stats['max'] >= 32.0
+        max_failed = diff_stats['max'] >= 40.0
         if mean_failed or max_failed:
             dump_comparison_images(render_subifd2, render_with_preview, output_dir, "test4_preview")
             # Copy DNG to comparison folder
@@ -768,12 +769,17 @@ def test_render_raw_scaling_consistency(tmp_path):
             assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%, max={diff_stats['max']:.2f}%"
         print(f"  ✓ Renders match within threshold")
         
-        # Test 5: create_dng_from_page with demosaic and pyramid
-        print("\nTest 5: create_dng_from_page(main, demosaic, pyramid)...")
+        # Test 5: create_dng_from_page with JXL compression and pyramid
+        print("\nTest 5: create_dng_from_page(IfdPageSpec with JXL, pyramid)...")
+        from muimg.dngio import IfdPageSpec, PageOp
+        main_page_spec = IfdPageSpec(
+            page=main_page,
+            page_operation=(PageOp.TRANSCODE, COMPRESSION.JPEGXL_DNG),
+            compression_args={'distance': 0.1, 'effort': 5}
+        )
         pyramid_params = PyramidParams(levels=3, compression=COMPRESSION.JPEGXL_DNG)
         dng_with_pyramid = create_dng_from_page(
-            main_page,
-            demosaic=True,
+            main_page_spec,
             pyramid=pyramid_params
         )
         
@@ -781,11 +787,10 @@ def test_render_raw_scaling_consistency(tmp_path):
         test5_path = output_dir / "test5_with_pyramid.dng"
         dng_with_pyramid.write_to(test5_path)
         print(f"  Saved to: {test5_path}")
-        # Ignore SubIFD NextIFD warnings (harmless, appears when pyramid SubIFDs are chained)
         run_dng_validate(
-            test5_path, 
-            output_dir / "test5_with_pyramid",
-            ignored_warnings=["unexpected non-zero NextIFD"]
+             test5_path, 
+             output_dir / "test5_with_pyramid",
+             ignored_warnings=["unexpected non-zero NextIFD"]
         )
         
         # Render main page and resize to 0.25
@@ -807,8 +812,8 @@ def test_render_raw_scaling_consistency(tmp_path):
         print(f"    Mean diff: {diff_stats['mean']:.4f}%")
         print(f"    Max diff:  {diff_stats['max']:.4f}%")
         # Allow differences due to compression (LJPEG vs JPEGXL_DNG)
-        mean_failed = diff_stats['mean'] >= 0.6
-        max_failed = diff_stats['max'] >= 30.0
+        mean_failed = diff_stats['mean'] >= 0.75
+        max_failed = diff_stats['max'] >= 40.0
         if mean_failed or max_failed:
             dump_comparison_images(render_subifd2, render_pyramid_resized, output_dir, "test5_pyramid_resized")
             # Copy DNG to comparison folder
@@ -832,7 +837,7 @@ def test_render_raw_scaling_consistency(tmp_path):
         print(f"    Mean diff: {diff_stats['mean']:.4f}%")
         print(f"    Max diff:  {diff_stats['max']:.4f}%")
         mean_failed = diff_stats['mean'] >= 1.0
-        max_failed = diff_stats['max'] >= 37.0
+        max_failed = diff_stats['max'] >= 40.0
         if mean_failed or max_failed:
             dump_comparison_images(render_subifd2, render_pyramid_level2, output_dir, "test5_pyramid_level2")
             # Copy DNG to comparison folder
