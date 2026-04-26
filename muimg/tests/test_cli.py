@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Tests for convert_imgformat and convert_imgformat_to_stream pipelines.
 
 Compares output from Python SDK pipeline (via CLI) vs Core Image pipeline.

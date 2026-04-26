@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Test endianness handling for array tags in MetadataTags.
 
 This test creates TIFF files with both big-endian and little-endian byte orders,

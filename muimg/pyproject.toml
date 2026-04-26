@@ -1,15 +1,18 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260425.1635"
+version = "0.1.20260426.1151"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "PolyForm-Noncommercial-1.0.0"}
+license = {text = "PolyForm-Small-Business-1.0.0 (Modified)"}
 dependencies = [
     "av",                               # 22 MB
     "click",                            # 108 KB

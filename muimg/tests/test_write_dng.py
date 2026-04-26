@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Test write_dng_from_array with synthetic RGB ramp data.
 
 Validates DNG encoding/decoding fidelity across compression methods and

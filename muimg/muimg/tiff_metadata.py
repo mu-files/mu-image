@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """TIFF/DNG metadata support classes.
 
 This module provides classes for creating and parsing TIFF/DNG metadata tags.

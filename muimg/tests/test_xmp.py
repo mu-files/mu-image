@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 from __future__ import annotations
 
 from pathlib import Path

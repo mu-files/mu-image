@@ -11,7 +11,7 @@ pip install -e .
 
 ## Optional: RCD Demosaicing (GPL-Licensed)
 
-The RCD (Ratio Corrected Demosaicing) algorithm provides the best balance of quality and speed for Bayer demosaicing. However, RCD is licensed under **GPL v3**, which is incompatible with muimg's PolyForm Noncommercial license.
+The RCD (Ratio Corrected Demosaicing) algorithm provides the best balance of quality and speed for Bayer demosaicing. However, RCD is licensed under **GPL v3**, which is separate from muimg's PolyForm Small Business license.
 
 RCD is disabled by default. To enable it:
 
@@ -42,3 +42,25 @@ dng.write_dng(
     generate_thumbnail=True
 )
 ```
+
+## License
+
+This software is released under a modified **PolyForm Small Business License 1.0.0**.
+
+**Free for:**
+- Small businesses (<100 employees, <$10M revenue)
+- Individuals
+- Academic institutions
+- Non-profit organizations
+
+**Large enterprises** require a commercial license. Contact: license@mu-files.com
+
+See [LICENSE](LICENSE) for full terms.
+
+### Third-Party Components
+
+- **Adobe DNG SDK**: Adobe DNG SDK License (permissive, royalty-free)
+- **VNG Demosaicing**: LGPL v2.1 / CDDL v1.0
+- **RCD Demosaicing** (optional): GPL v3
+
+See [LICENSES/README.md](LICENSES/README.md) for details.

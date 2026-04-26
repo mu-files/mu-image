@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Pytest configuration and fixtures for muimg tests.
 
 Provides shared test utilities for DNG validation and comparison.

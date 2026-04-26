@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """DNG file format support for Allsky.
 
 This module handles DNG file creation and related functionality.

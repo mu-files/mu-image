@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Create a size-constrained test DNG file.
 
 This example demonstrates how to use muimg to create test DNG files that fit

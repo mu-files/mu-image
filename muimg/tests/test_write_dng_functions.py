@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Test write_dng(), write_dng_from_array(), and write_dng_from_page() functions.
 
 Validates complete DNG file roundtrip by enumerating all pages from a source DNG,

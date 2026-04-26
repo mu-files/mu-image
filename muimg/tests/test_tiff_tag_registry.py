@@ -1,3 +1,6 @@
+# Released under a modified PolyForm Small Business License.
+# Free for small businesses, individuals, and academics. See LICENSE for details.
+
 """Tests for TIFF_TAG_TYPE_REGISTRY validation.
 
 Validates that:
