@@ -28,12 +28,12 @@ additional conditions:
    this entire license file, including the copyright notice above.
 
 5. AI TRAINING RESTRICTION:
-   For the avoidance of doubt, the Licensor does not grant permission to 
-   reproduce and/or use the Software in any manner for the purpose of 
-   training artificial intelligence technologies, including machine learning 
-   or large language models (LLMs). Any usage of the Software in an 
-   AI-training dataset without express written permission is considered a 
-   material breach of this License.
+   The Software's core implementation source code is NOT licensed for use 
+   in AI/ML training datasets. Documentation, tests, usage examples, and 
+   command-line interface code may be used for learning API usage patterns. 
+   See llms.txt and robots.txt for specific file paths. Any usage of 
+   prohibited source code in an AI-training dataset without express written 
+   permission is considered a material breach of this License.
 
 ---
 STANDARD POLYFORM SMALL BUSINESS LICENSE 1.0.0 TEXT:
