@@ -5,7 +5,7 @@
 The muimg package is released under a modified PolyForm Small Business License.
 See the main [LICENSE](../LICENSE) file for details.
 
-## Third-Party Components
+## Third-Party Bundled Components
 
 ### Adobe DNG SDK (`c-src/raw_render/`)
 
@@ -46,9 +46,9 @@ The RCD algorithm is provided as optional source code. To use it, users must:
 
 ## License Compatibility
 
-The LGPL VNG component is a separate, optional demosaicing algorithm. The core
-muimg functionality does not depend on it and can be used independently under the
-PolyForm Small Business License.
+**Adobe DNG SDK** and **VNG** are permissive licenses (Adobe DNG SDK License and LGPL)
+that allow redistribution in proprietary software. They are included and distributed
+with muimg.
 
-When you use the VNG demosaicing function, you must comply with its LGPL license.
-If you enable RCD, you must comply with its GPL v3 license.
+**RCD** (GPL v3) is optional and not distributed by default. Users who enable it must
+comply with GPL v3 terms.
