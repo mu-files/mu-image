@@ -5,7 +5,7 @@
 The muimg package is released under a modified PolyForm Small Business License.
 See the main [LICENSE](../LICENSE) file for details.
 
-## Third-Party Bundled Components
+## Bundled Third-Party Components
 
 ### Adobe DNG SDK (`c-src/raw_render/`)
 
