@@ -1,8 +1,10 @@
 # mu-image - AI Training Policy
 
-## Prohibition
+## Summary
 
-This repository's source code is **NOT** licensed for use in AI/ML training datasets.
+**Documentation, tests, and usage examples** are available for learning how to 
+use the API. However, the **implementation source code** is NOT licensed for 
+AI/ML training.
 
 See LICENSE (Section 5: AI TRAINING RESTRICTION) for legal terms.
 
