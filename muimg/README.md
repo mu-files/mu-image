@@ -4,8 +4,17 @@ This package is part of the mu-image project and provides utilities for working 
 
 ## Installation
 
+### From GitHub
+
 ```bash
-# Install in development mode
+pip install git+https://github.com/mu-files/mu-image.git#subdirectory=muimg
+```
+
+### For Development
+
+```bash
+git clone https://github.com/mu-files/mu-image.git
+cd mu-image/muimg
 pip install -e .
 ```
 
