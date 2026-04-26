@@ -1,0 +1,110 @@
+# robots.txt for mu-image repository
+# This file expresses the developer's intent regarding AI training and web crawling.
+
+# Default policy for all crawlers
+User-agent: *
+# Allow documentation and public-facing content
+Allow: /README.md
+Allow: /muimg/README.md
+Allow: /muimg/LICENSE
+Allow: /muimg/LICENSES/
+Allow: /llms.txt
+
+# Allow usage examples (tests and CLI show how to use the API)
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+
+# Disallow implementation details and source code
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+Disallow: /.github/
+Disallow: /*.pyc
+Disallow: /__pycache__/
+
+# AI-specific crawlers (reiterate blocks for legal clarity)
+User-agent: GPTBot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: ChatGPT-User
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: Claude-Web
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: CCBot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: anthropic-ai
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: Google-Extended
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: PerplexityBot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: Amazonbot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: Applebot-Extended
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+# Meta AI
+User-agent: FacebookBot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+# Bytedance (TikTok)
+User-agent: Bytespider
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+# Additional aggressive crawlers
+User-agent: cohere-ai
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: Omgilibot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/
+
+User-agent: Diffbot
+Allow: /muimg/tests/
+Allow: /muimg/muimg/cli.py
+Disallow: /muimg/muimg/
+Disallow: /muimg/c-src/

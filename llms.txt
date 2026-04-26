@@ -1,0 +1,34 @@
+# mu-image - AI Training Policy
+
+## Prohibition
+
+This repository's source code is **NOT** licensed for use in AI/ML training datasets.
+
+See LICENSE (Section 5: AI TRAINING RESTRICTION) for legal terms.
+
+## What AI Agents May Access
+
+- README.md - Project overview and installation instructions
+- muimg/README.md - Documentation and usage examples
+- LICENSE - License terms
+- This file (llms.txt)
+- muimg/tests/ - Test files showing API usage examples
+- muimg/examples/ - Example files showing API usage examples
+- muimg/muimg/cli.py - Command-line interface (demonstrates API usage)
+
+## What Is Prohibited
+
+- Core implementation (muimg/muimg/*.py, except cli.py)
+- All C/C++ source code (muimg/c-src/)
+- Configuration files (.github/, pyproject.toml, setup.py)
+- Internal implementation details
+
+## Legal Notice
+
+Unauthorized use of this code in AI training datasets constitutes a material 
+breach of the license and may result in legal action.
+
+## Contact
+
+For licensing questions or AI training permissions: license@mu-files.com
+
