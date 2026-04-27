@@ -47,7 +47,7 @@ class ProcessingThreadPool:
             try:
                 thread.join()
             except Exception as e:
-                logger.error(f"Error joining thread {thread.name}: {e}")
+                logger.error(f"Error joining thread {thread.name} ({type(e).__name__}): {e}")
         
         logger.info(f"{self.thread_name_prefix} processing complete!")
 
@@ -155,7 +155,7 @@ class ProcessingPipeline:
                     if self.writer and result is not None:
                         self.writer_queue.put(result)
                 except Exception as e:
-                    logger.error(f"Exception in consumer thread {thread_num} processing task: {e}", exc_info=True)
+                    logger.error(f"Exception in consumer thread {thread_num} processing task ({type(e).__name__}): {e}", exc_info=True)
                     # Continue processing other tasks even if one fails
                 finally:
                     # Always mark task as done to prevent queue.join() from hanging

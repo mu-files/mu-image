@@ -1419,7 +1419,7 @@ class MetadataTags:
                             sign = '+' if total_seconds >= 0 else '-'
                             offset_str = f"{sign}{hours:02d}:{minutes:02d}"
                 except Exception as e:
-                    logger.warning(f"Invalid timezone '{timezone}': {e}")
+                    logger.warning(f"Invalid timezone '{timezone}' ({type(e).__name__}): {e}")
             
             if offset_str:
                 self.add_tag(offset_tag, offset_str)
@@ -1900,7 +1900,7 @@ class XmpMetadata:
         try:
             return return_type(value)
         except (ValueError, TypeError) as e:
-            logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type}: {e}")
+            logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type} ({type(e).__name__}): {e}")
             return None
     
     def get_formatted_string(self, strip_whitespace: bool = True, filter_blank_lines: bool = True) -> Optional[str]:

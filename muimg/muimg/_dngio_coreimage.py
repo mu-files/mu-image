@@ -157,7 +157,7 @@ def _strip_unique_camera_model(dng_data: bytes) -> bytes:
         return dng_data
         
     except Exception as e:
-        logger.warning(f"Failed to strip UniqueCameraModel: {e}. Using original data.")
+        logger.warning(f"Failed to strip UniqueCameraModel ({type(e).__name__}): {e}. Using original data.")
         return dng_data
 
 
@@ -193,7 +193,7 @@ class CoreImageContext:
                 self.colorspace_name = "prophoto"
                 logger.debug("Using ProPhoto RGB (ROMM RGB) working color space")
         except Exception as e:
-            logger.warning(f"Failed to load ProPhoto profile: {e}")
+            logger.warning(f"Failed to load ProPhoto profile ({type(e).__name__}): {e}")
         
         # Fallback to sRGB if ProPhoto load fails
         if not working_space_ns:
@@ -303,7 +303,7 @@ def render_dng_coreimage(
                     except AttributeError:
                         logger.warning(f"Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
                     except Exception as e:
-                        logger.warning(f"Error processing option {key} with value {value}: {e}. Skipping.")
+                        logger.warning(f"Error processing option {key} with value {value} ({type(e).__name__}): {e}. Skipping.")
 
                 # --- Create CIRAWFilter ---
                 # Always read DNG data and strip UniqueCameraModel to avoid CI camera-specific processing
@@ -497,6 +497,6 @@ def decode_dng_coreimage(
         return result
                 
     except Exception as e:
-        logger.warning(f"Error decoding {file}: {e}")
-        logger.debug(f"Error decoding {file}: {e}", exc_info=True)
+        logger.warning(f"Error decoding {file} ({type(e).__name__}): {e}")
+        logger.debug(f"Error decoding {file} ({type(e).__name__}): {e}", exc_info=True)
         raise

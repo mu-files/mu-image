@@ -235,7 +235,7 @@ def convert_imgformat(
         return write_image(image, output, output_format_stream)
                 
     except Exception as e:
-        logger.error(f"Error converting {file}: {e}", exc_info=True)
+        logger.error(f"Error converting {file} ({type(e).__name__}): {e}", exc_info=True)
         raise
 
 
@@ -329,7 +329,7 @@ def convert_dng(
         logger.error(f"Validation error: ({type(e).__name__}): {e}")
         return False
     except Exception as e:
-        logger.error(f"Error converting DNG:  ({type(e).__name__}): {e}", exc_info=True)
+        logger.error(f"Error converting DNG ({type(e).__name__}): {e}", exc_info=True)
         raise
 
 

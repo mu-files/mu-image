@@ -191,7 +191,7 @@ class SequenceEncodePipeline(ProcessingPipeline):
                 self._temp_path.unlink()
                 logger.info(f"Cleaned up temporary file")
             except Exception as e:
-                logger.error(f"Failed to copy video to final destination: {e}")
+                logger.error(f"Failed to copy video to final destination ({type(e).__name__}): {e}")
                 logger.info(f"Video remains at temporary location: {self._temp_path}")
                 raise
             finally:
@@ -225,7 +225,7 @@ class SequenceEncodePipeline(ProcessingPipeline):
                     blob = f.read()
                 yield (index, str(file_path), blob)
             except OSError as e:
-                logger.warning(f"Skipping file {file_path} due to I/O error: {e}")
+                logger.warning(f"Skipping file {file_path} due to I/O error ({type(e).__name__}): {e}")
                 continue
     
     def default_consumer(self, task: tuple[int, str, bytes]) -> tuple[int, np.ndarray | None]:
@@ -255,7 +255,7 @@ class SequenceEncodePipeline(ProcessingPipeline):
             
             return (index, img)
         except Exception as e:
-            logger.warning(f"Frame {index}: Error processing {Path(file_path).name}: {e}")
+            logger.warning(f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}")
             self._failed_frames.add(index)
             return (index, None)
     

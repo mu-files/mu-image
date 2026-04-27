@@ -1022,7 +1022,7 @@ def convert_dngs_to_video(
             return (index, img)
             
         except Exception as e:
-            logger.error(f"Frame {index}: Error decoding {Path(file_path).name}: {e}")
+            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
             return (index, None)
     
     # Create and run the pipeline

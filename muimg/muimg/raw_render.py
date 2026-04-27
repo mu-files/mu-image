@@ -3170,7 +3170,7 @@ def _render_camera_rgb(
                     float(total_baseline_exposure),
                 )
             except Exception as e:
-                logger.warning(f"Failed to apply ProfileGainTableMap: {e}")
+                logger.warning(f"Failed to apply ProfileGainTableMap ({type(e).__name__}): {e}")
             timings["profile_gain_table_map"] = time.perf_counter() - t0
 
         # =====================================================================
@@ -3278,7 +3278,7 @@ def _render_camera_rgb(
                     logger.debug(f"Using ProfileToneCurve with {n_points} control points")
                 except ValueError as e:
                     # Fallback to ACR3 if curve is invalid (e.g., non-monotonic x)
-                    logger.warning(f"ProfileToneCurve invalid ({e}), using ACR3")
+                    logger.warning(f"ProfileToneCurve invalid ({type(e).__name__}): {e}, using ACR3")
         
         profile_curve = get_acr3_curve(4096) if tag_profile_curve is None else tag_profile_curve
         
@@ -3317,7 +3317,7 @@ def _render_camera_rgb(
         return result
 
     except Exception as e:
-        logger.error(f"Error rendering DNG: {e}", exc_info=True)
+        logger.error(f"Error rendering DNG ({type(e).__name__}): {e}", exc_info=True)
         raise
 
 

@@ -388,7 +388,7 @@ class DngPage(TiffPage):
                             else:
                                 output = np.zeros((img_height, img_width, samples), dtype=dtype)
                     except Exception as e:
-                        logger.warning(f"Failed to decode tile {i}: {e}, filling with zeros")
+                        logger.warning(f"Failed to decode tile {i} ({type(e).__name__}): {e}, filling with zeros")
                         continue
                     
                     ty = (i // tiles_x) * tile_height
@@ -414,7 +414,7 @@ class DngPage(TiffPage):
                             else:
                                 output = np.zeros((img_height, img_width, samples), dtype=dtype)
                     except Exception as e:
-                        logger.warning(f"Failed to decode strip {i}: {e}, filling with zeros")
+                        logger.warning(f"Failed to decode strip {i} ({type(e).__name__}): {e}, filling with zeros")
                         continue
                     
                     # Handle last strip which may be shorter
@@ -608,7 +608,7 @@ class DngPage(TiffPage):
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list1))
             except Exception as e:
-                logger.warning(f"Failed to parse OpcodeList1: {e}")
+                logger.warning(f"Failed to parse OpcodeList1 ({type(e).__name__}): {e}")
                 opcodes = None
             
             if opcodes:
@@ -616,7 +616,7 @@ class DngPage(TiffPage):
                     logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
                     data = raw_render.apply_opcodes_cfa(data, opcodes, "OpcodeList1")
                 except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList1: {e}")
+                    logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
 
         active_area = self.get_tag("ActiveArea")
         if active_area is not None:
@@ -645,7 +645,7 @@ class DngPage(TiffPage):
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
             except Exception as e:
-                logger.warning(f"Failed to parse OpcodeList2: {e}")
+                logger.warning(f"Failed to parse OpcodeList2 ({type(e).__name__}): {e}")
                 opcodes = None
             
             if opcodes:
@@ -669,7 +669,7 @@ class DngPage(TiffPage):
                             data=data_ops, cfa_pattern=stage2.cfa_pattern
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList2: {e}")
+                    logger.warning(f"Failed to apply OpcodeList2 ({type(e).__name__}): {e}")
         
         return stage2
 
@@ -796,7 +796,7 @@ class DngPage(TiffPage):
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list3))
             except Exception as e:
-                logger.warning(f"Failed to parse OpcodeList3: {e}")
+                logger.warning(f"Failed to parse OpcodeList3 ({type(e).__name__}): {e}")
                 opcodes = None
             
             if opcodes:
@@ -808,7 +808,7 @@ class DngPage(TiffPage):
                         opcode_list_name="OpcodeList3"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList3: {e}")
+                    logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
 
         # Apply DefaultCrop
         crop_origin = self.get_tag("DefaultCropOrigin")
@@ -2094,7 +2094,7 @@ def write_dng(
             logger.debug("Successfully wrote DNG file to in-memory buffer")
 
     except Exception as e:
-        logger.error(f"Error saving DNG file with TiffWriter: {e}")
+        logger.error(f"Error saving DNG file with TiffWriter ({type(e).__name__}): {e}")
         raise
 
 
@@ -2416,7 +2416,7 @@ def write_dng_from_page(
         main_page_tags = filter_tags_by_ifd_category(main_page_tags, main_page_categories)
         _filter_metadata_tags(main_page_tags, exclude_names=source_page_spec.strip_tags)
     if not preview:
-        main_page_tags |= ifd0_tags
+        main_page_tags = ifd0_tags | main_page_tags # if duplicate tags main page takes precedence
     main_page_tags |= source_page_spec.extratags    
 
     # handle pyramid tags
