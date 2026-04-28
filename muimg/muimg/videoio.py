@@ -76,6 +76,112 @@ def letterbox_frame(
     return canvas
 
 
+def add_text_overlay(
+    img: np.ndarray,
+    text: str,
+    position: str = "bottom-left",
+    font_scale: float | None = None,
+    max_chars: int = 30
+) -> np.ndarray:
+    """Add text overlay with white background to image.
+    
+    Args:
+        img: Input image (H, W, 3)
+        text: Text to display (will be truncated to max_chars)
+        position: Position on frame ("top-left", "top-right", "bottom-left", "bottom-right")
+        font_scale: Font scale factor. If None, auto-scale to ~2% of frame height
+        max_chars: Maximum characters to display (default: 30)
+    
+    Returns:
+        Image with text overlay
+    """
+    import cv2
+    
+    # Truncate text if needed
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    
+    # Auto-scale font to ~2% of frame height if not specified
+    height, width = img.shape[:2]
+    if font_scale is None:
+        font_scale = height * 0.02 / 30  # Normalized for typical font size
+    
+    # Render at 2x resolution for better quality, then downsample
+    supersample = 2
+    font_scale_hires = font_scale * supersample
+    
+    font = cv2.FONT_HERSHEY_DUPLEX  # Cleaner, more modern font
+    thickness = max(1, int(font_scale_hires * 1.5))  # Slightly thinner for cleaner look
+    
+    # Get text size for max_chars to ensure fixed box size (at high res)
+    max_text = "A" * max_chars  # Use 'A' as representative character
+    (max_text_width_hires, text_height_hires), baseline_hires = cv2.getTextSize(max_text, font, font_scale_hires, thickness)
+    
+    # Calculate padding (2 char widths left/right, 0.5 char height top/bottom) at high res
+    char_width_hires = max_text_width_hires / max_chars
+    pad_x_hires = int(char_width_hires * 2)
+    pad_y_hires = int(text_height_hires * 0.5)
+    
+    # Calculate fixed background box dimensions based on max_chars (at high res)
+    box_width_hires = max_text_width_hires + 2 * pad_x_hires
+    box_height_hires = text_height_hires + 2 * pad_y_hires + baseline_hires
+    
+    # Final dimensions at normal resolution
+    box_width = box_width_hires // supersample
+    box_height = box_height_hires // supersample
+    
+    # Calculate position
+    margin = 10
+    if position == "bottom-left":
+        x = margin
+        y = height - margin - box_height
+    elif position == "bottom-right":
+        x = width - margin - box_width
+        y = height - margin - box_height
+    elif position == "top-left":
+        x = margin
+        y = margin
+    elif position == "top-right":
+        x = width - margin - box_width
+        y = margin
+    else:
+        raise ValueError(f"Invalid position: {position}")
+    
+    # Create high-resolution overlay for better text quality
+    overlay_hires = np.zeros((box_height_hires, box_width_hires, 3), dtype=np.uint8)
+    
+    # Draw white background rectangle at high res
+    cv2.rectangle(
+        overlay_hires,
+        (0, 0),
+        (box_width_hires, box_height_hires),
+        (255, 255, 255),
+        -1
+    )
+    
+    # Draw black text at high resolution (left-aligned within the box)
+    text_x_hires = pad_x_hires
+    text_y_hires = pad_y_hires + text_height_hires
+    cv2.putText(
+        overlay_hires,
+        text,
+        (text_x_hires, text_y_hires),
+        font,
+        font_scale_hires,
+        (0, 0, 0),
+        thickness,
+        cv2.LINE_AA
+    )
+    
+    # Downsample to final resolution for smooth appearance
+    overlay_final = cv2.resize(overlay_hires, (box_width, box_height), interpolation=cv2.INTER_AREA)
+    
+    # Blend overlay with original image
+    img[y:y+box_height, x:x+box_width] = overlay_final
+    
+    return img
+
+
 class VideoEncodePipeline(ProcessingPipeline):
     """Pipeline for encoding a sequence of images to a video file.
     
@@ -124,6 +230,7 @@ class VideoEncodePipeline(ProcessingPipeline):
                 - crf: Constant Rate Factor for quality (default: 20, lower=better)
                 - bit_depth: Bit depth (default: 8, options: 8, 10)
                 - frame_rate: Output frame rate in fps (default: 30)
+                - overlay_text: If True, add filename overlay to frames (default: False)
             use_temp_file: If True (default), encode to a local temp file first,
                 then copy to output_path. Helps avoid issues with network drives.
             producer: Custom producer callable. If None, uses default_producer.
@@ -150,6 +257,7 @@ class VideoEncodePipeline(ProcessingPipeline):
         self.crf = config.get("crf", 20)
         self.bit_depth = config.get("bit_depth", 8)
         self.frame_rate = config.get("frame_rate", 30)
+        self.overlay_text = config.get("overlay_text", False)
         
         # Validate bit depth
         if self.bit_depth not in (8, 10):
@@ -324,6 +432,11 @@ class VideoEncodePipeline(ProcessingPipeline):
             # Resize with aspect ratio preservation if resolution is set
             if self.resolution is not None:
                 img = letterbox_frame(img, self.resolution)
+            
+            # Add filename overlay if requested
+            if self.overlay_text:
+                filename = Path(file_path).name
+                img = add_text_overlay(img, filename, position="bottom-left")
             
             return (index, img)
         except Exception as e:

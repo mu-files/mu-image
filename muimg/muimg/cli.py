@@ -931,15 +931,23 @@ def convert_image(input_file, output_file, bit_depth):
 @click.option("--bit-depth", type=click.Choice(["8", "10"]), default="8", help="Video bit depth (8 or 10)")
 @click.option("--frame-rate", type=float, default=30, help="Output frame rate in fps (supports fractional rates, e.g., 0.5 for 1 frame every 2 seconds)")
 @click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
+@click.option("--overlay-txt", is_flag=True, help="Add filename overlay to each frame")
 def convert_dngs_to_video(
     input_folder, output_mp4, temperature, tint, exposure, orientation, 
-    no_xmp, use_coreimage, resolution, codec, crf, bit_depth, frame_rate, num_workers
+    no_xmp, use_coreimage, resolution, codec, crf, bit_depth, frame_rate, num_workers, overlay_txt
 ):
     """Convert a folder of DNG files to MP4 video."""
     import io
     import numpy as np
     from .dngio import decode_dng
     from .videoio import VideoEncodePipeline
+    
+    # Set process title for easier identification in task managers
+    try:
+        import setproctitle
+        setproctitle.setproctitle(f"muimg: encoding {Path(output_mp4).name}")
+    except ImportError:
+        pass  # setproctitle is optional
     
     # Scan input folder for DNG files
     input_path = Path(input_folder)
@@ -1037,6 +1045,12 @@ def convert_dngs_to_video(
                 # Place scaled image on canvas
                 canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
                 img = canvas
+            
+            # Add filename overlay if requested
+            if overlay_txt:
+                from .videoio import add_text_overlay
+                filename = Path(file_path).name
+                img = add_text_overlay(img, filename, position="bottom-left")
             
             return (index, img)
             
