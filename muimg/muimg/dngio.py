@@ -2677,6 +2677,7 @@ def decode_dng(
             - 'ToneCurvePV2012Green': Green channel tone curve
             - 'ToneCurvePV2012Blue': Blue channel tone curve
             - 'crlcp:PerspectiveModel': Lens correction profile
+            - 'orientation': TIFF orientation value (1-8, int) to override EXIF orientation
             - 'highlight_preserving_exposure': Use highlight preservation (Python pipeline only)
     
     Returns:

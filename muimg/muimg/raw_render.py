@@ -12,7 +12,7 @@ from typing import Any
 # Package imports
 from . import _raw_render
 from .common import enum_display_name
-from .tiff_metadata import get_cfa_pattern_codes, Illuminant
+from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
 
@@ -506,23 +506,19 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     
     Args:
         image: Input image array (any shape with H, W as first two dims)
-        orientation: TIFF orientation code (1, 3, 6, or 8)
-            - 1: Normal (no rotation)
-            - 3: 180° rotation
-            - 6: 90° clockwise rotation
-            - 8: 90° counter-clockwise rotation (270° CW)
+        orientation: TIFF orientation code
         
     Returns:
         Rotated image array
     """
     import cv2
-    if orientation == 6:
+    if orientation == Orientation.ROTATE_90_CW:
         return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    elif orientation == 3:
+    elif orientation == Orientation.ROTATE_180:
         return cv2.rotate(image, cv2.ROTATE_180)
-    elif orientation == 8:
+    elif orientation == Orientation.ROTATE_270_CW:
         return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif orientation != 1:
+    elif orientation != Orientation.HORIZONTAL:
         logger.warning(
             f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
         )
@@ -2886,7 +2882,7 @@ def _render_camera_rgb(
         # Merge rendering_params overrides (with validation)
         if rendering_params is not None:
             # Render-method specific parameters (not from XMP)
-            render_specific_params = {'highlight_preserving_exposure'}
+            render_specific_params = {'highlight_preserving_exposure', 'orientation'}
             # Combine XMP params and render-specific params
             supported_params = SUPPORTED_XMP_PARAMS | render_specific_params
             
@@ -3267,7 +3263,10 @@ def _render_camera_rgb(
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
         t0 = time.perf_counter()
-        orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
+        # Check rendering_params first, fall back to EXIF orientation
+        orientation = rendering_params.get('orientation') if rendering_params else None
+        if orientation is None:
+            orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
         timings['orientation'] = time.perf_counter() - t0
