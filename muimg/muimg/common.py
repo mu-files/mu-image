@@ -3,10 +3,12 @@
 
 """Common utilities for muimg."""
 
+from __future__ import annotations
+
 import logging
 import sys
 from enum import Enum
-from typing import Type, Optional
+from typing import Type
 
 
 def enum_display_name(enum_class: Type[Enum], value: int, suffix: str = "") -> str:
@@ -32,7 +34,7 @@ def enum_display_name(enum_class: Type[Enum], value: int, suffix: str = "") -> s
         return f"Type{value}{suffix}" if suffix else f"Type{value}"
 
 
-def enum_from_value(enum_class: Type[Enum], value: int) -> Optional[Enum]:
+def enum_from_value(enum_class: Type[Enum], value: int) -> Enum | None:
     """
     Get enum member from numeric value.
     

@@ -5,16 +5,18 @@
 
 This module handles DNG file creation and related functionality.
 """
+from __future__ import annotations
+
 import io
 import logging
 import imagecodecs
 import numpy as np
 from datetime import datetime
 
-from enum import Enum, IntEnum
+from enum import Enum, IntEnum, StrEnum
 from pathlib import Path
 from tifffile import COMPRESSION, TiffFile, TiffPage, TiffWriter
-from typing import Optional, Union, List, Dict, Tuple, Any, Type, IO
+from typing import Any, IO, TypeAlias
 from dataclasses import dataclass, replace
 
 from . import raw_render
@@ -37,10 +39,21 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Type Aliases
+# =============================================================================
+
+# Common file path types
+PathLike: TypeAlias = str | Path | IO[bytes]
+
+# DNG file/page input types (using forward references)
+DngInput: TypeAlias = str | Path | IO[bytes] | "DngFile" | "DngPage"
+
+
+# =============================================================================
 # Constants
 # =============================================================================
 
-class RawStageSelector(str, Enum):
+class RawStageSelector(StrEnum):
     """Raw processing stage selectors."""
     RAW = "raw"
     LINEARIZED = "linearized"
@@ -61,7 +74,7 @@ class SubFileType(IntEnum):
     ALT_PREVIEW_IMAGE = 65537
     
     @classmethod
-    def lookup(cls, value: int) -> Optional["SubFileType"]:
+    def lookup(cls, value: int) -> SubFileType | None:
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
@@ -82,10 +95,10 @@ class DngPage(TiffPage):
     an existing TiffPage instance.
     """
     
-    @dataclass(frozen=True)
+    @dataclass(frozen=True, slots=True)
     class _RawStage:
         data: np.ndarray
-        cfa_pattern: Optional[str] = None
+        cfa_pattern: str | None = None
     
     def __new__(cls, *args, **kwargs):
         """Create DngPage instance without calling TiffPage.__init__."""
@@ -132,7 +145,7 @@ class DngPage(TiffPage):
         return self._is_ifd0
     
     @property
-    def photometric_name(self) -> Optional[str]:
+    def photometric_name(self) -> str | None:
         """Photometric interpretation string (e.g., 'CFA', 'LINEAR_RAW', 'RGB')."""
         if self.photometric is not None:
             return self.photometric.name
@@ -164,7 +177,7 @@ class DngPage(TiffPage):
             return False
         return value in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE)
 
-    def get_rendered_size(self, apply_orientation: bool = True) -> Tuple[int, int]:
+    def get_rendered_size(self, apply_orientation: bool = True) -> tuple[int, int]:
         """Get the final dimensions after DefaultCrop is applied.
         
         Args:
@@ -189,12 +202,12 @@ class DngPage(TiffPage):
         
         return w, h
 
-    def get_xmp(self) -> Optional[XmpMetadata]:
+    def get_xmp(self) -> XmpMetadata | None:
         """Return XMP metadata as an `XmpMetadata` object."""
         xmp = self.get_tag("XMP")
         return xmp
 
-    def _get_tag_object(self, tag: Union[str, int]) -> Optional[tuple]:
+    def _get_tag_object(self, tag: str | int) -> tuple | None:
         """Internal helper to get tag object and metadata with normalized values.
         
         All tag values are normalized to system byte order for consistent internal
@@ -233,9 +246,9 @@ class DngPage(TiffPage):
 
     def get_tag(
         self,
-        tag: Union[str, int],
-        return_type: Optional[type] = None,
-    ) -> Optional[Any]:
+        tag: str | int,
+        return_type: type | None = None,
+    ) -> Any | None:
         """Get tag value with automatic or specified type conversion.
         
         Args:
@@ -256,7 +269,7 @@ class DngPage(TiffPage):
         return convert_tag_value(
             tag_name, normalized_val, raw_tag.dtype, raw_tag.count, spec, return_type)
 
-    def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
+    def get_raw_tag(self, tag: str | int) -> Any | None:
         """Get raw tag value without any type conversion.
         
         Args:
@@ -271,7 +284,7 @@ class DngPage(TiffPage):
         tag_info = self._get_tag_object(tag)
         return tag_info[4] if tag_info else None
     
-    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+    def get_time_from_tags(self, time_type: str = "original") -> datetime | None:
         """Extract datetime from EXIF time tags with subseconds and timezone.
         
         This is the inverse of MetadataTags.add_time_tags(). Reads the datetime,
@@ -494,7 +507,7 @@ class DngPage(TiffPage):
         
         return self._decode_segmented(decode_tile)
 
-    def _stage1(self) -> Optional["DngPage._RawStage"]:
+    def _stage1(self) -> DngPage._RawStage | None:
         if self.is_cfa:
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_cfa = self._decode_jpegxl()
@@ -675,7 +688,7 @@ class DngPage(TiffPage):
 
     def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> Optional[tuple[np.ndarray, str]]:
+    ) -> tuple[np.ndarray, str] | None:
         """Extract CFA data and pattern from this page.
 
         Args:
@@ -711,7 +724,7 @@ class DngPage(TiffPage):
     
     def get_linear_raw(
         self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Extract LINEAR_RAW data from this page.
 
         Args:
@@ -744,7 +757,7 @@ class DngPage(TiffPage):
     def get_camera_rgb_raw(
         self, 
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA
-        ) -> Optional[np.ndarray]:
+        ) -> np.ndarray | None:
         """Extract the camera-RGB intermediate from a raw page for the color pipeline.
 
         This corresponds to the `rgb_camera` input passed into
@@ -826,7 +839,7 @@ class DngPage(TiffPage):
     def decode_to_rgb(
         self,
         output_dtype: type = np.uint8
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Decode any DNG page to RGB array.
         
         For raw pages (CFA, LINEAR_RAW), renders with default parameters.
@@ -965,7 +978,7 @@ class DngFile(TiffFile):
         # For file-backed DNGs, use tifffile's FileHandle.size property (no read needed)
         return self.filehandle.size
     
-    def write_to(self, destination: Union[str, Path, io.IOBase]) -> None:
+    def write_to(self, destination: str | Path | io.IOBase) -> None:
         """Write the DNG file to a destination.
         
         For file-backed DNGs, copies directly from source file without loading
@@ -1004,18 +1017,18 @@ class DngFile(TiffFile):
             shutil.copyfileobj(self.filehandle._fh, destination)
 
     @property
-    def ifd0(self) -> Optional[DngPage]:
+    def ifd0(self) -> DngPage | None:
         """Return IFD0 as a DngPage, or None if no pages exist."""
         return DngPage(self.pages[0]) if self.pages else None
 
-    def get_flattened_pages(self) -> List[DngPage]:
+    def get_flattened_pages(self) -> list[DngPage]:
         """Get all pages as DngPage instances.
         
         Returns:
             List of DngPage objects in flattened order. Tag inheritance
             falls back to IFD0 via TiffPage.parent.
         """
-        def build_recursive(pages_list: Optional[List]) -> List[DngPage]:
+        def build_recursive(pages_list: list | None) -> list[DngPage]:
             """Build DngPage instances from TiffPages recursively."""
             result = []
             if pages_list is None:
@@ -1031,7 +1044,7 @@ class DngFile(TiffFile):
         
         return build_recursive(self.pages)
     
-    def get_main_page(self) -> Optional[DngPage]:
+    def get_main_page(self) -> DngPage | None:
         """Get the main image page.
         
         First looks for a page with NewSubFileType == 0 (explicit main image).
@@ -1056,7 +1069,7 @@ class DngFile(TiffFile):
 
     def _find_closest_raw_page_and_final_dim(
         self, scale: float
-    ) -> Optional[Tuple[DngPage, Tuple[int, int]]]:
+    ) -> tuple[DngPage, tuple[int, int]] | None:
         """Find the optimal raw page and compute final dimensions for scaling.
         
         Searches all flattened pages for CFA or LINEAR_RAW pages and returns
@@ -1124,21 +1137,21 @@ class DngFile(TiffFile):
 
     def get_tag(
         self,
-        tag: Union[str, int],
-        return_type: Optional[type] = None,
-    ) -> Optional[Any]:
+        tag: str | int,
+        return_type: type | None = None,
+    ) -> Any | None:
         """See `DngPage.get_tag`."""
         return self.ifd0.get_tag(tag, return_type=return_type) if self.ifd0 else None
 
-    def get_xmp(self) -> Optional[XmpMetadata]:
+    def get_xmp(self) -> XmpMetadata | None:
         """See `DngPage.get_xmp`."""
         return self.ifd0.get_xmp() if self.ifd0 else None
 
-    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+    def get_time_from_tags(self, time_type: str = "original") -> datetime | None:
         """See `DngPage.get_time_from_tags`."""
         return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
     
-    def get_rendered_size(self, apply_orientation: bool = True) -> Optional[Tuple[int, int]]:
+    def get_rendered_size(self, apply_orientation: bool = True) -> tuple[int, int] | None:
         """See `DngPage.get_rendered_size`."""
         main_page = self.get_main_page()
         return main_page.get_rendered_size(apply_orientation=apply_orientation) if main_page else None
@@ -1154,7 +1167,7 @@ class DngFile(TiffFile):
         
     def get_cfa(
         self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> Optional[tuple[np.ndarray, str]]:
+    ) -> tuple[np.ndarray, str] | None:
         """See `DngPage.get_cfa`."""
         return self._forward_main_page(
             "get_cfa",
@@ -1164,7 +1177,7 @@ class DngFile(TiffFile):
 
     def get_linear_raw(
         self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """See `DngPage.get_linear_raw`."""
         return self._forward_main_page(
             "get_linear_raw",
@@ -1175,7 +1188,7 @@ class DngFile(TiffFile):
     def get_camera_rgb_raw(
         self,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Extract camera-RGB from main raw page with optional scaling.
         
         When scale is provided, automatically selects the optimal SubIFD pyramid
@@ -1201,7 +1214,7 @@ class DngFile(TiffFile):
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict = None,
-        scale: Optional[float] = None,
+        scale: float | None = None,
     ) -> "np.ndarray | None":
         """Render main raw DNG page to RGB image with optional scaling.
         
@@ -1283,7 +1296,7 @@ class DngFile(TiffFile):
     def get_preview_rgb(
         self,
         output_dtype: type = np.uint8,
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Decode preview image from IFD0 to RGB array.
         
         In most DNG files, IFD0 contains a preview image. This method verifies
@@ -1375,7 +1388,7 @@ def _prepare_ifd_args(
     subfiletype: int,
     photometric: str,
     subifds_count: int = 0,
-    compressionargs: Optional[dict] = None,
+    compressionargs: dict | None = None,
 ) -> dict:
     """Prepare TiffWriter IFD args, extracting tags that have kwargs equivalents.
     
@@ -1551,7 +1564,7 @@ _COMPRESSION_INVALIDATED_TAGS = {
 
 def _filter_metadata_tags(
     tags: MetadataTags,
-    exclude_names: Optional[set[str]] = None,
+    exclude_names: set[str] | None = None,
 ) -> None:
     """Filter tags in-place by removing tags in the exclude set.
     
@@ -1563,7 +1576,7 @@ def _filter_metadata_tags(
         tags.remove_tag(tag_name)
 
 
-class PageOp(str, Enum):
+class PageOp(StrEnum):
     """Page operation mode for DNG writing."""
     COPY = "copy"        # Copy page data as-is, preserving source compression
     TRANSCODE = "transcode"  # Decompress and re-compress with specified compression
@@ -1574,7 +1587,7 @@ class PageOp(str, Enum):
         from .common import enum_from_string
         return enum_from_string(cls, value)
 
-@dataclass
+@dataclass(slots=True)
 class IfdPageSpec:
     """Specification for writing a DNG page from a source DNG file.
     
@@ -1591,10 +1604,10 @@ class IfdPageSpec:
     """
     page: DngPage
     subfiletype: int = 0
-    page_operation: Union[PageOp, Tuple[PageOp, COMPRESSION]] = PageOp.COPY
-    compression_args: Optional[dict] = None
-    extratags: Optional[MetadataTags] = None
-    strip_tags: Optional[set[str]] = None
+    page_operation: PageOp | tuple[PageOp, COMPRESSION] = PageOp.COPY
+    compression_args: dict | None = None
+    extratags: MetadataTags | None = None
+    strip_tags: set[str] | None = None
     copy_page_tags: bool = True
     
     def requires_transcode(self) -> bool:
@@ -1625,7 +1638,7 @@ class IfdPageSpec:
         return compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
 
 
-@dataclass
+@dataclass(slots=True)
 class IfdDataSpec:
     """Specification for writing a DNG IFD from raw array data.
     
@@ -1645,10 +1658,10 @@ class IfdDataSpec:
     photometric: str
     subfiletype: int = 0
     cfa_pattern: str = "RGGB"
-    compression: Optional[COMPRESSION] = None
-    compression_args: Optional[dict] = None
-    extratags: Optional[MetadataTags] = None
-    bits_per_sample: Optional[int] = None
+    compression: COMPRESSION | None = None
+    compression_args: dict | None = None
+    extratags: MetadataTags | None = None
+    bits_per_sample: int | None = None
     
     def requires_transcode(self) -> bool:
         """Check if this spec requires transcoding (always False for array data)."""
@@ -1659,11 +1672,15 @@ class IfdDataSpec:
         return self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
 
 
+# IFD specification type alias (defined after the classes)
+IfdSpec: TypeAlias = IfdPageSpec | IfdDataSpec
+
+
 def write_dng(
-    destination_file: Union[str, Path, io.BytesIO],
+    destination_file: str | Path | io.BytesIO,
     *,
-    ifd0_spec: Union[IfdPageSpec, IfdDataSpec],
-    subifds: List[Union[IfdPageSpec, IfdDataSpec]] = None,
+    ifd0_spec: IfdPageSpec | IfdDataSpec,
+    subifds: list[IfdPageSpec | IfdDataSpec] = None,
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -1778,11 +1795,11 @@ def write_dng(
 
     def _write_ifd_from_spec(
         writer: TiffWriter,
-        spec: Union[IfdPageSpec, IfdDataSpec],
+        spec: IfdPageSpec | IfdDataSpec,
         *,
         is_ifd0: bool = False,
         needs_v1_7_1: bool,
-        main_spec: Optional[Union[IfdPageSpec, IfdDataSpec]] = None,
+        main_spec: IfdPageSpec | IfdDataSpec | None = None,
     ) -> None:
         # Get subfiletype from spec
         subfiletype = spec.subfiletype
@@ -2100,8 +2117,8 @@ def write_dng(
 
 def create_dng(
     *,
-    ifd0_spec: Union[IfdPageSpec, IfdDataSpec],
-    subifds: List[Union[IfdPageSpec, IfdDataSpec]] = None,
+    ifd0_spec: IfdPageSpec | IfdDataSpec,
+    subifds: list[IfdPageSpec | IfdDataSpec] = None,
 ) -> "DngFile":
     """Create a DNG file in memory and return as DngFile object.
     
@@ -2120,7 +2137,7 @@ def create_dng(
     buffer.seek(0)
     return DngFile(buffer)
 
-@dataclass
+@dataclass(slots=True)
 class PreviewParams:
     """Parameters for preview generation in DNG files.
     
@@ -2135,13 +2152,13 @@ class PreviewParams:
         use_xmp: Use XMP metadata for preview rendering (default: True)
     """
     max_dimension: int = 1024
-    compression: Optional[COMPRESSION] = None
-    compression_args: Optional[dict] = None
-    rendering_params: Optional[dict] = None
+    compression: COMPRESSION | None = None
+    compression_args: dict | None = None
+    rendering_params: dict | None = None
     use_xmp: bool = True
 
 
-@dataclass
+@dataclass(slots=True)
 class PyramidParams:
     """Parameters for pyramid level generation in DNG files.
     
@@ -2152,16 +2169,16 @@ class PyramidParams:
         extratags: Additional metadata tags to add to each pyramid level
     """
     levels: int = 0
-    compression: Optional[COMPRESSION] = None
-    compression_args: Optional[dict] = None
-    extratags: Optional["MetadataTags"] = None
+    compression: COMPRESSION | None = None
+    compression_args: dict | None = None
+    extratags: MetadataTags | None = None
 
 
 def create_dng_from_array(
     data_spec: IfdDataSpec,
     *,
-    preview: Optional[PreviewParams] = None,
-    pyramid: Optional[PyramidParams] = None,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
 ) -> "DngFile":
     """Create a DNG file from array data in memory and return as DngFile object.
     
@@ -2193,11 +2210,11 @@ def create_dng_from_array(
 
 
 def write_dng_from_array(
-    destination_file: Union[str, Path, io.BytesIO],
+    destination_file: str | Path | io.BytesIO,
     data_spec: IfdDataSpec,
     *,
-    preview: Optional[PreviewParams] = None,
-    pyramid: Optional[PyramidParams] = None,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
 ) -> None:
     """Write raw array data to a DNG file with optional preview and pyramid generation.
     
@@ -2346,17 +2363,17 @@ STAGE3_TAGS = {
 
 
 def write_dng_from_page(
-    destination_file: Union[str, Path, io.BytesIO],
-    page: Union[IfdPageSpec, DngPage],
+    destination_file: str | Path | io.BytesIO,
+    page: IfdPageSpec | DngPage,
     *,
     scale: float = 1.0,
     demosaic: bool = False,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
-    preview: Optional[PreviewParams] = None,
-    pyramid: Optional[PyramidParams] = None,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
     copy_ifd0_tags: bool = True,
-    ifd0_extratags: Optional["MetadataTags"] = None,
-    ifd0_strip_tags: Optional[set[str]] = None,
+    ifd0_extratags: MetadataTags | None = None,
+    ifd0_strip_tags: set[str] | None = None,
 ) -> None:
     """Write a DNG file from a page with optional transformations and pyramid generation.
     
@@ -2587,16 +2604,16 @@ def write_dng_from_page(
 
 
 def create_dng_from_page(
-    page: Union[IfdPageSpec, DngPage],
+    page: IfdPageSpec | DngPage,
     *,
     scale: float = 1.0,
     demosaic: bool = False,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
-    preview: Optional[PreviewParams] = None,
-    pyramid: Optional[PyramidParams] = None,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
     copy_ifd0_tags: bool = True,
-    ifd0_extratags: Optional["MetadataTags"] = None,
-    ifd0_strip_tags: Optional[set[str]] = None,
+    ifd0_extratags: MetadataTags | None = None,
+    ifd0_strip_tags: set[str] | None = None,
 ) -> "DngFile":
     """Create a DNG file from a page in memory and return as DngFile object.
     
@@ -2641,7 +2658,7 @@ def create_dng_from_page(
 
 
 def decode_dng(
-    file: Union[str, Path, IO[bytes], DngFile, DngPage],
+    file: str | Path | IO[bytes] | DngFile | DngPage,
     output_dtype: type = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     use_coreimage_if_available: bool = False,

@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from fractions import Fraction
 from tifffile import PHOTOMETRIC, TIFF
-from typing import Optional, Union, Dict, Any, Type, List, Tuple
+from typing import Any, Self, Type
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {v: k for k, v in CFA_PATTERN
 # - "dng_profile": Can be in IFD 0 or Camera Profile IFDs
 # - "dng_preview": Must be in Preview NewSubFileType
 
-@dataclass
+@dataclass(slots=True)
 class TagSpec:
     """Specification for a TIFF/DNG tag.
     
@@ -116,9 +116,9 @@ class TagSpec:
                the returned np.ndarray will be reshaped to this shape.
         dng_ifd: IFD type where this tag should appear (see IFD Location Categories above).
     """
-    dtype: Union[TiffType, List[TiffType]]  # Single type or list for inference
-    count: Optional[int] = None
-    shape: Optional[Tuple[int, ...]] = None
+    dtype: TiffType | list[TiffType]  # Single type or list for inference
+    count: int | None = None
+    shape: tuple[int, ...] | None = None
     dng_ifd: str = "any"
     
     def get_dtype_for_value(self, value: Any) -> TiffType:
@@ -157,7 +157,7 @@ class TagSpec:
             raise ValueError(f"Unknown multi-type dtype list: {self.dtype}. "
                            f"Add explicit handling or use a defined constant.")
     
-def get_native_type(dtype: Union[int, str, list], count: Optional[int]) -> Optional[type]:
+def get_native_type(dtype: int | str | list, count: int | None) -> type | None:
     """Determine the most appropriate Python type for a TIFF tag.
     
     Args:
@@ -651,7 +651,7 @@ class LocalTiffTags:
 LOCAL_TIFF_TAGS = LocalTiffTags()
 
 
-def resolve_tag(tag: Union[str, int]) -> Tuple[Optional[int], Optional[str], Optional[TagSpec]]:
+def resolve_tag(tag: str | int) -> tuple[int | None, str | None, TagSpec | None]:
     """Resolve a tag name or code to (tag_id, tag_name, spec).
     
     Args:
@@ -679,8 +679,8 @@ def _decode_tag_value(
     tag_name: str,
     tag_value: Any,
     tag_dtype: int,
-    spec: Optional[TagSpec] = None, 
-    return_type: Optional[type] = None,
+    spec: TagSpec | None = None, 
+    return_type: type | None = None,
 ) -> Any:
     """Decode a raw TIFF value to a Python type (TIFF → Python).
     
@@ -789,8 +789,8 @@ def convert_tag_value(
     tag_value: Any,
     tag_dtype: int,
     tag_count: int,
-    registry_spec: Optional[TagSpec] = None,
-    return_type: Optional[type] = None,
+    registry_spec: TagSpec | None = None,
+    return_type: type | None = None,
 ) -> Any:
     """Convert a tag value with special formatting and type conversion.
     
@@ -1041,7 +1041,7 @@ def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: List[s
 def _get_time_impl(
     tag_source: Any,
     time_type: str = "original"
-) -> Optional[datetime]:
+) -> datetime | None:
     """Internal implementation for extracting datetime from EXIF time tags.
     
     Args:
@@ -1150,7 +1150,7 @@ def _convert_exif_dict_to_tags(tags: MetadataTags) -> None:
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
     
-    @dataclass
+    @dataclass(slots=True)
     class StoredTag:
         code: int
         dtype: int  # TIFF dtype code
@@ -1173,14 +1173,14 @@ class MetadataTags:
         """Return the number of tags."""
         return len(self._tags)
     
-    def __contains__(self, tag: Union[int, str]) -> bool:
+    def __contains__(self, tag: int | str) -> bool:
         """Check if a tag exists by code (int) or name (str)."""
         tag_id, _, _ = resolve_tag(tag)
         if tag_id is None:
             return False
         return tag_id in self._tags
     
-    def __getitem__(self, tag: Union[int, str]) -> Any:
+    def __getitem__(self, tag: int | str) -> Any:
         """Get raw tag value using [] operator, like tifffile.tags.
         
         Raises KeyError if not found.
@@ -1190,7 +1190,7 @@ class MetadataTags:
             raise KeyError(tag)
         return result
 
-    def remove_tag(self, tag: Union[int, str]) -> bool:
+    def remove_tag(self, tag: int | str) -> bool:
         """Remove a tag by code (int) or name (str).
         
         Args:
@@ -1207,24 +1207,10 @@ class MetadataTags:
             return True
         return False
 
-    def copy(self, convert_exif: bool = True) -> MetadataTags:
-        """Create a deep copy of this MetadataTags instance.
-        
-        Args:
-            convert_exif: If True (default), convert ExifTag dictionary to individual TIFF tags. 
-        
-        Returns:
-            New MetadataTags instance with copied tags.
-        """
-        import copy
+    def copy(self) -> Self:
+        """Create a shallow copy of this MetadataTags instance."""
         new_instance = MetadataTags()
-        # Deep copy the tags dict to avoid shared mutable objects
-        new_instance._tags = copy.deepcopy(self._tags)
-        
-        # Convert EXIF dict to individual tags if requested
-        if convert_exif:
-            _convert_exif_dict_to_tags(new_instance)
-    
+        new_instance._tags = dict(self._tags)
         return new_instance
 
     def add_tag(self, tag_name: str, value: Any) -> None:
@@ -1266,8 +1252,8 @@ class MetadataTags:
 
     def add_raw_tag(
         self, 
-        name_or_code: Union[str, int], 
-        dtype: Union[TiffType, int], 
+        name_or_code: str | int, 
+        dtype: TiffType | int, 
         count: int, 
         value: Any
     ) -> None:
@@ -1301,9 +1287,9 @@ class MetadataTags:
 
     def add_time_tags(
         self,
-        time_value: Union[str, datetime, Any],
+        time_value: str | datetime | Any,
         time_type: str = "original",
-        timezone: Optional[str] = None
+        timezone: str | None = None
     ) -> None:
         """Add datetime, subsecond, and timezone offset tags.
         
@@ -1444,7 +1430,7 @@ class MetadataTags:
         self.add_tag("XMP", xmp_bytes)
         logger.debug(f"Added XMP metadata with {len(xmp._attributes)} properties")
 
-    def extend(self, other: Optional[MetadataTags]) -> None:
+    def extend(self, other: MetadataTags | None) -> None:
         """Add all tags from another MetadataTags instance.
         
         Args:
@@ -1461,27 +1447,27 @@ class MetadataTags:
         for _, tag in other._tags.items():
             self.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
 
-    def __or__(self, other: Optional[MetadataTags]) -> MetadataTags:
+    def __or__(self, other: MetadataTags | None) -> Self:
         """Combine two MetadataTags instances using the | operator.
         """
         result = self.copy()
         result.extend(other)
         return result
 
-    def __ior__(self, other: Optional[MetadataTags]) -> MetadataTags:
+    def __ior__(self, other: MetadataTags | None) -> Self:
         """In-place union using the |= operator.
         """
         self.extend(other)
         return self
 
-    def get_xmp(self) -> Optional['XmpMetadata']:
+    def get_xmp(self) -> 'XmpMetadata' | None:
         """Return XMP metadata as an `XmpMetadata` object."""
         xmp = self.get_tag("XMP")
         return xmp
 
     def _get_tag_info(
-        self, tag: Union[str, int]
-    ) -> Optional[tuple]:
+        self, tag: str | int
+    ) -> tuple | None:
         """Internal helper to resolve tag and get stored tag object.
         
         Args:
@@ -1503,9 +1489,9 @@ class MetadataTags:
 
     def get_tag(
         self, 
-        tag: Union[str, int], 
-        return_type: Optional[type] = None
-    ) -> Optional[Any]:
+        tag: str | int, 
+        return_type: type | None = None
+    ) -> Any | None:
         """Get a tag value with type conversion.
         
         Args:
@@ -1527,7 +1513,7 @@ class MetadataTags:
         _, tag_name, spec, t = tag_info
         return convert_tag_value(tag_name, t.value, t.dtype, t.count, spec, return_type)
 
-    def get_raw_tag(self, tag: Union[str, int]) -> Optional[Any]:
+    def get_raw_tag(self, tag: str | int) -> Any | None:
         """Get raw tag value without any type conversion.
         
         Args:
@@ -1545,7 +1531,7 @@ class MetadataTags:
         
         return tag_info[3].value
     
-    def get_time_from_tags(self, time_type: str = "original") -> Optional[datetime]:
+    def get_time_from_tags(self, time_type: str = "original") -> datetime | None:
         """Extract datetime from EXIF time tags with subseconds and timezone.
         
         This is the inverse of add_time_tags(). Reads the datetime, subsecond,
@@ -1586,7 +1572,7 @@ class XmpMetadata:
         self._attributes = self._parse(xmp_string)
     
     @classmethod
-    def from_attributes(cls, attributes: Dict[str, Any]) -> 'XmpMetadata':
+    def from_attributes(cls, attributes: Dict[str, Any]) -> Self:
         """Create XmpMetadata from a dict of fully-qualified XMP attributes.
         
         Args:
@@ -1604,7 +1590,7 @@ class XmpMetadata:
         instance._attributes = dict(attributes)
         return instance
     
-    def merged(self, other: Union['XmpMetadata', Dict[str, Any]]) -> 'XmpMetadata':
+    def merged(self, other: 'XmpMetadata' | dict[str, Any]) -> Self:
         """Create a new XmpMetadata with attributes from this instance and other.
         
         Args:
@@ -1655,7 +1641,7 @@ class XmpMetadata:
             "adobe:ns:meta/": "x",
         }
 
-        def _qname_to_prefixed_name(qname: str) -> Optional[str]:
+        def _qname_to_prefixed_name(qname: str) -> str | None:
             if not qname:
                 return None
             if qname[0] != "{":
@@ -1742,7 +1728,7 @@ class XmpMetadata:
         logger.debug(f"Parsed {len(attributes)} XMP attributes")
         return attributes
     
-    def xpath_query(self, element_name: str, namespace_uri: str) -> Optional[Dict[str, str]]:
+    def xpath_query(self, element_name: str, namespace_uri: str) -> dict[str, str] | None:
         """Query XMP for elements by namespace URI and local name.
         
         Searches the entire XMP tree for elements matching the given namespace and name,
@@ -1764,7 +1750,7 @@ class XmpMetadata:
         result = self.xpath_query_with_parent(element_name, namespace_uri, include_parent=False)
         return result[0] if result else None
     
-    def xpath_query_with_parent(self, element_name: str, namespace_uri: str, include_parent: bool = True) -> Optional[tuple]:
+    def xpath_query_with_parent(self, element_name: str, namespace_uri: str, include_parent: bool = True) -> tuple | None:
         """Query XMP for elements and optionally include direct parent element attributes.
         
         General-purpose method that finds an element and optionally returns its parent's attributes.
@@ -1866,7 +1852,7 @@ class XmpMetadata:
             logger.debug(f"XPath query failed for {element_name}: {e}")
             return None
     
-    def get_root_prop(self, prop: str, return_type: Optional[Type] = None) -> Optional[Any]:
+    def get_root_prop(self, prop: str, return_type: Type | None = None) -> Any | None:
         """Get a root-level XMP property value with optional type conversion.
         
         Only works with properties at the root Description level. For deeply nested
@@ -1903,7 +1889,7 @@ class XmpMetadata:
             logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type} ({type(e).__name__}): {e}")
             return None
     
-    def get_formatted_string(self, strip_whitespace: bool = True, filter_blank_lines: bool = True) -> Optional[str]:
+    def get_formatted_string(self, strip_whitespace: bool = True, filter_blank_lines: bool = True) -> str | None:
         """Get the raw XMP string with optional formatting.
         
         Args:
@@ -1938,7 +1924,7 @@ class XmpMetadata:
 # XMP Codec Functions
 # =============================================================================
 
-def xmp_packet_to_metadata(packet: Union[bytes, str]) -> XmpMetadata:
+def xmp_packet_to_metadata(packet: bytes | str) -> XmpMetadata:
     """Parse an XMP packet (bytes or string) into XmpMetadata.
     
     Args:

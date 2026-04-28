@@ -6,7 +6,7 @@ import queue
 import threading
 
 from datetime import datetime, timedelta
-from typing import Callable, Iterable, Any, List, Tuple, Union
+from typing import Callable, Iterable, Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +17,9 @@ class ProcessingThreadPool:
     def __init__(self, num_workers: int, thread_name_prefix: str = "Worker"):
         self.num_workers = num_workers
         self.thread_name_prefix = thread_name_prefix
-        self.threads: List[threading.Thread] = []
+        self.threads: list[threading.Thread] = []
     
-    def run_workers(self, worker_func: Callable, worker_args_list: List[Tuple]) -> None:
+    def run_workers(self, worker_func: Callable, worker_args_list: list[tuple]) -> None:
         """
         Run worker functions in parallel threads and wait for completion.
         
@@ -57,7 +57,7 @@ class ProcessingPipeline:
 
     def __init__(
         self,
-        producer: Union[Callable[[], Iterable[Any]], "ProcessingPipeline", None],
+        producer: Callable[[], Iterable[Any]] | "ProcessingPipeline" | None,
         consumer: Callable[[Any], Any],
         writer: Callable[[Any], None] = None,
         num_workers: int = 4,

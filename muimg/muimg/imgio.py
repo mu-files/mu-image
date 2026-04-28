@@ -1,10 +1,12 @@
 # Released under a modified PolyForm Small Business License.
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 
+from __future__ import annotations
+
 import io
 import logging
 from pathlib import Path
-from typing import IO, Optional, Union
+from typing import IO
 
 import numpy as np
 import tifffile
@@ -17,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 def write_image(
     image: np.ndarray,
-    output: Union[str, Path, IO[bytes]],
+    output: str | Path | IO[bytes],
     output_format_stream: str = "jpg",
-    metadata: Optional[MetadataTags] = None,
+    metadata: MetadataTags | None = None,
 ) -> bool:
     """
     Save a decoded RGB image to file or stream with optional metadata.
@@ -118,7 +120,7 @@ def write_image(
 
 
 def decode_image(
-    file: Union[str, Path, IO[bytes]],
+    file: str | Path | IO[bytes],
     output_dtype: type = np.uint8,
 ) -> np.ndarray:
     """
@@ -206,8 +208,8 @@ def decode_image(
     return convert_dtype(img, output_dtype)
 
 def convert_imgformat(
-    file: Union[str, Path, IO[bytes]],
-    output: Union[str, Path, IO[bytes]],
+    file: str | Path | IO[bytes],
+    output: str | Path | IO[bytes],
     output_dtype: type = np.uint8,
     output_format_stream: str = "jpg",
 ) -> bool:
@@ -240,7 +242,7 @@ def convert_imgformat(
 
 
 def convert_imgformat_to_stream(
-    file: Union[str, Path, IO[bytes]],
+    file: str | Path | IO[bytes],
     output_format_stream: str = "jpg",
     output_dtype: type = np.uint8,
 ) -> IO[bytes]:
@@ -266,8 +268,8 @@ def convert_imgformat_to_stream(
 
 
 def convert_dng(
-    file: Union[str, Path, IO[bytes], "DngFile", "DngPage"],
-    output: Union[str, Path, IO[bytes]],
+    file: str | Path | IO[bytes] | "DngFile" | "DngPage",
+    output: str | Path | IO[bytes],
     output_dtype: type = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     strict: bool = True,
@@ -334,7 +336,7 @@ def convert_dng(
 
 
 def convert_dng_to_stream(
-    file: Union[str, Path, IO[bytes], "DngFile", "DngPage"],
+    file: str | Path | IO[bytes] | "DngFile" | "DngPage",
     output_format_stream: str = "jpg",
     output_dtype: type = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,

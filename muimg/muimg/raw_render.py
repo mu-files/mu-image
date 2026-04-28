@@ -1,11 +1,13 @@
 # Released under a modified PolyForm Small Business License.
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 
+from __future__ import annotations
+
 import numpy as np
 import logging
 
-from enum import Enum, IntEnum, auto
-from typing import Any, Union, Optional
+from enum import Enum, IntEnum, StrEnum, auto
+from typing import Any
 from .tiff_metadata import get_cfa_pattern_codes
 from .common import enum_display_name
 
@@ -37,7 +39,7 @@ class DngOpcode(IntEnum):
     WARP_RECTILINEAR2 = 14
     
     @classmethod
-    def lookup(cls, value: int) -> Optional["DngOpcode"]:
+    def lookup(cls, value: int) -> "DngOpcode" | None:
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
@@ -57,11 +59,12 @@ class ColorSpace(Enum):
     SRGB_LINEAR = auto()
     SRGB_GAMMA = auto()          # sRGB piecewise gamma
 
-class DemosaicAlgorithm(str, Enum):
+class DemosaicAlgorithm(StrEnum):
     """Demosaic algorithm selectors."""
     VNG = "VNG"
     RCD = "RCD"
     OPENCV_EA = "OPENCV_EA"
+    OPENCV_EDGE = "OPENCV_EDGE"
     DNGSDK_BILINEAR = "DNGSDK_BILINEAR"
     
     @classmethod
@@ -110,7 +113,7 @@ class Illuminant(IntEnum):
     OTHER = (255, None)                           # lsOther - requires IlluminantData
     
     @classmethod
-    def lookup(cls, value: int) -> Optional["Illuminant"]:
+    def lookup(cls, value: int) -> "Illuminant" | None:
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
@@ -127,7 +130,7 @@ class SplineCurve:
     Uses scipy CubicSpline for interpolation. Points are stored as float tuples.
     """
     
-    def __init__(self, points_or_string: Optional[Union[str, list]] = None, bc_type: str = 'natural'):
+    def __init__(self, points_or_string: str | list | None = None, bc_type: str = 'natural'):
         """
         Initialize SplineCurve.
         
@@ -493,7 +496,7 @@ def convert_colorspace(
 
 
 def build_lut_from_spline(
-    curve_param: Union[SplineCurve, str, list],
+    curve_param: SplineCurve | str | list,
     lut_size: int = 4096,
     convert_srgb_gamma_to_linear: bool = False
 ) -> np.ndarray:
@@ -2199,7 +2202,7 @@ def compute_exposure_ramp_lut(
     default_black_render: int,
     highlight_preserving_exposure: bool = True,
     num_points: int = 4096,
-    rgb_prophoto: Optional[np.ndarray] = None
+    rgb_prophoto: np.ndarray | None = None
 ) -> np.ndarray:
     """Compute exposure_ramp LUT from exposure and DNG tag values.
     
@@ -2866,11 +2869,11 @@ def apply_post_rendering_operations(
     return result
 
 def _get_ifd0_tag(
-    ifd0_tags: Union["DngPage", "MetadataTags"],
-    raw_ifd_tags: Optional[Union["DngPage", "MetadataTags"]],
-    tag: Union[str, int],
-    return_type: Optional[type] = None
-) -> Optional:
+    ifd0_tags: "DngPage" | "MetadataTags",
+    raw_ifd_tags: "DngPage" | "MetadataTags" | None,
+    tag: str | int,
+    return_type: type | None = None
+) -> Any:
     """Get a tag value from IFD0 with validation.
     
     Internal helper for _render_camera_rgb() that enforces only IFD0/profile
@@ -2910,10 +2913,10 @@ def _get_ifd0_tag(
     return value
 
 def _render_camera_rgb(
-    ifd0_tags: Union["DngPage", "MetadataTags"],
+    ifd0_tags: "DngPage" | "MetadataTags",
     rgb_camera: np.ndarray,
     output_dtype: type,
-    raw_ifd_tags: Optional[Union["DngPage", "MetadataTags"]] = None,
+    raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict = None,
     use_xmp: bool = True,
 ) -> np.ndarray:
@@ -3449,7 +3452,7 @@ SUPPORTED_XMP_PARAMS = {
     # 'Texture', 'Clarity2012', 'Dehaze', 'Vibrance', 'Saturation'
 }
 
-def supported_xmp_to_dict(source: Union['XmpMetadata', 'MetadataTags', 'DngFile', 'DngPage']) -> dict:
+def supported_xmp_to_dict(source: 'XmpMetadata' | 'MetadataTags' | 'DngFile' | 'DngPage') -> dict:
     """Convert XMP metadata to pipeline-supported dict.
     
     Extracts only the properties used by the rendering pipeline.

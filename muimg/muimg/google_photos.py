@@ -7,7 +7,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -34,8 +37,8 @@ class GooglePhotosClient:
 
     def __init__(
         self,
-        token_path: Optional[Path] = None,
-        credentials_path: Optional[Path] = None,
+        token_path: Path | None = None,
+        credentials_path: Path | None = None,
     ):
         """Initialize Google Photos client.
 
@@ -165,7 +168,7 @@ class GooglePhotosClient:
         return album_id
 
     def upload_image(
-        self, image_path: Path, album_title: Optional[str] = None
+        self, image_path: Path, album_title: str | None = None
     ) -> dict:
         """Upload an image to Google Photos.
 

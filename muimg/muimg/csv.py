@@ -8,7 +8,7 @@ import threading
 from dataclasses import asdict, fields
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, get_args, get_type_hints
+from typing import Any, get_args, get_type_hints
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class CsvWriter:
     def __init__(
         self,
         csv_filepath: Path,
-        header_data: List[Tuple[str, Any]],
+        header_data: list[tuple[str, Any]],
         data_type: type,
     ):
         self.csv_filepath = csv_filepath
@@ -52,7 +52,7 @@ class CsvWriter:
             f"Value must be a simple type (str, int, float, bool, datetime, timedelta), but has type {type(value)}."
         )
 
-    def _write_header(self, header_data: List[Tuple[str, Any]]):
+    def _write_header(self, header_data: list[tuple[str, Any]]):
         """Writes the header data to the CSV file, handling various data structures."""
         for key, value in header_data:
             if isinstance(value, dict):
@@ -88,7 +88,7 @@ class CsvWriter:
         self.writer.writerow([])  # Blank line for separation
         self.writer.writerow(self.column_titles)
 
-    def write_row(self, row_data: Union[Dict[str, Any], List[Any], Any]):
+    def write_row(self, row_data: dict[str, Any] | list[Any] | Any):
         """
         Writes a single row of data from a dictionary, a dataclass, or a list of dataclasses.
 
@@ -145,13 +145,13 @@ class CsvOrderedWriter(CsvWriter):
     def __init__(
         self,
         csv_filepath: Path,
-        header_data: List[Tuple[str, Any]],
+        header_data: list[tuple[str, Any]],
         data_type: type,
     ):
         """Initializes the writer."""
         super().__init__(csv_filepath, header_data, data_type)
         self._lock = threading.Lock()
-        self._buffer: Dict[int, Dict[str, Any]] = {}
+        self._buffer: dict[int, dict[str, Any]] = {}
         self._next_index = 0
 
     def _write_buffered_items(self):
@@ -164,7 +164,7 @@ class CsvOrderedWriter(CsvWriter):
             super().write_row(row_data)
             self._next_index += 1
 
-    def write_row(self, index: int, row_data: Union[Dict[str, Any], List[Any], Any]):
+    def write_row(self, index: int, row_data: dict[str, Any] | list[Any] | Any):
         """
         Writes a data row. Buffers if the index is not the next one expected.
         Dataclasses are converted to dictionaries before buffering.
@@ -208,20 +208,20 @@ class CsvReader:
 
     def __init__(
         self,
-        csv_filepath: Union[str, Path],
-        header_schema: List[Tuple[str, Any]],
-        data_type: Union[type, List[type]],
+        csv_filepath: str | Path,
+        header_schema: list[tuple[str, Any]],
+        data_type: type | list[type],
     ):
         self.csv_filepath = Path(csv_filepath)
         self.header_schema = header_schema
         self._single_type_requested = not isinstance(data_type, list)
         self.data_types = data_type if isinstance(data_type, list) else [data_type]
 
-        self._file: Optional[TextIO] = None
-        self._reader: Optional[csv.DictReader] = None
-        self.header: Optional[List[Tuple[str, Any]]] = None
-        self.row_dict: Optional[Dict[str, str]] = None
-        self.fields_to_load: Optional[Set[str]] = None
+        self._file: TextIO | None = None
+        self._reader: csv.DictReader | None = None
+        self.header: list[tuple[str, Any]] | None = None
+        self.row_dict: dict[str, str] | None = None
+        self.fields_to_load: set[str] | None = None
 
         # Open the file and prepare the reader immediately upon initialization.
         self._file = open(self.csv_filepath, "r", newline="")
@@ -313,7 +313,7 @@ class CsvReader:
         for dt in self.data_types:
             self.fields_to_load.update({f.name for f in fields(dt)})
 
-    def _cast_and_validate(self, raw_dict: Dict[str, Any], schema: List[Tuple[str, Any]]) -> List[Tuple[str, Any]]:
+    def _cast_and_validate(self, raw_dict: dict[str, Any], schema: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
         """Recursively validates and casts a dictionary to conform to an ordered schema, returning a list of tuples."""
         typed_list = []
         for key, requested_type in schema:
@@ -353,7 +353,7 @@ class CsvReader:
                 raise type(e)(f"Error processing key '{key}': {e}") from e
         return typed_list
 
-    def _cast_and_validate_dict(self, raw_dict: Dict[str, Any], schema: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    def _cast_and_validate_dict(self, raw_dict: dict[str, Any], schema: list[tuple[str, Any]]) -> dict[str, Any]:
         """Helper to cast a simple dictionary against an ordered list-of-tuples schema."""
         typed_dict = {}
         for key, requested_type in schema:
@@ -367,7 +367,7 @@ class CsvReader:
                 raise type(e)(f"Error processing nested key '{key}': {e}") from e
         return typed_dict
 
-    def _process_row(self, row_dict: Dict[str, str]) -> List[Any]:
+    def _process_row(self, row_dict: dict[str, str]) -> list[Any]:
         """Processes a single row dictionary into a list of dataclass instances."""
         processed_objects = []
         for data_type in self.data_types:

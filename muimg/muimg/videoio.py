@@ -9,7 +9,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Iterable, Union
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -42,8 +42,8 @@ class SequenceEncodePipeline(ProcessingPipeline):
     
     def __init__(
         self,
-        source_files: list[Union[str, Path]] = None,
-        output_path: Union[str, Path] = None,
+        source_files: list[str | Path] = None,
+        output_path: str | Path = None,
         resolution: tuple[int, int] = None,
         config: dict[str, Any] = None,
         use_temp_file: bool = True,

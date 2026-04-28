@@ -1,12 +1,14 @@
 # Released under a modified PolyForm Small Business License.
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 
+from __future__ import annotations
+
 import io
 import logging
 import numpy as np
 import os
 
-from typing import IO, Optional, Union
+from typing import IO
 from .raw_render import SplineCurve
 
 logger = logging.getLogger(__name__)
@@ -232,12 +234,12 @@ class CoreImageContext:
 
 
 def render_dng_coreimage(
-    dng_input: Union[str, os.PathLike, IO[bytes]],
-    raw_filter_options: Optional[dict] = None,
+    dng_input: str | os.PathLike | IO[bytes],
+    raw_filter_options: dict | None = None,
     use_gpu: bool = False,
     output_dtype: type = np.uint16,
     use_system_camera_profiles: bool = True,
-) -> tuple[Optional[np.ndarray], str]:
+) -> tuple[np.ndarray | None, str]:
     """
     Processes a DNG file by creating a temporary Core Image context for the operation.
     This ensures no state is carried over between calls.
@@ -379,7 +381,7 @@ def render_dng_coreimage(
 
 
 def decode_dng_coreimage(
-    file: Union[str, os.PathLike, IO[bytes], "DngFile"],
+    file: str | os.PathLike | IO[bytes] | "DngFile",
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
     rendering_params: dict = None,
