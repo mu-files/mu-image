@@ -6,7 +6,7 @@ import queue
 import threading
 
 from datetime import datetime, timedelta
-from typing import Callable, Iterable, Any
+from typing import Any, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 

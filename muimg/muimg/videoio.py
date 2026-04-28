@@ -5,14 +5,15 @@
 
 import io
 import logging
+import numpy as np
 import os
 import shutil
 import tempfile
+
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import numpy as np
-
+# Package imports
 from .imgio import decode_image
 from .processing import ProcessingPipeline
 

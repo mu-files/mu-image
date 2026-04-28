@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-import io
 import logging
-from pathlib import Path
-from typing import IO
-
 import numpy as np
 import tifffile
 
+from pathlib import Path
+from typing import IO
+
+# Package imports
 from .dngio import DngFile, DngPage, decode_dng
 from .raw_render import DemosaicAlgorithm, convert_dtype
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, resolve_tag, TiffType

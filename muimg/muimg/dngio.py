@@ -1,28 +1,27 @@
 # Released under a modified PolyForm Small Business License.
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 
-"""DNG file format support for Allsky.
+"""DNG file format support and utilities.
 
-This module handles DNG file creation and related functionality.
+This module provides functionality for reading, writing, and processing DNG files.
 """
 from __future__ import annotations
 
+import imagecodecs
 import io
 import logging
-import imagecodecs
 import numpy as np
-from datetime import datetime
 
+from dataclasses import dataclass, replace
+from datetime import datetime
 from enum import Enum, IntEnum, StrEnum
 from pathlib import Path
 from tifffile import COMPRESSION, TiffFile, TiffPage, TiffWriter
 from typing import Any, IO, TypeAlias
-from dataclasses import dataclass, replace
 
+# Package imports
 from . import raw_render
 from .raw_render import DemosaicAlgorithm
-
-# Import metadata classes from tiff_metadata module
 from .tiff_metadata import (
     MetadataTags,
     TIFF_TAG_TYPE_REGISTRY,
@@ -31,6 +30,7 @@ from .tiff_metadata import (
     resolve_tag,
     filter_tags_by_ifd_category,
 )
+
 # tifffile followups:
 # - dng_validate expects SubIFD NextIFD == 0, but tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero.
 # - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.

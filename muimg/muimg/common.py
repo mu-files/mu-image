@@ -2,11 +2,11 @@
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 
 """Common utilities for muimg."""
-
 from __future__ import annotations
 
 import logging
 import sys
+
 from enum import Enum
 from typing import Type
 

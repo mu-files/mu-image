@@ -3,16 +3,16 @@
 
 from __future__ import annotations
 
-import numpy as np
 import logging
+import numpy as np
 
 from enum import Enum, IntEnum, StrEnum, auto
 from typing import Any
-from .tiff_metadata import get_cfa_pattern_codes
-from .common import enum_display_name
 
-# DNG color C extension (provides color temp conversion, tone curves, HueSatMap, etc.)
+# Package imports
 from . import _raw_render
+from .common import enum_display_name
+from .tiff_metadata import get_cfa_pattern_codes
 
 logger = logging.getLogger(__name__)
 

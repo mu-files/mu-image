@@ -6,16 +6,17 @@
 import json
 import logging
 import os
+import requests
+
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-import requests
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
