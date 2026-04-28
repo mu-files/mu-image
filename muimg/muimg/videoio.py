@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -209,7 +210,8 @@ class VideoEncodePipeline(ProcessingPipeline):
             encode_path = self.output_path
         
         self._container = av.open(str(encode_path), mode="w")
-        self._stream = self._container.add_stream(self.codec, rate=self.frame_rate)
+        self._stream = self._container.add_stream(
+            self.codec, rate=Fraction(self.frame_rate).limit_denominator())
         self._stream.width = width
         self._stream.height = height
         self._stream.pix_fmt = self.pix_fmt

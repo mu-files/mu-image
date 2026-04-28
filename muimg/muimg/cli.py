@@ -929,7 +929,7 @@ def convert_image(input_file, output_file, bit_depth):
 @click.option("--codec", type=str, default="h264", help="Video codec (h264, hevc, vp9)")
 @click.option("--crf", type=int, default=20, help="Constant Rate Factor for quality (lower=better)")
 @click.option("--bit-depth", type=click.Choice(["8", "10"]), default="8", help="Video bit depth (8 or 10)")
-@click.option("--frame-rate", type=int, default=30, help="Output frame rate in fps")
+@click.option("--frame-rate", type=float, default=30, help="Output frame rate in fps (supports fractional rates, e.g., 0.5 for 1 frame every 2 seconds)")
 @click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
 def convert_dngs_to_video(
     input_folder, output_mp4, temperature, tint, exposure, orientation, 
