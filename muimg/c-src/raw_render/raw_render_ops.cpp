@@ -3326,5 +3326,9 @@ static struct PyModuleDef raw_render_module = {
 // Module initialization
 PyMODINIT_FUNC PyInit__raw_render(void) {
     import_array();
+    
+    // Initialize bicubic weights table (thread-safe: happens once at module load)
+    init_bicubic_weights_2d();
+    
     return PyModule_Create(&raw_render_module);
 }

@@ -926,7 +926,7 @@ def convert_image(input_file, output_file, bit_depth):
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
 @click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
 @click.option("--resolution", type=str, help="Output video resolution (e.g., '1920x1080')")
-@click.option("--codec", type=str, default="hevc", help="Video codec (hevc, h264, vp9)")
+@click.option("--codec", type=str, default="h264", help="Video codec (h264, hevc, vp9)")
 @click.option("--crf", type=int, default=20, help="Constant Rate Factor for quality (lower=better)")
 @click.option("--bit-depth", type=click.Choice(["8", "10"]), default="8", help="Video bit depth (8 or 10)")
 @click.option("--frame-rate", type=int, default=30, help="Output frame rate in fps")
@@ -939,7 +939,7 @@ def convert_dngs_to_video(
     import io
     import numpy as np
     from .dngio import decode_dng
-    from .videoio import SequenceEncodePipeline
+    from .videoio import VideoEncodePipeline
     
     # Scan input folder for DNG files
     input_path = Path(input_folder)
@@ -988,26 +988,55 @@ def convert_dngs_to_video(
         """Custom consumer: decodes DNG blob using decode_dng with rendering params."""
         index, file_path, blob = task
         try:
+            # Create DngFile from blob
+            from .dngio import DngFile
+            dng_file = DngFile(io.BytesIO(blob))
+            
+            # Calculate scale before decoding for efficiency
+            # Scaling during decode_dng is much more efficient as it avoids the full render path
+            # at full resolution
+            scale = 1.0
+            if resolution_tuple is not None:
+                # Get render size from DNG to compute scale
+                render_width, render_height = dng_file.get_rendered_size()
+                
+                target_width, target_height = resolution_tuple
+                scale_w = target_width / render_width
+                scale_h = target_height / render_height
+                scale = min(scale_w, scale_h)
+
+            # Decode with scaling applied during rendering
             img, _ = decode_dng(
-                file=io.BytesIO(blob),
+                file=dng_file,
                 output_dtype=output_dtype,
                 demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
                 use_coreimage_if_available=use_coreimage,
                 use_xmp=not no_xmp,
                 rendering_params=rendering_params,
                 strict=False,
+                scale=scale,
             )
             
             if img is None:
                 logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
                 return (index, None)
             
-            # Resize if resolution is set and image doesn't match
+            # Apply letterboxing if resolution is set
             if resolution_tuple is not None:
+                import cv2
                 current_height, current_width = img.shape[:2]
-                if (current_width, current_height) != resolution_tuple:
-                    import cv2
-                    img = cv2.resize(img, resolution_tuple, interpolation=cv2.INTER_AREA)
+                target_width, target_height = resolution_tuple
+                
+                # Create black canvas at target resolution
+                canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
+                
+                # Calculate centered position for scaled image
+                y_offset = (target_height - current_height) // 2
+                x_offset = (target_width - current_width) // 2
+                
+                # Place scaled image on canvas
+                canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
+                img = canvas
             
             return (index, img)
             
@@ -1017,7 +1046,7 @@ def convert_dngs_to_video(
     
     # Create and run the pipeline
     try:
-        pipeline = SequenceEncodePipeline(
+        pipeline = VideoEncodePipeline(
             source_files=dng_files,
             output_path=output_mp4,
             resolution=resolution_tuple,
@@ -1027,8 +1056,29 @@ def convert_dngs_to_video(
         )
         
         click.echo(f"Encoding {len(dng_files)} DNGs to {output_mp4}...")
+        
+        import time
+        start_time = time.perf_counter()
         pipeline.run()
+        elapsed = time.perf_counter() - start_time
+        
+        # Count successful frames (exclude None results)
+        successful_frames = len(dng_files)  # Assume all succeeded unless we track failures
+        fps = successful_frames / elapsed if elapsed > 0 else 0
+        
         click.echo(f"Successfully created video: {output_mp4}")
+        click.echo(f"Encoded {successful_frames} frames in {elapsed:.2f}s ({fps:.2f} fps)")
+        
+        # Print queue statistics (indented)
+        stats = pipeline.get_queue_stats()
+        click.echo(
+            f"  Queue stats - Task queue: avg_depth={stats['task_queue']['avg_depth']:.1f}, "
+            f"empty_time={stats['task_queue']['empty_time']:.1f}s"
+        )
+        click.echo(
+            f"  Queue stats - Writer queue: avg_depth={stats['writer_queue']['avg_depth']:.1f}, "
+            f"empty_time={stats['writer_queue']['empty_time']:.1f}s"
+        )
         
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

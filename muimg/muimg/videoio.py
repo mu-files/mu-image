@@ -20,7 +20,62 @@ from .processing import ProcessingPipeline
 logger = logging.getLogger(__name__)
 
 
-class SequenceEncodePipeline(ProcessingPipeline):
+def letterbox_frame(
+    img: np.ndarray,
+    target_resolution: tuple[int, int],
+    interpolation: int = None
+) -> np.ndarray:
+    """Resize image to target resolution while preserving aspect ratio.
+    
+    Scales the image to fit within target_resolution, then centers it on a
+    black canvas. This produces letterboxing (black bars top/bottom) or
+    pillarboxing (black bars left/right) as needed.
+    
+    Args:
+        img: Input image array (H, W, C)
+        target_resolution: Target (width, height) in pixels
+        interpolation: OpenCV interpolation method (default: INTER_AREA for downscaling)
+    
+    Returns:
+        Image at exact target_resolution with aspect ratio preserved
+    """
+    import cv2
+    
+    if interpolation is None:
+        interpolation = cv2.INTER_AREA
+    
+    current_height, current_width = img.shape[:2]
+    target_width, target_height = target_resolution
+    
+    # If already at target resolution, return as-is
+    if (current_width, current_height) == target_resolution:
+        return img
+    
+    # Calculate scale to maintain aspect ratio
+    scale_w = target_width / current_width
+    scale_h = target_height / current_height
+    scale = min(scale_w, scale_h)
+    
+    # Calculate new dimensions
+    new_width = int(current_width * scale)
+    new_height = int(current_height * scale)
+    
+    # Create black canvas at target resolution
+    canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
+    
+    # Calculate centered position
+    y_offset = (target_height - new_height) // 2
+    x_offset = (target_width - new_width) // 2
+    
+    # Resize directly into canvas region (avoids copy)
+    cv2.resize(img, (new_width, new_height), 
+              dst=canvas[y_offset:y_offset+new_height, x_offset:x_offset+new_width],
+              interpolation=interpolation)
+    
+    return canvas
+
+
+class VideoEncodePipeline(ProcessingPipeline):
     """Pipeline for encoding a sequence of images to a video file.
     
     Extends ProcessingPipeline with video-specific functionality:
@@ -32,7 +87,7 @@ class SequenceEncodePipeline(ProcessingPipeline):
     callables to __init__ or by subclassing and overriding the default_* methods.
     
     Example usage:
-        pipeline = SequenceEncodePipeline(
+        pipeline = VideoEncodePipeline(
             source_files=["/path/to/img1.dng", "/path/to/img2.dng", ...],
             output_path="/path/to/output.mp4",
             resolution=(1920, 1080),
@@ -160,8 +215,25 @@ class SequenceEncodePipeline(ProcessingPipeline):
         self._stream.pix_fmt = self.pix_fmt
         
         options = {"crf": str(self.crf)}
-        if self.bit_depth == 10:
-            options["profile"] = "main10"
+        
+        # Control encoder output
+        if self.codec == "h264":
+            options["preset"] = "medium"
+            options["tune"] = "film"
+            if self.bit_depth == 10:
+                options["profile"] = "high10"
+        elif self.codec == "hevc":
+            # Build x265-params string with all x265-specific options
+            x265_params = ["log-level=warning"]
+            if self.bit_depth == 10:
+                x265_params.append("profile=main10")
+            else:
+                # Use Main profile for 8-bit (better QuickTime compatibility)
+                x265_params.append("profile=main")
+            
+            options["preset"] = "medium"
+            options["x265-params"] = ":".join(x265_params)
+        
         self._stream.options = options
         
         logger.info(
@@ -247,12 +319,9 @@ class SequenceEncodePipeline(ProcessingPipeline):
                 self._failed_frames.add(index)
                 return (index, None)
             
-            # Resize if resolution is set and image doesn't match
+            # Resize with aspect ratio preservation if resolution is set
             if self.resolution is not None:
-                current_height, current_width = img.shape[:2]
-                if (current_width, current_height) != self.resolution:
-                    import cv2
-                    img = cv2.resize(img, self.resolution, interpolation=cv2.INTER_LINEAR)
+                img = letterbox_frame(img, self.resolution)
             
             return (index, img)
         except Exception as e:

@@ -175,6 +175,8 @@ class DngPage(TiffPage):
             If DefaultCropSize is not present, returns (imagewidth, imagelength).
         """
         crop_size = self.get_tag("DefaultCropSize")
+        orientation = self.ifd0.get_tag("Orientation") if self.ifd0 else None
+        
         if crop_size is not None:
             w, h = int(crop_size[0]), int(crop_size[1])
         else:
@@ -183,7 +185,6 @@ class DngPage(TiffPage):
         # Swap dimensions for 90° rotations if requested
         if apply_orientation:
             # Orientation is an IFD0 tag
-            orientation = self.ifd0.get_tag("Orientation") if self.ifd0 else None
             if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                 w, h = h, w
         
@@ -1054,21 +1055,17 @@ class DngFile(TiffFile):
         
         return None
 
-    def _find_closest_raw_page_and_final_dim(
-        self, scale: float
-    ) -> tuple[DngPage, tuple[int, int]] | None:
-        """Find the optimal raw page and compute final dimensions for scaling.
+    def _find_optimal_raw_page(self, scale: float) -> DngPage | None:
+        """Find the optimal raw page for the given scale factor.
         
         Searches all flattened pages for CFA or LINEAR_RAW pages and returns
-        the page with the smallest max dimension that is still >= target dimension,
-        along with the final target dimensions.
+        the page with the smallest max dimension that is still >= target dimension.
         
         Args:
             scale: Scaling factor (e.g., 0.5 for half size)
             
         Returns:
-            Tuple of (optimal_page, (target_width, target_height)), or None
-            if no raw pages are found.
+            Optimal raw page for rendering, or None if no raw pages are found.
         """
         # Get main page to calculate target dimension
         main_page = self.get_main_page()
@@ -1103,16 +1100,7 @@ class DngFile(TiffFile):
             # No page meets target - use main page
             optimal_page = main_page
         
-        # Calculate final target dimensions maintaining aspect ratio
-        
-        if main_w >= main_h:
-            target_w = int(target_max_dim)
-            target_h = int(main_h * target_max_dim / main_w)
-        else:
-            target_h = int(target_max_dim)
-            target_w = int(main_w * target_max_dim / main_h)
-        
-        return optimal_page, (target_w, target_h)
+        return optimal_page
 
     def get_ifd0_tags(self, convert_exif: bool = True) -> MetadataTags:
         """Return a copy of IFD0 tags as a MetadataTags object.
@@ -1236,11 +1224,15 @@ class DngFile(TiffFile):
                 return None
             target_w = target_h = None  # No resize needed
         else:
-            # Find optimal page and compute final dimensions
-            result = self._find_closest_raw_page_and_final_dim(scale)
-            if result is None:
+            # Find optimal page for scaling
+            render_page = self._find_optimal_raw_page(scale)
+            if render_page is None:
                 return None
-            render_page, (target_w, target_h) = result
+            
+            # Calculate target dimensions by scaling main page dimensions
+            main_w, main_h = main_page.get_rendered_size(apply_orientation=False)
+            target_w = int(main_w * scale)
+            target_h = int(main_h * scale)
         
         # Validate DNG tags
         try:
@@ -1259,13 +1251,19 @@ class DngFile(TiffFile):
             return None
         
         # Apply resize if needed (when scaling and dimensions don't match)
+        scale_needed = False
         if target_w is not None and target_h is not None:
             render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
             if render_w != target_w or render_h != target_h:
-                import cv2
-                rgb_camera = cv2.resize(
-                    rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
-                )
+                # If upscaling, defer to post-render for better preformance
+                if render_w < target_w and render_h < target_h:
+                    scale_needed = True
+                else:
+                    # Downscaling: do it now before rendering
+                    import cv2
+                    rgb_camera = cv2.resize(
+                        rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
+                    )
         
         # Render camera RGB to final output
         # use main_page for raw_ifd in case there is a PGTM, nothing else uses raw_ifd tags in RGB render path
@@ -1277,6 +1275,13 @@ class DngFile(TiffFile):
             rendering_params=rendering_params,
             use_xmp=use_xmp,
         )
+        
+        # Post-render upscaling if needed
+        if scale_needed:
+            import cv2
+            rgb_image = cv2.resize(
+                rgb_image, (target_w, target_h), interpolation=cv2.INTER_LINEAR
+            )
         
         return rgb_image
 
@@ -2651,6 +2656,7 @@ def decode_dng(
     use_xmp: bool = True,
     rendering_params: dict = None,
     strict: bool = True,
+    scale: float = 1.0,
 ) -> tuple[np.ndarray, "MetadataTags"]:
     """
     Decode a DNG file or page to a numpy array with metadata.
@@ -2679,28 +2685,38 @@ def decode_dng(
             - 'crlcp:PerspectiveModel': Lens correction profile
             - 'orientation': TIFF orientation value (1-8, int) to override EXIF orientation
             - 'highlight_preserving_exposure': Use highlight preservation (Python pipeline only)
+        scale: Scaling factor for output resolution (e.g., 0.5 for half size). For Core Image
+            with DngPage input, scales the raw array before processing. For Python SDK, selects
+            optimal pyramid level and applies final scaling.
     
     Returns:
         Tuple of (image, metadata):
             - image: RGB image array with shape (height, width, 3) and specified dtype
             - metadata: MetadataTags containing IFD0 tags
     """
-    # Normalize DngPage to DngFile for consistent handling
-    if isinstance(file, DngPage):
-        file = create_dng_from_page(file)
-    
-    # Create or use DngFile
-    dng_file = file if isinstance(file, DngFile) else DngFile(file)
-    
-    # Extract metadata
-    metadata = dng_file.get_ifd0_tags()
-    
     # Try Core Image path if requested
     if use_coreimage_if_available:
         try:
             from ._dngio_coreimage import core_image_available, decode_dng_coreimage
 
             if core_image_available:
+                # For Core Image, if scaling is needed, create a new DngFile from the main page with scale applied
+                if isinstance(file, DngPage):
+                    dng_file = create_dng_from_page(file, scale=scale)
+                else:
+                    # Create or use DngFile
+                    dng_file = file if isinstance(file, DngFile) else DngFile(file)
+                    
+                    # If scaling is needed, create a new DngFile from the main page with scale applied
+                    if scale != 1.0:
+                        main_page = dng_file.get_main_page()
+                        if main_page is None:
+                            raise ValueError("No main page found in DNG file")
+                        dng_file = create_dng_from_page(main_page, scale=scale)
+                
+                # Extract metadata
+                metadata = dng_file.get_ifd0_tags()
+                
                 image = decode_dng_coreimage(
                     file=dng_file,
                     use_xmp=use_xmp,
@@ -2720,12 +2736,24 @@ def decode_dng(
             )
     
     # Python SDK pipeline
+    # For DngPage input, convert to DngFile without scaling (render_raw will handle it)
+    if isinstance(file, DngPage):
+        dng_file = create_dng_from_page(file, scale=1.0)
+    else:
+        # Create or use DngFile
+        dng_file = file if isinstance(file, DngFile) else DngFile(file)
+    
+    # Extract metadata
+    metadata = dng_file.get_ifd0_tags()
+    
+    # Always pass scale to render_raw for Python pipeline
     result = dng_file.render_raw(
         output_dtype=output_dtype,
         demosaic_algorithm=demosaic_algorithm,
         use_xmp=use_xmp,
         rendering_params=rendering_params,
         strict=strict,
+        scale=scale,
     )
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")

@@ -2223,7 +2223,6 @@ def compute_exposure_ramp_lut(
             idx = np.searchsorted(cdf, 0.98)
             mx = bin_edges[idx] if idx < len(bin_edges) else bin_edges[-1]
 
-
             # Scale by exposure
             smx = slope * mx
             
@@ -3093,7 +3092,8 @@ def _render_camera_rgb(
         is_version2 = pgtm_data is not None
         
         if pgtm_data is None:
-            # Try PGTM on raw_ifd_tags first (for DNG 1.6 files following mistaken spec)
+            # Get PGTM on raw_ifd_tags (only raw_ifd tag in this function due to 
+            # mistake in DNG 1.6 spec)
             if raw_ifd_tags:
                 pgtm_data = raw_ifd_tags.get_tag("ProfileGainTableMap")
         

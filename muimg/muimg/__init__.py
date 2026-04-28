@@ -54,7 +54,7 @@ from .tiff_metadata import (
     xmp_packet_to_metadata,
     xmp_metadata_to_packet,
 )
-from .videoio import SequenceEncodePipeline
+from .videoio import VideoEncodePipeline, letterbox_frame
 
 __all__ = [
     'ColorSpace',
@@ -81,8 +81,9 @@ __all__ = [
     'decode_image',
     'apply_tiff_orientation',
     'demosaic',
+    'letterbox_frame',
     'ProcessingPipeline',
-    'SequenceEncodePipeline',
+    'VideoEncodePipeline',
     'SplineCurve',
     'add_supported_xmp_from_dict',
     'supported_xmp_from_dict',
