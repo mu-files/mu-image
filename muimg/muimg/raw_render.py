@@ -12,7 +12,7 @@ from typing import Any
 # Package imports
 from . import _raw_render
 from .common import enum_display_name
-from .tiff_metadata import get_cfa_pattern_codes
+from .tiff_metadata import get_cfa_pattern_codes, Illuminant
 
 logger = logging.getLogger(__name__)
 
@@ -72,51 +72,6 @@ class DemosaicAlgorithm(StrEnum):
         """Look up enum member by string value."""
         from .common import enum_from_string
         return enum_from_string(cls, value)
-
-class Illuminant(IntEnum):
-    """Light source enum values from DNG SDK dng_tag_values.h.
-    
-    Maps EXIF LightSource values (CalibrationIlluminant1/2/3) to temperature in Kelvin.
-    SDK ref: dng_camera_profile.cpp IlluminantToTemperature()
-    
-    Usage:
-        Illuminant.DAYLIGHT -> 1 (the enum value)
-        Illuminant.DAYLIGHT.temperature -> 5500.0 (the temperature in Kelvin)
-    """
-    def __new__(cls, value, temperature=None):
-        obj = int.__new__(cls, value)
-        obj._value_ = value
-        obj.temperature = temperature
-        return obj
-    
-    UNKNOWN = (0, None)                           # lsUnknown - use default
-    DAYLIGHT = (1, 5500.0)                        # lsDaylight
-    FLUORESCENT = (2, 4150.0)                     # lsFluorescent (3800+4500)/2
-    TUNGSTEN = (3, 2850.0)                        # lsTungsten
-    FLASH = (4, 5500.0)                           # lsFlash
-    FINE_WEATHER = (9, 5500.0)                    # lsFineWeather
-    CLOUDY_WEATHER = (10, 6500.0)                 # lsCloudyWeather
-    SHADE = (11, 7500.0)                          # lsShade
-    DAYLIGHT_FLUORESCENT = (12, 6400.0)           # lsDaylightFluorescent (5700+7100)/2
-    DAY_WHITE_FLUORESCENT = (13, 5050.0)          # lsDayWhiteFluorescent (4600+5500)/2
-    COOL_WHITE_FLUORESCENT = (14, 4150.0)         # lsCoolWhiteFluorescent (3800+4500)/2
-    WHITE_FLUORESCENT = (15, 3525.0)              # lsWhiteFluorescent (3250+3800)/2
-    WARM_WHITE_FLUORESCENT = (16, 2925.0)         # lsWarmWhiteFluorescent (2600+3250)/2
-    STANDARD_LIGHT_A = (17, 2850.0)               # lsStandardLightA
-    STANDARD_LIGHT_B = (18, 5500.0)               # lsStandardLightB
-    STANDARD_LIGHT_C = (19, 6500.0)               # lsStandardLightC
-    D55 = (20, 5500.0)                            # lsD55
-    D65 = (21, 6500.0)                            # lsD65
-    D75 = (22, 7500.0)                            # lsD75
-    D50 = (23, 5000.0)                            # lsD50
-    ISO_STUDIO_TUNGSTEN = (24, 3200.0)            # lsISOStudioTungsten
-    OTHER = (255, None)                           # lsOther - requires IlluminantData
-    
-    @classmethod
-    def lookup(cls, value: int) -> "Illuminant" | None:
-        """Look up enum member by integer value."""
-        from .common import enum_from_value
-        return enum_from_value(cls, value)
 
 # =============================================================================
 # Helper Classes

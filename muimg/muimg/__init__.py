@@ -45,7 +45,10 @@ from .raw_render import (
     add_supported_xmp_from_dict,
 )
 from .tiff_metadata import (
+    Illuminant,
     MetadataTags,
+    Orientation,
+    SubFileType,
     XmpMetadata,
     get_cfa_pattern_codes,
     xmp_packet_to_metadata,
@@ -60,7 +63,10 @@ __all__ = [
     'CsvWriter',
     'DngFile',
     'DngPage',
+    'Illuminant',
     'MetadataTags',
+    'Orientation',
+    'SubFileType',
     'XmpMetadata',
     'get_cfa_pattern_codes',
     'xmp_packet_to_metadata',

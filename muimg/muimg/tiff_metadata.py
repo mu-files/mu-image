@@ -12,30 +12,105 @@ import numpy as np
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import Enum, IntEnum
 from fractions import Fraction
-from tifffile import PHOTOMETRIC, TIFF
+from tifffile import COMPRESSION, PHOTOMETRIC, TIFF
 from typing import Any, Self, Type
 
 logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Tag Type Registry
+# TIFF/DNG Metadata Enums
 # =============================================================================
-# Maps tag names to TagSpec with:
-#   dtype: TIFF data type string(s) ('s'=ascii, 'H'=ushort, 'I'=ulong, '2I'=urational, 
-#          '2i'=srational, 'B'=byte, 'f'=float, 'd'=double). Can be a list for type inference.
-#   count: Expected count, or None for variable length
-#   shape: Target shape for reshaping arrays (e.g., (3, 3) for matrices), or None
-#   dng_ifd: IFD location category ("dng_raw", "dng_ifd0", "dng_profile", "any", etc.)
-#
-# This registry enables auto-conversion: clients provide friendly Python types
-# (float, datetime, str, np.ndarray) and we convert to appropriate TIFF format.
-#
-# For tags that accept multiple types (per DNG SDK), dtype can be a list.
-# Type inference order: int types first, then float/rational types.
-# Example: ["I", "2I"] means int→LONG, float→RATIONAL
+
+class SubFileType(IntEnum):
+    """NewSubFileType values from DNG spec (TIFF tag 254)."""
+    MAIN_IMAGE = 0
+    PREVIEW_IMAGE = 1
+    TRANSPARENCY_MASK = 4
+    DEPTH_MAP = 8
+    ALT_PREVIEW_IMAGE = 65537
+    
+    @classmethod
+    def lookup(cls, value: int) -> "SubFileType" | None:
+        """Look up enum member by integer value."""
+        from .common import enum_from_value
+        return enum_from_value(cls, value)
+
+
+class Illuminant(IntEnum):
+    """Light source enum values from DNG SDK dng_tag_values.h (CalibrationIlluminant tags).
+    
+    Maps EXIF LightSource values (CalibrationIlluminant1/2/3) to temperature in Kelvin.
+    SDK ref: dng_camera_profile.cpp IlluminantToTemperature()
+    
+    Usage:
+        Illuminant.DAYLIGHT -> 1 (the enum value)
+        Illuminant.DAYLIGHT.temperature -> 5500.0 (the temperature in Kelvin)
+    """
+    def __new__(cls, value, temperature=None):
+        obj = int.__new__(cls, value)
+        obj._value_ = value
+        obj.temperature = temperature
+        return obj
+    
+    UNKNOWN = (0, None)                           # lsUnknown - use default
+    DAYLIGHT = (1, 5500.0)                        # lsDaylight
+    FLUORESCENT = (2, 4150.0)                     # lsFluorescent (3800+4500)/2
+    TUNGSTEN = (3, 2850.0)                        # lsTungsten
+    FLASH = (4, 5500.0)                           # lsFlash
+    FINE_WEATHER = (9, 5500.0)                    # lsFineWeather
+    CLOUDY_WEATHER = (10, 6500.0)                 # lsCloudyWeather
+    SHADE = (11, 7500.0)                          # lsShade
+    DAYLIGHT_FLUORESCENT = (12, 6400.0)           # lsDaylightFluorescent (5700+7100)/2
+    DAY_WHITE_FLUORESCENT = (13, 5050.0)          # lsDayWhiteFluorescent (4600+5500)/2
+    COOL_WHITE_FLUORESCENT = (14, 4150.0)         # lsCoolWhiteFluorescent (3800+4500)/2
+    WHITE_FLUORESCENT = (15, 3525.0)              # lsWhiteFluorescent (3250+3800)/2
+    WARM_WHITE_FLUORESCENT = (16, 2925.0)         # lsWarmWhiteFluorescent (2600+3250)/2
+    STANDARD_LIGHT_A = (17, 2850.0)               # lsStandardLightA
+    STANDARD_LIGHT_B = (18, 5500.0)               # lsStandardLightB
+    STANDARD_LIGHT_C = (19, 6500.0)               # lsStandardLightC
+    D55 = (20, 5500.0)                            # lsD55
+    D65 = (21, 6500.0)                            # lsD65
+    D75 = (22, 7500.0)                            # lsD75
+    D50 = (23, 5000.0)                            # lsD50
+    ISO_STUDIO_TUNGSTEN = (24, 3200.0)            # lsISOStudioTungsten
+    OTHER = (255, None)                           # lsOther - requires IlluminantData
+    
+    @classmethod
+    def lookup(cls, value: int) -> "Illuminant" | None:
+        """Look up enum member by integer value."""
+        from .common import enum_from_value
+        return enum_from_value(cls, value)
+
+
+class Orientation(IntEnum):
+    """TIFF/EXIF orientation values (TIFF tag 274).
+    
+    Defines how the image should be rotated/flipped for proper display.
+    Values 1-8 cover all combinations of rotation and mirroring.
+    """
+    HORIZONTAL = 1          # Normal orientation (0°)
+    MIRROR_HORIZONTAL = 2   # Flipped horizontally
+    ROTATE_180 = 3          # Rotated 180°
+    MIRROR_VERTICAL = 4     # Flipped vertically
+    MIRROR_HORIZONTAL_ROTATE_270_CW = 5  # Flipped horizontally then rotated 270° CW
+    ROTATE_90_CW = 6        # Rotated 90° clockwise
+    MIRROR_HORIZONTAL_ROTATE_90_CW = 7   # Flipped horizontally then rotated 90° CW
+    ROTATE_270_CW = 8       # Rotated 270° clockwise (90° CCW)
+    
+    @classmethod
+    def lookup(cls, value: int) -> "Orientation" | None:
+        """Look up enum member by integer value."""
+        from .common import enum_from_value
+        return enum_from_value(cls, value)
+
+
+
+# =============================================================================
+# TIFF Type System
+# =============================================================================
 
 class TiffType(int, Enum):
     """TIFF data type codes with metadata.
@@ -115,11 +190,14 @@ class TagSpec:
         shape: Target shape for array tags (e.g., (3, 3) for matrices). If specified,
                the returned np.ndarray will be reshaped to this shape.
         dng_ifd: IFD type where this tag should appear (see IFD Location Categories above).
+        enum_class: Optional enum class for this tag's values (e.g., Orientation, Illuminant).
+                   Used for display formatting and validation.
     """
     dtype: TiffType | list[TiffType]  # Single type or list for inference
     count: int | None = None
     shape: tuple[int, ...] | None = None
     dng_ifd: str = "any"
+    enum_class: Type[Enum] | None = None
     
     def get_dtype_for_value(self, value: Any) -> TiffType:
         """Select appropriate dtype based on value type.
@@ -212,18 +290,32 @@ def get_native_type(dtype: int | str | list, count: int | None) -> type | None:
     return None
 
 
-# Comprehensive TIFF/DNG/EXIF tag registry, sorted by tag code
-# Types verified against DNG SDK source and tifffile registry
-# For multi-type tags, first type is for integers, second for floats
+# =============================================================================
+# TIFF/DNG Tag Registry
+# =============================================================================
+# Comprehensive registry mapping tag names to TagSpec definitions.
+# See TagSpec docstring above for field descriptions.
+#
+# This registry enables auto-conversion: clients provide friendly Python types
+# (float, datetime, str, np.ndarray) and we convert to appropriate TIFF format.
+#
+# For tags accepting multiple types (per DNG SDK), use multi-type constants:
+#   - TIFFTYPE_SHORT_OR_LONG: int→LONG
+#   - TIFFTYPE_ASCII_OR_BYTE: str→ASCII, bytes→BYTE
+#   - TIFFTYPE_INT_OR_RATIONAL: int→LONG, float→RATIONAL
+#
+# Types verified against DNG SDK source and tifffile registry.
+# Registry sorted by tag code for easy lookup.
+
 TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ProcessingSoftware": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 11 (0x000B)
-    "NewSubfileType": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 254 (0x00FE)
+    "NewSubfileType": TagSpec(TiffType.LONG, 1, dng_ifd="any", enum_class=SubFileType),  # 254 (0x00FE)
     "SubfileType": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 255 (0x00FF)
     "ImageWidth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 256 (0x0100)
     "ImageLength": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 257 (0x0101)
     "BitsPerSample": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 258 (0x0102)
-    "Compression": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 259 (0x0103)
-    "PhotometricInterpretation": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 262 (0x0106)
+    "Compression": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=COMPRESSION),  # 259 (0x0103)
+    "PhotometricInterpretation": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=PHOTOMETRIC),  # 262 (0x0106)
     "Thresholding": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 263 (0x0107)
     "CellWidth": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 264 (0x0108)
     "CellLength": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 265 (0x0109)
@@ -233,7 +325,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "Make": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 271 (0x010F)
     "Model": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 272 (0x0110)
     "StripOffsets": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 273 (0x0111)
-    "Orientation": TagSpec(TiffType.SHORT, 1, dng_ifd="ifd0"),  # 274 (0x0112)
+    "Orientation": TagSpec(TiffType.SHORT, 1, dng_ifd="ifd0", enum_class=Orientation),  # 274 (0x0112)
     "SamplesPerPixel": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 277 (0x0115)
     "RowsPerStrip": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 278 (0x0116)
     "StripByteCounts": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 279 (0x0117)
@@ -470,8 +562,8 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "DNGPrivateData": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50740 (0xC634)
     "MakerNoteSafety": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 50741 (0xC635)
     "RawImageSegmentation": TagSpec(TiffType.SHORT, 3, dng_ifd="any"),  # 50752 (0xC640)
-    "CalibrationIlluminant1": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile"),  # 50778 (0xC65A)
-    "CalibrationIlluminant2": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile"),  # 50779 (0xC65B)
+    "CalibrationIlluminant1": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant),  # 50778 (0xC65A)
+    "CalibrationIlluminant2": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant),  # 50779 (0xC65B)
     "BestQualityScale": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50780 (0xC65C)
     "RawDataUniqueID": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50781 (0xC65D)
     "OriginalRawFileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50827 (0xC68B)
@@ -541,7 +633,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ProfileGainTableMap": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 52525 (0xCD2D)
     "SemanticName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52526 (0xCD2E)
     "SemanticInstanceID": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52528 (0xCD30)
-    "CalibrationIlluminant3": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile"),  # 52529 (0xCD31)
+    "CalibrationIlluminant3": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant),  # 52529 (0xCD31)
     "CameraCalibration3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 52530 (0xCD32) - 3x3 matrix
     "ColorMatrix3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 52531 (0xCD33) - 3x3 matrix
     "ForwardMatrix3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 52532 (0xCD34) - 3x3 matrix

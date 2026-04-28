@@ -118,20 +118,9 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     import re
     import os
     from tifffile import PHOTOMETRIC, COMPRESSION
-    from .dngio import DngFile, SubFileType
-    from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY
+    from .dngio import DngFile
+    from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY, SubFileType
     from .common import enum_display_name
-    from .raw_render import Illuminant
-    
-    # Map tag names to their enum classes for display
-    TAG_ENUM_MAP = {
-        'NewSubfileType': SubFileType,
-        'Compression': COMPRESSION,
-        'PhotometricInterpretation': PHOTOMETRIC,
-        'CalibrationIlluminant1': Illuminant,
-        'CalibrationIlluminant2': Illuminant,
-        'CalibrationIlluminant3': Illuminant,
-    }
     
     try:
         f = DngFile(input_file)
@@ -324,12 +313,13 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                 value = tag.value
             
             # Convert enum values to display names if applicable
-            if tag_name in TAG_ENUM_MAP and value is not None:
+            tag_spec = TIFF_TAG_TYPE_REGISTRY.get(tag_name)
+            if tag_spec and tag_spec.enum_class and value is not None:
                 # Special case: PhotometricInterpretation has a custom name property
                 if tag_name == "PhotometricInterpretation":
                     value = page.photometric_name
                 else:
-                    value = enum_display_name(TAG_ENUM_MAP[tag_name], value)
+                    value = enum_display_name(tag_spec.enum_class, value)
             
             # Display the tag with appropriate indentation
             _display_tag(tag_name, value, indent, tag_code, dtype, count, xmp_tracker, ifd_num, issue_number)
@@ -571,9 +561,9 @@ def dng_convert(
                     click.echo(f"Error: Failed to decode preview page", err=True)
                     sys.exit(1)
 
-                # Write with metadata (set Orientation=1 since preview is already rotated)
+                # Write with metadata (set Orientation=HORIZONTAL since preview is already rotated)
                 metadata = dng.get_ifd0_tags()
-                metadata.add_tag("Orientation", 1)
+                metadata.add_tag("Orientation", Orientation.HORIZONTAL)
                 success = write_image(rgb, output_file, metadata=metadata)
                 if not success:
                     click.echo(f"Error: Failed to write output file", err=True)

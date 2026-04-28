@@ -24,6 +24,8 @@ from . import raw_render
 from .raw_render import DemosaicAlgorithm
 from .tiff_metadata import (
     MetadataTags,
+    Orientation,
+    SubFileType,
     TIFF_TAG_TYPE_REGISTRY,
     XmpMetadata,
     convert_tag_value,
@@ -64,21 +66,6 @@ class RawStageSelector(StrEnum):
         """Look up enum member by string value."""
         from .common import enum_from_string
         return enum_from_string(cls, value)
-
-class SubFileType(IntEnum):
-    """NewSubFileType values from DNG spec."""
-    MAIN_IMAGE = 0
-    PREVIEW_IMAGE = 1
-    TRANSPARENCY_MASK = 4
-    DEPTH_MAP = 8
-    ALT_PREVIEW_IMAGE = 65537
-    
-    @classmethod
-    def lookup(cls, value: int) -> SubFileType | None:
-        """Look up enum member by integer value."""
-        from .common import enum_from_value
-        return enum_from_value(cls, value)
-
 
 
 # =============================================================================
@@ -197,7 +184,7 @@ class DngPage(TiffPage):
         if apply_orientation:
             # Orientation is an IFD0 tag
             orientation = self.ifd0.get_tag("Orientation") if self.ifd0 else None
-            if orientation in (6, 8):  # 90° CW or CCW
+            if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                 w, h = h, w
         
         return w, h
@@ -1463,8 +1450,7 @@ def _add_required_ifd0_tags(tags: MetadataTags, needs_v1_7_1: bool = False) -> N
     
     # Add required tags if not already set
     if "Orientation" not in tags:
-        _ORIENTATION_HORIZONTAL = 1
-        tags.add_tag("Orientation", _ORIENTATION_HORIZONTAL)
+        tags.add_tag("Orientation", Orientation.HORIZONTAL)
     
     # Default to sRGB color space with proper matrices for passthrough
     if "ColorMatrix1" not in tags and "ForwardMatrix1" not in tags:
@@ -2553,10 +2539,10 @@ def write_dng_from_page(
         
         logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({preview_rgb.shape[:2]})")
         
-        # Create copy of ifd0_tags with Orientation equal to none 
+        # Create copy of ifd0_tags with Orientation equal to HORIZONTAL
         # since the Orientation tag is persisted across the copy
         ifd0_tags_no_orientation = ifd0_tags.copy()
-        ifd0_tags_no_orientation.add_tag("Orientation", 1)
+        ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
         
         # Render with color transforms
         rendered_preview = raw_render._render_camera_rgb(
@@ -2720,8 +2706,8 @@ def decode_dng(
                     output_dtype=output_dtype,
                     rendering_params=rendering_params,
                 )
-                # Image has been rotated during rendering, set Orientation to 1 (normal)
-                metadata.add_tag("Orientation", 1)
+                # Image has been rotated during rendering, set Orientation to HORIZONTAL (normal)
+                metadata.add_tag("Orientation", Orientation.HORIZONTAL)
                 return image, metadata
 
             logger.warning(
@@ -2743,6 +2729,6 @@ def decode_dng(
     if result is None:
         raise RuntimeError(f"No main image page found in DNG file: {file}")
     
-    # Image has been rotated during rendering, set Orientation to 1 (normal)
-    metadata.add_tag("Orientation", 1)
+    # Image has been rotated during rendering, set Orientation to HORIZONTAL (normal)
+    metadata.add_tag("Orientation", Orientation.HORIZONTAL)
     return result, metadata
