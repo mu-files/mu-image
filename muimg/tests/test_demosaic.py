@@ -16,6 +16,25 @@ from conftest import compute_diff_stats
 TEST_DNG = Path(__file__).parent / "dngfiles" / "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng"
 
 
+def is_rcd_available():
+    """Check if RCD demosaicing is available (GPL-licensed, optional)."""
+    try:
+        # Try to use RCD on a tiny test array
+        test_cfa = np.zeros((4, 4), dtype=np.uint16)
+        demosaic(test_cfa, "RGGB", algorithm=DemosaicAlgorithm.RCD)
+        return True
+    except ImportError:
+        return False
+
+
+def get_available_algorithms():
+    """Get list of available demosaic algorithms, excluding RCD if not available."""
+    algorithms = [DemosaicAlgorithm.VNG, DemosaicAlgorithm.OPENCV_EA]
+    if is_rcd_available():
+        algorithms.append(DemosaicAlgorithm.RCD)
+    return algorithms
+
+
 @pytest.fixture
 def cfa_data():
     """Load CFA data from test DNG file."""
@@ -40,7 +59,7 @@ def test_demosaic_uint8_consistency(cfa_data):
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
-    for algorithm in [DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, DemosaicAlgorithm.OPENCV_EA]:
+    for algorithm in get_available_algorithms():
         result = demosaic(cfa_u8, cfa_pattern, algorithm=algorithm)
         
         # Check dtype preservation
@@ -77,7 +96,7 @@ def test_demosaic_uint16_consistency(cfa_data):
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
-    for algorithm in [DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, DemosaicAlgorithm.OPENCV_EA]:
+    for algorithm in get_available_algorithms():
         result = demosaic(cfa_u16, cfa_pattern, algorithm=algorithm)
         
         # Check dtype preservation
@@ -113,7 +132,7 @@ def test_demosaic_float32_consistency(cfa_data):
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
-    for algorithm in [DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, DemosaicAlgorithm.OPENCV_EA]:
+    for algorithm in get_available_algorithms():
         result = demosaic(cfa_f32, cfa_pattern, algorithm=algorithm)
         
         # Check dtype preservation
@@ -214,8 +233,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
     }
     
     # Test each algorithm for the reference
-    algorithms = [DemosaicAlgorithm.DNGSDK_BILINEAR, DemosaicAlgorithm.OPENCV_EA,
-                  DemosaicAlgorithm.VNG, DemosaicAlgorithm.RCD, ]
+    algorithms = [DemosaicAlgorithm.DNGSDK_BILINEAR] + get_available_algorithms()
     
     for ref_algorithm in algorithms:
         # Demosaic the original RGGB pattern with reference algorithm

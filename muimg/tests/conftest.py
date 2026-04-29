@@ -327,24 +327,46 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
         indent: String to prepend to validation messages (default: no indent)
         
     Returns:
-        Loaded TIFF as numpy array, or None if dng_validate not available
+        Loaded TIFF as numpy array, or None if dng_validate not available and validate=False
         
     Raises:
         RuntimeError: If dng_validate fails or produces errors (only when validate=True and not skip_dng_validate)
         AssertionError: If either validator produces warnings (only when validate=True, except ignored ones)
+    
+    Note:
+        If Adobe's dng_validate is not found, the function will:
+        - Still run muimg's metadata validator (if validate=True)
+        - Return None (if validate=False, for rendering comparisons)
+        - Print a one-time warning with installation instructions
     """
     # Warnings to ignore (add patterns here as needed)
     IGNORED_WARNINGS = [w.lower() for w in (ignored_warnings or [])]
     
-    if not DNG_VALIDATE_PATH.exists():
-        return None
+    # Check if Adobe dng_validate is available
+    dng_validate_available = DNG_VALIDATE_PATH.exists()
+    
+    # Print one-time warning if dng_validate is not available
+    if not dng_validate_available and not skip_dng_validate:
+        # Use a global flag to only print once per session
+        if not hasattr(run_dng_validate, '_warned_missing'):
+            print("\n" + "="*70)
+            print("Adobe dng_validate not found")
+            print("="*70)
+            print(f"Expected location: {DNG_VALIDATE_PATH}")
+            print("\nTo install Adobe DNG SDK dng_validate:")
+            print("1. Download DNG SDK from: https://helpx.adobe.com/camera-raw/digital-negative.html")
+            print("2. Build the dng_validate tool (see SDK documentation)")
+            print("3. Place the binary at the path above, or update DNG_VALIDATE_PATH in conftest.py")
+            print("\nTests will continue using muimg's validator only.")
+            print("="*70 + "\n")
+            run_dng_validate._warned_missing = True
     
     output_tiff = Path(str(output_base) + ".tif")
     all_warnings = []
     
     try:
-        # Run dng_validate (C++ SDK validator) unless skipped
-        if not skip_dng_validate:
+        # Run dng_validate (C++ SDK validator) if available and not skipped
+        if dng_validate_available and not skip_dng_validate:
             result = subprocess.run(
                 [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
                 capture_output=True,
@@ -431,4 +453,10 @@ def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, igno
             raise
         raise RuntimeError(f"Validation error: {e}")
     
-    return load_tiff(output_tiff)
+    # Return TIFF if dng_validate ran and produced output
+    if dng_validate_available and not skip_dng_validate:
+        return load_tiff(output_tiff)
+    else:
+        # dng_validate didn't run, so no TIFF was generated
+        # Return None for rendering comparison tests (they'll skip)
+        return None
