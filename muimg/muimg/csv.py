@@ -224,7 +224,8 @@ class CsvReader:
         self.fields_to_load: set[str] | None = None
 
         # Open the file and prepare the reader immediately upon initialization.
-        self._file = open(self.csv_filepath, "r", newline="")
+        # Use utf-8-sig encoding to automatically strip BOM if present
+        self._file = open(self.csv_filepath, "r", newline="", encoding="utf-8-sig")
         try:
             self._read_header_and_first_row()
         except Exception:

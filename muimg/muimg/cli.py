@@ -14,6 +14,7 @@ from .raw_render import DemosaicAlgorithm
 logger = logging.getLogger(__name__)
 
 
+
 @click.group()
 @click.option("-v", "--verbose", count=True, help="Increase verbosity")
 def cli(verbose):
@@ -905,7 +906,7 @@ def dng_convert(
                 photometric = page.photometric_name if page else "unknown"
             else:
                 photometric = file_arg.photometric_name
-            w, h = file_arg.get_rendered_size()
+            w, h = file_arg.get_rendered_size(rendering_params=params)
             
             elapsed_ms = (time.perf_counter() - t_start) * 1000
             click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file} in {elapsed_ms:.0f}ms")
@@ -915,8 +916,59 @@ def dng_convert(
         sys.exit(1)
 
 
+def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict]]:
+    """Load DNG rendering settings from CSV file.
+    
+    Returns:
+        Tuple of (file_list, settings_list) where:
+        - file_list: List of absolute paths to DNG files from CSV
+        - settings_list: List of rendering_params dicts, one per file in same order
+    
+    If filename in CSV is relative, it's resolved relative to the CSV file's directory.
+    Only includes non-None values in the rendering params.
+    """
+    from dataclasses import dataclass
+    from .csv import CsvReader
+    
+    @dataclass
+    class DngRenderSettings:
+        """Per-file DNG rendering settings loaded from CSV."""
+        filename: str
+        Temperature: float | None = None
+        Tint: float | None = None
+        Exposure2012: float | None = None
+        orientation: int | None = None
+    
+    file_list = []
+    settings_list = []
+    csv_dir = settings_file.parent
+    
+    with CsvReader(settings_file, header_schema=[], data_type=DngRenderSettings) as reader:        
+        for settings in reader:  
+            # Resolve file path: if absolute use as-is, else relative to CSV dir
+            file_path = Path(settings.filename)
+            if not file_path.is_absolute():
+                file_path = csv_dir / file_path
+            file_list.append(file_path)
+            
+            # Build rendering params dict with only non-None values
+            rendering_params = {}
+            if settings.Temperature is not None:
+                rendering_params['Temperature'] = settings.Temperature
+            if settings.Tint is not None:
+                rendering_params['Tint'] = settings.Tint
+            if settings.Exposure2012 is not None:
+                rendering_params['Exposure2012'] = settings.Exposure2012
+            if settings.orientation is not None:
+                rendering_params['orientation'] = settings.orientation
+            
+            settings_list.append(rendering_params)
+    
+    return file_list, settings_list
+
+
 @dng.command(name="batch-convert")
-@click.argument("input_folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("input", type=click.Path(exists=True))
 @click.argument("output_folder", type=click.Path())
 @click.option("--format", "output_format", type=click.Choice(["tif", "jxl", "jpg"]), default="tif", help="Output format")
 @click.option("--bit-depth", type=click.Choice(["8", "16"]), default="16", help="Output bit depth (8 or 16)")
@@ -929,10 +981,15 @@ def dng_convert(
 @click.option("--scale", type=float, default=1.0, help="Resolution scale factor (e.g., 0.5 for half size)")
 @click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
 def batch_convert_dngs(
-    input_folder, output_folder, output_format, bit_depth, temperature, tint, 
+    input, output_folder, output_format, bit_depth, temperature, tint, 
     exposure, orientation, no_xmp, use_coreimage, scale, num_workers
 ):
-    """Convert a folder of DNG files to TIFF/JXL/JPG images."""
+    """Convert DNG files to TIFF/JXL/JPG images.
+    
+    INPUT can be either:
+    - A folder containing DNG files (will scan for *.dng)
+    - A CSV file with per-file settings (filename,Temperature,Tint,Exposure2012,orientation)
+    """
     import io
     import numpy as np
     from .dngio import decode_dng, DngFile, DemosaicAlgorithm
@@ -945,30 +1002,41 @@ def batch_convert_dngs(
     except ImportError:
         pass  # setproctitle is optional
     
-    # Scan input folder for DNG files
-    input_path = Path(input_folder)
-    dng_files = sorted(input_path.glob("*.dng"))
+    # Build base rendering_params dict from CLI options
+    base_rendering_params = {}
+    if temperature is not None:
+        base_rendering_params['Temperature'] = temperature
+    if tint is not None:
+        base_rendering_params['Tint'] = tint
+    if exposure is not None:
+        base_rendering_params['Exposure2012'] = exposure
+    if orientation is not None:
+        base_rendering_params['Orientation'] = orientation
     
-    if not dng_files:
-        click.echo(f"Error: No DNG files found in {input_folder}", err=True)
+    # Determine file list and settings based on input type
+    input_path = Path(input)
+    settings_list = []
+    
+    if input_path.is_file() and input_path.suffix.lower() == '.csv':
+        # CSV file drives the file list
+        dng_files, settings_list = _load_dng_settings(input_path)
+        click.echo(f"Loaded {len(dng_files)} files from {input}")
+    elif input_path.is_dir():
+        # Scan input folder for DNG files
+        dng_files = sorted(input_path.glob("*.dng"))
+        
+        if not dng_files:
+            click.echo(f"Error: No DNG files found in {input}", err=True)
+            sys.exit(1)
+        
+        click.echo(f"Found {len(dng_files)} DNG files in {input}")
+    else:
+        click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
-    
-    click.echo(f"Found {len(dng_files)} DNG files in {input_folder}")
     
     # Create output folder if it doesn't exist
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    # Build rendering_params dict from DNG options
-    rendering_params = {}
-    if temperature is not None:
-        rendering_params['Temperature'] = temperature
-    if tint is not None:
-        rendering_params['Tint'] = tint
-    if exposure is not None:
-        rendering_params['Exposure2012'] = exposure
-    if orientation is not None:
-        rendering_params['Orientation'] = orientation
     
     # Determine output dtype
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
@@ -981,6 +1049,15 @@ def batch_convert_dngs(
         try:
             # Create DngFile from blob
             dng_file = DngFile(io.BytesIO(blob))
+            
+            # Build rendering params: use settings from CSV or base params from CLI
+            if settings_list:
+                # CSV mode: use settings from list, merge with base
+                rendering_params = base_rendering_params.copy()
+                rendering_params.update(settings_list[index])
+            else:
+                # Folder mode: use base params from CLI
+                rendering_params = base_rendering_params.copy()
             
             # Decode with rendering params and scale
             img, metadata = decode_dng(
@@ -1045,7 +1122,7 @@ def batch_convert_dngs(
 
 
 @dng.command(name="batch-to-video")
-@click.argument("input_folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("input", type=click.Path(exists=True))
 @click.argument("output_mp4", type=click.Path())
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
@@ -1053,7 +1130,7 @@ def batch_convert_dngs(
 @click.option("--orientation", type=int, help="Image orientation")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
 @click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
-@click.option("--resolution", type=str, help="Output video resolution (e.g., '1920x1080')")
+@click.option("--resolution", type=str, default="1920x1080", help="Output video resolution (e.g., '1920x1080')")
 @click.option("--codec", type=str, default="h264", help="Video codec (h264, hevc, vp9)")
 @click.option("--crf", type=int, default=20, help="Constant Rate Factor for quality (lower=better)")
 @click.option("--bit-depth", type=click.Choice(["8", "10"]), default="8", help="Video bit depth (8 or 10)")
@@ -1061,10 +1138,15 @@ def batch_convert_dngs(
 @click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
 @click.option("--overlay-txt", is_flag=True, help="Add filename overlay to each frame")
 def convert_dngs_to_video(
-    input_folder, output_mp4, temperature, tint, exposure, orientation, 
+    input, output_mp4, temperature, tint, exposure, orientation, 
     no_xmp, use_coreimage, resolution, codec, crf, bit_depth, frame_rate, num_workers, overlay_txt
 ):
-    """Convert a folder of DNG files to MP4 video."""
+    """Convert DNG files to MP4 video.
+    
+    INPUT can be either:
+    - A folder containing DNG files (will scan for *.dng)
+    - A CSV file with per-file settings (filename,Temperature,Tint,Exposure2012,orientation)
+    """
     import io
     import numpy as np
     from .dngio import decode_dng
@@ -1077,16 +1159,6 @@ def convert_dngs_to_video(
     except ImportError:
         pass  # setproctitle is optional
     
-    # Scan input folder for DNG files
-    input_path = Path(input_folder)
-    dng_files = sorted(input_path.glob("*.dng"))
-    
-    if not dng_files:
-        click.echo(f"Error: No DNG files found in {input_folder}", err=True)
-        sys.exit(1)
-    
-    click.echo(f"Found {len(dng_files)} DNG files in {input_folder}")
-    
     # Parse resolution if provided
     resolution_tuple = None
     if resolution:
@@ -1097,16 +1169,37 @@ def convert_dngs_to_video(
             click.echo(f"Error: Invalid resolution format '{resolution}'. Use format like '1920x1080'", err=True)
             sys.exit(1)
     
-    # Build rendering_params dict from DNG options
-    rendering_params = {}
+    # Build base rendering_params dict from CLI options
+    base_rendering_params = {}
     if temperature is not None:
-        rendering_params['Temperature'] = temperature
+        base_rendering_params['Temperature'] = temperature
     if tint is not None:
-        rendering_params['Tint'] = tint
+        base_rendering_params['Tint'] = tint
     if exposure is not None:
-        rendering_params['Exposure2012'] = exposure
+        base_rendering_params['Exposure2012'] = exposure
     if orientation is not None:
-        rendering_params['orientation'] = orientation
+        base_rendering_params['orientation'] = orientation
+    
+    # Determine file list and settings based on input type
+    input_path = Path(input)
+    settings_list = []
+    
+    if input_path.is_file() and input_path.suffix.lower() == '.csv':
+        # CSV file drives the file list
+        dng_files, settings_list = _load_dng_settings(input_path)
+        click.echo(f"Loaded {len(dng_files)} files from {input}")
+    elif input_path.is_dir():
+        # Scan input folder for DNG files
+        dng_files = sorted(input_path.glob("*.dng"))
+        
+        if not dng_files:
+            click.echo(f"Error: No DNG files found in {input}", err=True)
+            sys.exit(1)
+        
+        click.echo(f"Found {len(dng_files)} DNG files in {input}")
+    else:
+        click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
+        sys.exit(1)
     
     # Build video encoding config
     config = {
@@ -1128,18 +1221,33 @@ def convert_dngs_to_video(
             from .dngio import DngFile
             dng_file = DngFile(io.BytesIO(blob))
             
+            # Build rendering params: use settings from CSV or base params from CLI
+            if settings_list:
+                # CSV mode: use settings from list, merge with base
+                rendering_params = base_rendering_params.copy()
+                rendering_params.update(settings_list[index])
+            else:
+                # Folder mode: use base params from CLI
+                rendering_params = base_rendering_params.copy()
+            
             # Calculate scale before decoding for efficiency
             # Scaling during decode_dng is much more efficient as it avoids the full render path
             # at full resolution
-            scale = 1.0
-            if resolution_tuple is not None:
-                # Get render size from DNG to compute scale
-                render_width, render_height = dng_file.get_rendered_size()
-                
-                target_width, target_height = resolution_tuple
-                scale_w = target_width / render_width
-                scale_h = target_height / render_height
-                scale = min(scale_w, scale_h)
+            # Get render size from DNG to compute scale
+            # Pass rendering_params so it uses orientation from params if specified
+            render_width, render_height = dng_file.get_rendered_size(
+                rendering_params=rendering_params
+            )
+            
+            target_width, target_height = resolution_tuple
+            scale_w = target_width / render_width
+            scale_h = target_height / render_height
+            scale = min(scale_w, scale_h)
+            
+            # Debug output
+            orientation = rendering_params.get('orientation', 'None')
+            logger.info(f"Frame {index} ({Path(file_path).name}): orientation={orientation}, "
+                       f"rendered_size={render_width}x{render_height}, scale={scale:.3f}")
 
             # Decode with scaling applied during rendering
             img, _ = decode_dng(
@@ -1157,22 +1265,23 @@ def convert_dngs_to_video(
                 logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
                 return (index, None)
             
-            # Apply letterboxing if resolution is set
-            if resolution_tuple is not None:
-                import cv2
-                current_height, current_width = img.shape[:2]
-                target_width, target_height = resolution_tuple
-                
-                # Create black canvas at target resolution
-                canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
-                
-                # Calculate centered position for scaled image
-                y_offset = (target_height - current_height) // 2
-                x_offset = (target_width - current_width) // 2
-                
-                # Place scaled image on canvas
-                canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
-                img = canvas
+            # Apply letterboxing
+            current_height, current_width = img.shape[:2]
+            target_width, target_height = resolution_tuple
+            
+            logger.info(f"Frame {index}: decoded image size={current_width}x{current_height}, "
+                       f"target={target_width}x{target_height}")
+            
+            # Create black canvas at target resolution
+            canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
+            
+            # Calculate centered position for scaled image
+            y_offset = (target_height - current_height) // 2
+            x_offset = (target_width - current_width) // 2
+            
+            # Place scaled image on canvas
+            canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
+            img = canvas
             
             # Add filename overlay if requested
             if overlay_txt:

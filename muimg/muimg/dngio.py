@@ -164,26 +164,34 @@ class DngPage(TiffPage):
             return False
         return value in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE)
 
-    def get_rendered_size(self, apply_orientation: bool = True) -> tuple[int, int]:
+    def get_rendered_size(
+        self, apply_orientation: bool = True, rendering_params: dict | None = None
+    ) -> tuple[int, int]:
         """Get the final dimensions after DefaultCrop is applied.
         
         Args:
-            apply_orientation: If True, swap width/height for 90° rotations (orientation 6 or 8)
+            apply_orientation: If True, swap width/height for 90° rotations
+            rendering_params: Optional rendering parameters dict. If provided
+                and contains 'orientation', that value will be used instead
+                of the metadata orientation.
         
         Returns:
             Tuple of (width, height) after crop is applied.
             If DefaultCropSize is not present, returns (imagewidth, imagelength).
         """
         crop_size = self.get_tag("DefaultCropSize")
-        orientation = self.ifd0.get_tag("Orientation") if self.ifd0 else None
-        
         if crop_size is not None:
             w, h = int(crop_size[0]), int(crop_size[1])
         else:
             w, h = self.imagewidth or 0, self.imagelength or 0
         
         # Swap dimensions for 90° rotations if requested
-        if apply_orientation:
+        if apply_orientation:            
+            # Use orientation from rendering_params if provided, otherwise from metadata
+            orientation = self.ifd0.get_tag("Orientation")
+            if rendering_params and 'orientation' in rendering_params:
+                orientation = rendering_params['orientation']
+
             # Orientation is an IFD0 tag
             if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                 w, h = h, w
@@ -1146,10 +1154,14 @@ class DngFile(TiffFile):
         """See `DngPage.get_time_from_tags`."""
         return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
     
-    def get_rendered_size(self, apply_orientation: bool = True) -> tuple[int, int] | None:
+    def get_rendered_size(
+        self, apply_orientation: bool = True, rendering_params: dict | None = None
+    ) -> tuple[int, int] | None:
         """See `DngPage.get_rendered_size`."""
         main_page = self.get_main_page()
-        return main_page.get_rendered_size(apply_orientation=apply_orientation) if main_page else None
+        return main_page.get_rendered_size(
+            apply_orientation=apply_orientation, rendering_params=rendering_params
+        ) if main_page else None
 
     def _forward_main_page(self, method_name: str, *args, require=None, **kwargs):
         page = self.get_main_page()
@@ -1281,6 +1293,8 @@ class DngFile(TiffFile):
                 else:
                     # Downscaling: do it now before rendering
                     import cv2
+                    src_h, src_w = rgb_camera.shape[:2]
+                    logger.info(f"Pre-render resize: {src_w}x{src_h} -> {target_w}x{target_h}")
                     rgb_camera = cv2.resize(
                         rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
                     )
@@ -1299,8 +1313,21 @@ class DngFile(TiffFile):
         # Post-render upscaling if needed
         if scale_needed:
             import cv2
+            
+            # Check if orientation swaps dimensions (same logic as get_rendered_size)
+            final_w, final_h = target_w, target_h
+            orientation = self.ifd0.get_tag("Orientation")
+            if rendering_params and 'orientation' in rendering_params:
+                orientation = rendering_params['orientation']
+
+            # Swap dimensions for 90° rotations
+            if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
+                final_w, final_h = final_h, final_w
+            
+            src_h, src_w = rgb_image.shape[:2]
+            logger.info(f"Post-render resize: {src_w}x{src_h} -> {final_w}x{final_h}")
             rgb_image = cv2.resize(
-                rgb_image, (target_w, target_h), interpolation=cv2.INTER_LINEAR
+                rgb_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
             )
         
         return rgb_image
