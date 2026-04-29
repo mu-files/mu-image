@@ -5,10 +5,13 @@ import logging
 import queue
 import threading
 
-from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 
 logger = logging.getLogger(__name__)
+
+# Sentinel value to distinguish "not provided" from "explicitly None"
+# Used in pipeline __init__ to allow: default behavior, explicit None, or custom callable
+DEFAULT_PIPELINE_CALLABLE = object()
 
 
 class ProcessingThreadPool:

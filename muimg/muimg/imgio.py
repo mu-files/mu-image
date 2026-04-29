@@ -8,10 +8,11 @@ import numpy as np
 import tifffile
 
 from pathlib import Path
-from typing import IO
+from typing import IO, Callable, Iterable, Any
 
 # Package imports
 from .dngio import DngFile, DngPage, decode_dng
+from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, resolve_tag, TiffType
 
@@ -378,3 +379,166 @@ def convert_dng_to_stream(
     )
     stream.seek(0)
     return stream
+
+
+class ImageSequencePipeline(ProcessingPipeline):
+    """Pipeline for processing sequences of image files.
+    
+    Extends ProcessingPipeline with default producer/consumer/writer for image processing:
+    - Default producer reads image files from source_files
+    - Default consumer converts images to output format
+    - Default writer writes encoded images to output folder
+    
+    Example usage:
+        pipeline = ImageSequencePipeline(
+            source_files=[Path("img1.jpg"), Path("img2.jpg")],
+            output_folder=Path("/output"),
+            output_format="tif",
+            output_dtype=np.uint16,
+            num_workers=4,
+        )
+        pipeline.run()
+    """
+    
+    def __init__(
+        self,
+        source_files: list = None,
+        output_folder = None,
+        output_format: str = "tif",
+        output_dtype = None,
+        producer: Callable[[], Iterable[Any]] | None = DEFAULT_PIPELINE_CALLABLE,
+        consumer: Callable[[Any], Any] | None = DEFAULT_PIPELINE_CALLABLE,
+        writer: Callable[[Any], None] | None = DEFAULT_PIPELINE_CALLABLE,
+        num_workers: int = 4,
+        queue_size: int = None,
+        task_name: str = "Image Processing",
+    ):
+        """Initialize the image sequence pipeline.
+        
+        Args:
+            source_files: List of source image file paths
+            output_folder: Output folder path
+            output_format: Output format extension (e.g., 'tif', 'jxl', 'jpg')
+            output_dtype: Output data type (np.uint8 or np.uint16)
+            producer: Custom producer callable, or None to disable. Defaults to default_producer.
+            consumer: Custom consumer callable, or None to disable. Defaults to default_consumer.
+            writer: Custom writer callable, or None to disable. Defaults to default_writer.
+            num_workers: Number of parallel consumer threads
+            queue_size: Maximum size of processing queues
+            task_name: Descriptive name for logging
+        """
+        from pathlib import Path
+        
+        self.source_files = source_files
+        self.output_folder = Path(output_folder) if output_folder else None
+        self.output_format = output_format
+        self.output_dtype = output_dtype or np.uint8
+        
+        # Use default methods if not explicitly provided
+        # Sentinel value allows caller to explicitly pass None to disable
+        actual_producer = self.default_producer if producer is DEFAULT_PIPELINE_CALLABLE else producer
+        actual_consumer = self.default_consumer if consumer is DEFAULT_PIPELINE_CALLABLE else consumer
+        actual_writer = self.default_writer if writer is DEFAULT_PIPELINE_CALLABLE else writer
+        
+        # Call parent ProcessingPipeline.__init__
+        super().__init__(
+            producer=actual_producer,
+            consumer=actual_consumer,
+            writer=actual_writer,
+            num_workers=num_workers,
+            queue_size=queue_size,
+            task_name=task_name,
+        )
+    
+    def default_producer(self):
+        """Default producer: reads files from source_files and yields (index, path, blob).
+        
+        Yields:
+            Tuples of (index, file_path_str, file_bytes)
+        """
+        import logging
+        from pathlib import Path
+        
+        logger = logging.getLogger(__name__)
+        
+        if not self.source_files:
+            raise ValueError("source_files must be set to use default_producer")
+        
+        for index, file_path in enumerate(self.source_files):
+            try:
+                with open(file_path, "rb") as f:
+                    blob = f.read()
+                yield (index, str(file_path), blob)
+            except OSError as e:
+                logger.warning(f"Skipping file {file_path} due to I/O error ({type(e).__name__}): {e}")
+                continue
+    
+    def default_consumer(self, task: tuple[int, str, bytes]) -> tuple[int, str, bytes | None]:
+        """Default consumer: converts image blob to output format.
+        
+        Args:
+            task: Tuple of (index, file_path, blob)
+            
+        Returns:
+            Tuple of (index, file_path, encoded_blob) or (index, file_path, None) on failure
+        """
+        import io
+        import logging
+        from pathlib import Path
+        
+        logger = logging.getLogger(__name__)
+        
+        index, file_path, blob = task
+        try:
+            # Convert image to output format
+            output_stream = convert_imgformat_to_stream(
+                file=io.BytesIO(blob),
+                output_format_stream=self.output_format,
+                output_dtype=self.output_dtype
+            )
+            
+            # Get bytes from stream
+            encoded_blob = output_stream.read()
+            
+            if not encoded_blob:
+                logger.warning(f"Frame {index}: Failed to encode {Path(file_path).name}")
+                return (index, file_path, None)
+            
+            return (index, file_path, encoded_blob)
+        except Exception as e:
+            logger.warning(f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}")
+            return (index, file_path, None)
+    
+    def default_writer(self, result: tuple[int, str, bytes | None]) -> None:
+        """Default writer: writes encoded blob to output folder.
+        
+        Args:
+            result: Tuple of (index, file_path, encoded_blob) from consumer
+        """
+        import logging
+        from pathlib import Path
+        
+        logger = logging.getLogger(__name__)
+        
+        if not self.output_folder:
+            raise ValueError("output_folder must be set to use default_writer")
+        
+        if result is None:
+            return
+        
+        _, file_path, blob = result
+        
+        # Skip failed items
+        if blob is None:
+            return
+        
+        # Create output path from input filename
+        output_file = self.output_folder / Path(file_path).with_suffix(f'.{self.output_format}').name
+        
+        # Write blob to disk
+        try:
+            with open(output_file, 'wb') as f:
+                f.write(blob)
+            logger.info(f"Successfully wrote {len(blob)} bytes to {output_file}")
+        except Exception as e:
+            logger.error(f"Failed to write {output_file} ({type(e).__name__}): {e}")

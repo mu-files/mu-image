@@ -29,10 +29,22 @@ def cli(verbose):
     )
 
 
-@cli.group(name="dng")
-def dng():
-    """DNG file operations."""
-    pass
+@cli.command(name="convert-image")
+@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("output_file", type=click.Path())
+@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
+def convert_image(input_file, output_file, bit_depth):
+    """Convert image file to another format."""
+    import numpy as np
+    from .imgio import convert_imgformat
+    
+    success = convert_imgformat(
+        file=input_file,
+        output=output_file,
+        output_dtype=np.uint16 if bit_depth == "16" else np.uint8
+    )
+
+    sys.exit(0 if success else 1)
 
 
 def _format_bytes(size):
@@ -106,6 +118,10 @@ def _get_page_from_ifd_spec(dng_file, ifd_spec):
     
     return page, ifd_index, ifd_name
 
+@cli.group(name="dng")
+def dng():
+    """DNG file operations."""
+    pass
 
 @dng.command(name="metadata")
 @click.argument("input_file", type=click.Path(exists=True))
@@ -501,106 +517,6 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     num_bytes = value.nbytes
     echo(f"{tag_display}: {dtype_name} array, {num_elements} elements, {num_bytes} bytes")
 
-
-@dng.command(name="convert")
-@click.argument("input_file", type=click.Path(exists=True))
-@click.argument("output_file", type=click.Path())
-@click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
-@click.option("--temperature", type=float, help="White balance temperature")
-@click.option("--tint", type=float, help="White balance tint")
-@click.option("--exposure", type=float, help="Exposure adjustment in stops")
-@click.option("--orientation", type=int, help="Image orientation")
-@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
-@click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
-@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
-def dng_convert(
-    input_file, output_file, ifd, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
-):
-    """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
-    import numpy as np
-    import re
-    from .dngio import DngFile
-    from .imgio import convert_dng
-    
-    # Map bit depth to numpy dtype
-    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
-    
-    # Map CLI parameter names to XMP-style rendering_params names
-    params = {}
-    if temperature is not None:
-        params['Temperature'] = temperature
-    if tint is not None:
-        params['Tint'] = tint
-    if exposure is not None:
-        params['Exposure2012'] = exposure
-    if orientation is not None:
-        params['orientation'] = orientation
-    
-    # Convert DNG
-    try:
-        # Open DNG and select page
-        with DngFile(input_file) as dng:
-            # Pass dng if no specific IFD, otherwise pass page
-            if ifd is None:
-                file_arg = dng
-                ifd_name = "main raw page"
-            else:
-                file_arg, _, ifd_name = _get_page_from_ifd_spec(dng, ifd)
-            
-            # Handle preview pages differently from raw pages
-            if ifd is not None and not (file_arg.is_cfa or file_arg.is_linear_raw):
-                # Validate parameters before rendering
-                if params:
-                    click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
-                    sys.exit(1)
-                
-                # Preview page: decode directly to RGB
-                from .imgio import write_image
-                rgb = file_arg.decode_to_rgb(output_dtype=output_dtype)
-                if rgb is None:
-                    click.echo(f"Error: Failed to decode preview page", err=True)
-                    sys.exit(1)
-
-                # Write with metadata (set Orientation=HORIZONTAL since preview is already rotated)
-                metadata = dng.get_ifd0_tags()
-                metadata.add_tag("Orientation", Orientation.HORIZONTAL)
-                success = write_image(rgb, output_file, metadata=metadata)
-                if not success:
-                    click.echo(f"Error: Failed to write output file", err=True)
-                    sys.exit(1)
-            else:
-                # Raw page: use convert_dng for full rendering pipeline
-                success = convert_dng(
-                    file=file_arg,
-                    output=output_file,
-                    output_dtype=output_dtype,
-                    demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
-                    strict=False,
-                    use_xmp=not no_xmp,
-                    rendering_params=params,
-                    use_coreimage_if_available=use_coreimage,
-                )
-                
-                if not success:
-                    click.echo(f"Error: Failed to convert {input_file}", err=True)
-                    sys.exit(1)
-            
-            # Shared output message
-            # Get photometric from page (file_arg is either DngPage or DngFile)
-            if isinstance(file_arg, DngFile):
-                page = file_arg.get_main_page()
-                photometric = page.photometric_name if page else "unknown"
-            else:
-                photometric = file_arg.photometric_name
-            w, h = file_arg.get_rendered_size()
-            
-            click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file}")
-            
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-
 @dng.command(name="raw-stage")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
@@ -898,25 +814,235 @@ def dng_copy(
         sys.exit(1)
 
 
-@cli.command(name="convert-image")
+@dng.command(name="convert")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
+@click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
+@click.option("--temperature", type=float, help="White balance temperature")
+@click.option("--tint", type=float, help="White balance tint")
+@click.option("--exposure", type=float, help="Exposure adjustment in stops")
+@click.option("--orientation", type=int, help="Image orientation")
 @click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
-def convert_image(input_file, output_file, bit_depth):
-    """Convert image file to another format."""
+@click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
+@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
+def dng_convert(
+    input_file, output_file, ifd, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
+):
+    """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
     import numpy as np
-    from .imgio import convert_imgformat
+    import re
+    from .dngio import DngFile
+    from .imgio import convert_dng
     
-    success = convert_imgformat(
-        file=input_file,
-        output=output_file,
-        output_dtype=np.uint16 if bit_depth == "16" else np.uint8
-    )
+    # Map bit depth to numpy dtype
+    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
+    
+    # Map CLI parameter names to XMP-style rendering_params names
+    params = {}
+    if temperature is not None:
+        params['Temperature'] = temperature
+    if tint is not None:
+        params['Tint'] = tint
+    if exposure is not None:
+        params['Exposure2012'] = exposure
+    if orientation is not None:
+        params['orientation'] = orientation
+    
+    # Convert DNG
+    try:
+        # Open DNG and select page
+        with DngFile(input_file) as dng:
+            # Pass dng if no specific IFD, otherwise pass page
+            if ifd is None:
+                file_arg = dng
+                ifd_name = "main raw page"
+            else:
+                file_arg, _, ifd_name = _get_page_from_ifd_spec(dng, ifd)
+            
+            # Handle preview pages differently from raw pages
+            if ifd is not None and not (file_arg.is_cfa or file_arg.is_linear_raw):
+                # Validate parameters before rendering
+                if params:
+                    click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
+                    sys.exit(1)
+                
+                # Preview page: decode directly to RGB
+                from .imgio import write_image
+                rgb = file_arg.decode_to_rgb(output_dtype=output_dtype)
+                if rgb is None:
+                    click.echo(f"Error: Failed to decode preview page", err=True)
+                    sys.exit(1)
 
-    sys.exit(0 if success else 1)
+                # Write with metadata (set Orientation=HORIZONTAL since preview is already rotated)
+                metadata = dng.get_ifd0_tags()
+                metadata.add_tag("Orientation", Orientation.HORIZONTAL)
+                success = write_image(rgb, output_file, metadata=metadata)
+                if not success:
+                    click.echo(f"Error: Failed to write output file", err=True)
+                    sys.exit(1)
+            else:
+                # Raw page: use convert_dng for full rendering pipeline
+                success = convert_dng(
+                    file=file_arg,
+                    output=output_file,
+                    output_dtype=output_dtype,
+                    demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                    strict=False,
+                    use_xmp=not no_xmp,
+                    rendering_params=params,
+                    use_coreimage_if_available=use_coreimage,
+                )
+                
+                if not success:
+                    click.echo(f"Error: Failed to convert {input_file}", err=True)
+                    sys.exit(1)
+            
+            # Shared output message
+            # Get photometric from page (file_arg is either DngPage or DngFile)
+            if isinstance(file_arg, DngFile):
+                page = file_arg.get_main_page()
+                photometric = page.photometric_name if page else "unknown"
+            else:
+                photometric = file_arg.photometric_name
+            w, h = file_arg.get_rendered_size()
+            
+            click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file}")
+            
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
 
-@cli.command(name="convert-dngs-to-video")
+@dng.command(name="batch-convert")
+@click.argument("input_folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.argument("output_folder", type=click.Path())
+@click.option("--format", "output_format", type=click.Choice(["tif", "jxl", "jpg"]), default="tif", help="Output format")
+@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="16", help="Output bit depth (8 or 16)")
+@click.option("--temperature", type=float, help="White balance temperature")
+@click.option("--tint", type=float, help="White balance tint")
+@click.option("--exposure", type=float, help="Exposure adjustment in stops")
+@click.option("--orientation", type=int, help="Image orientation")
+@click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
+@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
+@click.option("--scale", type=float, default=1.0, help="Resolution scale factor (e.g., 0.5 for half size)")
+@click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
+def batch_convert_dngs(
+    input_folder, output_folder, output_format, bit_depth, temperature, tint, 
+    exposure, orientation, no_xmp, use_coreimage, scale, num_workers
+):
+    """Convert a folder of DNG files to TIFF/JXL/JPG images."""
+    import io
+    import numpy as np
+    from .dngio import decode_dng, DngFile, DemosaicAlgorithm
+    from .imgio import ImageSequencePipeline
+    
+    # Set process title for easier identification in task managers
+    try:
+        import setproctitle
+        setproctitle.setproctitle("muimg: batch-convert")
+    except ImportError:
+        pass  # setproctitle is optional
+    
+    # Scan input folder for DNG files
+    input_path = Path(input_folder)
+    dng_files = sorted(input_path.glob("*.dng"))
+    
+    if not dng_files:
+        click.echo(f"Error: No DNG files found in {input_folder}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"Found {len(dng_files)} DNG files in {input_folder}")
+    
+    # Create output folder if it doesn't exist
+    output_path = Path(output_folder)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Build rendering_params dict from DNG options
+    rendering_params = {}
+    if temperature is not None:
+        rendering_params['Temperature'] = temperature
+    if tint is not None:
+        rendering_params['Tint'] = tint
+    if exposure is not None:
+        rendering_params['Exposure2012'] = exposure
+    if orientation is not None:
+        rendering_params['Orientation'] = orientation
+    
+    # Determine output dtype
+    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
+    
+    # Custom DNG consumer - decodes DNG and encodes to output format
+    def dng_consumer(task: tuple[int, str, bytes]) -> tuple[int, str, bytes | None]:
+        from .imgio import write_image
+        
+        index, file_path, blob = task
+        try:
+            # Create DngFile from blob
+            dng_file = DngFile(io.BytesIO(blob))
+            
+            # Decode with rendering params and scale
+            img, metadata = decode_dng(
+                file=dng_file,
+                output_dtype=output_dtype,
+                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                use_coreimage_if_available=use_coreimage,
+                use_xmp=not no_xmp,
+                rendering_params=rendering_params,
+                strict=False,
+                scale=scale,
+            )
+            
+            if img is None:
+                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                return (index, file_path, None)
+            
+            # Encode to output format with metadata
+            output_stream = io.BytesIO()
+            write_image(img, output_stream, output_format_stream=output_format, metadata=metadata)
+            encoded_blob = output_stream.getvalue()
+            
+            return (index, file_path, encoded_blob)
+        except Exception as e:
+            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
+            return (index, file_path, None)
+    
+    # Create and run the pipeline
+    try:
+        pipeline = ImageSequencePipeline(
+            source_files=dng_files,
+            output_folder=output_path,
+            output_format=output_format,
+            output_dtype=output_dtype,
+            consumer=dng_consumer,
+            num_workers=num_workers,
+            task_name="DNG Batch Convert",
+        )
+        
+        click.echo(f"Converting {len(dng_files)} DNGs to {output_format.upper()}...")
+        
+        import time
+        start_time = time.perf_counter()
+        pipeline.run()
+        elapsed = time.perf_counter() - start_time
+        
+        click.echo(f"Successfully converted {len(dng_files)} files to {output_folder}")
+        click.echo(f"Processed {len(dng_files)} files in {elapsed:.2f}s ({len(dng_files)/elapsed:.2f} files/s)")
+        
+        # Print queue stats
+        stats = pipeline.get_queue_stats()
+        if "task_queue" in stats:
+            q = stats["task_queue"]
+            click.echo(f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
+        if "writer_queue" in stats:
+            q = stats["writer_queue"]
+            click.echo(f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
+        
+    except Exception as e:
+        logger.exception("Failed to convert DNGs")
+        sys.exit(1)
+
+
+@dng.command(name="batch-to-video")
 @click.argument("input_folder", type=click.Path(exists=True, file_okay=False, dir_okay=True))
 @click.argument("output_mp4", type=click.Path())
 @click.option("--temperature", type=float, help="White balance temperature")

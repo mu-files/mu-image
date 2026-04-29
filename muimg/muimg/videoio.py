@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 # Package imports
-from .imgio import decode_image
-from .processing import ProcessingPipeline
+from .imgio import decode_image, ImageSequencePipeline
+from .processing import ProcessingPipeline, DEFAULT_PIPELINE_CALLABLE
 
 logger = logging.getLogger(__name__)
 
@@ -182,13 +182,13 @@ def add_text_overlay(
     return img
 
 
-class VideoEncodePipeline(ProcessingPipeline):
+class VideoEncodePipeline(ImageSequencePipeline):
     """Pipeline for encoding a sequence of images to a video file.
     
-    Extends ProcessingPipeline with video-specific functionality:
-    - Default producer reads image files from a list of paths
-    - Default consumer decodes images using decode_image
-    - Default writer buffers frames and encodes them in order using PyAV
+    Extends ImageSequencePipeline with video-specific functionality:
+    - Inherits default producer from ImageSequencePipeline (reads files to blobs)
+    - Custom consumer decodes source format and creates in-memory frames ready for video encoding
+    - Custom writer buffers frames and encodes them to video in order using PyAV
     
     Each of producer, consumer, writer can be overridden by passing custom
     callables to __init__ or by subclassing and overriding the default_* methods.
@@ -210,9 +210,9 @@ class VideoEncodePipeline(ProcessingPipeline):
         resolution: tuple[int, int] = None,
         config: dict[str, Any] = None,
         use_temp_file: bool = True,
-        producer: Callable[[], Iterable[Any]] = None,
-        consumer: Callable[[Any], Any] = None,
-        writer: Callable[[Any], None] = None,
+        producer: Callable[[], Iterable[Any]] | None = DEFAULT_PIPELINE_CALLABLE,
+        consumer: Callable[[Any], Any] | None = DEFAULT_PIPELINE_CALLABLE,
+        writer: Callable[[Any], None] | None = DEFAULT_PIPELINE_CALLABLE,
         num_workers: int = 4,
         queue_size: int = None,
         task_name: str = "Video Encoding",
@@ -233,14 +233,16 @@ class VideoEncodePipeline(ProcessingPipeline):
                 - overlay_text: If True, add filename overlay to frames (default: False)
             use_temp_file: If True (default), encode to a local temp file first,
                 then copy to output_path. Helps avoid issues with network drives.
-            producer: Custom producer callable. If None, uses default_producer.
-            consumer: Custom consumer callable. If None, uses default_consumer.
-            writer: Custom writer callable. If None, uses default_writer.
+            producer: Custom producer callable, or None to disable producer.
+                Defaults to using default_producer.
+            consumer: Custom consumer callable, or None to disable consumer.
+                Defaults to using default_consumer.
+            writer: Custom writer callable, or None to disable writer.
+                Defaults to using default_writer.
             num_workers: Number of parallel consumer threads.
             queue_size: Maximum size of processing queues.
             task_name: Descriptive name for logging.
         """
-        self.source_files = [Path(f) for f in source_files] if source_files else []
         self.output_path = Path(output_path) if output_path else None
         self.resolution = resolution
         self.use_temp_file = use_temp_file
@@ -265,11 +267,11 @@ class VideoEncodePipeline(ProcessingPipeline):
         
         # Determine output dtype and pixel format based on bit depth
         if self.bit_depth == 10:
-            self.output_dtype = np.uint16
+            output_dtype = np.uint16
             self.pix_fmt = "yuv420p10le"
             self.input_format = "rgb48le"
         else:
-            self.output_dtype = np.uint8
+            output_dtype = np.uint8
             self.pix_fmt = "yuv420p"
             self.input_format = "rgb24"
         
@@ -282,12 +284,18 @@ class VideoEncodePipeline(ProcessingPipeline):
         self._frame_buffer = {}
         self._failed_frames = set()
         
-        # Use provided callables or default methods
-        actual_producer = producer if producer is not None else self.default_producer
-        actual_consumer = consumer if consumer is not None else self.default_consumer
-        actual_writer = writer if writer is not None else self.default_writer
+        # Use our default methods if not explicitly provided
+        # Sentinel value allows caller to explicitly pass None to disable
+        actual_producer = self.default_producer if producer is DEFAULT_PIPELINE_CALLABLE else producer
+        actual_consumer = self.default_consumer if consumer is DEFAULT_PIPELINE_CALLABLE else consumer
+        actual_writer = self.default_writer if writer is DEFAULT_PIPELINE_CALLABLE else writer
         
+        # Call parent ImageSequencePipeline.__init__
+        # Pass actual callables (not None) to avoid parent using its defaults
         super().__init__(
+            source_files=[Path(f) for f in source_files] if source_files else [],
+            output_format=None,  # Override default "tif" - not used for video
+            output_dtype=output_dtype,
             producer=actual_producer,
             consumer=actual_consumer,
             writer=actual_writer,
@@ -395,21 +403,6 @@ class VideoEncodePipeline(ProcessingPipeline):
             value: Metadata value
         """
         self._container_metadata[key] = value
-    
-    def default_producer(self) -> Iterable[tuple[int, str, bytes]]:
-        """Default producer: reads image files and yields (index, path, blob).
-        
-        Yields:
-            Tuples of (index, file_path_str, file_bytes)
-        """
-        for index, file_path in enumerate(self.source_files):
-            try:
-                with open(file_path, "rb") as f:
-                    blob = f.read()
-                yield (index, str(file_path), blob)
-            except OSError as e:
-                logger.warning(f"Skipping file {file_path} due to I/O error ({type(e).__name__}): {e}")
-                continue
     
     def default_consumer(self, task: tuple[int, str, bytes]) -> tuple[int, np.ndarray | None]:
         """Default consumer: decodes image blob using decode_image.
