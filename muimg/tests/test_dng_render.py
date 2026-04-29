@@ -16,7 +16,13 @@ import logging
 
 import muimg
 from muimg.raw_render import DemosaicAlgorithm
-from conftest import compute_diff_stats, core_image_available_for_tests, run_dng_validate, DNG_VALIDATE_PATH
+from conftest import (
+    compute_diff_stats,
+    core_image_available_for_tests,
+    run_dng_validate,
+    DNG_VALIDATE_PATH,
+    OutputPathManager,
+)
 
 # Suppress tifffile logging about Photoshop TIFF metadata inconsistencies
 logging.getLogger('tifffile').setLevel(logging.CRITICAL)
@@ -25,15 +31,43 @@ logging.getLogger('tifffile').setLevel(logging.CRITICAL)
 # Test data directory
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 
-# Output directory for test results
-OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_dng_render"
+# Test output path manager - set persistent=True to keep outputs, False for tmp_path
+output_path_manager = OutputPathManager(persistent=True)
 
 
 @pytest.fixture(scope="module")
-def output_dir():
+def output_dir(tmp_path_factory):
     """Create output directory for test artifacts."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    return OUTPUT_DIR
+    tmp_path = tmp_path_factory.mktemp("test_dng_render")
+    return output_path_manager.get_path(tmp_path, "test_dng_render")
+
+
+@pytest.fixture(scope="module")
+def cli_batch_output_dir(output_dir):
+    """Run CLI batch-convert once and return the output directory."""
+    import subprocess
+    import sys
+    
+    cli_output_dir = output_dir / "cli_batch_convert"
+    cli_output_dir.mkdir(exist_ok=True)
+    
+    # Run CLI batch-convert command once for all test files
+    cmd = [
+        sys.executable, "-m", "muimg.cli",
+        "dng", "batch-convert",
+        str(DNGFILES_DIR),
+        str(cli_output_dir),
+        "--bit-depth", "16",
+        "--format", "tif",
+        "--num-workers", "4",
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        pytest.fail(f"CLI batch-convert failed: {result.stderr}")
+    
+    return cli_output_dir
 
 
 # Test files with thresholds for 4 comparisons:
@@ -318,5 +352,61 @@ def test_coreimage_vs_dng_validate(
 
     if measured_diff >= threshold:
         pytest.fail(f"Core Image vs dng_validate: measured {measured_diff:.2f}% > threshold {threshold}%")
+    
+    assert measured_diff < threshold
+
+
+@pytest.mark.parametrize(
+    "file_stem,muimg_ps_thresh,ci_ps_thresh,muimg_dngval_thresh,ci_dngval_thresh",
+    TEST_CASES,
+    ids=lambda x: x if isinstance(x, str) else None,
+)
+def test_cli_batch_convert_vs_photoshop(
+    file_stem, muimg_ps_thresh, ci_ps_thresh, muimg_dngval_thresh, ci_dngval_thresh,
+    cli_batch_output_dir, request
+):
+    """Test CLI batch-convert with multiple workers against Photoshop reference.
+    
+    Uses a module-scoped fixture that runs batch-convert once for all test cases.
+    """
+    if muimg_ps_thresh is None:
+        pytest.skip(f"CLI batch-convert vs Photoshop skipped for {file_stem} (shape mismatch or known issue)")
+    
+    threshold = muimg_ps_thresh
+    if threshold >= 1.8:
+        request.applymarker(pytest.mark.xfail(reason=f"CLI batch-convert vs Photoshop diff > 1.8%"))
+
+    jxl_path = DNGFILES_DIR / f"{file_stem}.jxl"
+
+    if not jxl_path.exists():
+        pytest.skip(f"Photoshop reference not found: {jxl_path}")
+
+    # Load the output file from the cached batch-convert run
+    output_tif = cli_batch_output_dir / f"{file_stem}.tif"
+    if not output_tif.exists():
+        pytest.skip(f"CLI batch-convert did not produce output: {output_tif}")
+
+    cli_result = tifffile.imread(str(output_tif))
+
+    # Convert to uint16 for comparison (CLI output is uint8)
+    if cli_result.dtype == np.uint8:
+        cli_result = (cli_result.astype(np.uint16) * 257)  # Scale 0-255 to 0-65535
+
+    # Load Photoshop reference from JXL
+    jxl_data = jxl_path.read_bytes()
+    ref = imagecodecs.jpegxl_decode(jxl_data)
+
+    # Ensure same shape
+    if cli_result.shape != ref.shape:
+        pytest.fail(f"Shape mismatch: CLI={cli_result.shape}, Photoshop={ref.shape}")
+
+    # Compare
+    stats = compute_diff_stats(cli_result, ref)
+    measured_diff = stats['mean']
+
+    print(f"\n  [CLI batch-convert vs PS] {file_stem}: diff={measured_diff:.2f}% (threshold={threshold}%)")
+
+    if measured_diff >= threshold:
+        pytest.fail(f"CLI batch-convert vs Photoshop: measured {measured_diff:.2f}% > threshold {threshold}%")
     
     assert measured_diff < threshold

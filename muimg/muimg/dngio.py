@@ -1287,14 +1287,12 @@ class DngFile(TiffFile):
         if target_w is not None and target_h is not None:
             render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
             if render_w != target_w or render_h != target_h:
-                # If upscaling, defer to post-render for better preformance
+                # If upscaling, defer to post-render for better performance
                 if render_w < target_w and render_h < target_h:
                     scale_needed = True
                 else:
                     # Downscaling: do it now before rendering
                     import cv2
-                    src_h, src_w = rgb_camera.shape[:2]
-                    logger.info(f"Pre-render resize: {src_w}x{src_h} -> {target_w}x{target_h}")
                     rgb_camera = cv2.resize(
                         rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
                     )
@@ -1311,21 +1309,18 @@ class DngFile(TiffFile):
         )
         
         # Post-render upscaling if needed
-        if scale_needed:
-            import cv2
-            
+        if scale_needed:            
             # Check if orientation swaps dimensions (same logic as get_rendered_size)
-            final_w, final_h = target_w, target_h
             orientation = self.ifd0.get_tag("Orientation")
             if rendering_params and 'orientation' in rendering_params:
                 orientation = rendering_params['orientation']
 
             # Swap dimensions for 90° rotations
+            final_w, final_h = target_w, target_h
             if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                 final_w, final_h = final_h, final_w
-            
-            src_h, src_w = rgb_image.shape[:2]
-            logger.info(f"Post-render resize: {src_w}x{src_h} -> {final_w}x{final_h}")
+
+            import cv2
             rgb_image = cv2.resize(
                 rgb_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
             )
