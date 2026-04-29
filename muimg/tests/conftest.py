@@ -10,9 +10,95 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+import pytest
+import requests
 import tifffile
+from tqdm import tqdm
 
 from muimg.raw_render import convert_dtype
+
+
+# =============================================================================
+# Test Data Download
+# =============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_test_data():
+    """Download test data from GitHub if not present.
+    
+    This fixture runs once per test session before any tests execute.
+    If the dngfiles directory is missing or empty, it downloads all
+    test files from the GitHub repository.
+    """
+    dngfiles_dir = Path(__file__).parent / "dngfiles"
+    
+    # Check if directory exists and has DNG files
+    if dngfiles_dir.exists() and list(dngfiles_dir.glob("*.dng")):
+        return  # Files already present, skip download
+    
+    # Create directory if it doesn't exist
+    dngfiles_dir.mkdir(exist_ok=True)
+    
+    print("\n" + "="*70)
+    print("Test data not found. Downloading from GitHub...")
+    print("="*70)
+    
+    # Get list of files from GitHub API
+    api_url = "https://api.github.com/repos/mu-files/mu-image/contents/muimg/tests/dngfiles"
+    
+    try:
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+        files_info = response.json()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to fetch test data file list from GitHub: {e}\n"
+            f"URL: {api_url}"
+        ) from e
+    
+    # Filter for DNG and JXL files
+    test_files = [
+        f for f in files_info 
+        if f["type"] == "file" and (f["name"].endswith(".dng") or 
+                                     f["name"].endswith(".jxl") or
+                                     f["name"].endswith(".csv") or
+                                     f["name"].endswith(".xlsx"))
+    ]
+    
+    if not test_files:
+        raise RuntimeError("No test files found in GitHub repository")
+    
+    # Calculate total size
+    total_size = sum(f["size"] for f in test_files)
+    
+    print(f"Downloading {len(test_files)} files ({total_size / 1024 / 1024:.1f} MB)...")
+    
+    # Download each file with progress bar
+    with tqdm(total=len(test_files), desc="Downloading test data", 
+              unit="file", ncols=80) as pbar:
+        for file_info in test_files:
+            filename = file_info["name"]
+            download_url = file_info["download_url"]
+            dest_path = dngfiles_dir / filename
+            
+            try:
+                # Download with streaming to handle large files
+                response = requests.get(download_url, stream=True, timeout=30)
+                response.raise_for_status()
+                
+                with open(dest_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                pbar.update(1)
+                
+            except Exception as e:
+                print(f"\nWarning: Failed to download {filename}: {e}")
+                # Continue with other files
+    
+    print("="*70)
+    print(f"Download complete. Files saved to: {dngfiles_dir}")
+    print("="*70 + "\n")
 
 
 # =============================================================================
