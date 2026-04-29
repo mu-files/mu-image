@@ -830,7 +830,7 @@ def dng_convert(
 ):
     """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
     import numpy as np
-    import re
+    import time
     from .dngio import DngFile
     from .imgio import convert_dng
     
@@ -849,6 +849,7 @@ def dng_convert(
         params['orientation'] = orientation
     
     # Convert DNG
+    t_start = time.perf_counter()
     try:
         # Open DNG and select page
         with DngFile(input_file) as dng:
@@ -906,7 +907,8 @@ def dng_convert(
                 photometric = file_arg.photometric_name
             w, h = file_arg.get_rendered_size()
             
-            click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file}")
+            elapsed_ms = (time.perf_counter() - t_start) * 1000
+            click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file} in {elapsed_ms:.0f}ms")
             
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

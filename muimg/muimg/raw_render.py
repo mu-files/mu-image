@@ -376,6 +376,8 @@ def convert_colorspace(
     Returns:
         Converted image (H, W, 3) in destination color space with output_dtype
     """
+    import time
+    
     if source_space == dest_space and image.dtype == output_dtype:
         return image
     
@@ -407,6 +409,7 @@ def convert_colorspace(
     
     # Step 2: Convert between linear color spaces if needed
     if source_linear != dest_linear:
+        t0 = time.perf_counter()
         # ProPhoto (D50) ↔ sRGB (D65)
         if source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
             d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
@@ -437,17 +440,28 @@ def convert_colorspace(
         elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
             matrix = XYZ_D65_TO_SRGB @ ADOBERGB_TO_XYZ_D65
             result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+        
+        logger.info(f"    Timing: colorspace_matrix = {(time.perf_counter() - t0)*1000:.1f}ms")
     
     # Step 3: Encode dest gamma if needed
     if dest_space == ColorSpace.PROPHOTO_GAMMA:
+        t0 = time.perf_counter()
         result = _prophoto_gamma(result)
+        logger.info(f"    Timing: gamma_encode = {(time.perf_counter() - t0)*1000:.1f}ms")
     elif dest_space == ColorSpace.ADOBERGB_GAMMA:
+        t0 = time.perf_counter()
         result = _adobergb_gamma(result)
+        logger.info(f"    Timing: gamma_encode = {(time.perf_counter() - t0)*1000:.1f}ms")
     elif dest_space == ColorSpace.SRGB_GAMMA:
+        t0 = time.perf_counter()
         result = _raw_render.srgb_gamma(result, 0)  # 0 = encode
+        logger.info(f"    Timing: gamma_encode = {(time.perf_counter() - t0)*1000:.1f}ms")
     
     # Step 4: Convert to output_dtype
-    return convert_dtype(result, output_dtype)
+    t0 = time.perf_counter()
+    result_final = convert_dtype(result, output_dtype)
+    logger.info(f"    Timing: dtype_conversion = {(time.perf_counter() - t0)*1000:.1f}ms")
+    return result_final
 
 
 def build_lut_from_spline(
@@ -2708,6 +2722,7 @@ def apply_post_rendering_operations(
     Returns:
         Output image in dest_colorspace with output_dtype
     """
+    import time
     
     # Early return if no rendering params - just convert colorspace directly
     if not rendering_params:
@@ -2805,7 +2820,9 @@ def apply_post_rendering_operations(
                     logger.debug(f"SensorFormatFactor not found, using default sensor width {sensor_width_mm}mm")
                 
                 logger.debug(f"Radial distortion params: {radial_params}, scale_factor: {scale_factor}, center: ({center_x}, {center_y}), focal_length: {focal_length_mm}mm")
+                t0 = time.perf_counter()
                 rgb_output = apply_radial_distortion_correction(rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
+                logger.info(f"    Timing: lens_correction = {(time.perf_counter() - t0)*1000:.1f}ms")
                 logger.debug("Applied radial distortion correction")
     
     # Step 4: Convert from ProPhoto linear to dest_colorspace and output_dtype
@@ -2871,8 +2888,6 @@ def _render_camera_rgb(
     use_xmp: bool = True,
 ) -> np.ndarray:
     import time
-
-    timings = {}
 
     try:
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
@@ -3031,7 +3046,7 @@ def _render_camera_rgb(
         t0 = time.perf_counter()
         rgb_clipped = np.minimum(rgb_camera, camera_white.astype(np.float32))
         rgb_prophoto = _raw_render.matrix_transform(rgb_clipped, camera_to_prophoto.astype(np.float32))
-        timings['matrix_camera_to_prophoto'] = time.perf_counter() - t0
+        logger.info(f"    Timing: camera_to_prophoto = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         # =====================================================================
         # Step 1.5: DoBaselineHueSatMap (ProfileHueSatMap)
@@ -3064,7 +3079,7 @@ def _render_camera_rgb(
                 hue_sat_map,
                 hue_divs, sat_divs, val_divs
             )
-            timings['hue_sat_map'] = time.perf_counter() - t0
+            logger.info(f"    Timing: hue_sat_map = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         # =====================================================================
         # Step 1.6: DoBaselineProfileGainTableMap
@@ -3125,7 +3140,7 @@ def _render_camera_rgb(
                 )
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap ({type(e).__name__}): {e}")
-            timings["profile_gain_table_map"] = time.perf_counter() - t0
+            logger.info(f"    Timing: profile_gain_table_map = {(time.perf_counter() - t0)*1000:.1f}ms")
 
         # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
@@ -3181,7 +3196,7 @@ def _render_camera_rgb(
             rgb_exposed = _raw_render.apply_curve(
                 rgb_prophoto.astype(np.float32), exposure_ramp_lut
             )
-            timings['exposure_ramp'] = time.perf_counter() - t0
+            logger.info(f"    Timing: exposure_ramp = {(time.perf_counter() - t0)*1000:.1f}ms")
             
             t0 = time.perf_counter()
             rgb_exposed = _raw_render.apply_hue_sat_map(
@@ -3189,7 +3204,7 @@ def _render_camera_rgb(
                 look_table,
                 look_hue_divs, look_sat_divs, look_val_divs
             )
-            timings['look_table'] = time.perf_counter() - t0
+            logger.info(f"    Timing: look_table = {(time.perf_counter() - t0)*1000:.1f}ms")
             
             # Start combined curve with identity (exposure_ramp already applied to pixels)
             lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
@@ -3197,7 +3212,6 @@ def _render_camera_rgb(
         else:
             # No look_table: exposure_ramp will be baked into tone curve
             rgb_exposed = rgb_prophoto
-            timings['exposure_ramp'] = 0.0
             
             # Start combined curve with exposure_ramp
             combined_curve = exposure_ramp_lut
@@ -3243,14 +3257,13 @@ def _render_camera_rgb(
             rgb_exposed.astype(np.float32), combined_curve
         )
         
-        timings['tone_curve'] = time.perf_counter() - t0
+        logger.info(f"    Timing: tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         # =====================================================================
         # Step 4-5: Apply XMP post-rendering, color space conversion, and dtype conversion
         # SDK ref: dng_render.cpp lines 2040-2068
         # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
         # =====================================================================
-        t0 = time.perf_counter()
         result = apply_post_rendering_operations(
             rgb_toned,
             rendering_params,
@@ -3258,7 +3271,6 @@ def _render_camera_rgb(
             dest_colorspace=ColorSpace.SRGB_GAMMA,
             output_dtype=output_dtype
         )
-        timings['xmp_post_rendering'] = time.perf_counter() - t0
         
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
@@ -3269,7 +3281,7 @@ def _render_camera_rgb(
             orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
-        timings['orientation'] = time.perf_counter() - t0
+        logger.info(f"    Timing: orientation = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         return result
 

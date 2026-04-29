@@ -496,29 +496,37 @@ class DngPage(TiffPage):
         return self._decode_segmented(decode_tile)
 
     def _stage1(self) -> DngPage._RawStage | None:
+        import time
+        
         if self.is_cfa:
+            t0 = time.perf_counter()
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_cfa = self._decode_jpegxl()
             elif self.compression == COMPRESSION.JPEG:
                 raw_cfa = self._decode_jpeg_cfa()
             else:
                 raw_cfa = self.asarray()
+            logger.info(f"    Timing: decode_cfa = {(time.perf_counter() - t0)*1000:.1f}ms")
 
             col_interleave = self.get_tag("ColumnInterleaveFactor")
             row_interleave = self.get_tag("RowInterleaveFactor")
             if col_interleave == 2 and row_interleave == 2:
+                t0 = time.perf_counter()
                 raw_cfa = deswizzle_cfa_data(raw_cfa)
+                logger.info(f"    Timing: deswizzle_cfa = {(time.perf_counter() - t0)*1000:.1f}ms")
 
             cfa_str = self.get_tag("CFAPattern", str)
             return self._RawStage(data=raw_cfa, cfa_pattern=cfa_str)
 
         if self.is_linear_raw:
+            t0 = time.perf_counter()
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_linear = self._decode_jpegxl()
             elif self.compression == COMPRESSION.JPEG:
                 raw_linear = self._decode_jpeg_linear_raw()
             else:
                 raw_linear = self.asarray()
+            logger.info(f"    Timing: decode_linear_raw = {(time.perf_counter() - t0)*1000:.1f}ms")
             return self._RawStage(data=raw_linear)
 
         return None
@@ -526,6 +534,7 @@ class DngPage(TiffPage):
     def _stage2(
         self, stage1: "DngPage._RawStage", apply_ops2: bool = True
     ) -> "DngPage._RawStage":
+        import time
         photometric = self.photometric_name
         if photometric == "CFA":
             samples_per_pixel = 1
@@ -606,6 +615,7 @@ class DngPage(TiffPage):
         data = stage1.data
         opcode_list1 = self.get_tag("OpcodeList1")
         if opcode_list1 is not None:
+            t0 = time.perf_counter()
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list1))
             except Exception as e:
@@ -616,6 +626,7 @@ class DngPage(TiffPage):
                 try:
                     logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
                     data = raw_render.apply_opcodes_cfa(data, opcodes, "OpcodeList1")
+                    logger.info(f"    Timing: opcode_list1 = {(time.perf_counter() - t0)*1000:.1f}ms")
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
 
@@ -624,6 +635,7 @@ class DngPage(TiffPage):
             aa_top, aa_left, aa_bottom, aa_right = active_area
             data = data[aa_top:aa_bottom, aa_left:aa_right]
 
+        t0 = time.perf_counter()
         normalized = raw_render._raw_render.normalize_raw(
             data=data.astype(np.float32),
             black_level=black_level,
@@ -635,6 +647,7 @@ class DngPage(TiffPage):
             black_delta_v=black_delta_v,
             linearization_table=linearization_table,
         )
+        logger.info(f"    Timing: linearize = {(time.perf_counter() - t0)*1000:.1f}ms")
 
         stage2 = self._RawStage(data=normalized, cfa_pattern=stage1.cfa_pattern)
 
@@ -643,6 +656,7 @@ class DngPage(TiffPage):
 
         opcode_list2 = self.get_tag("OpcodeList2")
         if opcode_list2 is not None:
+            t0 = time.perf_counter()
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
             except Exception as e:
@@ -660,12 +674,14 @@ class DngPage(TiffPage):
                             use_bicubic=False,
                             opcode_list_name="OpcodeList2"
                         )
+                        logger.info(f"    Timing: opcode_list2 = {(time.perf_counter() - t0)*1000:.1f}ms")
                         return self._RawStage(data=data_ops)
                     else:
                         # CFA data
                         data_ops = raw_render.apply_opcodes_cfa(
                             stage2.data, opcodes, "OpcodeList2"
                         )
+                        logger.info(f"    Timing: opcode_list2 = {(time.perf_counter() - t0)*1000:.1f}ms")
                         return self._RawStage(
                             data=data_ops, cfa_pattern=stage2.cfa_pattern
                         )
@@ -764,6 +780,8 @@ class DngPage(TiffPage):
         Returns:
             Camera RGB array (H, W, 3) float32 in [0, 1], or None if extraction fails.
         """
+        import time
+        
         # Validate this is a raw page
         if not (self.is_cfa or self.is_linear_raw):
             raise ValueError(
@@ -794,6 +812,7 @@ class DngPage(TiffPage):
         # Apply OpcodeList3 (Stage3 operations)
         opcode_list3 = self.get_tag("OpcodeList3")
         if opcode_list3 is not None:
+            t0 = time.perf_counter()
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list3))
             except Exception as e:
@@ -808,6 +827,7 @@ class DngPage(TiffPage):
                         use_bicubic=False,
                         opcode_list_name="OpcodeList3"
                     )
+                    logger.info(f"    Timing: opcode_list3 = {(time.perf_counter() - t0)*1000:.1f}ms")
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
 
