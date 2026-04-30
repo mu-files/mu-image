@@ -1073,30 +1073,32 @@ def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
     Returns:
         Value converted to target byte order
     """
-    import sys
-    system_byteorder = '<' if sys.byteorder == 'little' else '>'
-
-    # Resolve '=' to actual system byte order
-    if target_byteorder == '=':
-        target_byteorder = system_byteorder
-    
     # Multi-byte typed arrays - always convert to explicit byte order
-    if isinstance(value, np.ndarray) and value.dtype.byteorder not in ('|', target_byteorder):
-        # Convert to target byte order with explicit marker
-        # This handles both actual byte swapping and normalizing '=' to explicit byte order
-        base_dtype = value.dtype.str[1:]  # Remove byte order prefix
-        target_dtype = f'{target_byteorder}{base_dtype}'
-        result = value.astype(target_dtype)
+    if isinstance(value, np.ndarray):
         
+        # Resolve '=' to actual system byte order
+        if target_byteorder == '=':
+            import sys
+            target_byteorder = '<' if sys.byteorder == 'little' else '>'
+
         # WINDOWS-SPECIFIC FIX: On Windows, uint32 arrays have dtype.char='L' instead of 'I'
         # tifffile validates dtype.char and expects 'I' for TIFF LONG (uint32)
-        # Use struct format string to recreate array with correct char
         import platform
-        if platform.system() == 'Windows' and result.dtype.kind == 'u' and result.dtype.itemsize == 4:
+        if platform.system() == 'Windows' and value.dtype.kind == 'u' and value.dtype.itemsize == 4:
             # Recreate uint32 array using struct format to get dtype.char='I'
-            result = np.array(result, dtype=f'{target_byteorder}I')
+            # This also sets the correct byte order, so we can return immediately
+            return value.astype(f'{target_byteorder}I')
         
-        return result
+        # Check if already in target byte order using dtype.str[0]
+        # dtype.str[0] is more reliable than dtype.byteorder which can report '=' even after conversion
+        if value.dtype.str[0] not in ('|', target_byteorder):
+            # Convert to target byte order with explicit marker
+            # This handles both actual byte swapping and normalizing '=' to explicit byte order
+            base_dtype = value.dtype.str[1:]  # Remove byte order prefix
+            target_dtype = f'{target_byteorder}{base_dtype}'
+            return value.astype(target_dtype)
+        
+        return value
     
     return value
 

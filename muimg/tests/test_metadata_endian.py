@@ -55,7 +55,8 @@ def create_test_tiff(path: Path, byteorder: str):
     float_array = np.arange(100, dtype=f'{byteorder}f4') + 1.5
     
     # Test values for uint32 array (100 elements)
-    uint32_array = np.arange(100, dtype=f'{byteorder}u4') + 100
+    # Use struct format 'I' instead of 'u4' to get correct dtype.char on Windows
+    uint32_array = np.arange(100, dtype=f'{byteorder}I') + 100
     
     # Write TIFF file with specified byte order
     with tifffile.TiffWriter(path, byteorder=byteorder) as tif:
