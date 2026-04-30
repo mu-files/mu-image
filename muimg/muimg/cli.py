@@ -4,6 +4,7 @@
 """Command-line interface for muimg."""
 
 import logging
+import platform
 import sys
 from pathlib import Path
 
@@ -12,6 +13,29 @@ import click
 from .raw_render import DemosaicAlgorithm
 
 logger = logging.getLogger(__name__)
+
+
+def safe_echo(message, **kwargs):
+    """Wrapper around click.echo that handles Windows console encoding issues.
+    
+    On Windows, sanitizes text to avoid UnicodeEncodeError with cp1252 encoding.
+    On Unix systems (Mac/Linux/Raspberry Pi), passes text through unchanged.
+    
+    Args:
+        message: Text to print
+        **kwargs: Additional arguments to pass to click.echo (err, nl, color, etc.)
+    """
+    if platform.system() == 'Windows' and isinstance(message, str):
+        # Remove BOM and other problematic Unicode characters
+        sanitized = message.replace('\ufeff', '').replace('\u200b', '')
+        # Try to encode to cp1252, fall back to ASCII if needed
+        try:
+            sanitized.encode('cp1252')
+        except UnicodeEncodeError:
+            sanitized = sanitized.encode('ascii', errors='replace').decode('ascii')
+        click.echo(sanitized, **kwargs)
+    else:
+        click.echo(message, **kwargs)
 
 
 
@@ -369,7 +393,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     
     def echo(text):
         """Helper to echo with indentation."""
-        click.echo(f"{indent}{text}")
+        safe_echo(f"{indent}{text}")
     
     # For unknown tags, show tag code and type info
     is_unknown = tag_name.startswith("Tag") and tag_code is not None

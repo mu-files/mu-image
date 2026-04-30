@@ -103,8 +103,10 @@ def test_endian_roundtrip_matrix(
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
-        source_path = tmpdir / f"source_{source_order}.tif"
-        dest_path = tmpdir / f"dest_{dest_order}.tif"
+        source_name = 'BE' if source_order == '>' else 'LE'
+        dest_name = 'BE' if dest_order == '>' else 'LE'
+        source_path = tmpdir / f"source_{source_name}.tif"
+        dest_path = tmpdir / f"dest_{dest_name}.tif"
         
         # Determine array size
         size = small_size if array_size_type == "small" else large_size
