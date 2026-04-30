@@ -1,3 +1,7 @@
+<p align="center" style="background-color: white; padding: 20px 0; margin: 0 0 30px 0;">
+  <img src="assets/muIcon_muimg_full.svg" alt="muimg logo" width="400">
+</p>
+
 # muimg
 
 This package is part of the mu-image project and provides utilities for working with raw image data, including DNG file generation.

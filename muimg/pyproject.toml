@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260430.1315"
+version = "0.1.20260430.1644"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -17,7 +17,7 @@ dependencies = [
     "av",                               # 22 MB
     "click",                            # 108 KB
     "defusedxml",                       # 25 KB
-    "google-auth>=2.0.0",               # 235 KB
+    "google-auth>=2.0.0",               # 241 KB
     "google-auth-oauthlib>=1.0.0",      # 19 KB
     "imagecodecs>=2026.3.6",            # 13 MB
     "numpy",                            # 6.2 MB
