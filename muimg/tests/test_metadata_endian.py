@@ -151,11 +151,11 @@ def test_endian_roundtrip_matrix(
         from muimg.dngio import _TIFFWRITER_MANAGED_TAGS
         managed_codes = {TIFF.TAGS.get(name) for name in _TIFFWRITER_MANAGED_TAGS if name in TIFF.TAGS}
         
-        source_tif = tifffile.TiffFile(source_path)
-        source_tags = MetadataTags()
-        for tag in source_tif.pages[0].tags.values():
-            if tag.code not in managed_codes:
-                source_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+        with tifffile.TiffFile(source_path) as source_tif:
+            source_tags = MetadataTags()
+            for tag in source_tif.pages[0].tags.values():
+                if tag.code not in managed_codes:
+                    source_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
         
         # Write to dest file
         with tifffile.TiffWriter(dest_path, byteorder=dest_order) as tif:
@@ -168,18 +168,18 @@ def test_endian_roundtrip_matrix(
             )
         
         # Read back via tifffile
-        dest_tif = tifffile.TiffFile(dest_path)
-        tifffile_value = dest_tif.pages[0].tags[65001].value
-        
-        # Read back via MetadataTags
-        dest_tags = MetadataTags()
-        for tag in dest_tif.pages[0].tags.values():
-            dest_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
-        metadata_value = None
-        for code, dtype, count, value, _ in dest_tags:
-            if code == 65001:
-                metadata_value = value
-                break
+        with tifffile.TiffFile(dest_path) as dest_tif:
+            tifffile_value = dest_tif.pages[0].tags[65001].value
+            
+            # Read back via MetadataTags
+            dest_tags = MetadataTags()
+            for tag in dest_tif.pages[0].tags.values():
+                dest_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+            metadata_value = None
+            for code, dtype, count, value, _ in dest_tags:
+                if code == 65001:
+                    metadata_value = value
+                    break
         
         # Convert to arrays for comparison
         if isinstance(tifffile_value, bytes):
@@ -276,51 +276,50 @@ def test_float_array_native_byteorder_bug():
             )
         
         print(f"Wrote to big-endian file: {dest_path}")
-        
-        # Read back
-        dest_tif = tifffile.TiffFile(dest_path)
-        dest_page = dest_tif.pages[0]
-        
-        # Verify file is big-endian
-        assert dest_tif.byteorder == '>', "Destination file should be big-endian"
-        print(f"File byteorder: {dest_tif.byteorder}")
-        
-        # Get the float array back
-        read_value = dest_page.tags[65001].value
-        
-        print(f"\nRead back: type={type(read_value)}")
-        if isinstance(read_value, np.ndarray):
-            print(f"  dtype={read_value.dtype}, byteorder={read_value.dtype.byteorder}")
-        
-        if isinstance(read_value, tuple):
-            print(f"  Converting tuple to array")
-            read_value = np.array(read_value, dtype=np.float32)
-        
-        if isinstance(read_value, np.ndarray):
-            print(f"Read values (first 5): {read_value[:5]}")
-        else:
-            print(f"Read values (first 5): {read_value[:5]}")
-        
-        # This should FAIL because the values will be corrupted
-        # Original first 5: [1.5, 2.5, 3.5, 4.5, 5.5]
-        # Corrupted: [8.96831e-44, 4.60060e-41, ...] (garbage)
-        print(f"\nComparing first 5 values:")
-        print(f"  Expected: {original_values[:5]}")
-        if isinstance(read_value, np.ndarray):
-            print(f"  Got:      {read_value[:5]}")
-        else:
-            print(f"  Got:      {np.array(read_value[:5])}")
-        
-        # Compare first 5 values
-        expected_first_5 = original_values[:5]
-        if isinstance(read_value, np.ndarray):
-            actual_first_5 = read_value[:5]
-        else:
-            actual_first_5 = np.array(read_value[:5], dtype=np.float32)
-        
-        np.testing.assert_array_almost_equal(actual_first_5, expected_first_5, decimal=5,
-            err_msg=f"Float array corrupted when writing byteorder='=' to big-endian file. "
-                    f"Expected {expected_first_5}, got {actual_first_5}")
+
+        with tifffile.TiffFile(dest_path) as dest_tif:
+            dest_page = dest_tif.pages[0]
+            
+            # Verify file is big-endian
+            assert dest_tif.byteorder == '>', "Destination file should be big-endian"
+            print(f"File byteorder: {dest_tif.byteorder}")
+            
+            # Get the float array back
+            read_value = dest_page.tags[65001].value
+            
+            print(f"\nRead back: type={type(read_value)}")
+            if isinstance(read_value, np.ndarray):
+                print(f"  dtype={read_value.dtype}, byteorder={read_value.dtype.byteorder}")
+            
+            if isinstance(read_value, tuple):
+                print(f"  Converting tuple to array")
+                read_value = np.array(read_value, dtype=np.float32)
+            
+            if isinstance(read_value, np.ndarray):
+                print(f"Read values (first 5): {read_value[:5]}")
+            else:
+                print(f"Read values (first 5): {read_value[:5]}")
+            
+            # This should FAIL because the values will be corrupted
+            # Original first 5: [1.5, 2.5, 3.5, 4.5, 5.5]
+            # Corrupted: [8.96831e-44, 4.60060e-41, ...] (garbage)
+            print(f"\nComparing first 5 values:")
+            print(f"  Expected: {original_values[:5]}")
+            if isinstance(read_value, np.ndarray):
+                print(f"  Got:      {read_value[:5]}")
+            else:
+                print(f"  Got:      {np.array(read_value[:5])}")
+            
+            # Compare first 5 values
+            expected_first_5 = original_values[:5]
+            if isinstance(read_value, np.ndarray):
+                actual_first_5 = read_value[:5]
+            else:
+                actual_first_5 = np.array(read_value[:5], dtype=np.float32)
+            
+            np.testing.assert_array_almost_equal(actual_first_5, expected_first_5, decimal=5,
+                err_msg=f"Float array corrupted when writing byteorder='=' to big-endian file. "
+                        f"Expected {expected_first_5}, got {actual_first_5}")
 
 
 def test_byte_array_endianness():
@@ -344,16 +343,16 @@ def test_byte_array_endianness():
         create_test_tiff(le_path, '<')
         
         # Read big-endian file
-        be_tif = tifffile.TiffFile(be_path)
-        be_page = be_tif.pages[0]
-        
-        # Get tags through MetadataTags
-        be_tags = MetadataTags()
-        for tag in be_page.tags.values():
-            be_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
-        
-        # Get byte array
-        be_byte_array = be_tags.get_tag(TAG_TEST_BYTE_ARRAY)
+        with tifffile.TiffFile(be_path) as be_tif:
+            be_page = be_tif.pages[0]
+            
+            # Get tags through MetadataTags
+            be_tags = MetadataTags()
+            for tag in be_page.tags.values():
+                be_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+            
+            # Get byte array
+            be_byte_array = be_tags.get_tag(TAG_TEST_BYTE_ARRAY)
         
         # Byte arrays should be returned as bytes or ndarray with byteorder='|'
         if isinstance(be_byte_array, bytes):
@@ -368,14 +367,14 @@ def test_byte_array_endianness():
             pytest.fail(f"Unexpected type for byte array: {type(be_byte_array)}")
         
         # Read little-endian file
-        le_tif = tifffile.TiffFile(le_path)
-        le_page = le_tif.pages[0]
-        
-        le_tags = MetadataTags()
-        for tag in le_page.tags.values():
-            le_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
-        
-        le_byte_array = le_tags.get_tag(TAG_TEST_BYTE_ARRAY)
+        with tifffile.TiffFile(le_path) as le_tif:
+            le_page = le_tif.pages[0]
+            
+            le_tags = MetadataTags()
+            for tag in le_page.tags.values():
+                le_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+            
+            le_byte_array = le_tags.get_tag(TAG_TEST_BYTE_ARRAY)
         
         # Byte arrays should be returned as bytes or ndarray with byteorder='|'
         if isinstance(le_byte_array, bytes):
@@ -408,20 +407,18 @@ def test_cross_endian_detection():
         create_test_tiff(le_path, '<')
         
         # Read both
-        be_tif = tifffile.TiffFile(be_path)
-        le_tif = tifffile.TiffFile(le_path)
-        
-        be_tags = MetadataTags()
-        for tag in be_tif.pages[0].tags.values():
-            be_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
-        
-        le_tags = MetadataTags()
-        for tag in le_tif.pages[0].tags.values():
-            le_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
-        
-        # Get byte arrays
-        be_bytes = be_tags.get_tag(TAG_TEST_BYTE_ARRAY)
-        le_bytes = le_tags.get_tag(TAG_TEST_BYTE_ARRAY)
+        with tifffile.TiffFile(be_path) as be_tif, tifffile.TiffFile(le_path) as le_tif:
+            be_tags = MetadataTags()
+            for tag in be_tif.pages[0].tags.values():
+                be_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+            
+            le_tags = MetadataTags()
+            for tag in le_tif.pages[0].tags.values():
+                le_tags.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
+            
+            # Get byte arrays
+            be_bytes = be_tags.get_tag(TAG_TEST_BYTE_ARRAY)
+            le_bytes = le_tags.get_tag(TAG_TEST_BYTE_ARRAY)
         
         # Byte arrays should NOT have byte order information (expected limitation)
         if isinstance(be_bytes, np.ndarray) and isinstance(le_bytes, np.ndarray):
