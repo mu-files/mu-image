@@ -1086,7 +1086,17 @@ def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
         # This handles both actual byte swapping and normalizing '=' to explicit byte order
         base_dtype = value.dtype.str[1:]  # Remove byte order prefix
         target_dtype = f'{target_byteorder}{base_dtype}'
-        return value.astype(target_dtype)
+        result = value.astype(target_dtype)
+        
+        # WINDOWS-SPECIFIC FIX: On Windows, uint32 arrays have dtype.char='L' instead of 'I'
+        # tifffile validates dtype.char and expects 'I' for TIFF LONG (uint32)
+        # Use struct format string to recreate array with correct char
+        import platform
+        if platform.system() == 'Windows' and result.dtype.kind == 'u' and result.dtype.itemsize == 4:
+            # Recreate uint32 array using struct format to get dtype.char='I'
+            result = np.array(result, dtype=f'{target_byteorder}I')
+        
+        return result
     
     return value
 
