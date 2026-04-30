@@ -6,16 +6,17 @@
 Provides shared test utilities for DNG validation and comparison.
 """
 
+import logging
 import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
-import requests
 import tifffile
-from tqdm import tqdm
 
 from muimg.raw_render import convert_dtype
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -24,81 +25,86 @@ from muimg.raw_render import convert_dtype
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_test_data():
-    """Download test data from GitHub if not present.
+    """Clone test data repository from GitHub if not present.
     
     This fixture runs once per test session before any tests execute.
-    If the dngfiles directory is missing or empty, it downloads all
-    test files from the GitHub repository.
+    If the dngfiles directory is not a git repository, it clones the
+    mu-image-testdata repository. If it exists, it pulls the latest changes.
     """
     dngfiles_dir = Path(__file__).parent / "dngfiles"
     
-    # Check if directory exists and has DNG files
-    if dngfiles_dir.exists() and list(dngfiles_dir.glob("*.dng")):
-        return  # Files already present, skip download
+    # Check if dngfiles is already a git repository
+    if (dngfiles_dir / ".git").exists():
+        # Already cloned, pull latest changes
+        print("\n" + "="*70)
+        print("Updating test data from GitHub...")
+        print("="*70)
+        try:
+            subprocess.run(
+                ["git", "pull"],
+                cwd=dngfiles_dir,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print("Test data updated successfully")
+            print("="*70 + "\n")
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Failed to update test data: {e.stderr}")
+            print("Continuing with existing test data...")
+            print("="*70 + "\n")
+        return
     
-    # Create directory if it doesn't exist
-    dngfiles_dir.mkdir(exist_ok=True)
+    # Not cloned yet, clone the repository
+    import threading
+    import time
     
-    print("\n" + "="*70)
-    print("Test data not found. Downloading from GitHub...")
-    print("="*70)
+    # Get repository size from GitHub API
+    import requests
+    try:
+        response = requests.get("https://api.github.com/repos/mu-files/mu-image-testdata", timeout=5)
+        repo_info = response.json()
+        expected_mb = repo_info.get("size", 80000) / 1024  # GitHub returns size in KB
+    except Exception:
+        expected_mb = 80  # Fallback if API call fails
     
-    # Get list of files from GitHub API
-    api_url = "https://api.github.com/repos/mu-files/mu-image/contents/muimg/tests/dngfiles"
+    logger.warning("=" * 70)
+    logger.warning(f"Downloading test data from GitHub (~{int(expected_mb)} MB)...")
+    logger.warning("Repository: git@github.com:mu-files/mu-image-testdata.git")
+    logger.warning("This may take a minute...")
+    logger.warning("=" * 70)
+    
+    # Progress indicator
+    stop_progress = threading.Event()
+    
+    def show_progress():
+        while not stop_progress.is_set():
+            time.sleep(2)
+            if not stop_progress.is_set() and dngfiles_dir.exists():
+                # Calculate size of downloaded files
+                total_size = sum(f.stat().st_size for f in dngfiles_dir.rglob('*') if f.is_file())
+                mb_downloaded = total_size / (1024 * 1024)
+                percent = min(99, int((mb_downloaded / expected_mb) * 100))
+                logger.warning(f"Downloading... {percent}% ({mb_downloaded:.1f}/{int(expected_mb)} MB)")
+    
+    progress_thread = threading.Thread(target=show_progress, daemon=True)
+    progress_thread.start()
     
     try:
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        files_info = response.json()
-    except Exception as e:
+        subprocess.run(
+            ["git", "clone", "--quiet", "git@github.com:mu-files/mu-image-testdata.git", str(dngfiles_dir)],
+            check=True
+        )
+        stop_progress.set()
+        progress_thread.join(timeout=1)
+        logger.warning("✓ Test data downloaded successfully!")
+        logger.warning("=" * 70)
+    except subprocess.CalledProcessError as e:
         raise RuntimeError(
-            f"Failed to fetch test data file list from GitHub: {e}\n"
-            f"URL: {api_url}"
+            f"Failed to clone test data repository.\n"
+            f"Make sure SSH keys are configured for GitHub access.\n"
+            f"Repository: git@github.com:mu-files/mu-image-testdata.git"
         ) from e
-    
-    # Filter for DNG and JXL files
-    test_files = [
-        f for f in files_info 
-        if f["type"] == "file" and (f["name"].endswith(".dng") or 
-                                     f["name"].endswith(".jxl") or
-                                     f["name"].endswith(".csv") or
-                                     f["name"].endswith(".xlsx"))
-    ]
-    
-    if not test_files:
-        raise RuntimeError("No test files found in GitHub repository")
-    
-    # Calculate total size
-    total_size = sum(f["size"] for f in test_files)
-    
-    print(f"Downloading {len(test_files)} files ({total_size / 1024 / 1024:.1f} MB)...")
-    
-    # Download each file with progress bar
-    with tqdm(total=len(test_files), desc="Downloading test data", 
-              unit="file", ncols=80) as pbar:
-        for file_info in test_files:
-            filename = file_info["name"]
-            download_url = file_info["download_url"]
-            dest_path = dngfiles_dir / filename
-            
-            try:
-                # Download with streaming to handle large files
-                response = requests.get(download_url, stream=True, timeout=30)
-                response.raise_for_status()
-                
-                with open(dest_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                
-                pbar.update(1)
-                
-            except Exception as e:
-                print(f"\nWarning: Failed to download {filename}: {e}")
-                # Continue with other files
-    
-    print("="*70)
-    print(f"Download complete. Files saved to: {dngfiles_dir}")
-    print("="*70 + "\n")
 
 
 # =============================================================================

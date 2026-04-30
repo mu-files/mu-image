@@ -115,5 +115,8 @@ Desktop.ini
 # Test output files
 muimg/tests/test_outputs/
 
+# Test data repository (cloned on-demand from mu-image-testdata)
+muimg/tests/dngfiles/
+
 # GPL-licensed RCD demosaic (user-enabled, not distributed)
 muimg/c-src/demosaic/rcd.c

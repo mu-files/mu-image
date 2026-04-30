@@ -45,7 +45,6 @@ MEAN_DIFF_THRESHOLD = 1.5  # Mean difference as percentage (0-100 scale)
 P99_DIFF_THRESHOLD = 7.0   # P99 difference as percentage (0-100 scale)
 
 
-@pytest.mark.skipif(not TEST_DNG.exists(), reason="Test DNG file not found")
 @pytest.mark.skipif(
     not core_image_available_for_tests(), reason="Core Image not available"
 )
@@ -163,7 +162,6 @@ def test_convert_imgformat_sdk_vs_coreimage():
     )
 
 
-@pytest.mark.skipif(not TEST_DNG.exists(), reason="Test DNG file not found")
 def test_convert_imgformat_to_file():
     """Test basic convert_imgformat to file."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,7 +183,6 @@ def test_convert_imgformat_to_file():
         assert img.shape[2] == 3, "Output should be RGB"
 
 
-@pytest.mark.skipif(not TEST_DNG.exists(), reason="Test DNG file not found")
 def test_convert_imgformat_to_stream():
     """Test basic convert_imgformat_to_stream."""
     png_stream = convert_imgformat_to_stream(
