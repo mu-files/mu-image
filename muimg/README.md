@@ -1,5 +1,5 @@
 <p align="center" style="background-color: white; padding: 20px 0; margin: 0 0 30px 0;">
-  <img src="assets/muIcon_muimg_full.svg" alt="muimg logo" width="400">
+  <img src="assets/muIcon_muimg_full.png" alt="muimg logo" width="400">
 </p>
 
 # muimg
