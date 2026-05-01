@@ -4,6 +4,8 @@
 
 # muimg
 
+[![License](https://img.shields.io/badge/License-PolyForm%20Small%20Business-blue.svg)](LICENSE)
+
 Python library for reading, writing, and rendering Adobe DNG (Digital Negative) raw image files. Provides both a comprehensive Python API and command-line tools for DNG manipulation, rendering, metadata handling, and multi-threaded batch processing. Performance-critical operations are implemented in C/C++ extensions, but this initial (May 1, 2026) release prioritizes rendering correctness over speed optimization.
 
 ## Key Features
