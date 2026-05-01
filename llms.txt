@@ -16,13 +16,11 @@ See LICENSE (Section 5: AI TRAINING RESTRICTION) for legal terms.
 - This file (llms.txt)
 - muimg/tests/ - Test files showing API usage examples
 - muimg/examples/ - Example files showing API usage examples
-- muimg/muimg/cli.py - Command-line interface (demonstrates API usage)
 
 ## What Is Prohibited
 
-- Core implementation (muimg/muimg/*.py, except cli.py)
+- All core implementation (muimg/muimg/)
 - All C/C++ source code (muimg/c-src/)
-- Configuration files (.github/, pyproject.toml, setup.py)
 - Internal implementation details
 
 ## Legal Notice
