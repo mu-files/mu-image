@@ -4,18 +4,18 @@
 
 # muimg
 
-Python library for reading, writing, and rendering Adobe DNG (Digital Negative) raw image files. Provides both a comprehensive Python API and command-line tools for DNG manipulation, rendering, metadata handling, and multi-threaded batch processing. Performance-critical operations are implemented in C/C++ extensions, but this initial (May 1, 2006) release prioritizes rendering correctness over speed optimization.
+Python library for reading, writing, and rendering Adobe DNG (Digital Negative) raw image files. Provides both a comprehensive Python API and command-line tools for DNG manipulation, rendering, metadata handling, and multi-threaded batch processing. Performance-critical operations are implemented in C/C++ extensions, but this initial (May 1, 2026) release prioritizes rendering correctness over speed optimization.
 
 ## Key Features
 
-- **DNG Read/Write**: Full support for reading, writing, and modifying Adobe DNG (Digital Negative) files
-- **RAW Rendering Pipeline**: Complete implementation of DNG rendering pipeline (linearization, demosaicing, opcodes, color correction, tone curves). On macOS can opt between built-in renderer and coreimage renderer.
+- **DNG Read/Write**: Full support for reading, writing, and modifying Adobe DNG (Digital Negative) files.
+- **RAW Rendering Pipeline**: Complete implementation of DNG rendering pipeline (linearization, demosaicing, opcodes, color correction, tone curves). On macOS can opt between built-in renderer and Core Image renderer.
 - **Multiple Demosaicing Algorithms**: DNGSDK_BILINEAR, VNG, RCD (optional), OPENCV_EA
-- **XMP Support**: Renderer supports Temperature, Tint, Exposure, Curves, and radial distortion from XMP metadata
+- **XMP Support**: Renderer supports Temperature, Tint, Exposure, Curves, and radial distortion from XMP metadata.
 - **Metadata Handling**: User-friendly TIFF/EXIF/XMP tag handling with automatic type conversion
 - **Compression**: Uncompressed, JPEG, JPEG XL support
-- **CLI Tools**: Comprehensive command-line interface for DNG operations
-- **Batch Processing**: Multi-threaded batch conversion and video encoding
+- **CLI Tools**: Comprehensive command-line interface for DNG operations.
+- **Batch Processing**: Multi-threaded batch conversion and video encoding.
 
 ## Installation
 
@@ -84,7 +84,7 @@ dependencies = [
 
 ### Writing DNGs
 
-**`write_dng()`**: Most general function to create a DNG file. Takes an IFD0 spec and optional list of SubIFD specs (each can be `IfdPageSpec` or `IfdDataSpec`). Each spec describes the page data and how to encode it.
+**`write_dng()`**: The most general function to create a DNG file. Takes an IFD0 spec and optional list of SubIFD specs (each can be `IfdPageSpec` or `IfdDataSpec`). Each spec describes the page data and how to encode it.
 
 **`write_dng_from_page()`**: Create a DNG from an existing `DngPage` or `IfdPageSpec`. Supports transformations (scaling, demosaicing), compression transcoding (e.g., uncompressed to JXL), preview/pyramid generation, and tag manipulation.
 
@@ -94,9 +94,9 @@ dependencies = [
 
 **Pipeline control**: `ProcessingPipeline` class provides fine-grained control over batch processing with customizable producer/consumer/writer stages that decouple file I/O operations from pixel processing (e.g., decouple reading DngFile from disk and rendering it).
 
-**Image sequences**: `ImageSequencePipeline` - a `ProcessingPipeline` for processing sequences of image files and saving the results (.tiff/.jpg) to an output folder.
+**Image sequences**: `ImageSequencePipeline` is a `ProcessingPipeline` for processing sequences of image files and saving the results (.tiff/.jpg) to an output folder.
 
-**Video encoding**: `VideoEncodePipeline` - a `ProcessingPipeline` for encoding image sequences to video files with configurable codecs, resolution, and frame rates, and saving the result to a video file (.mp4).
+**Video encoding**: `VideoEncodePipeline` is a `ProcessingPipeline` for encoding image sequences to video files with configurable codecs, resolution, and frame rates, and saving the result to a video file (.mp4).
 
 **Parallelism**: Control parallelism with `--num-workers` flag in CLI or `num_workers` parameter in API. Default is 4 workers. Adjust based on CPU cores and memory availability.
 
@@ -104,7 +104,7 @@ dependencies = [
 
 **Tag management**: `MetadataTags.add_tag()` adds TIFF/EXIF tags with automatic type handling. `DngPage.get_page_tags()` returns a `MetadataTags` object with metadata for that page.
 
-**Type registry**: `TIFF_TAG_TYPE_REGISTRY` provides metadata about all supported TIFF/DNG tags including data types, valid IFDs, and enum mappings.
+**Type registry**: `TIFF_TAG_TYPE_REGISTRY` provides metadata about all supported TIFF/DNG tags, including data types, valid IFDs, and enum mappings.
 
 ## CLI Commands
 
@@ -143,7 +143,7 @@ muimg dng metadata input.dng --summary
 Extract raw data at specific pipeline stages:
 
 ```bash
-# Extract un-processed raw data
+# Extract unprocessed raw data
 muimg dng raw-stage input.dng output.tif raw
 
 # Extract after OpcodeList2
@@ -161,7 +161,7 @@ muimg dng raw-stage input.dng output.tif linearized --ifd subifd2
 Create a new DNG from source DNG with optional transformations:
 
 ```bash
-# Create a new dng file with main page transcoded to JXL
+# Create a new DNG file with the main page transcoded to JXL
 muimg dng copy input.dng output.dng --jxl-distance 0.5
 
 # Scale and demosaic
@@ -212,7 +212,7 @@ muimg dng batch-convert /path/to/dngs/ /path/to/output/ --format tif
 # Control parallelism (set to 8 here, default is 4 workers)
 muimg dng batch-convert /path/to/dngs/ /path/to/output/ --format tif --num-workers 8
 
-# With fixed rendering parameters for each image
+# Use fixed rendering parameters for each image
 muimg dng batch-convert /path/to/dngs/ /path/to/output/ \
   --format jxl --temperature 5500 --exposure 0.5
 
@@ -220,7 +220,7 @@ muimg dng batch-convert /path/to/dngs/ /path/to/output/ \
 # CSV format: filename,Temperature,Tint,Exposure2012,orientation
 muimg dng batch-convert settings.csv /path/to/output/ --format tif
 
-# Scaled output (uses efficient scaling rendering path)
+# Scaled output (uses the efficient scaling rendering path)
 muimg dng batch-convert /path/to/dngs/ /path/to/output/ --scale 0.5
 ```
 
@@ -306,11 +306,11 @@ venv/bin/pytest tests/test_cli.py -v -s --log-cli-level=INFO
 2. Build the `dng_validate` tool (see SDK documentation)
 3. Place the binary at the path specified in `tests/conftest.py` or update `DNG_VALIDATE_PATH`
 
-Tests will continue using muimg's built-in validator if `dng_validate` is not available.
+Tests always use muimg's built-in validator.
 
-**Note**: Test DNG files (~80 MB) are stored in a separate repository (`mu-files/mu-image-testdata`) and are automatically downloaded on the first test run.
+**Note**: Test image files (~80 MB) are stored in a separate repository (`mu-files/mu-image-testdata`) and are automatically downloaded on the first test run.
 
-**DNG Rendering** (`test_dng_render.py`): Tests the full rendering pipeline including linearization, demosaicing, color correction, tone curves, and output color space conversion for a variety of real camera DNG files (scaled to download-friendly resolution) and compares results against `dng_validate`.
+**DNG Rendering** (`test_dng_render.py`): Tests the full rendering pipeline, including linearization, demosaicing, color correction, tone curves, and output color space conversion for a variety of real camera DNG files (scaled to download-friendly resolution) and compares results against `dng_validate`.
 
 **Metadata Handling** (`test_metadata_*.py`): Tests TIFF tag reading/writing, endianness handling, XMP parsing, and Core Graphics metadata extraction on macOS.
 
@@ -320,7 +320,7 @@ Tests will continue using muimg's built-in validator if `dng_validate` is not av
 
 **CLI Commands** (`test_cli.py`): Tests command-line interface functionality.
 
-**Preview and Pyramid** (`test_preview_rendering.py`, `test_pyramid_subifd.py`): Tests thumbnail/preview generation and pyramid level creation.
+**Preview and Pyramid** (`test_preview_rendering.py`, `test_pyramid_subifd.py`): Tests thumbnail/preview generation and pyramid-level creation.
 
 **Demosaicing** (`test_demosaic.py`): Tests various demosaicing algorithms.
 
@@ -331,9 +331,9 @@ Tests will continue using muimg's built-in validator if `dng_validate` is not av
 The following DNG features are not yet implemented:
 
 - **Triple-illuminant**: Support for 3 calibration illuminants (ColorMatrix3, CalibrationIlluminant3)
-- **RGBTables**: DNG 1.6+ per-channel 1D LUTs
+- **RGBTables**: DNG version 1.6+ per-channel 1D LUTs
 - **ReductionMatrix**: Support for cameras with >3 color channels
-- **SemanticMasks**: DNG 1.6+ depth maps and segmentation masks
+- **SemanticMasks**: DNG v1.6+ depth maps and segmentation masks
 - **HDR/Overrange**: ProfileDynamicRange and extended dynamic range support
 
 See [docs/dng_render_pipeline.md](docs/dng_render_pipeline.md) for detailed implementation status of each pipeline stage.
@@ -352,7 +352,7 @@ The RCD (Ratio Corrected Demosaicing) algorithm is disabled by default because i
 
 By enabling RCD, you accept the GPL v3 license terms for that component. The RCD source is based on [Luis Sanz Rodríguez's implementation](https://github.com/LuisSR/RCD-Demosaicing).
 
-**Core Image Rendering**: On macOS, Core Image provides native DNG rendering. CPU rendering is the default as it's often faster than GPU for certain DNG types (e.g., iPhone linear DNGs). Use `--use-coreimage` flag in CLI or `use_coreimage_if_available=True` in API.
+**Core Image Rendering**: On macOS, Core Image provides native DNG rendering. Use `--use-coreimage` flag in CLI or `use_coreimage_if_available=True` in API.
 
 ## Technical Documentation
 
