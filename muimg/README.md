@@ -9,7 +9,7 @@ Python library for reading, writing, and rendering Adobe DNG (Digital Negative) 
 ## Key Features
 
 - **DNG Read/Write**: Full support for reading, writing, and modifying Adobe DNG (Digital Negative) files
-- **RAW Rendering Pipeline**: Complete implementation of DNG rendering pipeline (linearization, demosaicing, opcodes, color correction, tone curves). On MacOS can opt between built-in renderer and coreimage renderer.
+- **RAW Rendering Pipeline**: Complete implementation of DNG rendering pipeline (linearization, demosaicing, opcodes, color correction, tone curves). On macOS can opt between built-in renderer and coreimage renderer.
 - **Multiple Demosaicing Algorithms**: DNGSDK_BILINEAR, VNG, RCD (optional), OPENCV_EA
 - **XMP Support**: Renderer supports Temperature, Tint, Exposure, Curves, and radial distortion from XMP metadata
 - **Metadata Handling**: User-friendly TIFF/EXIF/XMP tag handling with automatic type conversion
@@ -158,7 +158,7 @@ muimg dng raw-stage input.dng output.tif linearized --ifd subifd2
 
 ### DNG Copy and Transform
 
-Create new a new DNG from source DNG with optional transformations:
+Create a new DNG from source DNG with optional transformations:
 
 ```bash
 # Create a new dng file with main page transcoded to JXL
