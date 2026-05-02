@@ -60,7 +60,7 @@ def write_image(
             filtered_metadata = filter_tags_by_ifd_category(metadata, ["ifd0", "exif"])
             
             # Remove SubIFD pointer tags and others that tifffile manages itself
-            for tag_name in ("ExifTag", "GPSTag", "ProfileIFD", "Software", "ImageDescription"):
+            for tag_name in ("ExifTag", "GPSTag", "ExtraCameraProfiles", "Software", "ImageDescription"):
                 filtered_metadata.remove_tag(tag_name)
             
             extratags = filtered_metadata

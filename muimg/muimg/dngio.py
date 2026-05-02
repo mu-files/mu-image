@@ -34,7 +34,6 @@ from .tiff_metadata import (
 )
 
 # tifffile followups:
-# - dng_validate expects SubIFD NextIFD == 0, but tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero.
 # - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.
 
 logger = logging.getLogger(__name__)
@@ -1546,25 +1545,27 @@ def _add_required_ifd0_tags(tags: MetadataTags, needs_v1_7_1: bool = False) -> N
             tags.add_tag("DNGBackwardVersion", v1_4_0)
 
 
-# ProfileIFD is currently in _TIFFWRITER_MANAGED_TAGS to strip it during copy operations
+# ExtraCameraProfiles is currently in _TIFFWRITER_MANAGED_TAGS to strip it during copy operations
 # since we don't support reading or writing it yet. It possibly could be in a simlar 
 # way that exif and gps are suported.
 #
-# TiffFile parses ExifTag/GPSTag using:
-# 1. TIFF.TAG_READERS registry maps tag codes to reader functions:
-#    34665: read_exif_ifd, 34853: read_gps_ifd
-#    - Reads IFD header (number of tags)
-#    - Loops through tag entries
+# ExtraCameraProfiles structure (from DNG spec):
+# - Tag 50933 (0xC6F5) contains offset(s) to IFD(s) containing camera profile data
+# - Each profile IFD contains tags like ProfileName, ColorMatrix, etc.
+# - Similar to how ExifTag points to an Exif IFD
+#
+# To read ExtraCameraProfiles:
+# - Use tifffile's internal IFD reading functions
 #    - Follows offset pointers to read tag values
 #    - Returns dict of tag name -> value
 #
-# To add ProfileIFD support in the future:
-# 1. Determine ProfileIFD structure/format from DNG spec or sample files
+# To add ExtraCameraProfiles support in the future:
+# 1. Determine profile IFD structure/format from DNG spec or sample files
 # 2. Write read_profile_ifd() function similar to read_exif_ifd():
 #    def read_profile_ifd(fh, byteorder, dtype, count, offsetsize):
 #        return read_tags(fh, byteorder, offsetsize, TIFF.PROFILE_TAGS, maxifds=1)[0]
 # 3. Add to TIFF.TAG_READERS: 50933: read_profile_ifd
-# 4. Define TIFF.PROFILE_TAGS registry with ProfileIFD tag names
+# 4. Define TIFF.PROFILE_TAGS registry with profile IFD tag names
 #
 
 # Tags TiffWriter manages automatically - never copy as extratags
@@ -1576,7 +1577,7 @@ _TIFFWRITER_MANAGED_TAGS = {
     'PlanarConfiguration', 'ResolutionUnit', 'Software',
     'TileWidth', 'TileLength', 'TileOffsets', 'TileByteCounts',
     'SubIFDs', 'ExifTag', 'GPSTag', 'InteroperabilityTag',
-    'ProfileIFD',
+    'ExtraCameraProfiles',
 }
 
 # Digest tags only valid if we do a loss-less copy of the main page

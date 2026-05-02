@@ -7,11 +7,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260501.1044"
+version = "0.1.20260502.1638"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "PolyForm-Small-Business-1.0.0 (Modified)"}
 dependencies = [
     "av",                               # 22 MB
@@ -25,7 +25,7 @@ dependencies = [
     "requests>=2.25.0",                 # 63 KB
     "scipy>=1.9.0",                     # 22 MB
     "setproctitle",                     # 18 KB
-    "tifffile",                         # 242 KB
+    "tifffile>=2026.5.2",               # 260 KB
 ]
 
 [project.optional-dependencies]

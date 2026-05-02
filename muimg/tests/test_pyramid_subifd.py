@@ -25,9 +25,9 @@ DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 # Ignored warnings are for known issues that should be suppressed
 # strip_tags are tags to remove from source (e.g., invalid digest)
 TEST_FILES = {
-    "asi676mc_1.dng": (True, ["makernote has unexpected type", "non-zero nextifd", "too little padding"], None),
-    "canon_eos_r5_mark_ii_linearraw_jxl_lossy_6ifds.dng": (False, ["non-zero nextifd"], None),
-    "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng": (True, ["non-zero nextifd", "columninterleavefactor tag not allowed"], {"NewRawImageDigest"}),
+    "asi676mc_1.dng": (True, ["makernote has unexpected type", "too little padding"], None),
+    "canon_eos_r5_mark_ii_linearraw_jxl_lossy_6ifds.dng": (False, [], None),
+    "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng": (True, ["columninterleavefactor tag not allowed"], {"NewRawImageDigest"}),
 }
 
 

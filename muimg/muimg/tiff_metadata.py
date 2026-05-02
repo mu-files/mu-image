@@ -577,7 +577,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ColorimetricReference": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 50879 (0xC6BF)
     "CameraCalibrationSignature": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50931 (0xC6F3)
     "ProfileCalibrationSignature": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50932 (0xC6F4)
-    "ProfileIFD": TagSpec(TiffType.LONG, None, dng_ifd="dng_ifd0"),  # 50933 (0xC6F5) - variable count (can have multiple profiles)
+    "ExtraCameraProfiles": TagSpec(TiffType.LONG, None, dng_ifd="dng_ifd0"),  # 50933 (0xC6F5) - variable count (can have multiple profiles)
     "AsShotProfileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50934 (0xC6F6)
     "NoiseReductionApplied": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50935 (0xC6F7)
     "ProfileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50936 (0xC6F8)
@@ -704,8 +704,6 @@ class LocalTiffTags:
         437: "JPEGTables-Alt",
         # DNG-specific not in tifffile
         52549: "ProfileToneMethod",
-        # Corrected tags (tifffile has wrong code)
-        52535: "IlluminantData3",  # tifffile incorrectly has 53535
     }
     
     def __init__(self):

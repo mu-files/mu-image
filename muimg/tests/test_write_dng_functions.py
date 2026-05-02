@@ -290,18 +290,11 @@ def test_complete_file_roundtrip(tmp_path):
     print("\nStep 6: Validating new DNG with dng_validate...")
     validate_output = output_dir / "roundtrip_output_validate"
     
-    # Known tifffile limitation: SubIFD NextIFD chaining
-    # See dngio.py comment: "tifffile writes NextIFD chaining for SubIFDs and does not expose a supported way to force it to zero"
-    ignored_warnings = [
-        'nextifd',
-    ]
-    
     try:
         run_dng_validate(
             output_path,
             validate_output,
             validate=True,
-            ignored_warnings=ignored_warnings,
             indent="  "
         )
         print("  ✓ Validation passed (no errors/warnings)")
@@ -532,15 +525,11 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
     
     # Step 3: Validate with dng_validate
     print("\nStep 3: Validating new DNG with dng_validate...")
-    ignored_warnings = [
-        'nextifd',
-    ]
     try:
         run_dng_validate(
             output_path,
             output_dir / "validate_output",
             validate=True,
-            ignored_warnings=ignored_warnings,
             indent="  "
         )
         print("  ✓ Validation passed (no errors/warnings)")
@@ -792,8 +781,7 @@ def test_render_raw_scaling_consistency(tmp_path):
         print(f"  Saved to: {test5_path}")
         run_dng_validate(
              test5_path, 
-             output_dir / "test5_with_pyramid",
-             ignored_warnings=["unexpected non-zero NextIFD"]
+             output_dir / "test5_with_pyramid"
         )
         
         # Render main page and resize to 0.25
