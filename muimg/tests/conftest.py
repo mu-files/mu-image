@@ -36,23 +36,25 @@ def ensure_test_data():
     # Check if dngfiles is already a git repository
     if (dngfiles_dir / ".git").exists():
         # Already cloned, pull latest changes
-        print("\n" + "="*70)
-        print("Updating test data from GitHub...")
-        print("="*70)
         try:
-            subprocess.run(
+            # Run git pull without --quiet to show progress
+            result = subprocess.run(
                 ["git", "pull"],
                 cwd=dngfiles_dir,
                 check=True,
                 capture_output=True,
                 text=True
             )
-            print("Test data updated successfully")
-            print("="*70 + "\n")
+            # Show what was updated
+            if "Already up to date" in result.stdout:
+                logger.warning("Test data: ✓ up to date (https://github.com/mu-files/mu-image-testdata.git)")
+            else:
+                logger.warning("Test data: ✓ updated from GitHub")
+                # Show summary of changes if available
+                if result.stdout.strip():
+                    logger.warning(f"  {result.stdout.strip()}")
         except subprocess.CalledProcessError as e:
-            print(f"Warning: Failed to update test data: {e.stderr}")
-            print("Continuing with existing test data...")
-            print("="*70 + "\n")
+            logger.warning(f"Test data: ⚠ update failed ({e.stderr.strip()}), continuing with existing data")
         return
     
     # Not cloned yet, clone the repository
@@ -64,13 +66,15 @@ def ensure_test_data():
     try:
         response = requests.get("https://api.github.com/repos/mu-files/mu-image-testdata", timeout=5)
         repo_info = response.json()
-        expected_mb = repo_info.get("size", 80000) / 1024  # GitHub returns size in KB
-    except Exception:
-        expected_mb = 80  # Fallback if API call fails
+        expected_mb = repo_info.get("size", 70000) / 1024  # GitHub returns size in KB
+    except Exception as e:
+        logger.warning(f"Warning: Could not fetch repository size from GitHub API: {e}")
+        logger.warning("Using estimated size for progress indicator...")
+        expected_mb = 70  # Fallback if API call fails (~70 MB as of May 2026)
     
     logger.warning("=" * 70)
     logger.warning(f"Downloading test data from GitHub (~{int(expected_mb)} MB)...")
-    logger.warning("Repository: git@github.com:mu-files/mu-image-testdata.git")
+    logger.warning("Repository: https://github.com/mu-files/mu-image-testdata.git")
     logger.warning("This may take a minute...")
     logger.warning("=" * 70)
     
@@ -92,7 +96,7 @@ def ensure_test_data():
     
     try:
         subprocess.run(
-            ["git", "clone", "--quiet", "git@github.com:mu-files/mu-image-testdata.git", str(dngfiles_dir)],
+            ["git", "clone", "--quiet", "https://github.com/mu-files/mu-image-testdata.git", str(dngfiles_dir)],
             check=True
         )
         stop_progress.set()
@@ -102,8 +106,8 @@ def ensure_test_data():
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             f"Failed to clone test data repository.\n"
-            f"Make sure SSH keys are configured for GitHub access.\n"
-            f"Repository: git@github.com:mu-files/mu-image-testdata.git"
+            f"Make sure you have internet access and git is installed.\n"
+            f"Repository: https://github.com/mu-files/mu-image-testdata.git"
         ) from e
 
 
