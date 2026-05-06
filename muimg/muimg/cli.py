@@ -1018,13 +1018,10 @@ def batch_convert_dngs(
     import numpy as np
     from .dngio import decode_dng, DngFile, DemosaicAlgorithm
     from .imgio import ImageSequencePipeline
+    import setproctitle
     
     # Set process title for easier identification in task managers
-    try:
-        import setproctitle
-        setproctitle.setproctitle("muimg: batch-convert")
-    except ImportError:
-        pass  # setproctitle is optional
+    setproctitle.setproctitle("muimg: batch-convert")
     
     # Build base rendering_params dict from CLI options
     base_rendering_params = {}
@@ -1175,13 +1172,10 @@ def convert_dngs_to_video(
     import numpy as np
     from .dngio import decode_dng
     from .videoio import VideoEncodePipeline
+    import setproctitle
     
     # Set process title for easier identification in task managers
-    try:
-        import setproctitle
-        setproctitle.setproctitle(f"muimg: encoding {Path(output_mp4).name}")
-    except ImportError:
-        pass  # setproctitle is optional
+    setproctitle.setproctitle(f"muimg: encoding {Path(output_mp4).name}")
     
     # Parse resolution if provided
     resolution_tuple = None
@@ -1355,7 +1349,12 @@ def convert_dngs_to_video(
             f"empty_time={stats['writer_queue']['empty_time']:.1f}s"
         )
         
+    except ImportError as e:
+        # ImportError from missing dependencies - show clean message only
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except Exception as e:
+        # Other errors - show full traceback
         click.echo(f"Error: {e}", err=True)
         logger.exception("Failed to encode video")
         sys.exit(1)
@@ -1363,7 +1362,11 @@ def convert_dngs_to_video(
 
 @cli.group(name="google-photos")
 def google_photos():
-    """Google Photos integration commands."""
+    """Google Photos integration commands.
+    
+    Requires: pip install muimg[all]
+    """
+    # Check will happen when GooglePhotosClient is instantiated
     pass
 
 
@@ -1385,22 +1388,26 @@ def auth(credentials, token_path, force):
     This will open a browser window for OAuth2 authentication.
     The refresh token will be saved for future automated access.
     """
-    from .google_photos import GooglePhotosClient
-    
-    creds_path = Path(credentials) if credentials else None
-    token_path = Path(token_path) if token_path else None
+    try:
+        from .google_photos import GooglePhotosClient
+        
+        creds_path = Path(credentials) if credentials else None
+        token_path = Path(token_path) if token_path else None
 
-    client = GooglePhotosClient(
-        credentials_path=creds_path, token_path=token_path
-    )
+        client = GooglePhotosClient(
+            credentials_path=creds_path, token_path=token_path
+        )
 
-    if client.authenticate(force_reauth=force):
-        click.echo(f"✓ Successfully authenticated")
-        click.echo(f"✓ Token saved to: {client.token_path}")
-        click.echo("\nYou can now use 'muimg google-photos upload' for automated uploads")
-        sys.exit(0)
-    else:
-        click.echo("✗ Authentication failed", err=True)
+        if client.authenticate(force_reauth=force):
+            click.echo(f"✓ Successfully authenticated")
+            click.echo(f"✓ Token saved to: {client.token_path}")
+            click.echo("\nYou can now use 'muimg google-photos upload' for automated uploads")
+            sys.exit(0)
+        else:
+            click.echo("✗ Authentication failed", err=True)
+            sys.exit(1)
+    except ImportError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 
@@ -1414,27 +1421,30 @@ def auth(credentials, token_path, force):
 )
 def upload(image_path, album, token_path):
     """Upload an image to Google Photos."""
-    from .google_photos import GooglePhotosClient
-    
-    image_path = Path(image_path)
-    token_path = Path(token_path) if token_path else None
-
-    client = GooglePhotosClient(token_path=token_path)
-
-    if not client.authenticate():
-        click.echo(
-            "✗ Authentication failed. Run 'muimg google-photos auth' first.",
-            err=True,
-        )
-        sys.exit(1)
-
     try:
+        from .google_photos import GooglePhotosClient
+        
+        image_path = Path(image_path)
+        token_path = Path(token_path) if token_path else None
+
+        client = GooglePhotosClient(token_path=token_path)
+
+        if not client.authenticate():
+            click.echo(
+                "✗ Authentication failed. Run 'muimg google-photos auth' first.",
+                err=True,
+            )
+            sys.exit(1)
+
         result = client.upload_image(image_path, album_title=album)
         click.echo(f"✓ Uploaded: {image_path.name}")
         if album:
             click.echo(f"  Album: {album}")
         click.echo(f"  URL: {result['productUrl']}")
         sys.exit(0)
+    except ImportError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"✗ Upload failed: {e}", err=True)
         logger.exception("Upload error")
@@ -1449,20 +1459,20 @@ def upload(image_path, album, token_path):
 )
 def list_albums(token_path):
     """List all albums in Google Photos."""
-    from .google_photos import GooglePhotosClient
-    
-    token_path = Path(token_path) if token_path else None
-
-    client = GooglePhotosClient(token_path=token_path)
-
-    if not client.authenticate():
-        click.echo(
-            "✗ Authentication failed. Run 'muimg google-photos auth' first.",
-            err=True,
-        )
-        sys.exit(1)
-
     try:
+        from .google_photos import GooglePhotosClient
+        
+        token_path = Path(token_path) if token_path else None
+
+        client = GooglePhotosClient(token_path=token_path)
+
+        if not client.authenticate():
+            click.echo(
+                "✗ Authentication failed. Run 'muimg google-photos auth' first.",
+                err=True,
+            )
+            sys.exit(1)
+
         albums = client.list_albums()
         if not albums:
             click.echo("No albums found")
@@ -1473,6 +1483,9 @@ def list_albums(token_path):
                 click.echo(f"    URL: {album['productUrl']}")
                 click.echo()
         sys.exit(0)
+    except ImportError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(f"✗ Failed to list albums: {e}", err=True)
         logger.exception("List albums error")

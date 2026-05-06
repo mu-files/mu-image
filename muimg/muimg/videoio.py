@@ -242,7 +242,20 @@ class VideoEncodePipeline(ImageSequencePipeline):
             num_workers: Number of parallel consumer threads.
             queue_size: Maximum size of processing queues.
             task_name: Descriptive name for logging.
+        
+        Raises:
+            ImportError: If av (PyAV) package is not installed
         """
+        # Check for video encoding dependencies early
+        try:
+            import av
+        except ImportError as e:
+            raise ImportError(
+                "Video encoding requires PyAV (av package).\n"
+                "Install with: pip install muimg[all]\n"
+                "Or install av directly: pip install av"
+            ) from e
+        
         self.output_path = Path(output_path) if output_path else None
         self.resolution = resolution
         self.use_temp_file = use_temp_file
@@ -307,6 +320,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
     def _setup_encoder(self):
         """Initialize PyAV container and video stream."""
         import av
+        
         if self.output_path is None:
             raise ValueError("output_path is required for video encoding")
         if self.resolution is None:

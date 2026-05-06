@@ -7,34 +7,36 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260502.1658"
+version = "0.1.20260505.2039"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "PolyForm-Small-Business-1.0.0 (Modified)"}
 dependencies = [
-    "av",                               # 22 MB
     "click",                            # 108 KB
     "defusedxml",                       # 25 KB
-    "google-auth>=2.0.0",               # 241 KB
-    "google-auth-oauthlib>=1.0.0",      # 19 KB
     "imagecodecs>=2026.3.6",            # 13 MB
     "numpy",                            # 6.2 MB
     "opencv-python-headless",           # 31 MB
-    "requests>=2.25.0",                 # 63 KB
     "scipy>=1.9.0",                     # 22 MB
     "setproctitle",                     # 18 KB
     "tifffile>=2026.5.2",               # 260 KB
 ]
 
 [project.optional-dependencies]
+# Video encoding + Google Photos integration + Testing
+all = [
+    "av",                               # 22 MB
+    "google-auth>=2.0.0",               # 241 KB
+    "google-auth-oauthlib>=1.0.0",      # 19 KB
+    "requests>=2.25.0",                 # 63 KB
+    "pytest",                           # 366 KB
+]
+# macOS Core Image support
 coreimage = [
     "pyobjc-framework-Cocoa",           # 376 KB
     "pyobjc-framework-Quartz",          # 214 KB
-]
-test = [
-    "pytest",                           # 366 KB
 ]
 
 [project.scripts]

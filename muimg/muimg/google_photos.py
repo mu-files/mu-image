@@ -6,14 +6,27 @@
 import json
 import logging
 import os
-import requests
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+# Check for optional Google Photos dependencies (no error raised at import time)
+try:
+    import requests
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    _IMPORT_ERROR = None
+except ImportError:
+    # Set to None - will be checked in __init__
+    requests = None
+    Request = None
+    Credentials = None
+    InstalledAppFlow = None
+    _IMPORT_ERROR = (
+        "Google Photos integration requires additional dependencies.\n"
+        "Install with: pip install muimg[all]\n"
+        "Or install manually: pip install google-auth google-auth-oauthlib requests"
+    )
 
 if TYPE_CHECKING:
     pass
@@ -46,7 +59,13 @@ class GooglePhotosClient:
         Args:
             token_path: Path to stored OAuth2 token (refresh token)
             credentials_path: Path to OAuth2 client credentials from Google Cloud Console
+        
+        Raises:
+            ImportError: If Google Photos dependencies are not installed
         """
+        if requests is None:
+            raise ImportError(_IMPORT_ERROR)
+        
         self.token_path = token_path or DEFAULT_TOKEN_PATH
         self.credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
         self.creds = None
