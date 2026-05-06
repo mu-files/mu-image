@@ -44,19 +44,31 @@ pip install -e .
 
 This gives you access to the `muimg` CLI command and allows you to modify the source code.
 
-### Optional: Core Image (macOS)
+### Optional Dependencies
 
-For macOS users, installing the Core Image dependency enables a second rendering engine that will be available at runtime alongside the built-in renderer. To add Core Image support:
+**Video Encoding & Google Photos:** For video encoding and Google Photos integration:
+
+```bash
+pip install -e ".[all]"
+```
+
+**Core Image (macOS):** For macOS users, installing the Core Image dependency enables a second rendering engine that will be available at runtime alongside the built-in renderer:
 
 ```bash
 pip install -e ".[coreimage]"
+```
+
+**Combined:** To install all optional features:
+
+```bash
+pip install -e ".[all,coreimage]"
 ```
 
 Or in `pyproject.toml`:
 
 ```toml
 dependencies = [
-    "muimg[coreimage] @ git+https://github.com/mu-files/mu-image.git#subdirectory=muimg",
+    "muimg[all,coreimage] @ git+https://github.com/mu-files/mu-image.git#subdirectory=muimg",
 ]
 ```
 
@@ -228,6 +240,8 @@ muimg dng batch-convert /path/to/dngs/ /path/to/output/ --scale 0.5
 
 ### Batch DNG to Video
 
+**Requires:** `pip install muimg[all]` (for video encoding support)
+
 Create video from DNG sequence:
 
 ```bash
@@ -250,6 +264,8 @@ muimg dng batch-to-video settings.csv output.mp4 --resolution 1920x1080
 ```
 
 ### Google Photos Integration
+
+**Requires:** `pip install muimg[all]` (for Google Photos support)
 
 Upload images to Google Photos:
 
@@ -285,6 +301,8 @@ Features:
 The test suite covers DNG reading, writing, rendering, metadata handling, and CLI operations.
 
 ### Running Tests
+
+**Requires:** `pip install muimg[all]` (pytest is included in the `[all]` extra)
 
 ```bash
 cd /path/to/mu-image/muimg

@@ -28,7 +28,6 @@ from .imgio import convert_imgformat, convert_imgformat_to_stream, decode_image
 from .processing import ProcessingPipeline
 from .raw_render import (
     ColorSpace,
-    SplineCurve,
     UnsupportedDNGTagError,
     apply_tiff_orientation,
     colortemp_to_uv,
@@ -44,6 +43,7 @@ from .raw_render import (
     supported_xmp_to_dict,
     add_supported_xmp_from_dict,
 )
+from .splines import CubicSpline
 from .tiff_metadata import (
     Illuminant,
     MetadataTags,
@@ -84,7 +84,7 @@ __all__ = [
     'letterbox_frame',
     'ProcessingPipeline',
     'VideoEncodePipeline',
-    'SplineCurve',
+    'CubicSpline',
     'add_supported_xmp_from_dict',
     'supported_xmp_from_dict',
     'supported_xmp_to_dict',

@@ -12,6 +12,7 @@ from typing import Any
 # Package imports
 from . import _raw_render
 from .common import enum_display_name
+from .splines import CubicSpline
 from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
@@ -74,139 +75,8 @@ class DemosaicAlgorithm(StrEnum):
         return enum_from_string(cls, value)
 
 # =============================================================================
-# Helper Classes
+# Helper Functions
 # =============================================================================
-
-
-class SplineCurve:
-    """
-    Represents a spline curve with control points in normalized 0-1 range.
-    
-    Uses scipy CubicSpline for interpolation. Points are stored as float tuples.
-    """
-    
-    def __init__(self, points_or_string: str | list | None = None, bc_type: str = 'natural'):
-        """
-        Initialize SplineCurve.
-        
-        Args:
-            points_or_string: Optional. Can be:
-                - None: Initialize with default linear curve (0.0, 0.0), (1.0, 1.0)
-                - str: Parse from string format "(0.0,0.0),(1.0,1.0)"
-                - list: Use provided float points directly
-            bc_type: Boundary condition type for scipy CubicSpline. Default 'natural'.
-                Can be 'natural', 'clamped', 'not-a-knot', or a 2-tuple specifying
-                derivatives at boundaries.
-        """
-        self.bc_type = bc_type
-        
-        if points_or_string is None:
-            # Default linear curve
-            self.points = [(0.0, 0.0), (1.0, 1.0)]
-        elif isinstance(points_or_string, str):
-            # Parse from string format
-            self._parse_from_string(points_or_string)
-        elif isinstance(points_or_string, list):
-            # Use provided points directly (ensure float)
-            self.points = [(float(x), float(y)) for x, y in points_or_string]
-        else:
-            raise TypeError(
-                f"SplineCurve constructor expects None, str, or list, "
-                f"got {type(points_or_string)}"
-            )
-        
-        # Ensure (0,0) and (1,1) endpoints exist
-        # Add (0,0) if not present
-        if not any(abs(p[0] - 0.0) < 1e-6 for p in self.points):
-            self.points.insert(0, (0.0, 0.0))
-        
-        # Add (1,1) if not present
-        if not any(abs(p[0] - 1.0) < 1e-6 for p in self.points):
-            self.points.append((1.0, 1.0))
-        
-        # Create the spline immediately
-        self._create_spline()
-    
-    def _parse_from_string(self, string_data: str):
-        """Helper method to parse points from string format.
-        
-        Expects normalized 0-1 float format: "(0.0,0.0),(0.5,0.5),(1.0,1.0)"
-        """
-        import re
-        
-        # Extract coordinate pairs using regex (supports int or float)
-        tuple_pattern = r'\(([0-9.]+),\s*([0-9.]+)\)'
-        matches = re.findall(tuple_pattern, string_data)
-        
-        if not matches:
-            raise ValueError(
-                f"No valid coordinate pairs found in spline curve data: {string_data}"
-            )
-        
-        # Convert string coordinates to float tuples
-        self.points = [(float(x), float(y)) for x, y in matches]
-    
-    def _create_spline(self):
-        """Create the CubicSpline from current points."""
-        from scipy.interpolate import CubicSpline
-        
-        x_coords = [p[0] for p in self.points]
-        y_coords = [p[1] for p in self.points]
-        
-        # Ensure monotonically increasing x values
-        if not all(x_coords[i] < x_coords[i+1] for i in range(len(x_coords)-1)):
-            raise ValueError("SplineCurve x coordinates must be monotonically increasing")
-        
-        self._spline = CubicSpline(x_coords, y_coords, bc_type=self.bc_type)
-    
-    def __call__(self, x):
-        """
-        Evaluate the spline at a given x value (callable interface).
-        
-        Args:
-            x: Input value (typically 0-1 range), can be scalar or array
-            
-        Returns:
-            Interpolated y value(s)
-        """
-        return self._spline(x)
-    
-    def resample(self, num_points: int) -> 'SplineCurve':
-        """
-        Create a new SplineCurve with evenly-spaced control points sampled 
-        from this curve.
-        
-        Args:
-            num_points: Number of control points in the new curve
-            
-        Returns:
-            New SplineCurve with resampled control points
-        """
-        if num_points < 2:
-            raise ValueError("resample requires at least 2 points")
-        
-        # Sample at evenly spaced x values
-        x_values = np.linspace(0.0, 1.0, num_points)
-        y_values = self(x_values)
-        
-        # Clip y values to 0-1 range
-        y_values = np.clip(y_values, 0.0, 1.0)
-        
-        new_points = [(float(x), float(y)) for x, y in zip(x_values, y_values)]
-        return SplineCurve(new_points)
-    
-    def __str__(self) -> str:
-        """
-        Convert SplineCurve to string format.
-        
-        Returns:
-            String representation in format "(0.0,0.0),(0.5,0.5),(1.0,1.0)"
-        """
-        tuple_strings = [f"({x:.6g},{y:.6g})" for x, y in self.points]
-        return ','.join(tuple_strings)
-    
-    def __repr__(self):
-        return f"SplineCurve(points={self.points})"
 
 
 def _srgb_gamma(linear: np.ndarray) -> np.ndarray:
@@ -465,14 +335,14 @@ def convert_colorspace(
 
 
 def build_lut_from_spline(
-    curve_param: SplineCurve | str | list,
+    curve_param: CubicSpline | str | list,
     lut_size: int = 4096,
     convert_srgb_gamma_to_linear: bool = False
 ) -> np.ndarray:
-    """Build a lookup table from spline curve control points or SplineCurve object.
+    """Build a lookup table from spline curve control points or CubicSpline object.
     
     Args:
-        curve_param: Either a SplineCurve object, string format, or list of control points
+        curve_param: Either a CubicSpline object, string format, or list of control points
         lut_size: Number of points in the LUT (default 4096)
         convert_srgb_gamma_to_linear: If True, convert curve from sRGB gamma 2.2 encoding
             (also known as Melissa RGB in Adobe tools) to linear encoding. Adobe tools
@@ -481,10 +351,10 @@ def build_lut_from_spline(
     Returns:
         numpy array of float32 values clipped to [0.0, 1.0] range
     """
-    if isinstance(curve_param, SplineCurve):
+    if isinstance(curve_param, CubicSpline):
         curve = curve_param
     else:
-        curve = SplineCurve(curve_param)
+        curve = CubicSpline(curve_param)
     
     # Build LUT in sRGB gamma space (0-1 range)
     lut_x = np.linspace(0.0, 1.0, lut_size, dtype=np.float32)
@@ -2099,7 +1969,7 @@ def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure:
         # Create spline with derivative continuity at x=0.25
         # bc_type: (1, slope) = first derivative at left = slope (matches linear region)
         #          (2, 0.0) = second derivative at right = 0 (natural spline end)
-        spline = SplineCurve(control_points, bc_type=((1, slope), (2, 0.0)))
+        spline = CubicSpline(control_points, bc_type=((1, slope), (2, 0.0)))
         
         # Apply piecewise curve
         return np.where(x <= 0.25, x * slope, spline(x))
@@ -3240,7 +3110,7 @@ def _render_camera_rgb(
                 points = [(curve_data[i*2], curve_data[i*2+1]) for i in range(n_points)]
                 
                 try:
-                    spline = SplineCurve(points)
+                    spline = CubicSpline(points)
                     lut_x = np.linspace(0.0, 1.0, 4096)
                     tag_profile_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
                     logger.debug(f"Using ProfileToneCurve with {n_points} control points")
@@ -3305,7 +3175,7 @@ def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
                - Fully qualified names: 'tiff:Orientation', 'dc:subject', etc.
                Values can be:
                - Scalar: str, int, float
-               - SplineCurve objects (for tone curves)
+               - CubicSpline objects (for tone curves)
                - List of 2-tuples (for tone curves)
                - List of strings (for dc:subject bags)
     
@@ -3340,7 +3210,7 @@ def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
             # List of strings for dc:subject bag
             attributes[key] = value
         elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
-            # SplineCurve object with points attribute (normalized 0-1)
+            # CubicSpline object with points attribute (normalized 0-1)
             attributes[key] = getattr(value, 'points')
         elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
             # Direct list of 2-tuples (tone curve points)
@@ -3407,10 +3277,10 @@ SUPPORTED_XMP_PARAMS = {
     'Temperature',           # White balance temperature in Kelvin (float)
     'Tint',                  # White balance tint adjustment (float)
     'Exposure2012',          # Exposure compensation in stops (float)
-    'ToneCurvePV2012',       # Main tone curve (SplineCurve or list of (x,y) points)
-    'ToneCurvePV2012Red',    # Red channel tone curve (SplineCurve or list of (x,y) points)
-    'ToneCurvePV2012Green',  # Green channel tone curve (SplineCurve or list of (x,y) points)
-    'ToneCurvePV2012Blue',   # Blue channel tone curve (SplineCurve or list of (x,y) points)
+    'ToneCurvePV2012',       # Main tone curve (CubicSpline or list of (x,y) points)
+    'ToneCurvePV2012Red',    # Red channel tone curve (CubicSpline or list of (x,y) points)
+    'ToneCurvePV2012Green',  # Green channel tone curve (CubicSpline or list of (x,y) points)
+    'ToneCurvePV2012Blue',   # Blue channel tone curve (CubicSpline or list of (x,y) points)
     'crlcp:PerspectiveModel', # Lens correction profile (nested dict with RadialDistort params)
     
     # TODO: Add pixel processing implementations for these additional properties:

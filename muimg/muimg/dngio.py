@@ -2721,7 +2721,7 @@ def decode_dng(
             - 'Temperature': White balance temperature in Kelvin (float)
             - 'Tint': White balance tint adjustment (float)
             - 'Exposure2012': Exposure compensation in stops (float)
-            - 'ToneCurvePV2012': Main tone curve as SplineCurve or list of (x,y) points
+            - 'ToneCurvePV2012': Main tone curve as CubicSpline or list of (x,y) points
             - 'ToneCurvePV2012Red': Red channel tone curve
             - 'ToneCurvePV2012Green': Green channel tone curve
             - 'ToneCurvePV2012Blue': Blue channel tone curve

@@ -11,7 +11,7 @@ import os
 from typing import IO
 
 # Package imports
-from .raw_render import SplineCurve
+from .splines import CubicSpline
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +79,12 @@ RAW_FILTER_OPTION_MAP = {
     "neutralLocation": ("kCIInputNeutralLocationKey", "point_nsvalue"),
 }
 
-def _create_tone_curve_filter(spline_curve: SplineCurve):
+def _create_tone_curve_filter(spline_curve: CubicSpline):
     """
-    Create a CIToneCurve filter from a SplineCurve object.
+    Create a CIToneCurve filter from a CubicSpline object.
     
     Args:
-        spline_curve: SplineCurve object with normalized 0-1 points
+        spline_curve: CubicSpline object with normalized 0-1 points
 
     Returns:
         CIFilter instance configured with tone curve points, or None if invalid
