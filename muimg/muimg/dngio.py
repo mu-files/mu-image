@@ -2075,10 +2075,10 @@ def write_dng(
             # JXL_BIT_DEPTH_FROM_CODESTREAM, they request that the jxl decoder return values scaled 
             # to the container bitdepth (eg 16bits for 10bit data). This causes a disconnect
             # with the bits_per_sample in the IFD.
-            # So we set white-level to 16-bit equivalent to compensate.
+            # So we shift 9-15 bit data to 16-bit before encoding to avoid this. 
             if 9 <= bits_per_sample <= 15:
-                if "WhiteLevel" not in ifd_tags:
-                    ifd_tags.add_tag("WhiteLevel", (1 << 16) - 1)
+                data = data << (16 - bits_per_sample)
+                bits_per_sample = 16  # Update for TIFF tag and JXL encoder
 
             # Use lossless mode when distance is 0
             if jxl_distance == 0.0:
