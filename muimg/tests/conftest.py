@@ -170,7 +170,13 @@ def core_image_available_for_tests() -> bool:
 DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targets/mac/release64/dng_validate"
 
 
-def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16, noise_stddev: float = 0.0) -> np.ndarray:
+def generate_rgb_ramp(
+    width: int,
+    height: int,
+    dtype: np.dtype = np.uint16,
+    noise_stddev: float = 0.0,
+    bits_per_sample: int = None
+) -> np.ndarray:
     """Generate synthetic RGB ramp test image with optional noise.
     
     Args:
@@ -180,6 +186,7 @@ def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16, nois
         noise_stddev: Standard deviation of Gaussian noise in [0,1] range.
                      Typical camera sensor noise is ~0.001-0.01 for good sensors.
                      0.0 = no noise (default, smooth gradient)
+        bits_per_sample: If specified, scale values to this bit depth (e.g., 10 for 10-bit data in uint16)
         
     Returns:
         RGB image (H, W, 3) with specified dtype:
@@ -187,6 +194,7 @@ def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16, nois
         - Blue channel: gradient top to bottom
         - Green channel: gradient on diagonal
         - Optional: Gaussian noise added to simulate sensor noise
+        - If bits_per_sample specified, values scaled to that bit depth
     """
     # Generate in float32 for highest precision
     img = np.zeros((height, width, 3), dtype=np.float32)
@@ -236,6 +244,15 @@ def generate_rgb_ramp(width: int, height: int, dtype: np.dtype = np.uint16, nois
     # Convert to target dtype if needed
     if dtype != np.float32:
         img = convert_dtype(img, dtype)
+    
+    # Scale to specified bit depth if requested
+    if bits_per_sample is not None:
+        dtype_bits = dtype(0).itemsize * 8
+        if bits_per_sample < dtype_bits:
+            # Scale from full dtype range to bits_per_sample range using ratio
+            src_max = (1 << dtype_bits) - 1
+            dst_max = (1 << bits_per_sample) - 1
+            img = (img.astype(np.float64) * dst_max / src_max).astype(dtype)
     
     return img
 

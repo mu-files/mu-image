@@ -442,10 +442,23 @@ class DngPage(TiffPage):
     def _decode_jpegxl(self) -> np.ndarray:
         """Decode JPEG XL compressed image data, handling tiled images.
         
+        Matches dng_validate behavior: for sub-byte-aligned data (9-15 bits),
+        upscales decoded values to the container bit depth (16-bit).
+        
         Returns:
             Decoded image array.
         """
-        return self._decode_segmented(imagecodecs.jpegxl_decode)
+        decoded = self._decode_segmented(imagecodecs.jpegxl_decode)
+        
+        # Match dng_validate: upscale 9-15 bit data to 16-bit container
+        # imagecodecs preserves original bit depth, but dng_validate/Photoshop
+        # request JXL decoder to scale values to container bit depth
+        if 9 <= self.bitspersample <= 15 and decoded.dtype == np.uint16:
+            src_max = (1 << self.bitspersample) - 1
+            dst_max = 65535  # 16-bit max
+            decoded = (decoded.astype(np.float64) * dst_max / src_max).astype(np.uint16)
+        
+        return decoded
     
     def _decode_jpeg_cfa(self) -> np.ndarray:
         """Decode JPEG-compressed CFA data.
@@ -1593,6 +1606,7 @@ _COMPRESSION_INVALIDATED_TAGS = {
     'JPEGLosslessPredictors', 'JPEGPointTransforms',
     'JPEGQTables', 'JPEGDCTables', 'JPEGACTables',
     'JXLDistance', 'JXLEffort', 'JXLDecodeSpeed',
+    'ColumnInterleaveFactor', 'RowInterleaveFactor',  # CFA swizzle tags will be added back in if JXL encoding
     'Software' # if we are not doing a pure copy of the image bits then replace software with muimg
 }
 
@@ -1734,69 +1748,41 @@ def write_dng(
         raw_ifd_args: dict,
     ) -> None:
         # IFD args are already prepared by caller
-
-        # Uncompressed: use numpy array so tifffile handles byte order
+        
+        logger.debug(f"_write_page_ifd: compression={page.compression}, is_tiled={page.is_tiled}, shape={page.shape}")
+        
+        # For uncompressed data, use asarray() to handle byte order conversion
+        # For compressed data, copy raw bytes (compression is byte-order independent)
         if page.compression == COMPRESSION.NONE:
-            raw_data = page.asarray()
-            logger.debug(f"Read uncompressed data: {raw_data.shape} {raw_data.dtype}")
-            writer.write(
-                data=raw_data,
-                bitspersample=page.bitspersample,
-                **raw_ifd_args,
-            )
-            logger.debug("Successfully wrote uncompressed raw data")
+            data = page.asarray()
+            logger.debug(f"Using asarray() for uncompressed data (handles byte order conversion)")
         else:
-            # Compressed: read raw segments
-            samples_per_pixel = page.samplesperpixel if hasattr(page, 'samplesperpixel') else 1
-            if samples_per_pixel > 1:
-                write_shape = (page.imagelength, page.imagewidth, samples_per_pixel)
-            else:
-                write_shape = (page.imagelength, page.imagewidth)
-
-            fh = page.parent.filehandle
-            compressed_segments = list(
-                fh.read_segments(page.dataoffsets, page.databytecounts, sort=True)
-            )
-            logger.debug(f"Read {len(compressed_segments)} compressed segments from page")
-
-            def compressed_data_iterator():
-                try:
-                    for segment_data, _index in compressed_segments:
-                        yield segment_data
-                except GeneratorExit:
-                    return
-
+            # Read raw compressed segments
+            segments = list(
+                page.parent.filehandle.read_segments(page.dataoffsets, page.databytecounts))
+            segment_bytes = [seg_data for seg_data, _ in segments]
+            data = iter(segment_bytes)
+            logger.debug(f"Extracted {len(segment_bytes)} compressed segment bytes")
+            
+            # Set tile or rowsperstrip parameter for compressed data
             if page.is_tiled:
-                tile_shape = (page.tilelength, page.tilewidth)
-                writer.write(
-                    data=compressed_data_iterator(),
-                    shape=write_shape,
-                    dtype=page.dtype,
-                    bitspersample=page.bitspersample,
-                    tile=tile_shape,
-                    **raw_ifd_args,
-                )
-                logger.debug(
-                    f"Successfully copied tiled compressed data ({sum(page.databytecounts)} bytes)"
-                )
+                raw_ifd_args['tile'] = (page.tilelength, page.tilewidth)
             else:
-                raw_datasize = (
-                    page.imagelength
-                    * page.imagewidth
-                    * samples_per_pixel
-                    * (page.bitspersample // 8)
-                )
-                writer.write(
-                    data=compressed_data_iterator(),
-                    shape=write_shape,
-                    dtype=page.dtype,
-                    bitspersample=page.bitspersample,
-                    rowsperstrip=raw_datasize,
-                    **raw_ifd_args,
-                )
-                logger.debug(
-                    f"Successfully copied stripped compressed data ({sum(page.databytecounts)} bytes)"
-                )
+                raw_ifd_args['rowsperstrip'] = (np.prod(page.shape) * page.bitspersample + 7) // 8
+        
+        writer.write(
+            data=data,
+            shape=page.shape,
+            dtype=page.dtype,
+            bitspersample=page.bitspersample,
+            **raw_ifd_args,
+        )
+
+        segment_type = "tiled" if page.is_tiled else "stripped"
+        compression_type = "uncompressed" if page.compression == COMPRESSION.NONE else "compressed"
+        logger.debug(
+            f"Successfully copied {segment_type} {compression_type} data ({sum(page.databytecounts)} bytes)"
+        )
 
     def _prepare_tags_for_write(tags: MetadataTags, target_byteorder: str):
         """Prepare MetadataTags for writing by converting arrays to target byte order.
@@ -1981,30 +1967,26 @@ def write_dng(
                 )
             bits_per_sample = int(spec.page.bitspersample)
             
-            # Compressed data (JPEG, JXL, etc.) decoders return values scaled to container bitdepth
-            # (e.g., 10-bit data comes back as 16-bit range). Normalize bits_per_sample to reflect this.
-            if spec.page.compression != COMPRESSION.NONE:
-                # Round up to next multiple of 8
-                bits_per_sample = ((bits_per_sample + 7) // 8) * 8
-
+            # JPEGXL decoder upscales 9-15 bit data to 16-bit container (matching dng_validate behavior)
+            # Normalize bits_per_sample to reflect this upscaling
+            if spec.page.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) and 9 <= bits_per_sample <= 15:
+                bits_per_sample = 16
+            
             if photometric == "CFA":
                 cfa_result = spec.page.get_cfa()
                 if cfa_result is None:
                     raise ValueError("Failed to extract CFA data from page")
-                data, _ = cfa_result
-                samples_per_pixel = 1
+                uncomp_data, _ = cfa_result
             elif photometric == "LINEAR_RAW":
-                data = spec.page.get_linear_raw()
-                if data is None:
+                uncomp_data = spec.page.get_linear_raw()
+                if uncomp_data is None:
                     raise ValueError("Failed to extract LINEAR_RAW data from page")
-                samples_per_pixel = 3
             else:
                 # Non-raw photometric (RGB, YCBCR, etc.) - use asarray like decode() does
                 try:
-                    data = spec.page.asarray()
+                    uncomp_data = spec.page.asarray()
                 except Exception as e:
                     raise ValueError(f"Failed to extract data from page (photometric={photometric}): {e}")
-                samples_per_pixel = 3
         else:
             # IfdDataSpec: data from array
             if spec.data.dtype not in (np.uint8, np.uint16, np.float16, np.float32):
@@ -2036,21 +2018,16 @@ def write_dng(
                         raise ValueError(f"bits_per_sample must be >= 8, got {bits_per_sample}")
             else:
                 bits_per_sample = spec.data.dtype.itemsize * 8
-            
-            data = spec.data
-            
+                        
             # Add CFA tags for array data with CFA photometric
             if photometric == "CFA":
                 ifd_tags.add_tag("CFAPattern", spec.cfa_pattern)
                 ifd_tags.add_tag("CFARepeatPatternDim", (2, 2))
                 ifd_tags.add_tag("CFAPlaneColor", bytes([0, 1, 2]))
-                samples_per_pixel = 1
-            else:
-                # linear_raw, rgb, ycbcr all have 3 channels
-                samples_per_pixel = 3
-        
-        datasize = int((data.shape[0] * data.shape[1] * samples_per_pixel * bits_per_sample) / 8)
 
+            uncomp_data = spec.data
+
+        
         # Write IFD with compression
         # Manual encoding for CFA and LINEAR_RAW to achieve optimal compression
         dng_photometric_types = photometric in ("CFA", "LINEAR_RAW")
@@ -2065,6 +2042,8 @@ def write_dng(
 
             ifd_tags.add_tag("JXLDistance", jxl_distance)
             ifd_tags.add_tag("JXLEffort", jxl_effort)
+            
+            data = uncomp_data
             if photometric == "CFA":
                 data = swizzle_cfa_data(data)
                 ifd_tags.add_tag("ColumnInterleaveFactor", 2)
@@ -2075,9 +2054,11 @@ def write_dng(
             # JXL_BIT_DEPTH_FROM_CODESTREAM, they request that the jxl decoder return values scaled 
             # to the container bitdepth (eg 16bits for 10bit data). This causes a disconnect
             # with the bits_per_sample in the IFD.
-            # So we shift 9-15 bit data to 16-bit before encoding to avoid this. 
+            # So we scale 9-15 bit data to 16-bit before encoding to avoid this. 
             if 9 <= bits_per_sample <= 15:
-                data = data << (16 - bits_per_sample)
+                src_max = (1 << bits_per_sample) - 1
+                dst_max = 65535  # 16-bit max
+                data = (data.astype(np.float64) * dst_max / src_max).astype(np.uint16)
                 bits_per_sample = 16  # Update for TIFF tag and JXL encoder
 
             # Use lossless mode when distance is 0
@@ -2089,34 +2070,21 @@ def write_dng(
                 encoded_bytes = imagecodecs.jpegxl_encode(
                     data, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
                 )
-            def encoded_data_iterator():
-                yield encoded_bytes
-
-            # Prepare tags after all additions are complete
-            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
-            writer.write(
-                data=encoded_data_iterator(),
-                shape=data.shape,
-                dtype=data.dtype,
-                bitspersample=bits_per_sample,
-                rowsperstrip=datasize,
-                **ifd_args,
-            )
+            
+            write_data = iter([encoded_bytes])
         elif compression == COMPRESSION.JPEG and dng_photometric_types:
             # JPEG lossless requires manual encoding with imagecodecs
-            
-            # Encode with imagecodecs
             lossless = compression_args.get('lossless', True) if compression_args else True
             
+            data = uncomp_data
             if photometric == "CFA":
                 # Reshape CFA data to 2-component interleaved format (H, W) -> (H, W//2, 2)
                 # This groups horizontally adjacent pixels which compresses better
                 h, w = data.shape
                 if w % 2 != 0:
                     raise ValueError(f"CFA width must be even for JPEG compression, got {w}")
-                original_shape = data.shape  # Keep original for metadata
                 data = data.reshape(h, w // 2, 2)
-                logger.debug(f"Reshaped CFA data for JPEG: {original_shape} -> {data.shape}")
+                logger.debug(f"Reshaped CFA data for JPEG: {uncomp_data.shape} -> {data.shape}")
                 
                 encoded_bytes = imagecodecs.jpeg_encode(
                     data, 
@@ -2124,7 +2092,6 @@ def write_dng(
                     bitspersample=bits_per_sample
                 )
             else:
-                original_shape = data.shape
                 encoded_bytes = imagecodecs.jpeg_encode(
                     data,
                     lossless=lossless,
@@ -2133,24 +2100,21 @@ def write_dng(
                     outcolorspace='RGB'
                 )
             
-            def encoded_data_iterator():
-                yield encoded_bytes
-            
-            # Prepare tags after all additions are complete
-            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
-            writer.write(
-                data=encoded_data_iterator(),
-                shape=original_shape,  # Use original shape for metadata
-                dtype=data.dtype,
-                bitspersample=bits_per_sample,
-                rowsperstrip=datasize,
-                **ifd_args,
-            )
+            write_data = iter([encoded_bytes])
         else:
             # All other compression types - let tifffile handle encoding
-            # Prepare tags after all additions are complete (including CFA tags)
-            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
-            writer.write(data, bitspersample=bits_per_sample, rowsperstrip=datasize, **ifd_args)
+            write_data = uncomp_data
+        
+        # Prepare tags and write (common for all paths)        
+        ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
+        writer.write(
+            write_data,
+            shape=uncomp_data.shape,
+            dtype=uncomp_data.dtype,
+            bitspersample=bits_per_sample,
+            rowsperstrip=(np.prod(uncomp_data.shape) * bits_per_sample + 7) // 8,
+            **ifd_args,
+        )
 
     # Initialize subifds list
     if subifds is None:
@@ -2255,41 +2219,6 @@ class PyramidParams:
     extratags: MetadataTags | None = None
 
 
-def create_dng_from_array(
-    data_spec: IfdDataSpec,
-    *,
-    preview: PreviewParams | None = None,
-    pyramid: PyramidParams | None = None,
-) -> "DngFile":
-    """Create a DNG file from array data in memory and return as DngFile object.
-    
-    This is a convenience wrapper around write_dng_from_array that writes to an
-    in-memory BytesIO stream and returns the result as a DngFile.
-    
-    Args:
-        data_spec: IfdDataSpec containing raw image data and metadata
-        preview: Optional preview generation parameters
-        pyramid: Optional pyramid level generation parameters
-        
-    Returns:
-        DngFile object loaded from the in-memory DNG
-        
-    Example:
-        >>> data_spec = IfdDataSpec(data=raw_array, photometric="CFA", ...)
-        >>> preview = PreviewParams(max_dimension=1024)  # Presence means generate preview
-        >>> dng = create_dng_from_array(data_spec, preview=preview)
-    """
-    buffer = io.BytesIO()
-    write_dng_from_array(
-        destination_file=buffer,
-        data_spec=data_spec,
-        preview=preview,
-        pyramid=pyramid,
-    )
-    buffer.seek(0)
-    return DngFile(buffer)
-
-
 def write_dng_from_array(
     destination_file: str | Path | io.BytesIO,
     data_spec: IfdDataSpec,
@@ -2339,6 +2268,40 @@ def write_dng_from_array(
         preview=preview,
         pyramid=pyramid,
     )
+
+def create_dng_from_array(
+    data_spec: IfdDataSpec,
+    *,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
+) -> "DngFile":
+    """Create a DNG file from array data in memory and return as DngFile object.
+    
+    This is a convenience wrapper around write_dng_from_array that writes to an
+    in-memory BytesIO stream and returns the result as a DngFile.
+    
+    Args:
+        data_spec: IfdDataSpec containing raw image data and metadata
+        preview: Optional preview generation parameters
+        pyramid: Optional pyramid level generation parameters
+        
+    Returns:
+        DngFile object loaded from the in-memory DNG
+        
+    Example:
+        >>> data_spec = IfdDataSpec(data=raw_array, photometric="CFA", ...)
+        >>> preview = PreviewParams(max_dimension=1024)  # Presence means generate preview
+        >>> dng = create_dng_from_array(data_spec, preview=preview)
+    """
+    buffer = io.BytesIO()
+    write_dng_from_array(
+        destination_file=buffer,
+        data_spec=data_spec,
+        preview=preview,
+        pyramid=pyramid,
+    )
+    buffer.seek(0)
+    return DngFile(buffer)
 
 
 def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:

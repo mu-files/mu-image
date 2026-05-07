@@ -195,7 +195,8 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                 sys.exit(1)
     
     # Show summary of available IFDs
-    click.echo(f"File contains {len(pages)} IFD(s):")
+    byteorder_name = "little-endian" if f.byteorder == '<' else "big-endian"
+    click.echo(f"File contains {len(pages)} IFD(s) ({byteorder_name}):")
     for i, p in enumerate(pages):
         ifd_type = "IFD0" if i == 0 else f"SubIFD[{i-1}]"
         photometric = p.photometric_name or "Unknown"
@@ -231,6 +232,12 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
         else:
             compression_name = "uncompressed"
         
+        # Get tiled/strip layout info
+        if p.is_tiled:
+            layout_info = f", tiled {p.tilewidth}x{p.tilelength}"
+        else:
+            layout_info = f", stripped (rows/strip={p.rowsperstrip})" if p.rowsperstrip < p.imagelength else ""
+        
         # Add NewSubfileType info if present
         subfile_info = ""
         if (subfile_type := p.get_tag("NewSubfileType")) is not None:
@@ -238,7 +245,7 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
         
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
         file_size_str = _format_bytes(compressed_size)
-        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {size_str}, {file_size_str} ({compression_ratio:.2f}x {compression_name})")
+        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {size_str}, {file_size_str} ({compression_ratio:.2f}x {compression_name}{layout_info})")
     
     # Show total file size
     total_size = os.path.getsize(input_file)
