@@ -110,7 +110,7 @@ dependencies = [
 
 **Image sequences**: `ImageSequencePipeline` is a `ProcessingPipeline` for processing sequences of image files and saving the results (.tiff/.jpg) to an output folder.
 
-**Video encoding**: `VideoEncodePipeline` is a `ProcessingPipeline` for encoding image sequences to video files with configurable codecs, resolution, and frame rates, and saving the result to a video file (.mp4).
+**Video encoding**: `VideoEncodePipeline` is a `ProcessingPipeline` for encoding image sequences to video files with configurable codecs, resolution, and frame rates, and saving the result to a video file (.mp4). Requires `pip install muimg[all]`.
 
 **Parallelism**: Control parallelism with `--num-workers` flag in CLI or `num_workers` parameter in API. Default is 4 workers. Adjust based on CPU cores and memory availability.
 

@@ -2052,7 +2052,10 @@ def write_dng(
         datasize = int((data.shape[0] * data.shape[1] * samples_per_pixel * bits_per_sample) / 8)
 
         # Write IFD with compression
-        if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+        # Manual encoding for CFA and LINEAR_RAW to achieve optimal compression
+        dng_photometric_types = photometric in ("CFA", "LINEAR_RAW")
+        
+        if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) and dng_photometric_types:
             # JPEGXL requires manual encoding with imagecodecs
             jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
             jxl_effort = compression_args.get('effort', 5) if compression_args else 5
@@ -2072,10 +2075,10 @@ def write_dng(
             # JXL_BIT_DEPTH_FROM_CODESTREAM, they request that the jxl decoder return values scaled 
             # to the container bitdepth (eg 16bits for 10bit data). This causes a disconnect
             # with the bits_per_sample in the IFD.
-            # So we shift 9-15 bit data to 16-bit before encoding to avoid this. 
+            # So we set white-level to 16-bit equivalent to compensate.
             if 9 <= bits_per_sample <= 15:
-                data = data << (16 - bits_per_sample)
-                bits_per_sample = 16  # Update for TIFF tag and JXL encoder
+                if "WhiteLevel" not in ifd_tags:
+                    ifd_tags.add_tag("WhiteLevel", (1 << 16) - 1)
 
             # Use lossless mode when distance is 0
             if jxl_distance == 0.0:
@@ -2094,6 +2097,50 @@ def write_dng(
             writer.write(
                 data=encoded_data_iterator(),
                 shape=data.shape,
+                dtype=data.dtype,
+                bitspersample=bits_per_sample,
+                rowsperstrip=datasize,
+                **ifd_args,
+            )
+        elif compression == COMPRESSION.JPEG and dng_photometric_types:
+            # JPEG lossless requires manual encoding with imagecodecs
+            
+            # Encode with imagecodecs
+            lossless = compression_args.get('lossless', True) if compression_args else True
+            
+            if photometric == "CFA":
+                # Reshape CFA data to 2-component interleaved format (H, W) -> (H, W//2, 2)
+                # This groups horizontally adjacent pixels which compresses better
+                h, w = data.shape
+                if w % 2 != 0:
+                    raise ValueError(f"CFA width must be even for JPEG compression, got {w}")
+                original_shape = data.shape  # Keep original for metadata
+                data = data.reshape(h, w // 2, 2)
+                logger.debug(f"Reshaped CFA data for JPEG: {original_shape} -> {data.shape}")
+                
+                encoded_bytes = imagecodecs.jpeg_encode(
+                    data, 
+                    lossless=lossless, 
+                    bitspersample=bits_per_sample
+                )
+            else:
+                original_shape = data.shape
+                encoded_bytes = imagecodecs.jpeg_encode(
+                    data,
+                    lossless=lossless,
+                    bitspersample=bits_per_sample,
+                    colorspace='RGB',
+                    outcolorspace='RGB'
+                )
+            
+            def encoded_data_iterator():
+                yield encoded_bytes
+            
+            # Prepare tags after all additions are complete
+            ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
+            writer.write(
+                data=encoded_data_iterator(),
+                shape=original_shape,  # Use original shape for metadata
                 dtype=data.dtype,
                 bitspersample=bits_per_sample,
                 rowsperstrip=datasize,

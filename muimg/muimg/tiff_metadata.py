@@ -1010,6 +1010,12 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
     if dtype in (TiffType.RATIONAL, TiffType.SRATIONAL):
         max_denom = 10000
         
+        # Handle nested list format: [[n1,d1],[n2,d2],...] -> (n1,d1,n2,d2,...)
+        if (isinstance(value, list) and len(value) > 0 and 
+            isinstance(value[0], (list, tuple)) and len(value[0]) == 2):
+            flat = tuple(item for pair in value for item in pair)
+            return (dtype, len(value), flat)
+        
         # Check if value is already in rational format by comparing with spec.count
         # For EXIF tags: spec.count=1 with 2-element tuple means pre-formatted (num, denom)
         # For arrays: spec.count=N with 2N-element tuple means N pre-formatted rationals
