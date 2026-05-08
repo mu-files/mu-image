@@ -98,11 +98,14 @@ dependencies = [
 
 ### Writing DNGs
 
+**`PageEncoding`**: Dataclass that groups compression type and codec-specific arguments. Used to specify how image data should be compressed when -writing DNGs from an array or -transcoding a
+DNG page. For JXL compression, `compression_args=None` defaults to lossless (`distance=0.0, effort=4`). Example: `PageEncoding(compression=COMPRESSION.JPEGXL_DNG, compression_args={'distance': 0.5, 'effort': 7})`.
+
 **`write_dng()`**: The most general function to create a DNG file. Takes an IFD0 spec and optional list of SubIFD specs (each can be `IfdPageSpec` or `IfdDataSpec`). Each spec describes the page data and how to encode it.
 
-**`write_dng_from_page()`**: Create a DNG from an existing `DngPage` or `IfdPageSpec`. Supports transformations (scaling, demosaicing), compression transcoding (e.g., uncompressed to JXL), preview/pyramid generation, and tag manipulation.
+**`write_dng_from_page()`**: Create a DNG from an existing `DngPage` or `IfdPageSpec`. Supports transformations (scaling, demosaicing), compression transcoding (e.g., uncompressed to JXL via `transcode_encoding=PageEncoding(...)`), preview/pyramid generation, and tag manipulation.
 
-**`write_dng_from_array()`**: Create a DNG from an `IfdDataSpec` containing a NumPy raw pixel data array and metadata. Supports preview and pyramid generation.
+**`write_dng_from_array()`**: Create a DNG from an `IfdDataSpec` containing a NumPy raw pixel data array and metadata. Supports preview and pyramid generation with optional compression via `encoding=PageEncoding(...)`.
 
 ### Batch Processing
 

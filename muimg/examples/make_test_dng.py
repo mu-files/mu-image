@@ -112,8 +112,10 @@ def make_test_dng(
     # Create page spec with JXL compression
     page_spec = dngio.IfdPageSpec(
         page=main_page,
-        page_operation=(dngio.PageOp.TRANSCODE, COMPRESSION.JPEGXL),
-        compression_args={'distance': jxl_distance, 'effort': jxl_effort},
+        transcode_encoding=dngio.PageEncoding(
+            compression=COMPRESSION.JPEGXL,
+            compression_args={'distance': jxl_distance, 'effort': jxl_effort}
+        ),
         extratags=extratags,
     )
     

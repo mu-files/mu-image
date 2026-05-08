@@ -22,7 +22,7 @@ from muimg.dngio import (
     write_dng_from_page,
     DngFile,
     IfdPageSpec,
-    PageOp,
+    PageEncoding,
     SubFileType,
     create_dng_from_page,
     PreviewParams,
@@ -257,7 +257,6 @@ def test_complete_file_roundtrip(tmp_path):
         ifd0_spec = IfdPageSpec(
             page=ifd0_page,
             subfiletype=ifd0_subfiletype,
-            page_operation=PageOp.COPY,
         )
         print(f"  Created IFD0 spec: subfiletype={ifd0_subfiletype} "
               f"(is_main_image={ifd0_page.is_main_image})")
@@ -270,7 +269,6 @@ def test_complete_file_roundtrip(tmp_path):
             spec = IfdPageSpec(
                 page=page,
                 subfiletype=subfiletype,
-                page_operation=PageOp.COPY,
             )
             subifd_specs.append(spec)
             print(f"  Created SubIFD {i} spec: subfiletype={subfiletype} "
@@ -515,8 +513,10 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
             ),
             pyramid=PyramidParams(
                 levels=3,
-                compression=COMPRESSION.JPEGXL_DNG,
-                compression_args={'distance': 0.0, 'effort': 5}
+                encoding=PageEncoding(
+                    compression=COMPRESSION.JPEGXL_DNG,
+                    compression_args={'distance': 0.0, 'effort': 5}
+                )
             )
         )
     
@@ -727,9 +727,17 @@ def test_render_raw_scaling_consistency(tmp_path):
         
         # Test 4: create_dng_from_page with scale=0.25 and preview
         print("\nTest 4: create_dng_from_page(main, scale=0.25, preview)...")
+        # Use lossless JXL to match old default behavior (compression_args=None → lossless)
+        main_page_spec = IfdPageSpec(
+            page=main_page,
+            transcode_encoding=PageEncoding(
+                compression=COMPRESSION.JPEGXL_DNG,
+                compression_args={'distance': 0.0}
+            )
+        )
         preview_params = PreviewParams(max_dimension=512)
         dng_with_preview = create_dng_from_page(
-            main_page,
+            main_page_spec,
             scale=0.25,
             preview=preview_params
         )
@@ -763,13 +771,20 @@ def test_render_raw_scaling_consistency(tmp_path):
         
         # Test 5: create_dng_from_page with JXL compression and pyramid
         print("\nTest 5: create_dng_from_page(IfdPageSpec with JXL, pyramid)...")
-        from muimg.dngio import IfdPageSpec, PageOp
         main_page_spec = IfdPageSpec(
             page=main_page,
-            page_operation=(PageOp.TRANSCODE, COMPRESSION.JPEGXL_DNG),
-            compression_args={'distance': 0.1, 'effort': 5}
+            transcode_encoding=PageEncoding(
+                compression=COMPRESSION.JPEGXL_DNG,
+                compression_args={'distance': 0.1, 'effort': 5}
+            )
         )
-        pyramid_params = PyramidParams(levels=3, compression=COMPRESSION.JPEGXL_DNG)
+        pyramid_params = PyramidParams(
+            levels=3,
+            encoding=PageEncoding(
+                compression=COMPRESSION.JPEGXL_DNG,
+                compression_args={'distance': 0.0}
+            )
+        )
         dng_with_pyramid = create_dng_from_page(
             main_page_spec,
             pyramid=pyramid_params

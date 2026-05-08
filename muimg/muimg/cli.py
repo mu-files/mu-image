@@ -798,16 +798,18 @@ def dng_copy(
             # Determine page_operation based on explicit compression request
             if compression is not None:
                 # TRANSCODE mode - decompress and recompress with specified compression
-                page_operation = (dngio.PageOp.TRANSCODE, compression)
+                transcode_encoding = dngio.PageEncoding(
+                    compression=compression,
+                    compression_args=compression_args
+                )
             else:
                 # COPY mode - preserve source compression (even when demosaicing/scaling)
-                page_operation = dngio.PageOp.COPY
+                transcode_encoding = None
             
             # Create IfdPageSpec
             page_spec = dngio.IfdPageSpec(
                 page=page,
-                page_operation=page_operation,
-                compression_args=compression_args,
+                transcode_encoding=transcode_encoding,
                 strip_tags=strip_tags_set,
             )
             
@@ -824,8 +826,10 @@ def dng_copy(
             if pyramid_levels > 0:
                 pyramid_params = dngio.PyramidParams(
                     levels=pyramid_levels,
-                    compression=COMPRESSION.JPEGXL_DNG,
-                    compression_args={'distance': 1.0}
+                    encoding=dngio.PageEncoding(
+                        compression=COMPRESSION.JPEGXL_DNG,
+                        compression_args={'distance': 1.0}
+                    )
                 )
             
             dngio.write_dng_from_page(

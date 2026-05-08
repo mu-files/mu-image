@@ -1624,16 +1624,37 @@ def _filter_metadata_tags(
         tags.remove_tag(tag_name)
 
 
-class PageOp(StrEnum):
-    """Page operation mode for DNG writing."""
-    COPY = "copy"        # Copy page data as-is, preserving source compression
-    TRANSCODE = "transcode"  # Decompress and re-compress with specified compression
+@dataclass(slots=True)
+class PageEncoding:
+    """TIFF page encoding specification.
     
-    @classmethod
-    def lookup(cls, value: str) -> "PageOp":
-        """Look up enum member by string value."""
-        from .common import enum_from_string
-        return enum_from_string(cls, value)
+    Groups compression type and codec-specific arguments.
+    Future: will include tile/strip layout parameters.
+    
+    Args:
+        compression: Compression type (None = COMPRESSION.NONE)
+        compression_args: Codec-specific args. For JXL, defaults to 
+            {'distance': 0.0, 'effort': 4} (lossless) if not specified.
+    """
+    compression: COMPRESSION | None = None
+    compression_args: dict | None = None
+    
+    def get_compression(self) -> tuple[COMPRESSION, dict | None]:
+        """Get compression type and args with defaults applied.
+        
+        Returns:
+            Tuple of (compression, compression_args). Compression defaults to
+            COMPRESSION.NONE if None. For JXL compression, args default to
+            {'distance': 0.0, 'effort': 4} (lossless) if not specified.
+        """
+        comp = self.compression if self.compression is not None else COMPRESSION.NONE
+        args = self.compression_args
+        
+        # Apply JXL defaults if no args specified
+        if comp in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) and args is None:
+            args = {'distance': 0.0, 'effort': 4}
+        
+        return (comp, args)
 
 @dataclass(slots=True)
 class IfdPageSpec:
@@ -1642,25 +1663,23 @@ class IfdPageSpec:
     Args:
         page: Source DNG page to write
         subfiletype: NewSubFileType value (0=main, 1=preview)
-        page_operation: Either PageOp.COPY to preserve source compression,
-                       or (PageOp.TRANSCODE, COMPRESSION) to decompress and recompress.
-                       When TRANSCODE, compression can be COMPRESSION.NONE for uncompressed.
-        compression_args: Args for compression (only used with TRANSCODE mode)
+        transcode_encoding: PageEncoding for transcode mode. None = COPY mode
+            (preserve source compression). PageEncoding(...) = TRANSCODE mode
+            (decompress and re-encode with specified compression).
         extratags: Additional metadata tags to add
         strip_tags: Tag names to remove from source
         copy_page_tags: Whether to copy tags from source page
     """
     page: DngPage
     subfiletype: int = 0
-    page_operation: PageOp | tuple[PageOp, COMPRESSION] = PageOp.COPY
-    compression_args: dict | None = None
+    transcode_encoding: PageEncoding | None = None
     extratags: MetadataTags | None = None
     strip_tags: set[str] | None = None
     copy_page_tags: bool = True
     
     def requires_transcode(self) -> bool:
         """Check if this spec requires transcoding (decompression + recompression)."""
-        if isinstance(self.page_operation, tuple):
+        if self.transcode_encoding is not None:
             return True  # Explicit TRANSCODE mode
         # Check if tiled page needs transcode due to unsupported tile configuration
         if self.page.is_tiled:
@@ -1673,17 +1692,17 @@ class IfdPageSpec:
             )
         return False
     
-    def get_target_compression(self) -> COMPRESSION:
-        """Get the target compression for this spec."""
-        if isinstance(self.page_operation, tuple):
-            _, compression = self.page_operation
-            return compression
-        return self.page.compression  # COPY mode preserves source
-    
-    def has_jxl_compression(self) -> bool:
-        """Check if this spec uses JXL compression."""
-        compression = self.get_target_compression()
-        return compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
+    def get_compression(self) -> tuple[COMPRESSION, dict | None]:
+        """Get compression and args for this spec.
+        
+        Returns:
+            Tuple of (compression, compression_args). For COPY mode, returns
+            (page.compression, None). For TRANSCODE mode, returns encoding's
+            compression with defaults applied.
+        """
+        return (self.transcode_encoding.get_compression() 
+                if self.transcode_encoding 
+                else (self.page.compression, None))
 
 
 @dataclass(slots=True)
@@ -1695,8 +1714,7 @@ class IfdDataSpec:
         photometric: Photometric interpretation ("CFA", "LINEAR_RAW", "RGB", "YCBCR")
         subfiletype: NewSubFileType value (0=main, 1=preview)
         cfa_pattern: CFA pattern (only used for photometric="CFA")
-        compression: Compression to apply. None means COMPRESSION.NONE (uncompressed).
-        compression_args: Args for compression (e.g., {'level': 90} for JPEG)
+        encoding: PageEncoding for compression. None means no compression (COMPRESSION.NONE).
         extratags: Additional metadata tags to add
         bits_per_sample: Bits per sample (e.g., 10, 12, 14 for raw data). None means
             infer from dtype (uint8→8, uint16→16, float16→16, float32→32). Use this to
@@ -1706,8 +1724,7 @@ class IfdDataSpec:
     photometric: str
     subfiletype: int = 0
     cfa_pattern: str = "RGGB"
-    compression: COMPRESSION | None = None
-    compression_args: dict | None = None
+    encoding: PageEncoding | None = None
     extratags: MetadataTags | None = None
     bits_per_sample: int | None = None
     
@@ -1715,9 +1732,15 @@ class IfdDataSpec:
         """Check if this spec requires transcoding (always False for array data)."""
         return False
     
-    def has_jxl_compression(self) -> bool:
-        """Check if this spec uses JXL compression."""
-        return self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
+    def get_compression(self) -> tuple[COMPRESSION, dict | None]:
+        """Get compression and args for this spec.
+        
+        Returns:
+            Tuple of (compression, compression_args). If encoding is None,
+            returns (COMPRESSION.NONE, None). Otherwise returns encoding's
+            compression with defaults applied.
+        """
+        return self.encoding.get_compression() if self.encoding else (COMPRESSION.NONE, None)
 
 
 # IFD specification type alias (defined after the classes)
@@ -1727,8 +1750,8 @@ IfdSpec: TypeAlias = IfdPageSpec | IfdDataSpec
 def write_dng(
     destination_file: str | Path | io.BytesIO,
     *,
-    ifd0_spec: IfdPageSpec | IfdDataSpec,
-    subifds: list[IfdPageSpec | IfdDataSpec] = None,
+    ifd0_spec: IfdSpec,
+    subifds: list[IfdSpec] = None,
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -1755,7 +1778,6 @@ def write_dng(
         # For compressed data, copy raw bytes (compression is byte-order independent)
         if page.compression == COMPRESSION.NONE:
             data = page.asarray()
-            logger.debug(f"Using asarray() for uncompressed data (handles byte order conversion)")
         else:
             # Read raw compressed segments
             segments = list(
@@ -1815,11 +1837,11 @@ def write_dng(
 
     def _write_ifd_from_spec(
         writer: TiffWriter,
-        spec: IfdPageSpec | IfdDataSpec,
+        spec: IfdSpec,
         *,
         is_ifd0: bool = False,
         needs_v1_7_1: bool,
-        main_spec: IfdPageSpec | IfdDataSpec | None = None,
+        main_spec: IfdSpec | None = None,
     ) -> None:
         # Get subfiletype from spec
         subfiletype = spec.subfiletype
@@ -1838,10 +1860,10 @@ def write_dng(
             
             # Get page tags with inheritance logic
             if spec.copy_page_tags:
-                extratags = spec.page.get_page_tags()
                 if is_ifd0:
-                    # For IFD0, merge both page tags and IFD0-specific tags
-                    extratags |= spec.page.get_ifd0_tags()
+                    # For IFD0, also merge IFD0-specific tags
+                    extratags = spec.page.get_ifd0_tags()
+                extratags |= spec.page.get_page_tags()
         else:
             # IfdDataSpec
             photometric = spec.photometric
@@ -1875,7 +1897,8 @@ def write_dng(
             if main_spec is not None:
                 # Case 1: main image is data AND (ifd0 is a page with copytags OR main is doing compression)
                 if isinstance(main_spec, IfdDataSpec):
-                    has_compression = main_spec.compression is not None and main_spec.compression != COMPRESSION.NONE
+                    comp, _ = main_spec.get_compression()
+                    has_compression = comp != COMPRESSION.NONE
                     if (isinstance(spec, IfdPageSpec) and spec.copy_page_tags) or has_compression:
                         digest_invalid = True
                 # Case 2: main image is a page with transcode
@@ -1896,34 +1919,12 @@ def write_dng(
         _filter_metadata_tags(ifd_tags, exclude_names=strip_tags)
         
         # ==== handle tifffile args for this IFD ====
-        # Determine compression and args based on spec type
-        if isinstance(spec, IfdPageSpec) and not spec.requires_transcode():
-            # Fast path: COPY mode - use page's existing compression, no args
-            compression = spec.page.compression
-            compression_args = None
-        else:
-            # All other cases: determine compression, then normalize
-            if isinstance(spec, IfdPageSpec):
-                # IfdPageSpec with transcode required
-                if isinstance(spec.page_operation, tuple):
-                    # TRANSCODE mode - use specified compression
-                    _, compression = spec.page_operation
-                    compression_args = spec.compression_args
-                else:
-                    # Unsupported tile config - use default COMPRESSION.NONE
-                    compression = COMPRESSION.NONE
-                    compression_args = None
-            else:
-                # IfdDataSpec - use spec's compression
-                compression = spec.compression
-                compression_args = spec.compression_args
-            
-            # Normalize compression type and args
-            if compression is None or compression == COMPRESSION.NONE:
-                # Uncompressed data doesn't need compression args
-                compression = COMPRESSION.NONE
-                compression_args = None
-            elif compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+        # Get compression and args from spec
+        compression, compression_args = spec.get_compression()
+        
+        # Normalize compression type and args (skip for COPY mode)
+        if not (isinstance(spec, IfdPageSpec) and not spec.requires_transcode()):
+            if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 # Normalize JXL compression variants to JPEGXL_DNG
                 compression = COMPRESSION.JPEGXL_DNG
             elif compression == COMPRESSION.JPEG:
@@ -1958,7 +1959,7 @@ def write_dng(
             # IfdPageSpec with TRANSCODE: extract data from page
             # (we only reach here if spec.requires_transcode() is True)
             # Warn only if we're falling back due to unsupported tiles (not explicit transcode)
-            if not isinstance(spec.page_operation, tuple) and spec.page.is_tiled:
+            if spec.transcode_encoding is None and spec.page.is_tiled:
                 tile_shape = (spec.page.tilelength, spec.page.tilewidth)
                 logger.warning(
                     "Falling back to decoded DNG write path for tiled page with unsupported tile %s "
@@ -2130,7 +2131,10 @@ def write_dng(
     main_spec = main_specs[0] if main_specs else None
     
     # Check if any IFD uses JXL compression
-    needs_v1_7_1 = any(s.has_jxl_compression() for s in all_specs)
+    needs_v1_7_1 = any(
+        s.get_compression()[0] in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) 
+        for s in all_specs
+    )
 
     try:
         with TiffWriter(destination_file, bigtiff=False, byteorder='<') as tif:
@@ -2162,8 +2166,8 @@ def write_dng(
 
 def create_dng(
     *,
-    ifd0_spec: IfdPageSpec | IfdDataSpec,
-    subifds: list[IfdPageSpec | IfdDataSpec] = None,
+    ifd0_spec: IfdSpec,
+    subifds: list[IfdSpec] = None,
 ) -> "DngFile":
     """Create a DNG file in memory and return as DngFile object.
     
@@ -2209,13 +2213,11 @@ class PyramidParams:
     
     Attributes:
         levels: Number of pyramid levels to generate (0=none)
-        compression: Compression type for pyramid levels (default: JPEGXL_DNG)
-        compression_args: Arguments for compression (default: {'distance': 0.5, 'effort': 5})
+        encoding: PageEncoding for pyramid levels (None = no compression)
         extratags: Additional metadata tags to add to each pyramid level
     """
     levels: int = 0
-    compression: COMPRESSION | None = None
-    compression_args: dict | None = None
+    encoding: PageEncoding | None = None
     extratags: MetadataTags | None = None
 
 
@@ -2257,8 +2259,7 @@ def write_dng_from_array(
     # Fast path in write_dng_from_page handles compression-only changes without demosaicing
     page_spec = IfdPageSpec(
         page=main_page,
-        page_operation=(PageOp.TRANSCODE, data_spec.compression),
-        compression_args=data_spec.compression_args,
+        transcode_encoding=data_spec.encoding,
         extratags=None,  # Already in the page
     )  
     # Delegate to write_dng_from_page with extracted values
@@ -2550,21 +2551,21 @@ def write_dng_from_page(
     if main_needs_transform:
         # Transformed data - extract compression from source
         raw_uint16 = raw_render.convert_dtype(pyramid_images[0], np.uint16)
-        if isinstance(source_page_spec.page_operation, tuple):
-            # Explicit TRANSCODE mode - use specified compression
-            _, main_compression = source_page_spec.page_operation
-            main_compression_args = source_page_spec.compression_args
+        if source_page_spec.transcode_encoding:
+            # Explicit TRANSCODE mode - use specified encoding
+            main_encoding = source_page_spec.transcode_encoding
         else:
-            # COPY mode - preserve source compression unknown args so set to None
-            main_compression = source_page_spec.page.compression
-            main_compression_args = None
+            # COPY mode - preserve source compression, no args
+            main_encoding = PageEncoding(
+                compression=source_page_spec.page.compression,
+                compression_args=None
+            )
 
         main_spec = IfdDataSpec(
             data=raw_uint16,
             photometric="LINEAR_RAW",
             subfiletype=SubFileType.MAIN_IMAGE,
-            compression=main_compression,
-            compression_args=main_compression_args,
+            encoding=main_encoding,
             extratags = main_page_tags
         )
     
@@ -2577,8 +2578,7 @@ def write_dng_from_page(
                 data=pyramid_uint16,
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
-                compression=pyramid.compression,
-                compression_args=pyramid.compression_args,
+                encoding=pyramid.encoding,
                 extratags=pyramid_tags,
             )
             pyramid_specs.append(pyramid_spec)
@@ -2625,12 +2625,15 @@ def write_dng_from_page(
             logger.info(f"Resized rendered preview to {rendered_preview.shape[:2]}")
         
         # Create preview spec for IFD0
+        preview_encoding = PageEncoding(
+            compression=preview.compression,
+            compression_args=preview.compression_args
+        ) if preview.compression else None
         preview_spec = IfdDataSpec(
             data=rendered_preview,
             photometric="RGB",
             subfiletype=SubFileType.PREVIEW_IMAGE,
-            compression=preview.compression,
-            compression_args=preview.compression_args,
+            encoding=preview_encoding,
             extratags=ifd0_tags,
         )
         
@@ -2681,7 +2684,7 @@ def create_dng_from_page(
     Example:
         >>> page = dng_file.get_main_page()
         >>> preview = PreviewParams(compression=COMPRESSION.JPEG)  # Presence means generate
-        >>> pyramid = PyramidParams(levels=2, compression=COMPRESSION.JPEGXL_DNG)
+        >>> pyramid = PyramidParams(levels=2, encoding=PageEncoding(compression=COMPRESSION.JPEGXL_DNG))
         >>> new_dng = create_dng_from_page(page, scale=0.5, preview=preview, pyramid=pyramid)
     """
     buffer = io.BytesIO()

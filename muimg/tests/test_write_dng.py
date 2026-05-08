@@ -19,7 +19,10 @@ from tifffile import COMPRESSION
 # These are harmless warnings when reading dng_validate output TIFFs
 logging.getLogger('tifffile').setLevel(logging.CRITICAL)
 
-from muimg.dngio import write_dng_from_array, write_dng, DngFile, IfdDataSpec, IfdPageSpec, decode_dng
+from muimg.dngio import (
+    write_dng_from_array, write_dng, DngFile, IfdDataSpec, 
+    IfdPageSpec, PageEncoding, decode_dng
+)
 from muimg.raw_render import DemosaicAlgorithm
 try:
     from muimg._dngio_coreimage import core_image_available
@@ -191,21 +194,27 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
             
             # Use write_dng API with preview as IFD0 and main data as SubIFD
+            preview_encoding = PageEncoding(
+                compression=COMPRESSION.JPEG,
+                compression_args={'level': 90}
+            )
             preview_spec = IfdDataSpec(
                 data=preview_data,
                 photometric="RGB",
                 subfiletype=1,  # Preview
-                compression=COMPRESSION.JPEG,
-                compression_args={'level': 90},
+                encoding=preview_encoding,
                 extratags=metadata,
             )
+            main_encoding = PageEncoding(
+                compression=compression,
+                compression_args=compression_args
+            ) if compression else None
             main_spec = IfdDataSpec(
                 data=test_data,
                 photometric=photometric,
                 cfa_pattern="RGGB",
                 subfiletype=0,  # Main image
-                compression=compression,
-                compression_args=compression_args,
+                encoding=main_encoding,
                 bits_per_sample=bits_per_sample,
             )
             write_dng(
@@ -215,12 +224,15 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
             )
         else:
             # No preview: use write_dng_from_array
+            encoding = PageEncoding(
+                compression=compression,
+                compression_args=compression_args
+            ) if compression else None
             data_spec = IfdDataSpec(
                 data=test_data,
                 photometric=photometric,
                 cfa_pattern="RGGB",
-                compression=compression,
-                compression_args=compression_args,
+                encoding=encoding,
                 extratags=metadata,
                 bits_per_sample=bits_per_sample,
             )
@@ -554,8 +566,10 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
         data=test_data,
         photometric=photometric,
         cfa_pattern="RGGB" if photometric == "CFA" else None,
-        compression=src_compression,
-        compression_args=src_args,
+        encoding=PageEncoding(
+            compression=src_compression,
+            compression_args=src_args
+        ) if src_compression != COMPRESSION.NONE else None,
         extratags=metadata,
         bits_per_sample=bits_per_sample,
     )
@@ -578,8 +592,10 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
         assert main_page is not None, f"Failed to get main page from {src_path}"
         dst_spec = IfdPageSpec(
             page=main_page,
-            page_operation=("TRANSCODE", dst_compression),
-            compression_args=dst_args,
+            transcode_encoding=PageEncoding(
+                compression=dst_compression,
+                compression_args=dst_args
+            ),
         )
         write_dng(destination_file=dst_path, ifd0_spec=dst_spec)
     
@@ -594,9 +610,9 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
     # Compare rendered outputs - should be identical for lossless transcode
     stats = compute_diff_stats(dst_rendered, src_rendered)
     
-    # TODO: Transcoding 10-bit data TO JXL has small error (~0.0007%).
-    # This should be exactly 0.0 for lossless transcode. Root cause unknown - possibly
-    # rounding in ratio multiplication, JXL codec, or rendering pipeline. Needs investigation.
+    # Transcoding 10-bit data TO JXL has small error (~0.0007%).
+    # This is due to the jpeg and uncompressed cases feeding 10-bit data to render pipeline
+    # and JXL up-converting it to 16-bit
     if (dst_label == "lossless_jxl" and src_label != "lossless_jxl" and 
         dtype_label == "uint16_10bit"):
         mean_threshold = 0.001  # 0.001% tolerance for 10-bit non-JXL → JXL transcode

@@ -117,7 +117,6 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
                 data=level,
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 photometric="LINEAR_RAW",
-                compression=None,
             )
             for level in pyramid_levels
         ]
@@ -128,7 +127,6 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
                 data=preview,
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 photometric="RGB",
-                compression=None,
             )
             subifds.insert(0, preview_spec)
 
@@ -225,7 +223,6 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
             subfiletype=SubFileType.MAIN_IMAGE,
             photometric="CFA",
             cfa_pattern=cfa_pattern,
-            compression=None,
             extratags=ifd0_tags,
         )
         
@@ -235,7 +232,6 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
                 data=level,
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 photometric="LINEAR_RAW",
-                compression=None,
             )
             for level in pyramid_levels
         ]
