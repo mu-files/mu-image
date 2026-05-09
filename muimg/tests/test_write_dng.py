@@ -134,6 +134,57 @@ UINT16_10BIT_CFA_CONFIGS = [
     ("lossy_jxl_4.0", 4.0, 0.99, 11.97, 0.95, 29.77, 0.0060),
 ]
 
+def validate_dng_and_compare_render(
+    dng_path: Path,
+    output_base: Path,
+    our_rendered: np.ndarray,
+    bits_per_sample: int | None,
+    comp_label: str,
+    dtype_label: str,
+    photometric: str,
+    ignored_warnings: list[str] | None = None,
+    indent: str = "    "
+) -> None:
+    """Run dng_validate and optionally compare rendered output.
+    
+    Args:
+        dng_path: Path to DNG file to validate
+        output_base: Base path for dng_validate output (without extension)
+        our_rendered: Our rendered output to compare against
+        bits_per_sample: Bits per sample (used to detect 10-bit JXL bug)
+        comp_label: Compression label (used to detect JXL)
+        dtype_label: Data type label for error messages
+        photometric: Photometric interpretation for error messages
+        ignored_warnings: List of warning patterns to ignore
+        indent: Indentation for print statements
+    """
+    # Skip dng_validate comparison for 10-bit JXL due to dng_validate bug
+    skip_validate_comparison = (bits_per_sample == 10 and "jxl" in comp_label)
+    
+    validated_tiff = run_dng_validate(
+        dng_path, 
+        output_base, 
+        validate=True, 
+        ignored_warnings=ignored_warnings or [], 
+        indent=indent
+    )
+    
+    if validated_tiff is not None and not skip_validate_comparison:
+        # dng_validate is available, compare renderings
+        validated_tiff_path = Path(str(output_base) + '.tif')
+        assert validated_tiff_path.exists(), f"dng_validate output TIFF not found: {validated_tiff_path}"
+        
+        from tifffile import imread
+        validated_render = imread(validated_tiff_path)
+        validate_stats = compute_diff_stats(our_rendered, validated_render)
+        print(f"{indent}Validate: mean={validate_stats['mean']:.4f}%, max={validate_stats['max']:.4f}%")
+        # Allow small differences due to different rendering pipelines
+        assert validate_stats['mean'] < 1.0, (
+            f"{dtype_label} {photometric} {comp_label}: Render vs dng_validate diff "
+            f"{validate_stats['mean']:.4f}% exceeds 1.0%"
+        )
+
+
 def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, comp_label, jxl_distance, raw_mean_thresh, raw_max_thresh, render_mean_thresh, render_max_thresh, bits_per_sample=None, expected_compression_ratio=None):
     """Test DNG write/decode fidelity for a specific dtype and compression combination.
     
@@ -311,13 +362,6 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
             # not scaled back to full dtype range, so compare against scaled data
             comparison_target = test_data
             
-            # For 9-15 bit JXL: we scale data to 16-bit before encoding to match dng_validate.
-            # Adjust comparison target to match the upscaled data.
-            if compression == COMPRESSION.JPEGXL_DNG and bits_per_sample is not None and 9 <= bits_per_sample <= 15:
-                src_max = (1 << bits_per_sample) - 1
-                dst_max = 65535  # 16-bit max
-                comparison_target = (test_data.astype(np.float64) * dst_max / src_max).astype(np.uint16)
-            
             # Compute diff stats for raw data
             stats = compute_diff_stats(decoded, comparison_target)
             
@@ -339,29 +383,19 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
             render_stats = compute_diff_stats(rendered, rgb_ramp_u8)
             
             # 1. Compare our rendering against dng_validate output (if available)
-            # dng_validate converts to TIFF, so we can read it back and compare
-            # Note: This runs BEFORE dng_validate is called below, so we need to run it first
             output_base = output_path / f"{dtype_label}_{photometric}_{preview_label}_{comp_label}"
-            ignored_warnings = [
-            "too little padding",  # Matches all 4 edge padding warnings
-            ]
-            validated_tiff = run_dng_validate(dng_path, output_base, validate=True, ignored_warnings=ignored_warnings, indent="    ")
+            ignored_warnings = ["too little padding"]  # Matches all 4 edge padding warnings
             
-            if validated_tiff is not None:
-                # dng_validate is available, compare renderings
-                # Now read the validated TIFF and compare
-                # Note: output_base is the full path without extension, dng_validate adds .tif
-                validated_tiff_path = Path(str(output_base) + '.tif')
-                assert validated_tiff_path.exists(), f"dng_validate output TIFF not found: {validated_tiff_path}"
-                
-                from tifffile import imread
-                validated_render = imread(validated_tiff_path)
-                validate_stats = compute_diff_stats(rendered, validated_render)
-                print(f"    Validate: mean={validate_stats['mean']:.4f}%, max={validate_stats['max']:.4f}%")
-                # Allow small differences due to different rendering pipelines
-                assert validate_stats['mean'] < 1.0, (
-                f"{dtype_label} {photometric} {comp_label}: Render vs dng_validate diff "
-                f"{validate_stats['mean']:.4f}% exceeds 1.0%"
+            validate_dng_and_compare_render(
+                dng_path=dng_path,
+                output_base=output_base,
+                our_rendered=rendered,
+                bits_per_sample=bits_per_sample,
+                comp_label=comp_label,
+                dtype_label=dtype_label,
+                photometric=photometric,
+                ignored_warnings=ignored_warnings,
+                indent="    "
             )
 
             '''
@@ -525,6 +559,20 @@ LOSSLESS_COMPRESSIONS = [
     ("lossless_jxl", COMPRESSION.JPEGXL_DNG, {'distance': 0.0, 'effort': 4}),
 ]
 
+# Layout configurations per dtype and compression
+# Format: {(dtype_label, compression_label): (tile_size, rows_per_strip)}
+LAYOUT_CONFIGS = {
+    ("uint8", "uncompressed"): ((256, 512), None),
+    ("uint8", "lossless_jxl"): (None, 320),
+    ("uint8", "lossless_jpeg"): ((320, 320), None),
+    ("uint16", "uncompressed"): (None, 520),
+    ("uint16", "lossless_jxl"): ((256, 256), None),
+    ("uint16", "lossless_jpeg"): ((496, 256), None),
+    ("uint16_10bit", "uncompressed"): (None, None),
+    ("uint16_10bit", "lossless_jxl"): ((128, 144), None),
+    ("uint16_10bit", "lossless_jpeg"): (None, 336),
+}
+
 PHOTOMETRIC_TYPES = ["CFA", "LINEAR_RAW"]
 
 @pytest.mark.parametrize("photometric", PHOTOMETRIC_TYPES)
@@ -540,6 +588,17 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
     format, and verifies that rendering produces identical results.
     Tests both CFA and LINEAR_RAW photometric types.
     """
+    # Print clear test description
+    print(f"\n{'='*80}")
+    print(f"Testing: {src_label} → {dst_label}")
+    print(f"  Data type: {dtype_label} (bits_per_sample={bits_per_sample})")
+    print(f"  Photometric: {photometric}")
+    src_tile_size, src_rows_per_strip = LAYOUT_CONFIGS.get((dtype_label, src_label), (None, None))
+    dst_tile_size, dst_rows_per_strip = LAYOUT_CONFIGS.get((dtype_label, dst_label), (None, None))
+    print(f"  Source layout: tile_size={src_tile_size}, rows_per_strip={src_rows_per_strip}")
+    print(f"  Dest layout: tile_size={dst_tile_size}, rows_per_strip={dst_rows_per_strip}")
+    print(f"{'='*80}")
+    
     # Determine output path
     output_path = output_path_manager.get_path(tmp_path, "test_lossless_transcode")
     
@@ -558,6 +617,9 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
     metadata.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
     metadata.add_tag("UniqueCameraModel", "Transcode Test Camera")
     
+    # Get layout configuration for source
+    src_tile_size, src_rows_per_strip = LAYOUT_CONFIGS.get((dtype_label, src_label), (None, None))
+    
     # Create source DNG
     src_filename = f"{dtype_label}_{photometric}_{src_label}_source.dng"
     src_path = output_path / src_filename
@@ -568,12 +630,19 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
         cfa_pattern="RGGB" if photometric == "CFA" else None,
         encoding=PageEncoding(
             compression=src_compression,
-            compression_args=src_args
-        ) if src_compression != COMPRESSION.NONE else None,
+            compression_args=src_args,
+            tile_size=src_tile_size,
+            rows_per_strip=src_rows_per_strip
+        ) if src_compression != COMPRESSION.NONE or src_tile_size or src_rows_per_strip else None,
         extratags=metadata,
         bits_per_sample=bits_per_sample,
     )
     write_dng_from_array(destination_file=src_path, data_spec=src_spec)
+    
+    # Validate source DNG
+    src_validate_base = output_path / f"{dtype_label}_{photometric}_{src_label}_source_validate"
+    ignored_warnings = ["too little padding"] if photometric == "CFA" else None
+    run_dng_validate(src_path, src_validate_base, validate=True, ignored_warnings=ignored_warnings, indent="  ")
     
     # Render source DNG
     with DngFile(src_path) as src_dng:
@@ -582,6 +651,9 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
             demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR
         )
         assert src_rendered is not None, f"Failed to render source {src_label}"
+    
+    # Get layout configuration for destination
+    dst_tile_size, dst_rows_per_strip = LAYOUT_CONFIGS.get((dtype_label, dst_label), (None, None))
     
     # Transcode to destination format
     dst_filename = f"{dtype_label}_{photometric}_{src_label}_to_{dst_label}.dng"
@@ -594,7 +666,9 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
             page=main_page,
             transcode_encoding=PageEncoding(
                 compression=dst_compression,
-                compression_args=dst_args
+                compression_args=dst_args,
+                tile_size=dst_tile_size,
+                rows_per_strip=dst_rows_per_strip
             ),
         )
         write_dng(destination_file=dst_path, ifd0_spec=dst_spec)
@@ -607,27 +681,36 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
         )
         assert dst_rendered is not None, f"Failed to render destination {dst_label}"
     
+    # Validate destination DNG and compare against dng_validate render
+    dst_validate_base = output_path / f"{dtype_label}_{photometric}_{src_label}_to_{dst_label}_validate"
+    validate_dng_and_compare_render(
+        dng_path=dst_path,
+        output_base=dst_validate_base,
+        our_rendered=dst_rendered,
+        bits_per_sample=bits_per_sample,
+        comp_label=dst_label,
+        dtype_label=dtype_label,
+        photometric=photometric,
+        ignored_warnings=["too little padding"] if photometric == "CFA" else None,
+        indent="  "
+    )
+    
     # Compare rendered outputs - should be identical for lossless transcode
     stats = compute_diff_stats(dst_rendered, src_rendered)
     
-    # Transcoding 10-bit data TO JXL has small error (~0.0007%).
-    # This is due to the jpeg and uncompressed cases feeding 10-bit data to render pipeline
-    # and JXL up-converting it to 16-bit
-    if (dst_label == "lossless_jxl" and src_label != "lossless_jxl" and 
-        dtype_label == "uint16_10bit"):
-        mean_threshold = 0.001  # 0.001% tolerance for 10-bit non-JXL → JXL transcode
-        max_threshold = 0.4  # ~1 uint8 value (100/255) due to rounding in rendering pipeline
-    else:
-        mean_threshold = 0.0
-        max_threshold = 0.0
-    
-    assert stats['mean'] <= mean_threshold, (
-        f"Lossless transcode {src_label} → {dst_label} ({dtype_label}) "
-        f"produced mean diff {stats['mean']:.6f} > threshold {mean_threshold}"
+    test_desc = (
+        f"{src_label} → {dst_label} | {dtype_label} bits={bits_per_sample} | {photometric} | "
+        f"src_layout: tile={src_tile_size} strip={src_rows_per_strip} | "
+        f"dst_layout: tile={dst_tile_size} strip={dst_rows_per_strip}"
     )
-    assert stats['max'] <= max_threshold, (
-        f"Lossless transcode {src_label} → {dst_label} ({dtype_label}) "
-        f"produced max diff {stats['max']:.6f} > threshold {max_threshold}"
+    
+    assert stats['mean'] <= 0.0, (
+        f"FAILED: {test_desc}\n"
+        f"  Mean diff {stats['mean']:.6f} > threshold 0.0"
+    )
+    assert stats['max'] <= 0.0, (
+        f"FAILED: {test_desc}\n"
+        f"  Max diff {stats['max']:.6f} > threshold 0.0"
     )
 
 

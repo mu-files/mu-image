@@ -448,49 +448,27 @@ class DngPage(TiffPage):
         Returns:
             Decoded image array.
         """
-        decoded = self._decode_segmented(imagecodecs.jpegxl_decode)
-        
-        # Match dng_validate: upscale 9-15 bit data to 16-bit container
-        # imagecodecs preserves original bit depth, but dng_validate/Photoshop
-        # request JXL decoder to scale values to container bit depth
-        if 9 <= self.bitspersample <= 15 and decoded.dtype == np.uint16:
-            src_max = (1 << self.bitspersample) - 1
-            dst_max = 65535  # 16-bit max
-            decoded = (decoded.astype(np.float64) * dst_max / src_max).astype(np.uint16)
-        
-        return decoded
+        return self._decode_segmented(imagecodecs.jpegxl_decode)
     
     def _decode_jpeg_cfa(self) -> np.ndarray:
         """Decode JPEG-compressed CFA data.
         
-        Handles malformed DNG files (e.g., Google Pixel) that may have zero-filled
-        padding tiles. Invalid tiles are caught by the JPEG decoder and filled with zeros.
-        
-        JPEG encodes CFA data as (height, width/2, 2) where pairs of pixels are treated
+        JPEG CFA data is encoded with 2-component interleaving where each CFA pixel is stored
         as a single pixel with 2 components. This is reshaped to (height, width).
         
         Returns:
             Decoded CFA image array.
         """
-        # Determine segment dimensions based on layout type
-        if self.is_tiled:
-            segment_height = self.tilelength
-            segment_width = self.tilewidth
-        else:
-            # Strip-based: full width, height from rowsperstrip (or full image for single strip)
-            segment_height = self.rowsperstrip or self.imagelength
-            segment_width = self.imagewidth
-        
-        logger.debug(f"_decode_jpeg_cfa: is_tiled={self.is_tiled}, segment=({segment_height}, {segment_width}), image=({self.imagelength}, {self.imagewidth})")
-
         def decode_tile(tile_data: bytes) -> np.ndarray:
             tile = imagecodecs.jpeg_decode(
                 tile_data,
                 bitspersample=self.bitspersample
             )
             # Handle JPEG CFA format: (height, width/2, 2) -> (height, width)
+            # Use the actual decoded dimensions instead of predetermined segment size
             if tile.ndim == 3 and tile.shape[2] == 2:
-                tile = tile.reshape(segment_height, segment_width)
+                h, w_half, _ = tile.shape
+                tile = tile.reshape(h, w_half * 2)
 
             return tile
         
@@ -1628,16 +1606,23 @@ def _filter_metadata_tags(
 class PageEncoding:
     """TIFF page encoding specification.
     
-    Groups compression type and codec-specific arguments.
-    Future: will include tile/strip layout parameters.
+    Groups compression type, codec-specific arguments, and tile/strip layout.
     
     Args:
         compression: Compression type (None = COMPRESSION.NONE)
         compression_args: Codec-specific args. For JXL, defaults to 
             {'distance': 0.0, 'effort': 4} (lossless) if not specified.
+        tile_size: Tile dimensions (height, width). Mutually exclusive with rows_per_strip.
+        rows_per_strip: Rows per strip. Mutually exclusive with tile_size.
+        
+    Notes:
+        - If both tile_size and rows_per_strip are None, uses single-strip layout (full image).
+        - tile_size and rows_per_strip cannot both be specified.
     """
     compression: COMPRESSION | None = None
     compression_args: dict | None = None
+    tile_size: tuple[int, int] | None = None
+    rows_per_strip: int | None = None
     
     def get_compression(self) -> tuple[COMPRESSION, dict | None]:
         """Get compression type and args with defaults applied.
@@ -1835,6 +1820,134 @@ def write_dng(
         
         return result
 
+    def _segment_and_compress(
+        data: np.ndarray,
+        compression: COMPRESSION,
+        compression_args: dict | None,
+        bits_per_sample: int,
+        photometric: str,
+        target_byteorder: str,
+        tile_size: tuple[int, int] | None = None,
+        rows_per_strip: int | None = None
+    ) -> list[bytes]:
+        """Segment image data and compress each segment in a single pass.
+        
+        Args:
+            data: Image data array (H, W) or (H, W, C)
+            compression: Compression type
+            compression_args: Compression-specific arguments
+            bits_per_sample: Bits per sample
+            photometric: Photometric interpretation
+            target_byteorder: Target byte order ('>' or '<')
+            tile_size: Tile dimensions (height, width) for tiled layout
+            rows_per_strip: Rows per strip for stripped layout
+            
+        Returns:
+            List of encoded segments (bytes)
+        """
+        from .tiff_metadata import normalize_array_to_target_byteorder
+        
+        # Step 1: Apply CFA swizzling to full image if needed (before segmentation)
+        if photometric == "CFA" and compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            data = swizzle_cfa_data(data)
+        
+        # Step 2: Define compression function for a single segment
+        def compress_segment(segment: np.ndarray) -> bytes:
+            """Compress a single segment based on compression type."""
+            if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+                # JXL compression
+                jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
+                jxl_effort = compression_args.get('effort', 5) if compression_args else 5
+                
+                if jxl_distance == 0.0:
+                    return imagecodecs.jpegxl_encode(
+                        segment, lossless=True, effort=jxl_effort, bitspersample=bits_per_sample
+                    )
+                else:
+                    return imagecodecs.jpegxl_encode(
+                        segment, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
+                    )
+                    
+            elif compression == COMPRESSION.JPEG:
+                # JPEG compression
+                lossless = compression_args.get('lossless', True) if compression_args else True
+                seg_data = segment
+                
+                if photometric == "CFA":
+                    # Reshape CFA data to 2-component interleaved format
+                    h, w = seg_data.shape
+                    if w % 2 != 0:
+                        raise ValueError(f"CFA width must be even for JPEG compression, got {w}")
+                    seg_data = seg_data.reshape(h, w // 2, 2)
+                    
+                    return imagecodecs.jpeg_encode(
+                        seg_data,
+                        lossless=lossless,
+                        bitspersample=bits_per_sample
+                    )
+                else:
+                    return imagecodecs.jpeg_encode(
+                        seg_data,
+                        lossless=lossless,
+                        bitspersample=bits_per_sample,
+                        colorspace='RGB',
+                        outcolorspace='RGB'
+                    )
+                    
+            elif compression == COMPRESSION.NONE:
+                # Uncompressed - handle byte order and bit packing
+                # 1. Convert to target byte order
+                seg = normalize_array_to_target_byteorder(segment, target_byteorder)
+                
+                # 2. Pack bits if needed (9-15 bit data in uint16 container)
+                if 9 <= bits_per_sample <= 15:
+                    # Use imagecodecs.packints_encode like tifffile does
+                    runlen = seg.shape[-1]
+                    if len(seg.shape) > 1:
+                        runlen *= seg.shape[-2]
+                    return imagecodecs.packints_encode(seg, bits_per_sample, runlen=runlen)
+                else:
+                    # No packing needed - convert to bytes
+                    return seg.tobytes()
+            else:
+                # Other compression types (shouldn't happen for DNG files)
+                return segment.tobytes()
+        
+        # Step 3: Tile/strip and compress in single pass
+        h, w = data.shape[:2]
+        encoded_segments = []
+        
+        if tile_size is not None:
+            # Tiled layout - split into 2D grid and compress each tile
+            tile_h, tile_w = tile_size
+            for ty in range(0, h, tile_h):
+                for tx in range(0, w, tile_w):
+                    tile = data[ty:ty+tile_h, tx:tx+tile_w]
+                    
+                    # TIFF spec requires padding edge tiles to nominal tile size
+                    actual_h, actual_w = tile.shape[:2]
+                    if actual_h < tile_h or actual_w < tile_w:
+                        # Pad edge tiles with zeros
+                        if len(tile.shape) == 3:
+                            padded = np.zeros((tile_h, tile_w, tile.shape[2]), dtype=tile.dtype)
+                            padded[:actual_h, :actual_w, :] = tile
+                        else:
+                            padded = np.zeros((tile_h, tile_w), dtype=tile.dtype)
+                            padded[:actual_h, :actual_w] = tile
+                        tile = padded
+                    
+                    encoded_segments.append(compress_segment(tile))
+        elif rows_per_strip is not None:
+            # Stripped layout - split into horizontal strips and compress each
+            for y in range(0, h, rows_per_strip):
+                strip = data[y:y+rows_per_strip]
+                encoded_segments.append(compress_segment(strip))
+        else:
+            # Single segment (full image)
+            encoded_segments.append(compress_segment(data))
+        
+        return encoded_segments
+
     def _write_ifd_from_spec(
         writer: TiffWriter,
         spec: IfdSpec,
@@ -1968,11 +2081,6 @@ def write_dng(
                 )
             bits_per_sample = int(spec.page.bitspersample)
             
-            # JPEGXL decoder upscales 9-15 bit data to 16-bit container (matching dng_validate behavior)
-            # Normalize bits_per_sample to reflect this upscaling
-            if spec.page.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) and 9 <= bits_per_sample <= 15:
-                bits_per_sample = 16
-            
             if photometric == "CFA":
                 cfa_result = spec.page.get_cfa()
                 if cfa_result is None:
@@ -2028,92 +2136,88 @@ def write_dng(
 
             uncomp_data = spec.data
 
+        # Get encoding object for layout parameters
+        encoding = spec.transcode_encoding if isinstance(spec, IfdPageSpec) else spec.encoding
         
-        # Write IFD with compression
-        # Manual encoding for CFA and LINEAR_RAW to achieve optimal compression
-        dng_photometric_types = photometric in ("CFA", "LINEAR_RAW")
-        
-        if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) and dng_photometric_types:
-            # JPEGXL requires manual encoding with imagecodecs
-            jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
-            jxl_effort = compression_args.get('effort', 5) if compression_args else 5
-            
-            if not (0.0 <= jxl_distance <= 15.0):
-                logger.warning(f"JXL distance {jxl_distance} is outside the typical range [0.0, 15.0].")
-
-            ifd_tags.add_tag("JXLDistance", jxl_distance)
-            ifd_tags.add_tag("JXLEffort", jxl_effort)
-            
-            data = uncomp_data
-            if photometric == "CFA":
-                data = swizzle_cfa_data(data)
-                ifd_tags.add_tag("ColumnInterleaveFactor", 2)
-                ifd_tags.add_tag("RowInterleaveFactor", 2)
-
-            # JXL supports storing bitspersample in the bitstream, but dng_validate and Photoshop
-            # dont use this the way we'd expect. On decode, instead of using 
-            # JXL_BIT_DEPTH_FROM_CODESTREAM, they request that the jxl decoder return values scaled 
-            # to the container bitdepth (eg 16bits for 10bit data). This causes a disconnect
-            # with the bits_per_sample in the IFD.
-            # So we scale 9-15 bit data to 16-bit before encoding to avoid this. 
-            if 9 <= bits_per_sample <= 15:
-                src_max = (1 << bits_per_sample) - 1
-                dst_max = 65535  # 16-bit max
-                data = (data.astype(np.float64) * dst_max / src_max).astype(np.uint16)
-                bits_per_sample = 16  # Update for TIFF tag and JXL encoder
-
-            # Use lossless mode when distance is 0
-            if jxl_distance == 0.0:
-                encoded_bytes = imagecodecs.jpegxl_encode(
-                    data, lossless=True, effort=jxl_effort, bitspersample=bits_per_sample
+        # Validate encoding parameters and determine layout
+        if encoding:
+            # Validate mutual exclusivity
+            if encoding.tile_size is not None and encoding.rows_per_strip is not None:
+                raise ValueError(
+                    "tile_size and rows_per_strip are mutually exclusive. "
+                    "Specify one or neither (for single-strip layout)."
                 )
+            
+            # Validate tile_size dimensions
+            if encoding.tile_size is not None:
+                tile_h, tile_w = encoding.tile_size
+                if tile_h <= 0 or tile_w <= 0:
+                    raise ValueError(
+                        f"tile_size dimensions must be positive, got {encoding.tile_size}"
+                    )
+            
+            # Validate rows_per_strip
+            if encoding.rows_per_strip is not None and encoding.rows_per_strip <= 0:
+                raise ValueError(
+                    f"rows_per_strip must be positive, got {encoding.rows_per_strip}"
+                )
+            
+            # Add layout args to ifd_args for writer.write()
+            if encoding.tile_size is not None:
+                ifd_args['tile'] = encoding.tile_size
+            elif encoding.rows_per_strip is not None:
+                ifd_args['rowsperstrip'] = encoding.rows_per_strip
             else:
-                encoded_bytes = imagecodecs.jpegxl_encode(
-                    data, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
-                )
+                ifd_args['rowsperstrip'] = (np.prod(uncomp_data.shape) * bits_per_sample + 7) // 8   
+
             
-            write_data = iter([encoded_bytes])
-        elif compression == COMPRESSION.JPEG and dng_photometric_types:
-            # JPEG lossless requires manual encoding with imagecodecs
-            lossless = compression_args.get('lossless', True) if compression_args else True
+            # Segment and compress data
+            dng_photometric_types = photometric in ("CFA", "LINEAR_RAW")
             
-            data = uncomp_data
-            if photometric == "CFA":
-                # Reshape CFA data to 2-component interleaved format (H, W) -> (H, W//2, 2)
-                # This groups horizontally adjacent pixels which compresses better
-                h, w = data.shape
-                if w % 2 != 0:
-                    raise ValueError(f"CFA width must be even for JPEG compression, got {w}")
-                data = data.reshape(h, w // 2, 2)
-                logger.debug(f"Reshaped CFA data for JPEG: {uncomp_data.shape} -> {data.shape}")
+            if (compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG, COMPRESSION.JPEG) 
+                and dng_photometric_types) or compression == COMPRESSION.NONE:
                 
-                encoded_bytes = imagecodecs.jpeg_encode(
-                    data, 
-                    lossless=lossless, 
-                    bitspersample=bits_per_sample
+                # Add compression-specific tags before encoding
+                if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+                    jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
+                    jxl_effort = compression_args.get('effort', 5) if compression_args else 5
+                    
+                    if not (0.0 <= jxl_distance <= 15.0):
+                        logger.warning(f"JXL distance {jxl_distance} is outside the typical range [0.0, 15.0].")
+
+                    ifd_tags.add_tag("JXLDistance", jxl_distance)
+                    ifd_tags.add_tag("JXLEffort", jxl_effort)
+                    
+                    if photometric == "CFA":
+                        ifd_tags.add_tag("ColumnInterleaveFactor", 2)
+                        ifd_tags.add_tag("RowInterleaveFactor", 2)
+                
+                # Use manual segmentation and compression
+                encoded_segments = _segment_and_compress(
+                    uncomp_data,
+                    compression,
+                    compression_args,
+                    bits_per_sample,
+                    photometric,
+                    writer.tiff.byteorder,
+                    encoding.tile_size,
+                    encoding.rows_per_strip
                 )
+                write_data = iter(encoded_segments)
             else:
-                encoded_bytes = imagecodecs.jpeg_encode(
-                    data,
-                    lossless=lossless,
-                    bitspersample=bits_per_sample,
-                    colorspace='RGB',
-                    outcolorspace='RGB'
-                )
-            
-            write_data = iter([encoded_bytes])
+                write_data = uncomp_data
         else:
-            # All other compression types - let tifffile handle encoding
             write_data = uncomp_data
+            ifd_args['rowsperstrip'] = (np.prod(uncomp_data.shape) * bits_per_sample + 7) // 8
         
-        # Prepare tags and write (common for all paths)        
+        # Prepare tags for write (convert arrays to target byte order)
         ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
+
         writer.write(
             write_data,
             shape=uncomp_data.shape,
             dtype=uncomp_data.dtype,
             bitspersample=bits_per_sample,
-            rowsperstrip=(np.prod(uncomp_data.shape) * bits_per_sample + 7) // 8,
             **ifd_args,
         )
 

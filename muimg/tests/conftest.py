@@ -341,7 +341,15 @@ def load_tiff(path: Path) -> np.ndarray | None:
         return None
 
 
-def run_dng_validate(dng_path: Path, output_base: Path, timeout: int = 120, ignored_warnings: list[str] | None = None, validate: bool = True, skip_dng_validate: bool = False, indent: str = "") -> np.ndarray | None:
+def run_dng_validate(
+    dng_path: Path, 
+    output_base: Path, 
+    timeout: int = 120, 
+    ignored_warnings: list[str] | None = None,
+    validate: bool = True, 
+    skip_dng_validate: bool = False, 
+    indent: str = ""
+    ) -> np.ndarray | None:
     """Run dng_validate and muimg metadata validators on a DNG file.
     
     Args:

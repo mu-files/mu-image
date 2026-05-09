@@ -729,6 +729,17 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     default=0,
     help="Number of pyramid levels to generate (default: 0 = none)",
 )
+@click.option(
+    "--tile-size",
+    type=str,
+    default="256x256",
+    help="Tile size as WIDTHxHEIGHT (default: 256x256). Ignored if --no-tiles is set.",
+)
+@click.option(
+    "--no-tiles",
+    is_flag=True,
+    help="Disable tiling (using single segment instead)",
+)
 def dng_copy(
     input_dng,
     output_dng,
@@ -743,6 +754,8 @@ def dng_copy(
     jxl_effort,
     tag,
     pyramid_levels,
+    tile_size,
+    no_tiles,
 ):
     """Create a new DNG file with optional transformations.
     
@@ -791,6 +804,15 @@ def dng_copy(
             if jxl_effort is not None:
                 compression_args['effort'] = jxl_effort
         
+        # Parse tile size
+        tile_size_tuple = None
+        if not no_tiles:
+            try:
+                width, height = tile_size.lower().split('x')
+                tile_size_tuple = (int(height), int(width))  # (height, width) for numpy
+            except (ValueError, AttributeError):
+                raise click.BadParameter(f"Invalid tile size format: {tile_size}. Expected WIDTHxHEIGHT (e.g., 256x256)")
+        
         # Open source DNG and get page based on IFD spec
         with dngio.DngFile(input_dng) as dng_file:
             page, _, _ = _get_page_from_ifd_spec(dng_file, ifd)
@@ -800,7 +822,8 @@ def dng_copy(
                 # TRANSCODE mode - decompress and recompress with specified compression
                 transcode_encoding = dngio.PageEncoding(
                     compression=compression,
-                    compression_args=compression_args
+                    compression_args=compression_args,
+                    tile_size=tile_size_tuple
                 )
             else:
                 # COPY mode - preserve source compression (even when demosaicing/scaling)
@@ -828,7 +851,8 @@ def dng_copy(
                     levels=pyramid_levels,
                     encoding=dngio.PageEncoding(
                         compression=COMPRESSION.JPEGXL_DNG,
-                        compression_args={'distance': 1.0}
+                        compression_args={'distance': 1.0},
+                        tile_size=tile_size_tuple
                     )
                 )
             
