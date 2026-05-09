@@ -26,6 +26,7 @@ from muimg.dngio import (
     SubFileType,
     create_dng_from_page,
     PreviewParams,
+    PreviewScale,
     PyramidParams,
 )
 from conftest import run_dng_validate, compute_diff_stats
@@ -736,7 +737,7 @@ def test_render_raw_scaling_consistency(tmp_path):
                 compression_args={'distance': 0.0}
             )
         )
-        preview_params = PreviewParams(max_dimension=512)
+        preview_params = PreviewParams(scale=PreviewScale.HALF)
         dng_with_preview = create_dng_from_page(
             main_page_spec,
             scale=0.25,

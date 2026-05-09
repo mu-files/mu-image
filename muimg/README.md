@@ -184,8 +184,11 @@ muimg dng copy input.dng output.dng --jxl-distance 0.5
 # Scale and demosaic
 muimg dng copy input.dng output.dng --scale 0.5 --demosaic
 
-# Generate preview
-muimg dng copy input.dng output.dng --preview --preview-max-dim 1024
+# Generate preview (1/4 scale)
+muimg dng copy input.dng output.dng --preview --preview-reduce 4
+
+# Generate preview (1/2 scale)
+muimg dng copy input.dng output.dng --preview --preview-reduce 2
 
 # Strip tags
 muimg dng copy input.dng output.dng --strip-tag OpcodeList2,OpcodeList3

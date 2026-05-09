@@ -28,6 +28,38 @@ from pathlib import Path
 from muimg.raw_render import DemosaicAlgorithm
 
 
+def calculate_preview_scale(image_shape, target_dim=1024):
+    """Calculate best PreviewScale to get closest to target dimension.
+    
+    Args:
+        image_shape: (height, width) or (height, width, channels)
+        target_dim: Target preview dimension (default: 1024)
+    
+    Returns:
+        PreviewScale enum value
+    """
+    import math
+    from muimg import dngio
+    
+    h, w = image_shape[:2]
+    max_dim = max(h, w)
+    
+    # Find pyramid level where max_dim / (2^level) is closest to target_dim
+    best_level = 0
+    best_diff = abs(max_dim - target_dim)
+    
+    for level in range(1, 4):  # Check levels 1, 2, 3
+        scaled_dim = max_dim >> level  # Equivalent to max_dim // (2^level)
+        diff = abs(scaled_dim - target_dim)
+        if diff < best_diff:
+            best_diff = diff
+            best_level = level
+    
+    scale_level = best_level
+    
+    return dngio.PreviewScale(scale_level)
+
+
 def make_test_dng(
     input_file: Path,
     output_file: Path,
@@ -82,7 +114,8 @@ def make_test_dng(
     if not preserve_unique_camera_model:
         extratags.add_tag("UniqueCameraModel", "muimg: test")
     
-    # If source is already small enough - still need to copy to inject new metadata and generate preview
+    # If source is already small enough - still need to copy to inject
+    # new metadata and generate preview
     if source_size <= target_size:
         if not dry_run:
             dng = dngio.DngFile(input_file)
@@ -90,7 +123,10 @@ def make_test_dng(
             if main_page is None:
                 raise RuntimeError(f"No main page found in {input_file}")
             
-            preview_params = dngio.PreviewParams(max_dimension=1024) if generate_preview else None
+            preview_params = None
+            if generate_preview:
+                scale = calculate_preview_scale(main_page.shape)
+                preview_params = dngio.PreviewParams(scale=scale)
             
             dngio.write_dng_from_page(
                 destination_file=output_file,
@@ -100,8 +136,8 @@ def make_test_dng(
             )
         return source_size, 1.0, False
     
-    # Source is too large - use JXL compression with iterative power-of-2 scaling
-    # Load source DNG once
+    # Source is too large - use JXL compression with iterative
+    # power-of-2 scaling. Load source DNG once
     dng = dngio.DngFile(input_file)
     main_page = dng.get_main_page()
     if main_page is None:
@@ -110,16 +146,20 @@ def make_test_dng(
     from tifffile import COMPRESSION
     
     # Create page spec with JXL compression
+    jxl_encoding = dngio.PageEncoding(
+        compression=COMPRESSION.JPEGXL,
+        compression_args={'distance': jxl_distance, 'effort': jxl_effort}
+    )
     page_spec = dngio.IfdPageSpec(
         page=main_page,
-        transcode_encoding=dngio.PageEncoding(
-            compression=COMPRESSION.JPEGXL,
-            compression_args={'distance': jxl_distance, 'effort': jxl_effort}
-        ),
+        transcode_encoding=jxl_encoding,
         extratags=extratags,
     )
     
-    preview_params = dngio.PreviewParams(max_dimension=1024) if generate_preview else None
+    preview_params = None
+    if generate_preview:
+        scale = calculate_preview_scale(main_page.shape)
+        preview_params = dngio.PreviewParams(scale=scale)
     
     scale = 1.0
     

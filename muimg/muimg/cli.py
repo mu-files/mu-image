@@ -696,10 +696,10 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
 )
 @click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
 @click.option(
-    "--preview-max-dim",
-    type=int,
-    default=1024,
-    help="Maximum preview dimension (default: 1024)",
+    "--preview-reduce",
+    type=click.Choice(['1', '2', '4', '8']),
+    default='4',
+    help="Preview reduction factor: 1=full, 2=1/2, 4=1/4, 8=1/8 (default: 4)",
 )
 @click.option(
     "--jxl-distance",
@@ -749,7 +749,7 @@ def dng_copy(
     demosaic_algorithm,
     strip_tag,
     preview,
-    preview_max_dim,
+    preview_reduce,
     jxl_distance,
     jxl_effort,
     tag,
@@ -839,8 +839,10 @@ def dng_copy(
             # Write using write_dng_from_page
             preview_params = None
             if preview:
+                # Map CLI reduction factors (1,2,4,8) to pyramid levels (0,1,2,3)
+                reduction_to_level = {'1': 0, '2': 1, '4': 2, '8': 3}
                 preview_params = dngio.PreviewParams(
-                    max_dimension=preview_max_dim,
+                    scale=dngio.PreviewScale(reduction_to_level[preview_reduce]),
                     compression=COMPRESSION.JPEG,
                     compression_args={'level': 90}
                 )

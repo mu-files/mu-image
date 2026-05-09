@@ -2120,6 +2120,22 @@ def create_dng(
     buffer.seek(0)
     return DngFile(buffer)
 
+
+class PreviewScale(IntEnum):
+    """Preview scale factors as pyramid levels.
+    
+    Values represent the pyramid level (each level is 1/2 the previous):
+    - FULL = 0 (full resolution)
+    - HALF = 1 (1/2 resolution)
+    - QUARTER = 2 (1/4 resolution)
+    - EIGHTH = 3 (1/8 resolution)
+    """
+    FULL = 0
+    HALF = 1
+    QUARTER = 2
+    EIGHTH = 3
+
+
 @dataclass(slots=True)
 class PreviewParams:
     """Parameters for preview generation in DNG files.
@@ -2128,13 +2144,13 @@ class PreviewParams:
     If None, no preview is generated.
     
     Attributes:
-        max_dimension: Maximum dimension for preview (default: 1024)
+        scale: Preview scale factor (default: QUARTER = 1/4 size)
         compression: Compression type for preview (default: JPEG)
         compression_args: Arguments for compression (default: {'level': 90} for JPEG)
         rendering_params: Override rendering params (Temperature, Tint, etc.)
         use_xmp: Use XMP metadata for preview rendering (default: True)
     """
-    max_dimension: int = 1024
+    scale: PreviewScale = PreviewScale.QUARTER
     compression: COMPRESSION | None = None
     compression_args: dict | None = None
     rendering_params: dict | None = None
@@ -2228,7 +2244,7 @@ def create_dng_from_array(
         
     Example:
         >>> data_spec = IfdDataSpec(data=raw_array, photometric="CFA", ...)
-        >>> preview = PreviewParams(max_dimension=1024)  # Presence means generate preview
+        >>> preview = PreviewParams(scale=PreviewScale.QUARTER)  # Presence means generate preview
         >>> dng = create_dng_from_array(data_spec, preview=preview)
     """
     buffer = io.BytesIO()
@@ -2473,14 +2489,9 @@ def write_dng_from_page(
     
     # Calculate levels needed for preview
     if preview:
-        h, w = camera_rgb.shape[:2]
-        max_dim = max(h, w)
-        levels_for_preview = 1
-        while max_dim / (2 ** levels_for_preview) > preview.max_dimension:
-            levels_for_preview += 1
-        # Best preview level is the one just larger than preview.max_dimension
-        preview_level_idx = max(0, levels_for_preview - 1)
-        num_pyramid_levels = max(num_pyramid_levels, levels_for_preview + 1)
+        # Direct mapping: FULL=0, HALF=1, QUARTER=2, EIGHTH=3
+        preview_level_idx = preview.scale
+        num_pyramid_levels = preview_level_idx + 1
     
     # Take max with requested pyramid levels
     if pyramid:
@@ -2556,18 +2567,6 @@ def write_dng_from_page(
             use_xmp=preview.use_xmp,
         )
         
-        # Resize rendered preview if needed
-        h, w = rendered_preview.shape[:2]
-        max_dim = max(h, w)
-        if max_dim > preview.max_dimension:
-            scale_factor = preview.max_dimension / max_dim
-            new_h = int(h * scale_factor)
-            new_w = int(w * scale_factor)
-            
-            import cv2
-            rendered_preview = cv2.resize(rendered_preview, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            logger.info(f"Resized rendered preview to {rendered_preview.shape[:2]}")
-        
         # Create preview spec for IFD0
         preview_encoding = PageEncoding(
             compression=preview.compression,
@@ -2628,7 +2627,7 @@ def create_dng_from_page(
         
     Example:
         >>> page = dng_file.get_main_page()
-        >>> preview = PreviewParams(compression=COMPRESSION.JPEG)  # Presence means generate
+        >>> preview = PreviewParams(scale=PreviewScale.QUARTER, compression=COMPRESSION.JPEG)
         >>> pyramid = PyramidParams(levels=2, encoding=PageEncoding(compression=COMPRESSION.JPEGXL_DNG))
         >>> new_dng = create_dng_from_page(page, scale=0.5, preview=preview, pyramid=pyramid)
     """
