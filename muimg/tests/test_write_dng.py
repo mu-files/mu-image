@@ -272,6 +272,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 destination_file=dng_path,
                 ifd0_spec=preview_spec,
                 subifds=[main_spec],
+                num_compression_workers=4,
             )
         else:
             # No preview: use write_dng_from_array
@@ -290,6 +291,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
             write_dng_from_array(
                 destination_file=dng_path,
                 data_spec=data_spec,
+                num_compression_workers=4,
             )
             
             # Extract raw data from DNG and validate rendering
@@ -671,7 +673,7 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
                 rows_per_strip=dst_rows_per_strip
             ),
         )
-        write_dng(destination_file=dst_path, ifd0_spec=dst_spec)
+        write_dng(destination_file=dst_path, ifd0_spec=dst_spec, num_compression_workers=4)
     
     # Render destination DNG
     with DngFile(dst_path) as dst_dng:

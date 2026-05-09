@@ -280,6 +280,7 @@ def test_complete_file_roundtrip(tmp_path):
             destination_file=output_path,
             ifd0_spec=ifd0_spec,
             subifds=subifd_specs,
+            num_compression_workers=4,
         )
         print(f"  Successfully wrote {output_path}")
         print(f"  File size: {output_path.stat().st_size:,} bytes")

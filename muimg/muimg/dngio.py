@@ -21,6 +21,7 @@ from typing import Any, IO, TypeAlias
 
 # Package imports
 from . import raw_render
+from .compress import compress_ifd, deswizzle_cfa_data
 from .raw_render import DemosaicAlgorithm
 from .tiff_metadata import (
     MetadataTags,
@@ -1351,59 +1352,6 @@ class DngFile(TiffFile):
 # Helper Functions
 # =============================================================================
 
-def swizzle_cfa_data(raw_data: np.ndarray) -> np.ndarray:
-    """Swizzle RGGB CFA data into a 2x2 grid of R, G1, G2, B sub-images."""
-
-    # Pre-allocate the swizzled array with same dtype as input
-    h, w = raw_data.shape
-    swizzled_data = np.empty((h, w), dtype=raw_data.dtype)
-    
-    # Calculate half dimensions for direct assignment
-    h_half, w_half = h // 2, w // 2
-    
-    # Extract channels and write directly into pre-allocated array
-    # R pixels: top-left quadrant
-    swizzled_data[0:h_half, 0:w_half] = raw_data[0::2, 0::2]
-    # G1 pixels: top-right quadrant  
-    swizzled_data[0:h_half, w_half:w] = raw_data[0::2, 1::2]
-    # G2 pixels: bottom-left quadrant
-    swizzled_data[h_half:h, 0:w_half] = raw_data[1::2, 0::2]
-    # B pixels: bottom-right quadrant
-    swizzled_data[h_half:h, w_half:w] = raw_data[1::2, 1::2]
-
-    return swizzled_data
-
-def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
-    """Deswizzle CFA data from a 2x2 grid of R, G1, G2, B sub-images back to RGGB."""
-    h_swizzled, w_swizzled = swizzled_data.shape
-    if h_swizzled % 2 != 0 or w_swizzled % 2 != 0:
-        raise ValueError("Swizzled data dimensions must be even.")
-
-    # Calculate half dimensions for quadrant extraction
-    h_half, w_half = h_swizzled // 2, w_swizzled // 2
-
-    # Extract the four channels from the swizzled data
-    # R is top-left quadrant
-    r_channel = swizzled_data[0:h_half, 0:w_half]
-    # G1 (first green) is top-right quadrant
-    g1_channel = swizzled_data[0:h_half, w_half:w_swizzled]
-    # G2 (second green) is bottom-left quadrant
-    g2_channel = swizzled_data[h_half:h_swizzled, 0:w_half]
-    # B is bottom-right quadrant
-    b_channel = swizzled_data[h_half:h_swizzled, w_half:w_swizzled]
-
-    # Create an empty array for the original interleaved data
-    # Its dimensions will be the same as the swizzled_data because each sub-image
-    # was H/2 x W/2, and they are re-interleaved into a H x W image.
-    original_data = np.empty_like(swizzled_data)
-
-    # Place the channels back into the original RGGB pattern
-    original_data[0::2, 0::2] = r_channel  # R pixels
-    original_data[0::2, 1::2] = g1_channel  # G1 pixels (top-right G)
-    original_data[1::2, 0::2] = g2_channel  # G2 pixels (bottom-left G)
-    original_data[1::2, 1::2] = b_channel  # B pixels
-
-    return original_data
 
 def _prepare_ifd_args(
     metadata: MetadataTags,
@@ -1737,6 +1685,7 @@ def write_dng(
     *,
     ifd0_spec: IfdSpec,
     subifds: list[IfdSpec] = None,
+    num_compression_workers: int = 1,
 ) -> None:
     """Write raw data to a DNG file using tifffile.
 
@@ -1748,6 +1697,7 @@ def write_dng(
             (for copying from source DNGs) and IfdDataSpec (for writing from arrays).
             Each spec's subfiletype controls its NewSubFileType. Defaults to empty list
             if IFD0 contains the main image (no preview).
+        num_compression_workers: Number of parallel compression workers (default: 1).
     """
     def _write_page_ifd(
         writer: TiffWriter,
@@ -1820,133 +1770,6 @@ def write_dng(
         
         return result
 
-    def _segment_and_compress(
-        data: np.ndarray,
-        compression: COMPRESSION,
-        compression_args: dict | None,
-        bits_per_sample: int,
-        photometric: str,
-        target_byteorder: str,
-        tile_size: tuple[int, int] | None = None,
-        rows_per_strip: int | None = None
-    ) -> list[bytes]:
-        """Segment image data and compress each segment in a single pass.
-        
-        Args:
-            data: Image data array (H, W) or (H, W, C)
-            compression: Compression type
-            compression_args: Compression-specific arguments
-            bits_per_sample: Bits per sample
-            photometric: Photometric interpretation
-            target_byteorder: Target byte order ('>' or '<')
-            tile_size: Tile dimensions (height, width) for tiled layout
-            rows_per_strip: Rows per strip for stripped layout
-            
-        Returns:
-            List of encoded segments (bytes)
-        """
-        from .tiff_metadata import normalize_array_to_target_byteorder
-        
-        # Step 1: Apply CFA swizzling to full image if needed (before segmentation)
-        if photometric == "CFA" and compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-            data = swizzle_cfa_data(data)
-        
-        # Step 2: Define compression function for a single segment
-        def compress_segment(segment: np.ndarray) -> bytes:
-            """Compress a single segment based on compression type."""
-            if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
-                # JXL compression
-                jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
-                jxl_effort = compression_args.get('effort', 5) if compression_args else 5
-                
-                if jxl_distance == 0.0:
-                    return imagecodecs.jpegxl_encode(
-                        segment, lossless=True, effort=jxl_effort, bitspersample=bits_per_sample
-                    )
-                else:
-                    return imagecodecs.jpegxl_encode(
-                        segment, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
-                    )
-                    
-            elif compression == COMPRESSION.JPEG:
-                # JPEG compression
-                lossless = compression_args.get('lossless', True) if compression_args else True
-                seg_data = segment
-                
-                if photometric == "CFA":
-                    # Reshape CFA data to 2-component interleaved format
-                    h, w = seg_data.shape
-                    if w % 2 != 0:
-                        raise ValueError(f"CFA width must be even for JPEG compression, got {w}")
-                    seg_data = seg_data.reshape(h, w // 2, 2)
-                    
-                    return imagecodecs.jpeg_encode(
-                        seg_data,
-                        lossless=lossless,
-                        bitspersample=bits_per_sample
-                    )
-                else:
-                    return imagecodecs.jpeg_encode(
-                        seg_data,
-                        lossless=lossless,
-                        bitspersample=bits_per_sample,
-                        colorspace='RGB',
-                        outcolorspace='RGB'
-                    )
-                    
-            elif compression == COMPRESSION.NONE:
-                # Uncompressed - handle byte order and bit packing
-                # 1. Convert to target byte order
-                seg = normalize_array_to_target_byteorder(segment, target_byteorder)
-                
-                # 2. Pack bits if needed (9-15 bit data in uint16 container)
-                if 9 <= bits_per_sample <= 15:
-                    # Use imagecodecs.packints_encode like tifffile does
-                    runlen = seg.shape[-1]
-                    if len(seg.shape) > 1:
-                        runlen *= seg.shape[-2]
-                    return imagecodecs.packints_encode(seg, bits_per_sample, runlen=runlen)
-                else:
-                    # No packing needed - convert to bytes
-                    return seg.tobytes()
-            else:
-                # Other compression types (shouldn't happen for DNG files)
-                return segment.tobytes()
-        
-        # Step 3: Tile/strip and compress in single pass
-        h, w = data.shape[:2]
-        encoded_segments = []
-        
-        if tile_size is not None:
-            # Tiled layout - split into 2D grid and compress each tile
-            tile_h, tile_w = tile_size
-            for ty in range(0, h, tile_h):
-                for tx in range(0, w, tile_w):
-                    tile = data[ty:ty+tile_h, tx:tx+tile_w]
-                    
-                    # TIFF spec requires padding edge tiles to nominal tile size
-                    actual_h, actual_w = tile.shape[:2]
-                    if actual_h < tile_h or actual_w < tile_w:
-                        # Pad edge tiles with zeros
-                        if len(tile.shape) == 3:
-                            padded = np.zeros((tile_h, tile_w, tile.shape[2]), dtype=tile.dtype)
-                            padded[:actual_h, :actual_w, :] = tile
-                        else:
-                            padded = np.zeros((tile_h, tile_w), dtype=tile.dtype)
-                            padded[:actual_h, :actual_w] = tile
-                        tile = padded
-                    
-                    encoded_segments.append(compress_segment(tile))
-        elif rows_per_strip is not None:
-            # Stripped layout - split into horizontal strips and compress each
-            for y in range(0, h, rows_per_strip):
-                strip = data[y:y+rows_per_strip]
-                encoded_segments.append(compress_segment(strip))
-        else:
-            # Single segment (full image)
-            encoded_segments.append(compress_segment(data))
-        
-        return encoded_segments
 
     def _write_ifd_from_spec(
         writer: TiffWriter,
@@ -1955,6 +1778,7 @@ def write_dng(
         is_ifd0: bool = False,
         needs_v1_7_1: bool,
         main_spec: IfdSpec | None = None,
+        num_compression_workers: int = 1,
     ) -> None:
         # Get subfiletype from spec
         subfiletype = spec.subfiletype
@@ -2193,7 +2017,7 @@ def write_dng(
                         ifd_tags.add_tag("RowInterleaveFactor", 2)
                 
                 # Use manual segmentation and compression
-                encoded_segments = _segment_and_compress(
+                encoded_segments = compress_ifd(
                     uncomp_data,
                     compression,
                     compression_args,
@@ -2201,7 +2025,8 @@ def write_dng(
                     photometric,
                     writer.tiff.byteorder,
                     encoding.tile_size,
-                    encoding.rows_per_strip
+                    encoding.rows_per_strip,
+                    num_compression_workers
                 )
                 write_data = iter(encoded_segments)
             else:
@@ -2250,12 +2075,17 @@ def write_dng(
                 is_ifd0=True,
                 needs_v1_7_1=needs_v1_7_1,
                 main_spec=main_spec,
+                num_compression_workers=num_compression_workers
             )
 
             # Write subifds
             for spec in subifds:
                 _write_ifd_from_spec(
-                    tif, spec, needs_v1_7_1=needs_v1_7_1, main_spec=main_spec
+                    tif,
+                    spec,
+                    needs_v1_7_1=needs_v1_7_1,
+                    main_spec=main_spec,
+                    num_compression_workers=num_compression_workers
                 )
 
         if isinstance(destination_file, Path):
@@ -2331,6 +2161,7 @@ def write_dng_from_array(
     *,
     preview: PreviewParams | None = None,
     pyramid: PyramidParams | None = None,
+    num_compression_workers: int = 1,
 ) -> None:
     """Write raw array data to a DNG file with optional preview and pyramid generation.
     
@@ -2339,6 +2170,7 @@ def write_dng_from_array(
         data_spec: IfdDataSpec containing raw image data and metadata
         preview: PreviewParams for preview generation (None = no preview)
         pyramid: PyramidParams for pyramid generation (None = no pyramid)
+        num_compression_workers: Number of parallel compression workers (default: 1)
     """
     
     # Create uncompressed temporary page spec (compression removed)
@@ -2372,6 +2204,7 @@ def write_dng_from_array(
         page=page_spec,
         preview=preview,
         pyramid=pyramid,
+        num_compression_workers=num_compression_workers
     )
 
 def create_dng_from_array(
@@ -2523,6 +2356,7 @@ def write_dng_from_page(
     copy_ifd0_tags: bool = True,
     ifd0_extratags: MetadataTags | None = None,
     ifd0_strip_tags: set[str] | None = None,
+    num_compression_workers: int = 1,
 ) -> None:
     """Write a DNG file from a page with optional transformations and pyramid generation.
     
@@ -2537,6 +2371,7 @@ def write_dng_from_page(
         copy_ifd0_tags: Copy IFD0 tags from source (default: True)
         ifd0_extratags: Additional metadata tags to add to IFD0
         ifd0_strip_tags: Tag names to strip from IFD0
+        num_compression_workers: Number of parallel compression workers (default: 1)
     
     Raises:
         ValueError: If input is invalid
@@ -2599,7 +2434,11 @@ def write_dng_from_page(
         
         # Fast path: no preview/pyramid - write and return immediately
         if preview is None and not (pyramid and pyramid.levels > 0):
-            write_dng(destination_file=destination_file, ifd0_spec=main_spec)
+            write_dng(
+                destination_file=destination_file,
+                ifd0_spec=main_spec,
+                num_compression_workers=num_compression_workers
+            )
             if isinstance(destination_file, io.BytesIO):
                 logger.info("Successfully wrote DNG to stream")
             else:
@@ -2694,6 +2533,7 @@ def write_dng_from_page(
             destination_file=destination_file,
             ifd0_spec=main_spec,
             subifds=pyramid_specs,
+            num_compression_workers=num_compression_workers
         )
     else:
         # Use pre-calculated best pyramid level
@@ -2746,6 +2586,7 @@ def write_dng_from_page(
             destination_file=destination_file,
             ifd0_spec=preview_spec,
             subifds=[main_spec] + pyramid_specs,
+            num_compression_workers=num_compression_workers
         )
     
     if isinstance(destination_file, io.BytesIO):
