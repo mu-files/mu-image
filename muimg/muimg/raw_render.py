@@ -177,7 +177,9 @@ def _adobergb_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
 
 def convert_dtype(
     image: np.ndarray,
-    dest_dtype: np.dtype
+    dest_dtype: np.dtype,
+    src_bits_per_element: int | None = None,
+    dest_bits_per_element: int | None = None
 ) -> np.ndarray:
     """Convert image between data types with proper normalization.
     
@@ -187,18 +189,69 @@ def convert_dtype(
     Args:
         image: Input image
         dest_dtype: Destination data type (np.uint8, np.uint16, np.float16, np.float32)
+        src_bits_per_element: Custom bit depth for source data (e.g., 12 for 12-bit data
+            in uint16 container). Must be None for float types and <= container bit depth
+            for integer types. Defaults to container bit depth if None.
+        dest_bits_per_element: Custom bit depth for destination data. Must be None for
+            float types and <= container bit depth for integer types. Defaults to
+            container bit depth if None.
         
     Returns:
         Converted image with dest_dtype
+        
+    Example:
+        # Convert 12-bit data stored in uint16 to 8-bit uint8
+        image_u16 = np.array([0, 2047, 4095], dtype=np.uint16)
+        result = convert_dtype(image_u16, np.uint8, src_bits_per_element=12)
+        # Scales from 0-4095 range to 0-255 range
     """
     source_dtype = image.dtype
+    dest_dtype = np.dtype(dest_dtype)
     
+    # Skip if dtypes match and effective bits match
     if source_dtype == dest_dtype:
-        return image
+        src_bits = src_bits_per_element if src_bits_per_element is not None else source_dtype.itemsize * 8
+        dest_bits = dest_bits_per_element if dest_bits_per_element is not None else dest_dtype.itemsize * 8
+        if src_bits == dest_bits:
+            return image
     
-    # Determine source and dest max values
-    source_max = 255.0 if source_dtype == np.uint8 else (65535.0 if source_dtype == np.uint16 else 1.0)
-    dest_max = 255.0 if dest_dtype == np.uint8 else (65535.0 if dest_dtype == np.uint16 else 1.0)
+    # Validate bits_per_element parameters
+    if source_dtype in (np.float16, np.float32, np.float64):
+        if src_bits_per_element is not None:
+            raise ValueError(
+                f"src_bits_per_element must be None for float dtype {source_dtype}, got {src_bits_per_element}"
+            )
+    else:
+        # Integer type - validate bits_per_element if provided
+        container_bits = source_dtype.itemsize * 8
+        if src_bits_per_element is not None and src_bits_per_element > container_bits:
+            raise ValueError(
+                f"src_bits_per_element ({src_bits_per_element}) exceeds container bit depth ({container_bits}) for {source_dtype}"
+            )
+    
+    if dest_dtype in (np.float16, np.float32, np.float64):
+        if dest_bits_per_element is not None:
+            raise ValueError(
+                f"dest_bits_per_element must be None for float dtype {dest_dtype}, got {dest_bits_per_element}"
+            )
+    else:
+        # Integer type - validate bits_per_element if provided
+        container_bits = dest_dtype.itemsize * 8
+        if dest_bits_per_element is not None and dest_bits_per_element > container_bits:
+            raise ValueError(
+                f"dest_bits_per_element ({dest_bits_per_element}) exceeds container bit depth ({container_bits}) for {dest_dtype}"
+            )
+    
+    # Helper to get max value for a dtype and optional custom bit depth
+    def get_max_value(dtype, bits_per_element):
+        if dtype in (np.float16, np.float32, np.float64):
+            return 1.0
+        bits = bits_per_element if bits_per_element is not None else dtype.itemsize * 8
+        return float((1 << bits) - 1)
+    
+    # Determine source and dest max values using bit-shift formula
+    source_max = get_max_value(source_dtype, src_bits_per_element)
+    dest_max = get_max_value(dest_dtype, dest_bits_per_element)
     
     # Compute direct scale factor
     scale = dest_max / source_max
