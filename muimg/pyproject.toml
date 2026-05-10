@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260509.1520"
+version = "0.1.20260509.1713"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -17,7 +17,7 @@ dependencies = [
     "click",                            # 108 KB
     "defusedxml",                       # 25 KB
     "imagecodecs>=2026.3.6",            # 13 MB
-    "numpy",                            # 6.2 MB
+    "numpy>=1.24.0,<2.0",               # 6.2 MB
     "opencv-python-headless",           # 31 MB
     "setproctitle",                     # 18 KB
     "tifffile>=2026.3.3,<2026.4",       # 260 KB
