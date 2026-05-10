@@ -15,7 +15,7 @@ Python library for reading, writing, and rendering Adobe DNG (Digital Negative) 
 - **Multiple Demosaicing Algorithms**: DNGSDK_BILINEAR, VNG, RCD (optional), OPENCV_EA
 - **XMP Support**: Renderer supports Temperature, Tint, Exposure, Curves, and radial distortion from XMP metadata.
 - **Metadata Handling**: User-friendly TIFF/EXIF/XMP tag handling with automatic type conversion
-- **Compression**: Uncompressed, JPEG, JPEG XL support
+- **Compression**: Uncompressed, JPEG, JPEG XL support with multi-core parallel compression for tiled formats
 - **CLI Tools**: Comprehensive command-line interface for DNG operations.
 - **Batch Processing**: Multi-threaded batch conversion and video encoding.
 
