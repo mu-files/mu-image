@@ -12,7 +12,7 @@ from typing import Any
 # Package imports
 from . import _raw_render
 from .common import enum_display_name
-from .splines import CubicSpline
+from .splines import CubicSpline, ColorSpace
 from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
@@ -45,20 +45,6 @@ class DngOpcode(IntEnum):
         from .common import enum_from_value
         return enum_from_value(cls, value)
 
-class ColorSpace(Enum):
-    """Color space definitions with native gamma encoding.
-    
-    Each color space is defined by:
-    - Primary chromaticities (red, green, blue)
-    - White point (D50 or D65)
-    - Gamma encoding (linear, 1.8, 2.2, or sRGB piecewise)
-    """
-    PROPHOTO_LINEAR = auto()
-    PROPHOTO_GAMMA = auto()      # Gamma 1.8
-    ADOBERGB_LINEAR = auto()
-    ADOBERGB_GAMMA = auto()      # Gamma 2.2
-    SRGB_LINEAR = auto()
-    SRGB_GAMMA = auto()          # sRGB piecewise gamma
 
 class DemosaicAlgorithm(StrEnum):
     """Demosaic algorithm selectors."""

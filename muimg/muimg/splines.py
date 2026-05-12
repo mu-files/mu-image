@@ -1,16 +1,45 @@
 # Released under a modified PolyForm Small Business License.
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 
-"""Cubic spline interpolation for tone curves.
+"""Cubic spline interpolation for tone curves and LUT operations.
 
-This module provides CubicSpline, a cubic spline implementation using only NumPy.
-Supports natural boundary conditions and custom derivative boundaries.
+This module provides:
+- CubicSpline: Cubic spline implementation using only NumPy
+- LUT: Lookup table for fast 1D transformations
+- ColorSpaceLUT: Cached gamma curve LUTs for color spaces
+- ColorSpace: Color space definitions
 """
 
 from __future__ import annotations
 
 import numpy as np
+import threading
+from enum import Enum, auto
 
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+class ColorSpace(Enum):
+    """Color space definitions with native gamma encoding.
+    
+    Each color space is defined by:
+    - Primary chromaticities (red, green, blue)
+    - White point (D50 or D65)
+    - Gamma encoding (linear, 1.8, 2.2, or sRGB piecewise)
+    """
+    PROPHOTO_LINEAR = auto()
+    PROPHOTO_GAMMA = auto()      # Gamma 1.8
+    ADOBERGB_LINEAR = auto()
+    ADOBERGB_GAMMA = auto()      # Gamma 2.2
+    SRGB_LINEAR = auto()
+    SRGB_GAMMA = auto()          # sRGB piecewise gamma
+
+
+# =============================================================================
+# Cubic Spline Interpolation
+# =============================================================================
 
 class CubicSpline:
     """
@@ -245,3 +274,228 @@ class CubicSpline:
     
     def __repr__(self):
         return f"CubicSpline(points={self.points})"
+
+
+class LUT:
+    """Lookup table for fast 1D transformations.
+    
+    Stores a 1D array mapping [0, 1] → [0, 1] with linear interpolation.
+    Supports arbitrary length and composition operations.
+    """
+    
+    def __init__(self, data: np.ndarray | CubicSpline | str | list | None = None, 
+                 size: int = 4096):
+        """Initialize LUT.
+        
+        Args:
+            data: LUT data. Can be:
+                - np.ndarray: Use directly (must be 1D float32)
+                - CubicSpline: Sample to create LUT
+                - str/list: Create CubicSpline, then sample
+                - None: Identity LUT (linear)
+            size: Number of LUT entries (only used if data is not ndarray)
+        """
+        if data is None:
+            # Identity LUT
+            self.data = np.linspace(0.0, 1.0, size, dtype=np.float32)
+        elif isinstance(data, np.ndarray):
+            self.data = data.astype(np.float32)
+        elif isinstance(data, (CubicSpline, str, list)):
+            # Build from spline
+            if isinstance(data, CubicSpline):
+                spline = data
+            else:
+                spline = CubicSpline(data)
+            x = np.linspace(0.0, 1.0, size, dtype=np.float32)
+            self.data = np.clip(spline(x), 0.0, 1.0).astype(np.float32)
+        else:
+            raise TypeError(f"Unsupported LUT data type: {type(data)}")
+    
+    def __call__(self, x: np.ndarray | float) -> np.ndarray | float:
+        """Apply LUT with linear interpolation."""
+        x = np.asarray(x, dtype=np.float32)
+        scalar_input = x.ndim == 0
+        x = np.atleast_1d(x)
+        
+        x = np.clip(x, 0.0, 1.0)
+        size = len(self.data)
+        indices = x * (size - 1)
+        idx_low = np.floor(indices).astype(np.int32)
+        idx_high = np.minimum(idx_low + 1, size - 1)
+        frac = indices - idx_low
+        result = self.data[idx_low] * (1.0 - frac) + self.data[idx_high] * frac
+        
+        return result[0] if scalar_input else result
+    
+    def compose_input(self, other: 'LUT' | callable, size: int = None) -> 'LUT':
+        """Compose with input remapping: result(x) = self(other(x)).
+        
+        Equivalent to remap_curve_input(). Creates uniform x samples, applies
+        the remap function, then interpolates through this LUT at those positions.
+        
+        Args:
+            other: LUT or function to apply before this LUT
+            size: Output LUT size (default: same as self)
+        
+        Returns:
+            New LUT with specified size
+        """
+        if size is None:
+            size = len(self.data)
+        
+        # Create uniform x samples
+        x = np.linspace(0.0, 1.0, size, dtype=np.float32)
+        
+        # Apply remap function to get positions to sample from
+        if isinstance(other, LUT):
+            remapped_x = other(x)
+        else:
+            remapped_x = other(x)
+        
+        # Interpolate through this LUT at remapped positions
+        # Need to use np.interp since remapped_x may not be uniform
+        self_x = np.linspace(0.0, 1.0, len(self.data), dtype=np.float32)
+        result_data = np.interp(remapped_x, self_x, self.data)
+        result_data = np.clip(result_data, 0.0, 1.0).astype(np.float32)
+        
+        return LUT(result_data)
+    
+    def compose_output(self, other: 'LUT' | callable, size: int = None) -> 'LUT':
+        """Compose with output remapping: result(x) = other(self(x)).
+        
+        Equivalent to remap_curve_output(). Resamples this LUT to desired size,
+        then applies the remap function to the output values.
+        
+        Args:
+            other: LUT or function to apply after this LUT
+            size: Output LUT size (default: same as self)
+        
+        Returns:
+            New LUT with specified size
+        """
+        if size is None:
+            size = len(self.data)
+        
+        # Resample this LUT to desired size if needed
+        if len(self.data) == size:
+            intermediate = self.data
+        else:
+            x = np.linspace(0.0, 1.0, size, dtype=np.float32)
+            intermediate = self(x)
+        
+        # Apply remap function to output values
+        if isinstance(other, LUT):
+            # other is a LUT - interpolate through it
+            other_x = np.linspace(0.0, 1.0, len(other.data), dtype=np.float32)
+            result_data = np.interp(intermediate, other_x, other.data)
+        else:
+            # other is a callable function
+            result_data = other(intermediate)
+        
+        result_data = np.clip(result_data, 0.0, 1.0).astype(np.float32)
+        return LUT(result_data)
+    
+    def resample(self, size: int) -> 'LUT':
+        """Resample LUT to different size."""
+        x = np.linspace(0.0, 1.0, size, dtype=np.float32)
+        return LUT(self(x))
+    
+    def to_c_array(self) -> np.ndarray:
+        """Convert to C-compatible array with repeated last value.
+        
+        Returns array of size len(self.data) + 1 where last value is repeated.
+        This avoids bounds checking in C++ interpolation code.
+        """
+        return np.append(self.data, self.data[-1]).astype(np.float32)
+    
+    def __len__(self) -> int:
+        return len(self.data)
+    
+    def __repr__(self):
+        return f"LUT(size={len(self.data)})"
+
+
+# Module-level cache for ColorSpaceLUT instances (thread-safe)
+_COLORSPACE_LUT_CACHE = {}
+_COLORSPACE_LUT_CACHE_LOCK = threading.Lock()
+
+
+class ColorSpaceLUT(LUT):
+    """LUT for color space gamma encoding/decoding.
+    
+    Instances are cached at module level to avoid recalculating gamma curves.
+    Cache is thread-safe using a lock.
+    """
+    
+    def __new__(cls, colorspace: ColorSpace, inverse: bool = False, size: int = 4096):
+        """Create or retrieve cached ColorSpaceLUT instance (thread-safe).
+        
+        Args:
+            colorspace: ColorSpace enum (SRGB_GAMMA, PROPHOTO_GAMMA, ADOBERGB_GAMMA)
+            inverse: If True, decode (gamma→linear). If False, encode (linear→gamma)
+            size: Number of LUT entries
+        
+        Returns:
+            Cached or new ColorSpaceLUT instance
+        """
+        # Create cache key
+        cache_key = (colorspace, inverse, size)
+        
+        # Thread-safe cache lookup and creation
+        with _COLORSPACE_LUT_CACHE_LOCK:
+            # Return cached instance if available
+            if cache_key in _COLORSPACE_LUT_CACHE:
+                return _COLORSPACE_LUT_CACHE[cache_key]
+            
+            # Create new instance
+            instance = super().__new__(cls)
+            _COLORSPACE_LUT_CACHE[cache_key] = instance
+            return instance
+    
+    def __init__(self, colorspace: ColorSpace, inverse: bool = False, size: int = 4096):
+        """Initialize gamma LUT for a color space.
+        
+        Note: Due to caching, __init__ may be called multiple times on the same
+        instance. We guard against re-initialization.
+        """
+        # Skip if already initialized (cached instance)
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+        
+        x = np.linspace(0.0, 1.0, size, dtype=np.float32)
+        
+        if colorspace == ColorSpace.SRGB_GAMMA:
+            if inverse:
+                # sRGB decode (gamma → linear)
+                data = np.where(x <= 0.04045, x / 12.92, 
+                               np.power((x + 0.055) / 1.055, 2.4))
+            else:
+                # sRGB encode (linear → gamma)
+                data = np.where(x <= 0.0031308, x * 12.92,
+                               1.055 * np.power(x, 1.0 / 2.4) - 0.055)
+        
+        elif colorspace == ColorSpace.PROPHOTO_GAMMA:
+            if inverse:
+                # ProPhoto decode (gamma → linear)
+                data = np.where(x < 16.0 / 512.0, x / 16.0, np.power(x, 1.8))
+            else:
+                # ProPhoto encode (linear → gamma)
+                data = np.where(x < 1.0 / 512.0, x * 16.0, np.power(x, 1.0 / 1.8))
+        
+        elif colorspace == ColorSpace.ADOBERGB_GAMMA:
+            # Adobe RGB uses simple power function (γ = 2.19921875)
+            if inverse:
+                data = np.power(x, 2.19921875)
+            else:
+                data = np.power(x, 1.0 / 2.19921875)
+        
+        else:
+            raise ValueError(f"Unsupported colorspace for LUT: {colorspace}")
+        
+        super().__init__(data.astype(np.float32))
+        self.colorspace = colorspace
+        self.inverse = inverse
+        self._initialized = True
+    
+    def __repr__(self):
+        return f"ColorSpaceLUT(colorspace={self.colorspace}, inverse={self.inverse}, size={len(self.data)})"
