@@ -28,13 +28,32 @@ class ColorSpace(Enum):
     - Primary chromaticities (red, green, blue)
     - White point (D50 or D65)
     - Gamma encoding (linear, 1.8, 2.2, or sRGB piecewise)
+    
+    Values are organized so linear spaces are even (0,2,4) and gamma spaces are odd (1,3,5).
+    This allows simple arithmetic to convert between linear and gamma variants.
     """
-    PROPHOTO_LINEAR = auto()
-    PROPHOTO_GAMMA = auto()      # Gamma 1.8
-    ADOBERGB_LINEAR = auto()
-    ADOBERGB_GAMMA = auto()      # Gamma 2.2
-    SRGB_LINEAR = auto()
-    SRGB_GAMMA = auto()          # sRGB piecewise gamma
+    PROPHOTO_LINEAR = 0
+    PROPHOTO_GAMMA = 1           # Gamma 1.8
+    ADOBERGB_LINEAR = 2
+    ADOBERGB_GAMMA = 3           # Gamma 2.2
+    SRGB_LINEAR = 4
+    SRGB_GAMMA = 5               # sRGB piecewise gamma
+    
+    def to_linear(self) -> "ColorSpace":
+        """Convert gamma space to its linear variant (or return self if already linear)."""
+        return ColorSpace(self.value & ~1)  # Clear bit 0
+    
+    def to_gamma(self) -> "ColorSpace":
+        """Convert linear space to its gamma variant (or return self if already gamma)."""
+        return ColorSpace(self.value | 1)  # Set bit 0
+    
+    def is_linear(self) -> bool:
+        """Check if this is a linear color space (bit 0 is clear)."""
+        return not (self.value & 1)
+    
+    def is_gamma(self) -> bool:
+        """Check if this is a gamma-encoded color space (bit 0 is set)."""
+        return bool(self.value & 1)
 
 
 # =============================================================================
@@ -399,14 +418,6 @@ class LUT:
         """Resample LUT to different size."""
         x = np.linspace(0.0, 1.0, size, dtype=np.float32)
         return LUT(self(x))
-    
-    def to_c_array(self) -> np.ndarray:
-        """Convert to C-compatible array with repeated last value.
-        
-        Returns array of size len(self.data) + 1 where last value is repeated.
-        This avoids bounds checking in C++ interpolation code.
-        """
-        return np.append(self.data, self.data[-1]).astype(np.float32)
     
     def __len__(self) -> int:
         return len(self.data)

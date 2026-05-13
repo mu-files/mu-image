@@ -34,6 +34,513 @@
 #include <vector>
 
 //=============================================================================
+// RAII wrapper for PyObject reference counting
+//=============================================================================
+
+struct PyObjectDeleter {
+    template<typename T>
+    void operator()(T* obj) const { 
+        Py_XDECREF((PyObject*)obj); 
+    }
+};
+
+template<typename T = PyObject>
+using PyPtr = std::unique_ptr<T, PyObjectDeleter>;
+
+// Helper to create PyPtr from raw pointer
+template<typename T = PyObject>
+PyPtr<T> make_pyptr(T* obj) {
+    return PyPtr<T>(obj);
+}
+
+//=============================================================================
+// Optimized Color Transform Pipeline (LUT → Matrix → LUT)
+//=============================================================================
+
+// Span size for cache-friendly processing
+static const int SPAN_SIZE = 128;
+
+// Helper: LUT lookup with linear interpolation
+// NOTE: LUT array must have size+1 elements with last value repeated
+// value_scaled should already be in [0, lut_size-1] range
+static inline float lut_lookup_interp(const float* lut, float value_scaled) {
+    int index = (int)value_scaled;
+    float frac = value_scaled - index;
+    return lut[index] * (1.0f - frac) + lut[index + 1] * frac;
+}
+
+// Helper: Direct LUT lookup for 8-bit (256 entries, no interpolation)
+static inline float lut_lookup_8bit(const float* lut, uint8_t value) {
+    return lut[value];
+}
+
+
+// Helper: Apply 3x3 matrix to RGB pixel
+static inline void matrix_mul_rgb(float* rgb, const float* matrix) {
+    float r = rgb[0], g = rgb[1], b = rgb[2];
+    rgb[0] = matrix[0]*r + matrix[1]*g + matrix[2]*b;
+    rgb[1] = matrix[3]*r + matrix[4]*g + matrix[5]*b;
+    rgb[2] = matrix[6]*r + matrix[7]*g + matrix[8]*b;
+}
+
+// Specialized: LUT only (no matrix)
+// Input and output LUTs are identical when there's no matrix
+// Use8bit256: true for uint8 input with 256-entry LUT (direct lookup, no interpolation)
+template<typename SrcT, typename DstT, bool Use8bit256>
+static void transform_lut_only_impl(
+    const SrcT* input,
+    DstT* output,
+    int total_pixels,
+    const float* lut,
+    int lut_size,
+    float src_scale,
+    float dst_scale
+) {
+    for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
+        int end = std::min(start + SPAN_SIZE, total_pixels);
+        
+        for (int i = start; i < end; ++i) {
+            int idx = i * 3;
+            float rgb[3];
+            
+            // Load, scale, and apply LUT
+            if constexpr (Use8bit256) {
+                // 8-bit direct lookup (no interpolation)
+                rgb[0] = lut_lookup_8bit(lut, input[idx + 0]);
+                rgb[1] = lut_lookup_8bit(lut, input[idx + 1]);
+                rgb[2] = lut_lookup_8bit(lut, input[idx + 2]);
+            } else {
+                // Fused scale: src_scale * (lut_size - 1) in one multiply
+                // Clip to [0, lut_size-1] instead of [0, 1]
+                float fused_scale = src_scale * (lut_size - 1);
+                float lut_max = (lut_size - 1);
+                rgb[0] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
+                rgb[1] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
+                rgb[2] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+            }
+            
+            // Clip and store
+            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
+            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
+            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+        }
+    }
+}
+
+// Specialized: LUT → Matrix
+template<typename SrcT, typename DstT, bool Use8bit256>
+static void transform_lut_matrix_impl(
+    const SrcT* input,
+    DstT* output,
+    int total_pixels,
+    const float* input_lut,
+    int input_lut_size,
+    const float* matrix,
+    float src_scale,
+    float dst_scale
+) {
+    for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
+        int end = std::min(start + SPAN_SIZE, total_pixels);
+        
+        for (int i = start; i < end; ++i) {
+            int idx = i * 3;
+            float rgb[3];
+            
+            // Load and apply input LUT
+            if constexpr (Use8bit256) {
+                // 8-bit direct lookup (no interpolation)
+                rgb[0] = lut_lookup_8bit(input_lut, input[idx + 0]);
+                rgb[1] = lut_lookup_8bit(input_lut, input[idx + 1]);
+                rgb[2] = lut_lookup_8bit(input_lut, input[idx + 2]);
+            } else {
+                // Fused scale: src_scale * (lut_size - 1) in one multiply
+                // Clip to [0, lut_size-1] instead of [0, 1]
+                float fused_scale = src_scale * (input_lut_size - 1);
+                float lut_max = (input_lut_size - 1);
+                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
+                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
+                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+            }
+            
+            // Apply matrix
+            matrix_mul_rgb(rgb, matrix);
+            
+            // Clip and store
+            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
+            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
+            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+        }
+    }
+}
+
+// Specialized: Matrix → LUT
+// Matrix is pre-scaled with (src_scale * (output_lut_size - 1))
+// so it outputs LUT indices directly
+template<typename SrcT, typename DstT>
+static void transform_matrix_lut_impl(
+    const SrcT* input,
+    DstT* output,
+    int total_pixels,
+    const float* matrix_with_scale,
+    const float* output_lut,
+    int output_lut_size,
+    float dst_scale
+) {
+    const float lut_max = (output_lut_size - 1);
+    
+    for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
+        int end = std::min(start + SPAN_SIZE, total_pixels);
+        
+        for (int i = start; i < end; ++i) {
+            int idx = i * 3;
+            float rgb[3];
+            
+            // Load
+            rgb[0] = input[idx + 0];
+            rgb[1] = input[idx + 1];
+            rgb[2] = input[idx + 2];
+            
+            // Apply matrix (outputs LUT indices directly)
+            matrix_mul_rgb(rgb, matrix_with_scale);
+            
+            // Clip to LUT index range
+            rgb[0] = fmaxf(0.0f, fminf(lut_max, rgb[0]));
+            rgb[1] = fmaxf(0.0f, fminf(lut_max, rgb[1]));
+            rgb[2] = fmaxf(0.0f, fminf(lut_max, rgb[2]));
+            
+            // Apply output LUT (rgb is already in LUT index space)
+            output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
+            output[idx + 1] = (DstT)(lut_lookup_interp(output_lut, rgb[1]) * dst_scale);
+            output[idx + 2] = (DstT)(lut_lookup_interp(output_lut, rgb[2]) * dst_scale);
+        }
+    }
+}
+
+// Specialized: LUT → Matrix → LUT (full pipeline)
+template<typename SrcT, typename DstT, bool Use8bit256>
+static void transform_lut_matrix_lut_impl(
+    const SrcT* input,
+    DstT* output,
+    int total_pixels,
+    const float* input_lut,
+    int input_lut_size,
+    const float* matrix,
+    const float* output_lut,
+    int output_lut_size,
+    float src_scale,
+    float dst_scale
+) {
+    for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
+        int end = std::min(start + SPAN_SIZE, total_pixels);
+        
+        for (int i = start; i < end; ++i) {
+            int idx = i * 3;
+            float rgb[3];
+            
+            // Load and apply input LUT
+            if constexpr (Use8bit256) {
+                // 8-bit direct lookup (no interpolation)
+                rgb[0] = lut_lookup_8bit(input_lut, input[idx + 0]);
+                rgb[1] = lut_lookup_8bit(input_lut, input[idx + 1]);
+                rgb[2] = lut_lookup_8bit(input_lut, input[idx + 2]);
+            } else {
+                // Fused scale: src_scale * (lut_size - 1) in one multiply
+                // Clip to [0, lut_size-1] instead of [0, 1]
+                float fused_scale = src_scale * (input_lut_size - 1);
+                float lut_max = (input_lut_size - 1);
+                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
+                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
+                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+            }
+            
+            // Apply matrix
+            matrix_mul_rgb(rgb, matrix);
+            
+            // Clip to [0, 1], scale to output LUT index range, apply output LUT, and store
+            float out_lut_max = (output_lut_size - 1);
+            rgb[0] = fmaxf(0.0f, fminf(1.0f, rgb[0])) * out_lut_max;
+            rgb[1] = fmaxf(0.0f, fminf(1.0f, rgb[1])) * out_lut_max;
+            rgb[2] = fmaxf(0.0f, fminf(1.0f, rgb[2])) * out_lut_max;
+            
+            output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
+            output[idx + 1] = (DstT)(lut_lookup_interp(output_lut, rgb[1]) * dst_scale);
+            output[idx + 2] = (DstT)(lut_lookup_interp(output_lut, rgb[2]) * dst_scale);
+        }
+    }
+}
+
+// Dispatcher: selects specialized function based on parameters
+static void transform_color_dispatch(
+    const void* input,
+    void* output,
+    int height,
+    int width,
+    int src_dtype,
+    int dst_dtype,
+    const float* input_lut,
+    int input_lut_size,
+    const float* matrix,
+    const float* output_lut,
+    int output_lut_size,
+    int src_bits,
+    int dst_bits
+) {
+    const int total_pixels = height * width;
+    
+    // Calculate scale factors
+    float src_scale = 1.0f;
+    if (src_dtype == NPY_UINT8) {
+        src_scale = 1.0f / (src_bits > 0 ? ((1 << src_bits) - 1) : 255.0f);
+    } else if (src_dtype == NPY_UINT16) {
+        src_scale = 1.0f / (src_bits > 0 ? ((1 << src_bits) - 1) : 65535.0f);
+    }
+    
+    float dst_scale = 1.0f;
+    if (dst_dtype == NPY_UINT8) {
+        dst_scale = (dst_bits > 0 ? ((1 << dst_bits) - 1) : 255.0f);
+    } else if (dst_dtype == NPY_UINT16) {
+        dst_scale = (dst_bits > 0 ? ((1 << dst_bits) - 1) : 65535.0f);
+    }
+    
+    // Determine which specialized function to use
+    bool has_input_lut = (input_lut != NULL);
+    bool has_matrix = (matrix != NULL);
+    bool has_output_lut = (output_lut != NULL);
+    
+    // Prepare scaled matrix if needed
+    float scaled_matrix[9];
+    const float* matrix_to_use = matrix;
+    
+    if (has_matrix) {
+        float scale = 1.0f;
+        
+        // Fuse src_scale when no input LUT (integer → float conversion)
+        if (!has_input_lut && src_dtype != NPY_FLOAT32) {
+            scale *= src_scale;
+        }
+        
+        // Fuse (output_lut_size - 1) when we have output LUT
+        // This lets matrix output LUT indices directly, skipping multiply in LUT lookup
+        if (has_output_lut) {
+            scale *= (output_lut_size - 1);
+        }
+        
+        if (scale != 1.0f) {
+            for (int i = 0; i < 9; ++i) {
+                scaled_matrix[i] = matrix[i] * scale;
+            }
+            matrix_to_use = scaled_matrix;
+        }
+    }
+    
+    // Dispatch to specialized function based on dtype combination and operations
+    // Check for uint8 + 256-entry LUT optimization at dispatch time
+    bool use_8bit_256 = (src_dtype == NPY_UINT8 && has_input_lut && input_lut_size == 256);
+    
+    #define DISPATCH_DTYPE_PAIR(SrcT, DstT) \
+        if (has_input_lut && has_matrix && has_output_lut) { \
+            if (use_8bit_256) { \
+                transform_lut_matrix_lut_impl<SrcT, DstT, true>( \
+                    (const SrcT*)input, (DstT*)output, total_pixels, \
+                    input_lut, input_lut_size, matrix, output_lut, output_lut_size, \
+                    src_scale, dst_scale); \
+            } else { \
+                transform_lut_matrix_lut_impl<SrcT, DstT, false>( \
+                    (const SrcT*)input, (DstT*)output, total_pixels, \
+                    input_lut, input_lut_size, matrix, output_lut, output_lut_size, \
+                    src_scale, dst_scale); \
+            } \
+        } else if (has_input_lut && has_matrix) { \
+            if (use_8bit_256) { \
+                transform_lut_matrix_impl<SrcT, DstT, true>( \
+                    (const SrcT*)input, (DstT*)output, total_pixels, \
+                    input_lut, input_lut_size, matrix, src_scale, dst_scale); \
+            } else { \
+                transform_lut_matrix_impl<SrcT, DstT, false>( \
+                    (const SrcT*)input, (DstT*)output, total_pixels, \
+                    input_lut, input_lut_size, matrix, src_scale, dst_scale); \
+            } \
+        } else if (has_matrix && has_output_lut) { \
+            transform_matrix_lut_impl<SrcT, DstT>( \
+                (const SrcT*)input, (DstT*)output, total_pixels, \
+                matrix_to_use, output_lut, output_lut_size, dst_scale); \
+        } else if (has_input_lut || has_output_lut) { \
+            const float* lut = has_input_lut ? input_lut : output_lut; \
+            int lut_size = has_input_lut ? input_lut_size : output_lut_size; \
+            bool use_8bit = (src_dtype == NPY_UINT8 && lut_size == 256); \
+            if (use_8bit) { \
+                transform_lut_only_impl<SrcT, DstT, true>( \
+                    (const SrcT*)input, (DstT*)output, total_pixels, \
+                    lut, lut_size, src_scale, dst_scale); \
+            } else { \
+                transform_lut_only_impl<SrcT, DstT, false>( \
+                    (const SrcT*)input, (DstT*)output, total_pixels, \
+                    lut, lut_size, src_scale, dst_scale); \
+            } \
+        }
+    
+    if (src_dtype == NPY_UINT8 && dst_dtype == NPY_UINT8) {
+        DISPATCH_DTYPE_PAIR(uint8_t, uint8_t)
+    } else if (src_dtype == NPY_UINT8 && dst_dtype == NPY_UINT16) {
+        DISPATCH_DTYPE_PAIR(uint8_t, uint16_t)
+    } else if (src_dtype == NPY_UINT8 && dst_dtype == NPY_FLOAT32) {
+        DISPATCH_DTYPE_PAIR(uint8_t, float)
+    } else if (src_dtype == NPY_UINT16 && dst_dtype == NPY_UINT8) {
+        DISPATCH_DTYPE_PAIR(uint16_t, uint8_t)
+    } else if (src_dtype == NPY_UINT16 && dst_dtype == NPY_UINT16) {
+        DISPATCH_DTYPE_PAIR(uint16_t, uint16_t)
+    } else if (src_dtype == NPY_UINT16 && dst_dtype == NPY_FLOAT32) {
+        DISPATCH_DTYPE_PAIR(uint16_t, float)
+    } else if (src_dtype == NPY_FLOAT32 && dst_dtype == NPY_UINT8) {
+        DISPATCH_DTYPE_PAIR(float, uint8_t)
+    } else if (src_dtype == NPY_FLOAT32 && dst_dtype == NPY_UINT16) {
+        DISPATCH_DTYPE_PAIR(float, uint16_t)
+    } else if (src_dtype == NPY_FLOAT32 && dst_dtype == NPY_FLOAT32) {
+        DISPATCH_DTYPE_PAIR(float, float)
+    }
+    
+    #undef DISPATCH_DTYPE_PAIR
+}
+
+//=============================================================================
+// Python binding for transform_color
+//=============================================================================
+
+static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwargs) {
+    PyArrayObject* image_array = NULL;
+    PyArrayObject* input_lut_array = NULL;
+    PyArrayObject* matrix_array = NULL;
+    PyArrayObject* output_lut_array = NULL;
+    int src_bits = -1;
+    int dst_bits = -1;
+    PyArray_Descr* output_dtype_descr = NULL;
+    
+    static char* kwlist[] = {
+        (char*)"image", (char*)"input_lut", (char*)"matrix", (char*)"output_lut",
+        (char*)"src_bits", (char*)"dst_bits", (char*)"output_dtype", NULL
+    };
+    
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|OOOiiO&", kwlist,
+            &PyArray_Type, &image_array,
+            &input_lut_array,
+            &matrix_array,
+            &output_lut_array,
+            &src_bits,
+            &dst_bits,
+            PyArray_DescrConverter, &output_dtype_descr)) {
+        return NULL;
+    }
+    
+    // Validate image
+    if (PyArray_NDIM(image_array) != 3 || PyArray_DIM(image_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "Image must be (H, W, 3)");
+        return NULL;
+    }
+    
+    int src_dtype = PyArray_TYPE(image_array);
+    if (src_dtype != NPY_UINT8 && src_dtype != NPY_UINT16 && src_dtype != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_ValueError, "Image dtype must be uint8, uint16, or float32");
+        return NULL;
+    }
+    
+    // Determine output dtype
+    auto dtype_guard = make_pyptr((PyObject*)output_dtype_descr);
+    int dst_dtype = output_dtype_descr ? output_dtype_descr->type_num : NPY_FLOAT32;
+    if (dst_dtype != NPY_UINT8 && dst_dtype != NPY_UINT16 && dst_dtype != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_ValueError, "Output dtype must be uint8, uint16, or float32");
+        return NULL;
+    }
+    
+    // Extract dimensions
+    int height = (int)PyArray_DIM(image_array, 0);
+    int width = (int)PyArray_DIM(image_array, 1);
+    
+    // Make contiguous - RAII handles cleanup automatically
+    auto image_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)image_array, src_dtype, 3, 3));
+    if (!image_cont) return NULL;
+    
+    // Process input LUT - copy with repeated last element for bounds safety
+    std::vector<float> input_lut_storage;
+    const float* input_lut_ptr = NULL;
+    int input_lut_size = 0;
+    PyPtr<PyArrayObject> input_lut_cont;
+    if (input_lut_array != NULL && (PyObject*)input_lut_array != Py_None) {
+        input_lut_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)input_lut_array, NPY_FLOAT32, 1, 1));
+        if (!input_lut_cont) return NULL;
+        
+        int size = (int)PyArray_SIZE(input_lut_cont.get());
+        const float* src = (const float*)PyArray_DATA(input_lut_cont.get());
+        
+        // Copy to vector with repeated last element
+        input_lut_storage.resize(size + 1);
+        std::memcpy(input_lut_storage.data(), src, size * sizeof(float));
+        input_lut_storage[size] = src[size - 1];  // Repeat last value
+        
+        input_lut_ptr = input_lut_storage.data();
+        input_lut_size = size;
+    }
+    
+    // Process matrix
+    const float* matrix_ptr = NULL;
+    PyPtr<PyArrayObject> matrix_cont;
+    if (matrix_array != NULL && (PyObject*)matrix_array != Py_None) {
+        matrix_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)matrix_array, NPY_FLOAT32, 2, 2));
+        if (!matrix_cont) return NULL;
+        if (PyArray_DIM(matrix_cont.get(), 0) != 3 || PyArray_DIM(matrix_cont.get(), 1) != 3) {
+            PyErr_SetString(PyExc_ValueError, "Matrix must be (3, 3)");
+            return NULL;
+        }
+        matrix_ptr = (const float*)PyArray_DATA(matrix_cont.get());
+    }
+    
+    // Process output LUT - copy with repeated last element for bounds safety
+    std::vector<float> output_lut_storage;
+    const float* output_lut_ptr = NULL;
+    int output_lut_size = 0;
+    PyPtr<PyArrayObject> output_lut_cont;
+    if (output_lut_array != NULL && (PyObject*)output_lut_array != Py_None) {
+        output_lut_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)output_lut_array, NPY_FLOAT32, 1, 1));
+        if (!output_lut_cont) return NULL;
+        
+        int size = (int)PyArray_SIZE(output_lut_cont.get());
+        const float* src = (const float*)PyArray_DATA(output_lut_cont.get());
+        
+        // Copy to vector with repeated last element
+        output_lut_storage.resize(size + 1);
+        std::memcpy(output_lut_storage.data(), src, size * sizeof(float));
+        output_lut_storage[size] = src[size - 1];  // Repeat last value
+        
+        output_lut_ptr = output_lut_storage.data();
+        output_lut_size = size;
+    }
+    
+    // Allocate output array
+    npy_intp dims[3] = {height, width, 3};
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, dst_dtype));
+    if (!result) return NULL;
+    
+    // Call dispatcher
+    transform_color_dispatch(
+        PyArray_DATA(image_cont.get()),
+        PyArray_DATA(result.get()),
+        height, width,
+        src_dtype, dst_dtype,
+        input_lut_ptr, input_lut_size,
+        matrix_ptr,
+        output_lut_ptr, output_lut_size,
+        src_bits, dst_bits
+    );
+    
+    // Return result (transfer ownership)
+    return (PyObject*)result.release();
+}
+
+//=============================================================================
 // RGB <-> HSV Conversion (from dng_utils.h)
 // H range: 0-6, S/V range: 0-1
 //=============================================================================
@@ -3306,6 +3813,21 @@ static PyMethodDef DngColorMethods[] = {
      "    bayer_phase (int): Bayer pattern phase (0-3)\n\n"
      "Returns:\n"
      "    ndarray: Data with bad pixels fixed"},
+    
+    {"transform_color", (PyCFunction)transform_color, METH_VARARGS | METH_KEYWORDS,
+     "Fused LUT→3x3→LUT color transformation pipeline.\n\n"
+     "Highly optimized C++ implementation with specialized paths for different\n"
+     "operation combinations. Supports 8-bit direct lookup optimization.\n\n"
+     "Args:\n"
+     "    image (ndarray): Input image (H, W, 3), dtype: uint8, uint16, or float32\n"
+     "    input_lut (ndarray, optional): Input LUT (N+1,) float32 (last value repeated)\n"
+     "    matrix (ndarray, optional): 3x3 color matrix, float32\n"
+     "    output_lut (ndarray, optional): Output LUT (N+1,) float32 (last value repeated)\n"
+     "    src_bits (int, optional): Source bit depth (-1 = use dtype default)\n"
+     "    dst_bits (int, optional): Dest bit depth (-1 = use dtype default)\n"
+     "    output_dtype (dtype, optional): Output dtype (default: float32)\n\n"
+     "Returns:\n"
+     "    ndarray: Transformed image (H, W, 3) with output_dtype"},
     
     {NULL, NULL, 0, NULL}
 };

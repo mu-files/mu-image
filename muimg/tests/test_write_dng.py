@@ -29,7 +29,8 @@ try:
 except ImportError:
     core_image_available = False
 from muimg.tiff_metadata import MetadataTags
-from muimg.raw_render import _srgb_gamma, convert_dtype
+from muimg.raw_render import convert_dtype, convert_colorspace
+from muimg.splines import ColorSpace
 from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats, run_dng_validate, OutputPathManager
 
 # Test output path manager - set persistent=True to keep outputs, False for tmp_path
@@ -378,9 +379,13 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 ramp_for_render = (rgb_ramp.astype(np.float64) * dst_max / src_max).astype(input_dtype)
             else:
                 ramp_for_render = rgb_ramp
-            rgb_linear_normalized = convert_dtype(ramp_for_render, np.float32)
-            rgb_srgb = _srgb_gamma(rgb_linear_normalized)
-            rgb_ramp_u8 = convert_dtype(rgb_srgb, np.uint8)
+            # Convert linear RGB to sRGB gamma-encoded uint8 for comparison
+            rgb_ramp_u8 = convert_colorspace(
+                ramp_for_render,
+                source_space=ColorSpace.SRGB_LINEAR,
+                dest_space=ColorSpace.SRGB_GAMMA,
+                output_dtype=np.uint8
+            )
             
             render_stats = compute_diff_stats(rendered, rgb_ramp_u8)
             

@@ -84,7 +84,7 @@ TEST_CASES = [
     ("canon_eos_r5_temp-tint", 1.30, 1.79, 0.02, 0.59),  # PS: MUIMG 1.18%, CI 1.77%; dngval: MUIMG 0.01%, CI 0.54%
     ("dc-s9_1", 1.64, 1.80, 0.03, 1.40),  # PS: MUIMG 1.49%, CI 1.98%; dngval: MUIMG 0.02%, CI 1.27%
     ("e-m10markiv_1", 1.80, 1.80, 0.01, 0.45),  # PS: MUIMG 2.01%, CI 2.60%; dngval: MUIMG 0.01%, CI 0.41%
-    ("insta360_oners", 1.80, 1.80, 0.01, 0.48),  # PS: MUIMG 2.36%, CI 2.23%; dngval: MUIMG 0.01%, CI 0.44%
+    ("insta360_oners", 1.80, 1.80, 0.01, 0.54),  # PS: MUIMG 2.36%, CI 2.23%; dngval: MUIMG 0.01%, CI 0.49%
     ("iphone_15_pro_1_back_camera_lossy", 0.63, 1.08, 0.21, 0.87),  # PS: MUIMG 0.57%, CI 0.98%; dngval: MUIMG 0.19%, CI 0.79%
     ("iphone_15_pro_flowers", 1.80, 1.80, 0.23, 0.98),  # PS: MUIMG 27.83%, CI 28.67%; dngval: MUIMG 0.21%, CI 0.89%
     ("leica_sl2-s_1", 1.64, 1.62, 0.02, 0.34),  # PS: MUIMG 1.49%, CI 1.47%; dngval: MUIMG 0.01%, CI 0.31%

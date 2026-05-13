@@ -12,7 +12,7 @@ from typing import Any
 # Package imports
 from . import _raw_render
 from .common import enum_display_name
-from .splines import CubicSpline, ColorSpace
+from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
@@ -63,102 +63,6 @@ class DemosaicAlgorithm(StrEnum):
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-
-def _srgb_gamma(linear: np.ndarray) -> np.ndarray:
-    """Apply sRGB gamma encoding (piecewise function).
-    
-    Uses C extension for performance. Accepts both 1D arrays (LUTs) and 
-    3D arrays (images). sRGB uses a piecewise function:
-    - Linear segment for dark values (< 0.0031308)
-    - Power curve (gamma ~2.2) for bright values
-    
-    Args:
-        linear: Linear RGB values (1D or 3D array)
-        
-    Returns:
-        sRGB gamma-encoded values (same shape as input)
-    """
-    return _raw_render.srgb_gamma(linear.astype(np.float32), 0)  # 0 = encode
-
-
-def _srgb_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
-    """Apply sRGB gamma decoding (piecewise function).
-    
-    Uses C extension for performance. Accepts both 1D arrays (LUTs) and 
-    3D arrays (images). Inverse of _srgb_gamma.
-    
-    Args:
-        gamma: sRGB gamma-encoded values (1D or 3D array)
-        
-    Returns:
-        Linear RGB values (same shape as input)
-    """
-    return _raw_render.srgb_gamma(gamma.astype(np.float32), 1)  # 1 = decode
-
-
-def _prophoto_gamma(linear: np.ndarray) -> np.ndarray:
-    """Apply ProPhoto RGB gamma 1.8 encoding.
-    
-    Source: DNG SDK 1.7.1 dng_color_space.cpp line 1007
-    dng_function_GammaEncode_1_8
-    
-    Args:
-        linear: Linear RGB values (can exceed 0-1 for wide-gamut)
-        
-    Returns:
-        Gamma-encoded values
-    """
-    # Clip negative pixel values to 0 
-    linear_clipped = np.maximum(linear, 0.0)
-    return np.power(linear_clipped, 1.0 / 1.8)
-
-
-def _prophoto_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
-    """Apply ProPhoto RGB gamma 1.8 decoding.
-    
-    Args:
-        gamma: Gamma-encoded values (can exceed 0-1 for wide-gamut)
-        
-    Returns:
-        Linear RGB values
-    """
-    # Clip negative pixel values to 0 
-    gamma_clipped = np.maximum(gamma, 0.0)
-    return np.power(gamma_clipped, 1.8)
-
-
-def _adobergb_gamma(linear: np.ndarray) -> np.ndarray:
-    """Apply Adobe RGB gamma 2.2 encoding (simple power curve).
-    
-    Source: DNG SDK 1.7.1 dng_color_space.cpp line 579
-    dng_function_GammaEncode_2_2
-    
-    Note: Adobe RGB uses a simple power curve, not the piecewise sRGB function.
-    
-    Args:
-        linear: Linear RGB values (can exceed 0-1 for wide-gamut)
-        
-    Returns:
-        Gamma-encoded values
-    """
-    # Clip negative pixel values to 0 
-    linear_clipped = np.maximum(linear, 0.0)
-    return np.power(linear_clipped, 1.0 / 2.2)
-
-
-def _adobergb_inverse_gamma(gamma: np.ndarray) -> np.ndarray:
-    """Apply Adobe RGB gamma 2.2 decoding.
-    
-    Args:
-        gamma: Gamma-encoded values (can exceed 0-1 for wide-gamut)
-        
-    Returns:
-        Linear RGB values
-    """
-    # Clip negative pixel values to 0 
-    gamma_clipped = np.maximum(gamma, 0.0)
-    return np.power(gamma_clipped, 2.2)
 
 
 def convert_dtype(
@@ -272,12 +176,12 @@ def convert_colorspace(
 ) -> np.ndarray:
     """Convert image between color spaces with optional dtype conversion.
     
-    Handles gamma decoding, matrix transforms, chromatic adaptation,
-    gamma encoding, and dtype conversion.
+    Handles gamma decoding, matrix transforms, chromatic adaptation, and gamma encoding
+    in a single fused pass for maximum performance.
     
     Args:
         image: Input image (H, W, 3) in source color space.
-               Can be uint8 (0-255), uint16 (0-65535), or float (0-1).
+               Can be uint8 (0-255), uint16 (0-65535), float16 (0-1), or float32 (0-1).
         source_space: Source ColorSpace
         dest_space: Destination ColorSpace
         output_dtype: Output data type (np.uint8, np.uint16, np.float16, np.float32)
@@ -285,92 +189,199 @@ def convert_colorspace(
     Returns:
         Converted image (H, W, 3) in destination color space with output_dtype
     """
-    import time
-    
     if source_space == dest_space and image.dtype == output_dtype:
         return image
     
-    # Normalize to 0-1 float32 range
-    result = convert_dtype(image, np.float32)
+    # Handle float16 by converting to float32 for processing
+    input_was_float16 = image.dtype == np.float16
+    if input_was_float16:
+        image = image.astype(np.float32)
     
-    # Step 1: Decode source gamma to linear
-    if source_space == ColorSpace.PROPHOTO_GAMMA:
-        result = _prophoto_inverse_gamma(result)
-        source_linear = ColorSpace.PROPHOTO_LINEAR
-    elif source_space == ColorSpace.ADOBERGB_GAMMA:
-        result = _adobergb_inverse_gamma(result)
-        source_linear = ColorSpace.ADOBERGB_LINEAR
-    elif source_space == ColorSpace.SRGB_GAMMA:
-        result = _raw_render.srgb_gamma(result, 1)  # 1 = decode
-        source_linear = ColorSpace.SRGB_LINEAR
-    else:
-        source_linear = source_space
+    output_is_float16 = output_dtype == np.float16
+    if output_is_float16:
+        output_dtype = np.float32
     
-    # Determine dest linear space
-    if dest_space in (ColorSpace.PROPHOTO_GAMMA, ColorSpace.PROPHOTO_LINEAR):
-        dest_linear = ColorSpace.PROPHOTO_LINEAR
-    elif dest_space in (ColorSpace.ADOBERGB_GAMMA, ColorSpace.ADOBERGB_LINEAR):
-        dest_linear = ColorSpace.ADOBERGB_LINEAR
-    elif dest_space in (ColorSpace.SRGB_GAMMA, ColorSpace.SRGB_LINEAR):
-        dest_linear = ColorSpace.SRGB_LINEAR
-    else:
-        dest_linear = dest_space
+    # Determine input LUT (gamma decode if needed)
+    input_lut = None
+    if source_space.is_gamma():
+        # Use 8-bit LUT for uint8 input, otherwise 4096
+        lut_size = 256 if image.dtype == np.uint8 else 4096
+        input_lut = ColorSpaceLUT(source_space, inverse=True, size=lut_size)
     
-    # Step 2: Convert between linear color spaces if needed
+    # Get linear variants for matrix computation
+    source_linear = source_space.to_linear()
+    dest_linear = dest_space.to_linear()
+    
+    # Determine color matrix (if color space conversion needed)
+    matrix = None
     if source_linear != dest_linear:
-        t0 = time.perf_counter()
         # ProPhoto (D50) ↔ sRGB (D65)
         if source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
             d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
             matrix = XYZ_D65_TO_SRGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
-            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
-        
         elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
             d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
             matrix = XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ SRGB_TO_XYZ_D65
-            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
-        
         # ProPhoto (D50) ↔ Adobe RGB (D65)
         elif source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
             d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
             matrix = XYZ_D65_TO_ADOBERGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
-            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
-        
         elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
             d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
             matrix = XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ ADOBERGB_TO_XYZ_D65
-            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
-        
         # sRGB (D65) ↔ Adobe RGB (D65) - same white point, no adaptation
         elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
             matrix = XYZ_D65_TO_ADOBERGB @ SRGB_TO_XYZ_D65
-            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
-        
         elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
             matrix = XYZ_D65_TO_SRGB @ ADOBERGB_TO_XYZ_D65
-            result = _raw_render.matrix_transform(result, matrix.astype(np.float32))
+    
+    # Determine output LUT (gamma encode if needed)
+    output_lut = None
+    if dest_space.is_gamma():
+        output_lut = ColorSpaceLUT(dest_space, inverse=False, size=4096)
+    
+    # Use fused transform_color pipeline
+    result = transform_color(
+        image,
+        input_lut=input_lut,
+        matrix=matrix,
+        output_lut=output_lut,
+        output_dtype=output_dtype
+    )
+    
+    # Convert back to float16 if requested
+    if output_is_float16:
+        result = result.astype(np.float16)
+    
+    return result
+
+
+def transform_color(
+    image: np.ndarray,
+    input_lut: LUT | np.ndarray | None = None,
+    matrix: np.ndarray | None = None,
+    output_lut: LUT | np.ndarray | None = None,
+    src_bits: int | None = None,
+    dst_bits: int | None = None,
+    output_dtype: np.dtype = np.float32
+) -> np.ndarray:
+    """Apply fused LUT→Matrix→LUT color transformation pipeline.
+    
+    This is the recommended way to apply color transformations when you need
+    to combine gamma decoding, color matrix, and gamma encoding in a single
+    efficient pass.
+    
+    Args:
+        image: Input image (H, W, 3), dtype: uint8, uint16, or float32
+        input_lut: Optional input LUT for gamma decoding. Can be:
+                   - LUT object (preferred - automatically converted to C array)
+                   - np.ndarray with shape (N+1,) float32 (last value repeated)
+                   Maps input values to [0, 1] range.
+        matrix: Optional 3x3 color transformation matrix, float32.
+                Applied in linear space after input LUT.
+        output_lut: Optional output LUT for gamma encoding. Can be:
+                    - LUT object (preferred - automatically converted to C array)
+                    - np.ndarray with shape (N+1,) float32 (last value repeated)
+                    Maps [0, 1] values to output range.
+        src_bits: Source bit depth. If None, inferred from dtype
+                  (8 for uint8, 16 for uint16, ignored for float32).
+        dst_bits: Destination bit depth. If None, inferred from output_dtype.
+        output_dtype: Output data type (np.uint8, np.uint16, or np.float32).
+                      Default: np.float32
+    
+    Returns:
+        Transformed image (H, W, 3) with output_dtype
+    
+    Examples:
+        >>> from muimg.splines import LUT
+        >>> 
+        >>> # Gamma decode only (12-bit → linear float) using LUT class
+        >>> decode_lut = LUT(lambda x: x ** 2.2, size=4096)
+        >>> linear = transform_color(raw_img, input_lut=decode_lut)
         
-        logger.info(f"    Timing: colorspace_matrix = {(time.perf_counter() - t0)*1000:.1f}ms")
+        >>> # Color matrix only
+        >>> matrix = camera_to_xyz @ xyz_to_srgb
+        >>> rgb = transform_color(linear_img, matrix=matrix)
+        
+        >>> # Full pipeline: decode → matrix → encode
+        >>> decode_lut = LUT(lambda x: x ** 2.2, size=4096)
+        >>> encode_lut = LUT(lambda x: x ** (1/2.2), size=4096)
+        >>> result = transform_color(
+        ...     raw_img,
+        ...     input_lut=decode_lut,
+        ...     matrix=color_matrix,
+        ...     output_lut=encode_lut,
+        ...     src_bits=12,
+        ...     dst_bits=12,
+        ...     output_dtype=np.uint16
+        ... )
+        
+        >>> # Using raw numpy arrays (legacy API)
+        >>> decode_arr = np.linspace(0, 1, 4096) ** 2.2
+        >>> decode_arr = np.append(decode_arr, decode_arr[-1]).astype(np.float32)
+        >>> linear = transform_color(raw_img, input_lut=decode_arr)
     
-    # Step 3: Encode dest gamma if needed
-    if dest_space == ColorSpace.PROPHOTO_GAMMA:
-        t0 = time.perf_counter()
-        result = _prophoto_gamma(result)
-        logger.info(f"    Timing: gamma_encode = {(time.perf_counter() - t0)*1000:.1f}ms")
-    elif dest_space == ColorSpace.ADOBERGB_GAMMA:
-        t0 = time.perf_counter()
-        result = _adobergb_gamma(result)
-        logger.info(f"    Timing: gamma_encode = {(time.perf_counter() - t0)*1000:.1f}ms")
-    elif dest_space == ColorSpace.SRGB_GAMMA:
-        t0 = time.perf_counter()
-        result = _raw_render.srgb_gamma(result, 0)  # 0 = encode
-        logger.info(f"    Timing: gamma_encode = {(time.perf_counter() - t0)*1000:.1f}ms")
+    Notes:
+        - LUT objects are preferred - they automatically handle C array conversion
+        - For numpy arrays, must have size+1 entries with last value repeated
+        - For 8-bit input with 256-entry LUT, uses optimized direct lookup (no interpolation)
+        - All operations are fused in a single pass for maximum cache efficiency
+        - Processes in 128-pixel spans for optimal L1 cache usage
+    """
+    # Validate inputs
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(f"Image must be (H, W, 3), got shape {image.shape}")
     
-    # Step 4: Convert to output_dtype
-    t0 = time.perf_counter()
-    result_final = convert_dtype(result, output_dtype)
-    logger.info(f"    Timing: dtype_conversion = {(time.perf_counter() - t0)*1000:.1f}ms")
-    return result_final
+    if image.dtype not in (np.uint8, np.uint16, np.float32):
+        raise ValueError(f"Image dtype must be uint8, uint16, or float32, got {image.dtype}")
+    
+    # Extract LUT data arrays
+    input_lut_array = None
+    if input_lut is not None:
+        if isinstance(input_lut, LUT):
+            input_lut_array = input_lut.data
+        elif isinstance(input_lut, np.ndarray):
+            if input_lut.ndim != 1:
+                raise ValueError(f"input_lut array must be 1D, got shape {input_lut.shape}")
+            input_lut_array = input_lut.astype(np.float32)
+        else:
+            raise TypeError(f"input_lut must be LUT or ndarray, got {type(input_lut)}")
+    
+    output_lut_array = None
+    if output_lut is not None:
+        if isinstance(output_lut, LUT):
+            output_lut_array = output_lut.data
+        elif isinstance(output_lut, np.ndarray):
+            if output_lut.ndim != 1:
+                raise ValueError(f"output_lut array must be 1D, got shape {output_lut.shape}")
+            output_lut_array = output_lut.astype(np.float32)
+        else:
+            raise TypeError(f"output_lut must be LUT or ndarray, got {type(output_lut)}")
+    
+    # Validate matrix if provided
+    if matrix is not None:
+        if matrix.shape != (3, 3):
+            raise ValueError(f"matrix must be (3, 3), got shape {matrix.shape}")
+        if matrix.dtype != np.float32:
+            matrix = matrix.astype(np.float32)
+    
+    # Convert output_dtype to numpy dtype if needed
+    if not isinstance(output_dtype, np.dtype):
+        output_dtype = np.dtype(output_dtype)
+    
+    if output_dtype not in (np.dtype('uint8'), np.dtype('uint16'), np.dtype('float32')):
+        raise ValueError(f"output_dtype must be uint8, uint16, or float32, got {output_dtype}")
+    
+    # Call C++ implementation
+    return _raw_render.transform_color(
+        image,
+        input_lut=input_lut_array,
+        matrix=matrix,
+        output_lut=output_lut_array,
+        src_bits=src_bits if src_bits is not None else -1,
+        dst_bits=dst_bits if dst_bits is not None else -1,
+        output_dtype=output_dtype
+    )
 
 
 def build_lut_from_spline(
@@ -408,11 +419,14 @@ def build_lut_from_spline(
         # When we convert to linear, the spacing becomes non-uniform.
         # We need to return a LUT that can be applied to uniformly-spaced linear pixels.
         
+        # sRGB gamma decode LUT (cached)
+        srgb_decode = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=True, size=lut_size)
+        
         # sRGB gamma decode: input values (sRGB gamma -> linear)
-        linear_lut_input = _srgb_inverse_gamma(lut_x)
+        linear_lut_input = srgb_decode(lut_x)
         
         # sRGB gamma decode: output values (sRGB gamma -> linear)
-        linear_lut_output = _srgb_inverse_gamma(srgb_gamma_lut_output)
+        linear_lut_output = srgb_decode(srgb_gamma_lut_output)
         
         # Resample to uniform spacing in linear space
         # LUTs are required to have uniform steps of 1/lut_size for direct indexing
@@ -2351,20 +2365,20 @@ PROPHOTO_RGB_TO_XYZ_D50 = np.array([
     [0.7976749, 0.1351917, 0.0313534],
     [0.2880402, 0.7118741, 0.0000857],
     [0.0000000, 0.0000000, 0.8252100]
-], dtype=np.float64)
+], dtype=np.float32)
 
 XYZ_D50_TO_PROPHOTO_RGB = np.array([
     [ 1.3459433, -0.2556075, -0.0511118],
     [-0.5445989,  1.5081673,  0.0205351],
     [ 0.0000000,  0.0000000,  1.2118128]
-], dtype=np.float64)
+], dtype=np.float32)
 
 # sRGB matrices (D65 white point)
 XYZ_D65_TO_SRGB = np.array([
     [ 3.2404542, -1.5371385, -0.4985314],
     [-0.9692660,  1.8760108,  0.0415560],
     [ 0.0556434, -0.2040259,  1.0572252]
-], dtype=np.float64)
+], dtype=np.float32)
 
 # Adobe RGB (1998) matrices (D65 white point)
 # Source: DNG SDK 1.7.1 dng_color_space.cpp lines 568-570
@@ -2373,7 +2387,7 @@ ADOBERGB_TO_XYZ_D65 = np.array([
     [0.6097, 0.2053, 0.1492],
     [0.3111, 0.6257, 0.0632],
     [0.0195, 0.0609, 0.7446]
-], dtype=np.float64)
+], dtype=np.float32)
 
 XYZ_D65_TO_ADOBERGB = np.linalg.inv(ADOBERGB_TO_XYZ_D65)
 
@@ -2381,7 +2395,7 @@ SRGB_TO_XYZ_D65 = np.array([
     [0.4124564, 0.3575761, 0.1804375],
     [0.2126729, 0.7151522, 0.0721750],
     [0.0193339, 0.1191920, 0.9503041]
-], dtype=np.float64)
+], dtype=np.float32)
 
 
 def _xy_to_XYZ(x: float, y: float) -> np.ndarray:
@@ -2635,7 +2649,10 @@ def apply_post_rendering_operations(
     
     # Early return if no rendering params - just convert colorspace directly
     if not rendering_params:
-        return convert_colorspace(rgb_input, source_colorspace, dest_colorspace, output_dtype=output_dtype)
+        t0 = time.perf_counter()
+        result = convert_colorspace(rgb_input, source_colorspace, dest_colorspace, output_dtype=output_dtype)
+        logger.info(f"    Timing: prophoto_to_srgb = {(time.perf_counter() - t0)*1000:.1f}ms")
+        return result
     
     # Step 1: Convert input to ProPhoto linear for rendering operations
     if source_colorspace != ColorSpace.PROPHOTO_LINEAR:
@@ -2735,12 +2752,14 @@ def apply_post_rendering_operations(
                 logger.debug("Applied radial distortion correction")
     
     # Step 4: Convert from ProPhoto linear to dest_colorspace and output_dtype
+    t0 = time.perf_counter()
     result = convert_colorspace(
         rgb_output,
         ColorSpace.PROPHOTO_LINEAR,
         dest_colorspace,
         output_dtype=output_dtype
     )
+    logger.info(f"    Timing: prophoto_to_srgb = {(time.perf_counter() - t0)*1000:.1f}ms")
     
     return result
 
