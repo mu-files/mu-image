@@ -127,6 +127,39 @@ static void transform_lut_only_impl(
     }
 }
 
+// Specialized: Matrix only (no LUTs)
+template<typename SrcT, typename DstT>
+static void transform_matrix_only_impl(
+    const SrcT* input,
+    DstT* output,
+    int total_pixels,
+    const float* matrix,
+    float src_scale,
+    float dst_scale
+) {
+    for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
+        int end = std::min(start + SPAN_SIZE, total_pixels);
+        
+        for (int i = start; i < end; ++i) {
+            int idx = i * 3;
+            float rgb[3];
+            
+            // Load and scale
+            rgb[0] = input[idx + 0] * src_scale;
+            rgb[1] = input[idx + 1] * src_scale;
+            rgb[2] = input[idx + 2] * src_scale;
+            
+            // Apply matrix
+            matrix_mul_rgb(rgb, matrix);
+            
+            // Clip and store
+            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
+            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
+            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+        }
+    }
+}
+
 // Specialized: LUT → Matrix
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_matrix_impl(
@@ -364,6 +397,10 @@ static void transform_color_dispatch(
             transform_matrix_lut_impl<SrcT, DstT>( \
                 (const SrcT*)input, (DstT*)output, total_pixels, \
                 matrix_to_use, output_lut, output_lut_size, dst_scale); \
+        } else if (has_matrix) { \
+            transform_matrix_only_impl<SrcT, DstT>( \
+                (const SrcT*)input, (DstT*)output, total_pixels, \
+                matrix, src_scale, dst_scale); \
         } else if (has_input_lut || has_output_lut) { \
             const float* lut = has_input_lut ? input_lut : output_lut; \
             int lut_size = has_input_lut ? input_lut_size : output_lut_size; \
@@ -377,6 +414,8 @@ static void transform_color_dispatch(
                     (const SrcT*)input, (DstT*)output, total_pixels, \
                     lut, lut_size, src_scale, dst_scale); \
             } \
+        } else { \
+            PyErr_SetString(PyExc_ValueError, "transform_color requires at least one of: input_lut, matrix, or output_lut"); \
         }
     
     if (src_dtype == NPY_UINT8 && dst_dtype == NPY_UINT8) {
@@ -1246,187 +1285,6 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
     return result;
 }
 
-// Apply sRGB gamma encoding/decoding (linear to sRGB or sRGB to linear)
-// Forward: if x <= 0.0031308: 12.92 * x, else: 1.055 * x^(1/2.4) - 0.055
-// Inverse: if x <= 0.04045: x / 12.92, else: ((x + 0.055) / 1.055)^2.4
-// Accepts both 1D arrays (N,) for LUTs and 3D arrays (H, W, 3) for images
-static PyObject* dng_color_srgb_gamma(PyObject* self, PyObject* args) {
-    PyArrayObject* rgb_array = NULL;
-    int inverse = 0;
-    
-    if (!PyArg_ParseTuple(args, "O!|i", &PyArray_Type, &rgb_array, &inverse)) {
-        return NULL;
-    }
-    
-    int ndim = PyArray_NDIM(rgb_array);
-    
-    // Validate input: must be 1D or 3D with 3 channels
-    if (ndim != 1 && ndim != 3) {
-        PyErr_SetString(PyExc_ValueError, "Input must be 1D (N,) or 3D (H, W, 3)");
-        return NULL;
-    }
-    if (ndim == 3 && PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "3D input must have shape (H, W, 3)");
-        return NULL;
-    }
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "Input must be float32");
-        return NULL;
-    }
-    
-    // Make contiguous copy
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, ndim, ndim);
-    if (!rgb_cont) return NULL;
-    
-    // Create output array with same shape
-    PyObject* result;
-    npy_intp total;
-    
-    if (ndim == 1) {
-        npy_intp n = PyArray_DIM(rgb_cont, 0);
-        result = PyArray_SimpleNew(1, &n, NPY_FLOAT32);
-        total = n;
-    } else {
-        npy_intp height = PyArray_DIM(rgb_cont, 0);
-        npy_intp width = PyArray_DIM(rgb_cont, 1);
-        npy_intp dims[3] = {height, width, 3};
-        result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
-        total = height * width * 3;
-    }
-    
-    if (!result) {
-        Py_DECREF(rgb_cont);
-        return NULL;
-    }
-    
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    
-    if (inverse) {
-        // Inverse sRGB gamma (sRGB to linear)
-        const float threshold = 0.04045f;
-        const float gamma = 2.4f;
-        
-        for (npy_intp i = 0; i < total; i++) {
-            float x = src_data[i];
-            float y;
-            if (x <= threshold) {
-                y = x / 12.92f;
-            } else {
-                y = std::pow((x + 0.055f) / 1.055f, gamma);
-            }
-            dst_data[i] = std::max(0.0f, std::min(1.0f, y));
-        }
-    } else {
-        // Forward sRGB gamma (linear to sRGB)
-        const float threshold = 0.0031308f;
-        const float inv_gamma = 1.0f / 2.4f;
-        
-        for (npy_intp i = 0; i < total; i++) {
-            float x = src_data[i];
-            float y;
-            if (x <= threshold) {
-                y = 12.92f * x;
-            } else {
-                y = 1.055f * std::pow(x, inv_gamma) - 0.055f;
-            }
-            dst_data[i] = std::max(0.0f, std::min(1.0f, y));
-        }
-    }
-    
-    Py_DECREF(rgb_cont);
-    return result;
-}
-
-// Apply 3x3 color matrix transform to RGB image with optional clipping
-static PyObject* dng_color_matrix_transform(PyObject* self, PyObject* args, PyObject* kwargs) {
-    PyArrayObject* rgb_array = NULL;
-    PyArrayObject* matrix_array = NULL;
-    int clip = 1;  // Default: clip to [0,1]
-    
-    static char* kwlist[] = {"rgb", "matrix", "clip", NULL};
-    
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!|p", kwlist,
-            &PyArray_Type, &rgb_array,
-            &PyArray_Type, &matrix_array,
-            &clip)) {
-        return NULL;
-    }
-    
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
-        return NULL;
-    }
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
-        return NULL;
-    }
-    if (PyArray_SIZE(matrix_array) != 9) {
-        PyErr_SetString(PyExc_ValueError, "matrix must be 3x3 (9 elements)");
-        return NULL;
-    }
-    
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* mat_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)matrix_array, NPY_FLOAT32, 1, 2);
-    
-    if (!rgb_cont || !mat_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(mat_cont);
-        return NULL;
-    }
-    
-    npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
-    if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(mat_cont);
-        return NULL;
-    }
-    
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* m = (const float*)PyArray_DATA(mat_cont);
-    
-    // Matrix is row-major: m[row*3 + col]
-    float m00 = m[0], m01 = m[1], m02 = m[2];
-    float m10 = m[3], m11 = m[4], m12 = m[5];
-    float m20 = m[6], m21 = m[7], m22 = m[8];
-    
-    npy_intp total_pixels = height * width;
-    
-    if (clip) {
-        for (npy_intp i = 0; i < total_pixels; i++) {
-            float r = src_data[i * 3 + 0];
-            float g = src_data[i * 3 + 1];
-            float b = src_data[i * 3 + 2];
-            
-            dst_data[i * 3 + 0] = std::max(0.0f, std::min(1.0f, m00 * r + m01 * g + m02 * b));
-            dst_data[i * 3 + 1] = std::max(0.0f, std::min(1.0f, m10 * r + m11 * g + m12 * b));
-            dst_data[i * 3 + 2] = std::max(0.0f, std::min(1.0f, m20 * r + m21 * g + m22 * b));
-        }
-    } else {
-        for (npy_intp i = 0; i < total_pixels; i++) {
-            float r = src_data[i * 3 + 0];
-            float g = src_data[i * 3 + 1];
-            float b = src_data[i * 3 + 2];
-            
-            dst_data[i * 3 + 0] = m00 * r + m01 * g + m02 * b;
-            dst_data[i * 3 + 1] = m10 * r + m11 * g + m12 * b;
-            dst_data[i * 3 + 2] = m20 * r + m21 * g + m22 * b;
-        }
-    }
-    
-    Py_DECREF(rgb_cont);
-    Py_DECREF(mat_cont);
-    return result;
-}
-
 // ============================================================================
 // Exposure Ramp (dng_function_exposure_ramp from dng_render.cpp lines 50-103)
 // Direct port of SDK code
@@ -1514,70 +1372,6 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     }
     
     Py_DECREF(rgb_cont);
-    return result;
-}
-
-// Apply simple per-pixel curve via LUT interpolation
-// No hue preservation - each channel processed independently
-static PyObject* dng_color_apply_curve(PyObject* self, PyObject* args) {
-    PyArrayObject* rgb_array = NULL;
-    PyArrayObject* curve_array = NULL;
-    
-    if (!PyArg_ParseTuple(args, "O!O!",
-            &PyArray_Type, &rgb_array,
-            &PyArray_Type, &curve_array)) {
-        return NULL;
-    }
-    
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
-        return NULL;
-    }
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
-        return NULL;
-    }
-    
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    int curve_size = (int)PyArray_SIZE(curve_array);
-    
-    if (curve_size < 2) {
-        PyErr_SetString(PyExc_ValueError, "Curve must have at least 2 points");
-        return NULL;
-    }
-    
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* curve_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)curve_array, NPY_FLOAT32, 1, 1);
-    
-    if (!rgb_cont || !curve_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(curve_cont);
-        return NULL;
-    }
-    
-    npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
-    if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(curve_cont);
-        return NULL;
-    }
-    
-    const float* src_data = (const float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* curve = (const float*)PyArray_DATA(curve_cont);
-    
-    // Simple per-pixel LUT interpolation
-    npy_intp total = height * width * 3;
-    for (npy_intp i = 0; i < total; i++) {
-        dst_data[i] = interpolate_tone_curve(src_data[i], curve, curve_size);
-    }
-    
-    Py_DECREF(rgb_cont);
-    Py_DECREF(curve_cont);
     return result;
 }
 
@@ -1692,68 +1486,6 @@ static PyObject* dng_color_apply_curve_hue_preserving(PyObject* self, PyObject* 
         dst_data[i * 3 + 0] = rr;
         dst_data[i * 3 + 1] = gg;
         dst_data[i * 3 + 2] = bb;
-    }
-    
-    Py_DECREF(rgb_cont);
-    Py_DECREF(curve_cont);
-    return result;
-}
-
-// Apply custom tone curve to image (simple per-channel, no hue preservation)
-static PyObject* dng_color_apply_tone_curve(PyObject* self, PyObject* args) {
-    PyArrayObject* rgb_array = NULL;
-    PyArrayObject* curve_array = NULL;
-    
-    if (!PyArg_ParseTuple(args, "O!O!",
-            &PyArray_Type, &rgb_array,
-            &PyArray_Type, &curve_array)) {
-        return NULL;
-    }
-    
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
-        return NULL;
-    }
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
-        return NULL;
-    }
-    
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    int curve_size = (int)PyArray_SIZE(curve_array);
-    
-    if (curve_size < 2) {
-        PyErr_SetString(PyExc_ValueError, "Tone curve must have at least 2 points");
-        return NULL;
-    }
-    
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* curve_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)curve_array, NPY_FLOAT32, 1, 1);
-    
-    if (!rgb_cont || !curve_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(curve_cont);
-        return NULL;
-    }
-    
-    npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
-    if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(curve_cont);
-        return NULL;
-    }
-    
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* curve = (const float*)PyArray_DATA(curve_cont);
-    
-    npy_intp total = height * width * 3;
-    for (npy_intp i = 0; i < total; i++) {
-        dst_data[i] = interpolate_tone_curve(src_data[i], curve, curve_size);
     }
     
     Py_DECREF(rgb_cont);
@@ -3592,23 +3324,6 @@ static PyMethodDef DngColorMethods[] = {
      "Returns:\n"
      "    ndarray: Processed RGB image with HueSatMap adjustments applied"},
     
-    {"apply_tone_curve", dng_color_apply_tone_curve, METH_VARARGS,
-     "Apply a custom tone curve (ProfileToneCurve) to RGB image.\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    curve (ndarray): 1D tone curve LUT, float32, maps [0,1] -> [0,1]\n\n"
-     "Returns:\n"
-     "    ndarray: Tone-mapped RGB image"},
-    
-    {"apply_curve", dng_color_apply_curve, METH_VARARGS,
-     "Apply simple per-pixel curve via LUT interpolation.\n\n"
-     "Each channel processed independently (no hue preservation).\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    curve (ndarray): 1D curve LUT, float32, maps [0,1] -> [0,1]\n\n"
-     "Returns:\n"
-     "    ndarray: Curve-mapped RGB image"},
-    
     {"apply_curve_hue_preserving", dng_color_apply_curve_hue_preserving, METH_VARARGS,
      "Apply hue-preserving RGB curve (RefBaselineRGBTone).\n\n"
      "This preserves color relationships by applying the curve to max/min\n"
@@ -3631,24 +3346,6 @@ static PyMethodDef DngColorMethods[] = {
      "    supportOverrange (bool, optional): Allow values > 1.0\n\n"
      "Returns:\n"
      "    ndarray: Exposure-adjusted RGB image"},
-    
-    {"srgb_gamma", dng_color_srgb_gamma, METH_VARARGS,
-     "Apply sRGB gamma encoding or decoding.\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    inverse (int, optional): If 0 (default), apply forward gamma (linear to sRGB).\n"
-     "                             If 1, apply inverse gamma (sRGB to linear).\n\n"
-     "Returns:\n"
-     "    ndarray: Gamma-encoded or decoded image"},
-    
-    {"matrix_transform", (PyCFunction)dng_color_matrix_transform, METH_VARARGS | METH_KEYWORDS,
-     "Apply 3x3 color matrix transform to RGB image.\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    matrix (ndarray): 3x3 color transform matrix, float32\n"
-     "    clip (bool): Clip output to [0,1] (default: True)\n\n"
-     "Returns:\n"
-     "    ndarray: Transformed RGB image"},
     
     {"linearize", dng_color_linearize, METH_VARARGS,
      "Apply linearization table to RAW sensor data (Stage 1).\n\n"

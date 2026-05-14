@@ -335,6 +335,10 @@ def transform_color(
     if image.dtype not in (np.uint8, np.uint16, np.float32):
         raise ValueError(f"Image dtype must be uint8, uint16, or float32, got {image.dtype}")
     
+    # Ensure at least one transform is provided
+    if input_lut is None and matrix is None and output_lut is None:
+        raise ValueError("transform_color requires at least one of: input_lut, matrix, or output_lut")
+    
     # Extract LUT data arrays
     input_lut_array = None
     if input_lut is not None:
@@ -2973,7 +2977,8 @@ def _render_camera_rgb(
 
         t0 = time.perf_counter()
         rgb_clipped = np.minimum(rgb_camera, camera_white.astype(np.float32))
-        rgb_prophoto = _raw_render.matrix_transform(rgb_clipped, camera_to_prophoto.astype(np.float32))
+        rgb_prophoto = transform_color(
+            rgb_clipped, matrix=camera_to_prophoto.astype(np.float32), output_dtype=np.float32)
         logger.info(f"    Timing: camera_to_prophoto = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         # =====================================================================
@@ -3121,8 +3126,8 @@ def _render_camera_rgb(
             # Must apply exposure_ramp separately when look_table exists
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             t0 = time.perf_counter()
-            rgb_exposed = _raw_render.apply_curve(
-                rgb_prophoto.astype(np.float32), exposure_ramp_lut
+            rgb_exposed = transform_color(
+                rgb_prophoto.astype(np.float32), input_lut=exposure_ramp_lut, output_dtype=np.float32
             )
             logger.info(f"    Timing: exposure_ramp = {(time.perf_counter() - t0)*1000:.1f}ms")
             
