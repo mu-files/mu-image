@@ -303,7 +303,8 @@ class LUT:
     """
     
     def __init__(self, data: np.ndarray | CubicSpline | str | list | None = None, 
-                 size: int = 4096):
+                 size: int = 4096,
+                 convert_srgb_gamma_to_linear: bool = False):
         """Initialize LUT.
         
         Args:
@@ -313,6 +314,9 @@ class LUT:
                 - str/list: Create CubicSpline, then sample
                 - None: Identity LUT (linear)
             size: Number of LUT entries (only used if data is not ndarray)
+            convert_srgb_gamma_to_linear: If True, convert curve from sRGB gamma 2.2
+                encoding to linear encoding. Used for Adobe curves that are defined
+                in sRGB gamma space but need to be applied to linear pixels.
         """
         if data is None:
             # Identity LUT
@@ -327,6 +331,20 @@ class LUT:
                 spline = CubicSpline(data)
             x = np.linspace(0.0, 1.0, size, dtype=np.float32)
             self.data = np.clip(spline(x), 0.0, 1.0).astype(np.float32)
+            
+            if convert_srgb_gamma_to_linear:
+                # Convert from sRGB gamma space to linear space
+                # The curve is defined in sRGB gamma space but needs to be applied to linear pixels
+                from muimg.raw_render import ColorSpaceLUT, ColorSpace
+                srgb_decode = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=True, size=size)
+                
+                # Decode both input and output from sRGB gamma to linear
+                linear_input = srgb_decode(x)
+                linear_output = srgb_decode(self.data)
+                
+                # Resample to uniform spacing in linear space
+                uniform_linear_x = np.linspace(0.0, 1.0, size, dtype=np.float32)
+                self.data = np.interp(uniform_linear_x, linear_input, linear_output).astype(np.float32)
         else:
             raise TypeError(f"Unsupported LUT data type: {type(data)}")
     

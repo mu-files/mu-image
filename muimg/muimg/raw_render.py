@@ -263,7 +263,8 @@ def transform_color(
     output_lut: LUT | np.ndarray | None = None,
     src_bits: int | None = None,
     dst_bits: int | None = None,
-    output_dtype: np.dtype = np.float32
+    output_dtype: np.dtype = np.float32,
+    hue_preserving_input_lut: bool = False
 ) -> np.ndarray:
     """Apply fused LUT→Matrix→LUT color transformation pipeline.
     
@@ -288,6 +289,9 @@ def transform_color(
         dst_bits: Destination bit depth. If None, inferred from output_dtype.
         output_dtype: Output data type (np.uint8, np.uint16, or np.float32).
                       Default: np.float32
+        hue_preserving_input_lut: If True, applies hue-preserving tone curve algorithm
+                                  to the input LUT. Only supports float32 input/output.
+                                  Requires input_lut. Default: False
     
     Returns:
         Transformed image (H, W, 3) with output_dtype
@@ -339,6 +343,19 @@ def transform_color(
     if input_lut is None and matrix is None and output_lut is None:
         raise ValueError("transform_color requires at least one of: input_lut, matrix, or output_lut")
     
+    # Validate hue-preserving mode requirements
+    if hue_preserving_input_lut:
+        if input_lut is None:
+            raise ValueError("hue_preserving_input_lut=True requires input_lut")
+        if image.dtype != np.float32:
+            raise ValueError(f"hue_preserving_input_lut=True requires float32 input, got {image.dtype}")
+        # Float32 output only required for LUT-only case (no matrix)
+        if matrix is None:
+            if output_lut is not None:
+                raise ValueError("hue_preserving_input_lut=True with no matrix requires no output_lut")
+            if output_dtype != np.float32:
+                raise ValueError(f"hue_preserving_input_lut=True with no matrix requires float32 output, got {output_dtype}")
+    
     # Extract LUT data arrays
     input_lut_array = None
     if input_lut is not None:
@@ -384,62 +401,9 @@ def transform_color(
         output_lut=output_lut_array,
         src_bits=src_bits if src_bits is not None else -1,
         dst_bits=dst_bits if dst_bits is not None else -1,
-        output_dtype=output_dtype
+        output_dtype=output_dtype,
+        hue_preserving=hue_preserving_input_lut
     )
-
-
-def build_lut_from_spline(
-    curve_param: CubicSpline | str | list,
-    lut_size: int = 4096,
-    convert_srgb_gamma_to_linear: bool = False
-) -> np.ndarray:
-    """Build a lookup table from spline curve control points or CubicSpline object.
-    
-    Args:
-        curve_param: Either a CubicSpline object, string format, or list of control points
-        lut_size: Number of points in the LUT (default 4096)
-        convert_srgb_gamma_to_linear: If True, convert curve from sRGB gamma 2.2 encoding
-            (also known as Melissa RGB in Adobe tools) to linear encoding. Adobe tools
-            display curves in sRGB gamma space but processing happens in linear space.
-        
-    Returns:
-        numpy array of float32 values clipped to [0.0, 1.0] range
-    """
-    if isinstance(curve_param, CubicSpline):
-        curve = curve_param
-    else:
-        curve = CubicSpline(curve_param)
-    
-    # Build LUT in sRGB gamma space (0-1 range)
-    lut_x = np.linspace(0.0, 1.0, lut_size, dtype=np.float32)
-    srgb_gamma_lut_output = np.clip(curve(lut_x), 0.0, 1.0).astype(np.float32)
-    
-    if convert_srgb_gamma_to_linear:
-        # Convert LUT from sRGB gamma 2.2 encoding to linear encoding
-        # This allows applying the curve to linear pixels while preserving
-        # the curve shape as displayed in Adobe tools
-        
-        # The LUT is built with uniform spacing in sRGB gamma space (lut_x).
-        # When we convert to linear, the spacing becomes non-uniform.
-        # We need to return a LUT that can be applied to uniformly-spaced linear pixels.
-        
-        # sRGB gamma decode LUT (cached)
-        srgb_decode = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=True, size=lut_size)
-        
-        # sRGB gamma decode: input values (sRGB gamma -> linear)
-        linear_lut_input = srgb_decode(lut_x)
-        
-        # sRGB gamma decode: output values (sRGB gamma -> linear)
-        linear_lut_output = srgb_decode(srgb_gamma_lut_output)
-        
-        # Resample to uniform spacing in linear space
-        # LUTs are required to have uniform steps of 1/lut_size for direct indexing
-        uniform_linear_x = np.linspace(0.0, 1.0, lut_size, dtype=np.float32)
-        resampled_output = np.interp(uniform_linear_x, linear_lut_input, linear_lut_output)
-        
-        return resampled_output.astype(np.float32)
-    else:
-        return srgb_gamma_lut_output
 
 
 def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
@@ -2205,80 +2169,6 @@ def compute_exposure_ramp_lut(
     return ramp_lut.astype(np.float32)
 
 
-def remap_curve_input(
-    tone_curve: np.ndarray,
-    remap_fn=None,
-    num_points: int = 4096
-) -> np.ndarray:
-    """Remap the input values of a tone curve, baking into a single LUT.
-    
-    SDK ref: dng_render.cpp lines 1009-1012
-    dng_1d_concatenate(f1, f2) - result(x) = curve(remap(x))
-    
-    Args:
-        tone_curve: Tone curve LUT
-        remap_fn: Function(x) -> x that remaps input values before the curve.
-                  If None, no remapping is applied.
-        num_points: Number of input sample points. Output LUT has same size.
-    
-    Returns:
-        Combined LUT as float32 array with num_points elements
-    """
-    if remap_fn is None:
-        return tone_curve.astype(np.float32)
-    
-    lut_x = np.linspace(0.0, 1.0, num_points, dtype=np.float64)
-    remap_x = remap_fn(lut_x)
-    
-    # Interpolate through the tone curve at remapped positions
-    tone_x = np.linspace(0.0, 1.0, len(tone_curve), dtype=np.float64)
-    combined = np.interp(remap_x, tone_x, tone_curve)
-    
-    return np.clip(combined, 0.0, 1.0).astype(np.float32)
-
-
-def remap_curve_output(
-    tone_curve: np.ndarray,
-    remap_fn=None,
-    num_points: int = 4096
-) -> np.ndarray:
-    """Remap the output values of a tone curve, baking into a single LUT.
-    
-    Complementary to remap_curve_input.
-    result(x) = remap(curve(x))
-    
-    Args:
-        tone_curve: Tone curve LUT
-        remap_fn: Function(y) -> y that remaps output values after the curve.
-                  Can also be a LUT array. If None, no remapping is applied.
-        num_points: Number of input sample points. Output LUT has same size.
-    
-    Returns:
-        Combined LUT as float32 array with num_points elements
-    """
-    if remap_fn is None:
-        return tone_curve.astype(np.float32)
-    
-    # If curve is already the right size, just remap its values directly
-    if len(tone_curve) == num_points:
-        intermediate = tone_curve
-    else:
-        # Resample curve to desired number of points
-        lut_x = np.linspace(0.0, 1.0, num_points, dtype=np.float64)
-        curve_x = np.linspace(0.0, 1.0, len(tone_curve), dtype=np.float64)
-        intermediate = np.interp(lut_x, curve_x, tone_curve)
-    
-    # Apply remap function to output
-    if callable(remap_fn):
-        result = remap_fn(intermediate)
-    else:
-        # remap_fn is a LUT array
-        remap_x = np.linspace(0.0, 1.0, len(remap_fn), dtype=np.float64)
-        result = np.interp(intermediate, remap_x, remap_fn)
-    
-    return np.clip(result, 0.0, 1.0).astype(np.float32)
-
-
 # Standard illuminant xy chromaticities (from DNG SDK)
 D50_xy = (0.34567, 0.35850)  # PCS reference white
 D55_xy = (0.33242, 0.34743)
@@ -2672,14 +2562,15 @@ def apply_post_rendering_operations(
     # Step 1: Apply main curve with hue preservation (if present and no per-channel curves)
     if 'ToneCurvePV2012' in rendering_params:
         rgb_output = rgb_prophoto_linear.copy()
-        main_curve_lut = build_lut_from_spline(
-            rendering_params['ToneCurvePV2012'],
-            convert_srgb_gamma_to_linear=True
-        )
+        # Build curve LUT and convert from sRGB gamma to linear space
+        main_curve_lut = LUT(rendering_params['ToneCurvePV2012'], size=4096, 
+                             convert_srgb_gamma_to_linear=True)
         
-        rgb_output = _raw_render.apply_curve_hue_preserving(
+        rgb_output = transform_color(
             rgb_output.astype(np.float32),
-            main_curve_lut
+            input_lut=main_curve_lut,
+            hue_preserving_input_lut=True,
+            output_dtype=np.float32
         )
         logger.debug("Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)")
     
@@ -2691,18 +2582,16 @@ def apply_post_rendering_operations(
             if rgb_output is rgb_prophoto_linear:
                 rgb_output = rgb_prophoto_linear.copy()
             
-            # Build per-channel curve LUT in linear space
-            channel_curve_lut = build_lut_from_spline(
-                rendering_params[curve_key],
-                convert_srgb_gamma_to_linear=True
-            )
+            # Build per-channel curve LUT and convert from sRGB gamma to linear space
+            channel_curve_lut = LUT(rendering_params[curve_key], size=4096,
+                                    convert_srgb_gamma_to_linear=True)
             
             # Apply per-channel curve
             channel_data = rgb_output[:, :, channel_idx].astype(np.float32)
             rgb_output[:, :, channel_idx] = np.interp(
                 channel_data,
-                np.linspace(0.0, 1.0, len(channel_curve_lut), dtype=np.float32),
-                channel_curve_lut
+                np.linspace(0.0, 1.0, len(channel_curve_lut.data), dtype=np.float32),
+                channel_curve_lut.data
             )
             logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
     
@@ -3140,18 +3029,17 @@ def _render_camera_rgb(
             logger.info(f"    Timing: look_table = {(time.perf_counter() - t0)*1000:.1f}ms")
             
             # Start combined curve with identity (exposure_ramp already applied to pixels)
-            lut_x = np.linspace(0.0, 1.0, 4096, dtype=np.float64)
-            combined_curve = lut_x.astype(np.float32)
+            combined_curve = LUT(None, size=4096)
         else:
             # No look_table: exposure_ramp will be baked into tone curve
             rgb_exposed = rgb_prophoto
             
             # Start combined curve with exposure_ramp
-            combined_curve = exposure_ramp_lut
+            combined_curve = LUT(exposure_ramp_lut)
         
         # Chain: apply exposure_tone to output
-        combined_curve = remap_curve_output(
-            combined_curve, lambda y: exposure_tone(y, exposure, highlight_preserving_exposure)
+        combined_curve = combined_curve.compose_output(
+            lambda y: exposure_tone(y, exposure, highlight_preserving_exposure)
         )
         
         # =====================================================================
@@ -3173,9 +3061,7 @@ def _render_camera_rgb(
                 points = [(curve_data[i*2], curve_data[i*2+1]) for i in range(n_points)]
                 
                 try:
-                    spline = CubicSpline(points)
-                    lut_x = np.linspace(0.0, 1.0, 4096)
-                    tag_profile_curve = np.clip(spline(lut_x), 0.0, 1.0).astype(np.float32)
+                    tag_profile_curve = LUT(points, size=4096).data
                     logger.debug(f"Using ProfileToneCurve with {n_points} control points")
                 except ValueError as e:
                     # Fallback to ACR3 if curve is invalid (e.g., non-monotonic x)
@@ -3184,10 +3070,13 @@ def _render_camera_rgb(
         profile_curve = get_acr3_curve(4096) if tag_profile_curve is None else tag_profile_curve
         
         # Chain: apply profile tone curve to output (combined_curve already has exposure_ramp and exposure_tone)
-        combined_curve = remap_curve_output(combined_curve, profile_curve)
+        combined_curve = combined_curve.compose_output(LUT(profile_curve))
         
-        rgb_toned = _raw_render.apply_curve_hue_preserving(
-            rgb_exposed.astype(np.float32), combined_curve
+        rgb_toned = transform_color(
+            rgb_exposed.astype(np.float32),
+            input_lut=combined_curve,
+            hue_preserving_input_lut=True,
+            output_dtype=np.float32
         )
         
         logger.info(f"    Timing: tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
