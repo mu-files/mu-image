@@ -1243,29 +1243,27 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
     npy_intp width = PyArray_DIM(rgb_array, 1);
     
     // Ensure contiguous input
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
     if (!rgb_cont) return NULL;
     
-    PyArrayObject* map_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)map_array, NPY_FLOAT32, 1, 4);
+    auto map_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)map_array, NPY_FLOAT32, 1, 4));
     if (!map_cont) {
-        Py_DECREF(rgb_cont);
         return NULL;
     }
     
     // Create output array
     npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(map_cont);
         return NULL;
     }
     
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const HSBModify* map_data = (const HSBModify*)PyArray_DATA(map_cont);
+    float* src_data = (float*)PyArray_DATA(rgb_cont.get());
+    float* dst_data = (float*)PyArray_DATA(result.get());
+    const HSBModify* map_data = (const HSBModify*)PyArray_DATA(map_cont.get());
     
     // Copy source to dest first
     memcpy(dst_data, src_data, height * width * 3 * sizeof(float));
@@ -1280,9 +1278,7 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
         );
     }
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(map_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // ============================================================================
@@ -1337,19 +1333,19 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     npy_intp height = PyArray_DIM(rgb_array, 0);
     npy_intp width = PyArray_DIM(rgb_array, 1);
     
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
     if (!rgb_cont) return NULL;
     
     npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
     if (!result) {
-        Py_DECREF(rgb_cont);
         return NULL;
     }
     
-    const float* src_data = (const float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    const float* src_data = (const float*)PyArray_DATA(rgb_cont.get());
+    float* dst_data = (float*)PyArray_DATA(result.get());
     
     // SDK ref: dng_render.cpp lines 55-75 (constructor)
     float slope = 1.0f / (float)(white - black);
@@ -1371,8 +1367,7 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
                                               radius, qScale, supportOverrange != 0);
     }
     
-    Py_DECREF(rgb_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Apply hue-preserving RGB curve (RefBaselineRGBTone from dng_reference.cpp)
@@ -1405,28 +1400,25 @@ static PyObject* dng_color_apply_curve_hue_preserving(PyObject* self, PyObject* 
         return NULL;
     }
     
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* curve_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)curve_array, NPY_FLOAT32, 1, 1);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
+    auto curve_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)curve_array, NPY_FLOAT32, 1, 1));
     
     if (!rgb_cont || !curve_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(curve_cont);
         return NULL;
     }
     
     npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(curve_cont);
         return NULL;
     }
     
-    float* src_data = (float*)PyArray_DATA(rgb_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* curve = (const float*)PyArray_DATA(curve_cont);
+    float* src_data = (float*)PyArray_DATA(rgb_cont.get());
+    float* dst_data = (float*)PyArray_DATA(result.get());
+    const float* curve = (const float*)PyArray_DATA(curve_cont.get());
     
     npy_intp total_pixels = height * width;
     
@@ -1488,9 +1480,7 @@ static PyObject* dng_color_apply_curve_hue_preserving(PyObject* self, PyObject* 
         dst_data[i * 3 + 2] = bb;
     }
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(curve_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Apply linearization table to RAW CFA data
@@ -1511,35 +1501,30 @@ static PyObject* dng_color_linearize(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    PyArrayObject* data_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)data_array, NPY_FLOAT32, 1, 3);
-    PyArrayObject* table_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)table_array, NPY_FLOAT32, 1, 1);
+    auto data_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_FLOAT32, 1, 3));
+    auto table_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)table_array, NPY_FLOAT32, 1, 1));
     
     if (!data_cont || !table_cont) {
-        Py_XDECREF(data_cont);
-        Py_XDECREF(table_cont);
         return NULL;
     }
     
     // Copy data for output
-    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(data_cont);
-        Py_DECREF(table_cont);
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* table = (const float*)PyArray_DATA(table_cont);
-    npy_intp count = PyArray_SIZE(data_cont);
-    int table_size = (int)PyArray_SIZE(table_cont);
+    float* result_data = (float*)PyArray_DATA(result.get());
+    const float* table = (const float*)PyArray_DATA(table_cont.get());
+    npy_intp count = PyArray_SIZE(data_cont.get());
+    int table_size = (int)PyArray_SIZE(table_cont.get());
     
     apply_linearization_table(result_data, count, table, table_size, max_val);
     
-    Py_DECREF(data_cont);
-    Py_DECREF(table_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Normalize RAW data using black/white levels per DNG spec Chapter 5.
@@ -1608,100 +1593,77 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     }
     
     // Make contiguous copies
-    PyArrayObject* data_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)data_array, NPY_FLOAT32, 2, 3);
-    PyArrayObject* black_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)black_array, NPY_FLOAT32, 1, 3);
-    PyArrayObject* white_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)white_array, NPY_FLOAT32, 1, 1);
+    auto data_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_FLOAT32, 2, 3));
+    auto black_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)black_array, NPY_FLOAT32, 1, 3));
+    auto white_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)white_array, NPY_FLOAT32, 1, 1));
     
     if (!data_cont || !black_cont || !white_cont) {
-        Py_XDECREF(data_cont);
-        Py_XDECREF(black_cont);
-        Py_XDECREF(white_cont);
         return NULL;
     }
     
     // Validate black_level size matches repeat pattern
     npy_intp expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel;
-    if (PyArray_SIZE(black_cont) != expected_black_size) {
+    if (PyArray_SIZE(black_cont.get()) != expected_black_size) {
         PyErr_Format(PyExc_ValueError, 
             "black_level size (%zd) must equal repeat_rows * repeat_cols * samples_per_pixel (%zd)",
-            (Py_ssize_t)PyArray_SIZE(black_cont), (Py_ssize_t)expected_black_size);
-        Py_DECREF(data_cont);
-        Py_DECREF(black_cont);
-        Py_DECREF(white_cont);
+            (Py_ssize_t)PyArray_SIZE(black_cont.get()), (Py_ssize_t)expected_black_size);
         return NULL;
     }
     
     // Handle optional delta arrays
-    PyArrayObject* delta_h_cont = NULL;
-    PyArrayObject* delta_v_cont = NULL;
+    PyPtr<PyArrayObject> delta_h_cont;
+    PyPtr<PyArrayObject> delta_v_cont;
     npy_intp delta_h_count = 0;
     npy_intp delta_v_count = 0;
     
     if (delta_h_obj != Py_None && delta_h_obj != NULL) {
-        delta_h_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-            delta_h_obj, NPY_FLOAT32, 1, 1);
+        delta_h_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny(delta_h_obj, NPY_FLOAT32, 1, 1));
         if (!delta_h_cont) {
-            Py_DECREF(data_cont);
-            Py_DECREF(black_cont);
-            Py_DECREF(white_cont);
             return NULL;
         }
-        delta_h_count = PyArray_SIZE(delta_h_cont);
+        delta_h_count = PyArray_SIZE(delta_h_cont.get());
     }
     
     if (delta_v_obj != Py_None && delta_v_obj != NULL) {
-        delta_v_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-            delta_v_obj, NPY_FLOAT32, 1, 1);
+        delta_v_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny(delta_v_obj, NPY_FLOAT32, 1, 1));
         if (!delta_v_cont) {
-            Py_DECREF(data_cont);
-            Py_DECREF(black_cont);
-            Py_DECREF(white_cont);
-            Py_XDECREF(delta_h_cont);
             return NULL;
         }
-        delta_v_count = PyArray_SIZE(delta_v_cont);
+        delta_v_count = PyArray_SIZE(delta_v_cont.get());
     }
     
     // Handle optional linearization table (uint16 LUT)
-    PyArrayObject* lin_table_cont = NULL;
+    PyPtr<PyArrayObject> lin_table_cont;
     int lin_table_size = 0;
     if (linearization_table_obj != Py_None && linearization_table_obj != NULL) {
-        lin_table_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-            linearization_table_obj, NPY_UINT16, 1, 1);
+        lin_table_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny(linearization_table_obj, NPY_UINT16, 1, 1));
         if (!lin_table_cont) {
-            Py_DECREF(data_cont);
-            Py_DECREF(black_cont);
-            Py_DECREF(white_cont);
-            Py_XDECREF(delta_h_cont);
-            Py_XDECREF(delta_v_cont);
             return NULL;
         }
-        lin_table_size = (int)PyArray_SIZE(lin_table_cont);
+        lin_table_size = (int)PyArray_SIZE(lin_table_cont.get());
     }
     
     // Copy data for output
-    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(data_cont);
-        Py_DECREF(black_cont);
-        Py_DECREF(white_cont);
-        Py_XDECREF(delta_h_cont);
-        Py_XDECREF(delta_v_cont);
-        Py_XDECREF(lin_table_cont);
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* black = (const float*)PyArray_DATA(black_cont);
-    const float* white = (const float*)PyArray_DATA(white_cont);
-    const float* delta_h = delta_h_cont ? (const float*)PyArray_DATA(delta_h_cont) : NULL;
-    const float* delta_v = delta_v_cont ? (const float*)PyArray_DATA(delta_v_cont) : NULL;
-    int white_count = (int)PyArray_SIZE(white_cont);
+    float* result_data = (float*)PyArray_DATA(result.get());
+    const float* black = (const float*)PyArray_DATA(black_cont.get());
+    const float* white = (const float*)PyArray_DATA(white_cont.get());
+    const float* delta_h = delta_h_cont ? (const float*)PyArray_DATA(delta_h_cont.get()) : NULL;
+    const float* delta_v = delta_v_cont ? (const float*)PyArray_DATA(delta_v_cont.get()) : NULL;
+    int white_count = (int)PyArray_SIZE(white_cont.get());
     
-    const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont) : nullptr;
+    const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont.get()) : nullptr;
     
     normalize_black_white(result_data, height, width, samples_per_pixel,
                          black, black_repeat_rows, black_repeat_cols,
@@ -1710,13 +1672,7 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
                          white, white_count,
                          lin_table, lin_table_size);
     
-    Py_DECREF(data_cont);
-    Py_DECREF(black_cont);
-    Py_DECREF(white_cont);
-    Py_XDECREF(delta_h_cont);
-    Py_XDECREF(delta_v_cont);
-    Py_XDECREF(lin_table_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Apply gain map (flat-field correction) to RAW CFA
@@ -1748,33 +1704,28 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
     npy_intp gain_h = PyArray_DIM(gain_array, 0);
     npy_intp gain_w = PyArray_DIM(gain_array, 1);
     
-    PyArrayObject* data_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)data_array, NPY_FLOAT32, 2, 2);
-    PyArrayObject* gain_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)gain_array, NPY_FLOAT32, 2, 2);
+    auto data_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_FLOAT32, 2, 2));
+    auto gain_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)gain_array, NPY_FLOAT32, 2, 2));
     
     if (!data_cont || !gain_cont) {
-        Py_XDECREF(data_cont);
-        Py_XDECREF(gain_cont);
         return NULL;
     }
     
     // Copy data for output
-    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(data_cont);
-        Py_DECREF(gain_cont);
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* gain = (const float*)PyArray_DATA(gain_cont);
+    float* result_data = (float*)PyArray_DATA(result.get());
+    const float* gain = (const float*)PyArray_DATA(gain_cont.get());
     
     apply_gain_map_cfa(result_data, height, width, gain, gain_h, gain_w, 2, 2);
     
-    Py_DECREF(data_cont);
-    Py_DECREF(gain_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // ============================================================================
@@ -2070,32 +2021,27 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
     npy_intp width = PyArray_DIM(rgb_array, 1);
     
     // Get contiguous arrays
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* gains_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)gains_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* weights_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)weights_array, NPY_FLOAT32, 1, 1);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
+    auto gains_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)gains_array, NPY_FLOAT32, 3, 3));
+    auto weights_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)weights_array, NPY_FLOAT32, 1, 1));
     
     if (!rgb_cont || !gains_cont || !weights_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(gains_cont);
-        Py_XDECREF(weights_cont);
         return NULL;
     }
     
     // Copy RGB for output
-    PyObject* result = PyArray_NewCopy(rgb_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(rgb_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(gains_cont);
-        Py_DECREF(weights_cont);
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* gains = (const float*)PyArray_DATA(gains_cont);
-    const float* weights = (const float*)PyArray_DATA(weights_cont);
+    float* result_data = (float*)PyArray_DATA(result.get());
+    const float* gains = (const float*)PyArray_DATA(gains_cont.get());
+    const float* weights = (const float*)PyArray_DATA(weights_cont.get());
     
     float exposure_weight_gain = powf(2.0f, (float)baseline_exposure);
     
@@ -2111,10 +2057,7 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
         exposure_weight_gain
     );
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(gains_cont);
-    Py_DECREF(weights_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Warp rectilinear lens distortion correction (Stage 2)
@@ -2151,50 +2094,42 @@ static PyObject* dng_color_op_warp_rectilinear(PyObject* self, PyObject* args, P
     npy_intp height = PyArray_DIM(rgb_array, 0);
     npy_intp width = PyArray_DIM(rgb_array, 1);
     
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
     // radial_array is 2D: (num_planes, num_coeffs)
-    PyArrayObject* radial_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)radial_array, NPY_FLOAT64, 2, 2);
-    PyArrayObject* tan_cont = NULL;
+    auto radial_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)radial_array, NPY_FLOAT64, 2, 2));
+    PyPtr<PyArrayObject> tan_cont;
     
     if (tangential_array) {
         // tangential_array is 2D: (num_planes, 2)
-        tan_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-            (PyObject*)tangential_array, NPY_FLOAT64, 2, 2);
+        tan_cont = make_pyptr<PyArrayObject>(
+            (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)tangential_array, NPY_FLOAT64, 2, 2));
     }
     
     if (!rgb_cont || !radial_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(radial_cont);
-        Py_XDECREF(tan_cont);
         return NULL;
     }
     
     // Get dimensions from 2D radial array
-    int num_planes = (int)PyArray_DIM(radial_cont, 0);
-    int num_coeffs = (int)PyArray_DIM(radial_cont, 1);
+    int num_planes = (int)PyArray_DIM(radial_cont.get(), 0);
+    int num_coeffs = (int)PyArray_DIM(radial_cont.get(), 1);
     
     npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(radial_cont);
-        Py_XDECREF(tan_cont);
         return NULL;
     }
     
-    const float* src = (const float*)PyArray_DATA(rgb_cont);
-    float* dst = (float*)PyArray_DATA((PyArrayObject*)result);
-    const double* radial = (const double*)PyArray_DATA(radial_cont);
-    const double* tangential = tan_cont ? (const double*)PyArray_DATA(tan_cont) : NULL;
+    const float* src = (const float*)PyArray_DATA(rgb_cont.get());
+    float* dst = (float*)PyArray_DATA(result.get());
+    const double* radial = (const double*)PyArray_DATA(radial_cont.get());
+    const double* tangential = tan_cont ? (const double*)PyArray_DATA(tan_cont.get()) : NULL;
     
     warp_rectilinear(src, dst, height, width, 3, radial, num_planes, num_coeffs, tangential, center_x, center_y, (bool)use_bicubic);
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(radial_cont);
-    Py_XDECREF(tan_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Fix vignette radial (Stage 2)
@@ -2222,34 +2157,29 @@ static PyObject* dng_color_op_fix_vignette(PyObject* self, PyObject* args) {
     npy_intp height = PyArray_DIM(rgb_array, 0);
     npy_intp width = PyArray_DIM(rgb_array, 1);
     
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* params_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)params_array, NPY_FLOAT64, 1, 1);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
+    auto params_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)params_array, NPY_FLOAT64, 1, 1));
     
     if (!rgb_cont || !params_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(params_cont);
         return NULL;
     }
     
     // Copy for output
-    PyObject* result = PyArray_NewCopy(rgb_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(rgb_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(params_cont);
         return NULL;
     }
     
-    float* data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const double* params = (const double*)PyArray_DATA(params_cont);
-    int num_params = (int)PyArray_SIZE(params_cont);
+    float* data = (float*)PyArray_DATA(result.get());
+    const double* params = (const double*)PyArray_DATA(params_cont.get());
+    int num_params = (int)PyArray_SIZE(params_cont.get());
     
     fix_vignette_radial(data, height, width, 3, params, num_params, center_x, center_y);
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(params_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Fix vignette radial for CFA data (OpcodeList1/2)
@@ -2275,28 +2205,26 @@ static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    PyArrayObject* cfa_cont = (PyArrayObject*)PyArray_GETCONTIGUOUS(cfa_array);
-    PyArrayObject* params_cont = (PyArrayObject*)PyArray_GETCONTIGUOUS(params_array);
+    auto cfa_cont = make_pyptr<PyArrayObject>((PyArrayObject*)PyArray_GETCONTIGUOUS(cfa_array));
+    auto params_cont = make_pyptr<PyArrayObject>((PyArrayObject*)PyArray_GETCONTIGUOUS(params_array));
     
-    npy_intp height = PyArray_DIM(cfa_cont, 0);
-    npy_intp width = PyArray_DIM(cfa_cont, 1);
+    npy_intp height = PyArray_DIM(cfa_cont.get(), 0);
+    npy_intp width = PyArray_DIM(cfa_cont.get(), 1);
     
-    PyObject* result = PyArray_NewLikeArray(cfa_cont, NPY_ANYORDER, NULL, 0);
-    PyArrayObject* result_array = (PyArrayObject*)result;
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewLikeArray(cfa_cont.get(), NPY_ANYORDER, NULL, 0));
     
-    float* data = (float*)PyArray_DATA(result_array);
-    const float* src = (const float*)PyArray_DATA(cfa_cont);
+    float* data = (float*)PyArray_DATA(result.get());
+    const float* src = (const float*)PyArray_DATA(cfa_cont.get());
     memcpy(data, src, height * width * sizeof(float));
     
-    const double* params = (const double*)PyArray_DATA(params_cont);
-    int num_params = (int)PyArray_SIZE(params_cont);
+    const double* params = (const double*)PyArray_DATA(params_cont.get());
+    int num_params = (int)PyArray_SIZE(params_cont.get());
     
     // Apply vignette correction to single-channel CFA data
     fix_vignette_radial(data, height, width, 1, params, num_params, center_x, center_y);
     
-    Py_DECREF(cfa_cont);
-    Py_DECREF(params_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 //=============================================================================
@@ -2508,26 +2436,23 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
     }
     
     // Ensure contiguous input
-    PyArrayObject* cfa_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)cfa_array, NPY_FLOAT32, 2, 2);
+    auto cfa_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)cfa_array, NPY_FLOAT32, 2, 2));
     if (!cfa_cont) return NULL;
     
     // Get CFA pattern as int array
-    PyArrayObject* pattern_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)cfa_pattern_array, NPY_INT32, 1, 2);
+    auto pattern_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)cfa_pattern_array, NPY_INT32, 1, 2));
     if (!pattern_cont) {
-        Py_DECREF(cfa_cont);
         return NULL;
     }
     
-    const int32_t* pattern_data = (const int32_t*)PyArray_DATA(pattern_cont);
+    const int32_t* pattern_data = (const int32_t*)PyArray_DATA(pattern_cont.get());
     int cfa_colors[4] = {pattern_data[0], pattern_data[1], pattern_data[2], pattern_data[3]};
     
     // Validate color indices (must be 0, 1, or 2)
     for (int i = 0; i < 4; i++) {
         if (cfa_colors[i] < 0 || cfa_colors[i] > 2) {
-            Py_DECREF(cfa_cont);
-            Py_DECREF(pattern_cont);
             PyErr_SetString(PyExc_ValueError, 
                 "cfa_pattern values must be 0 (Red), 1 (Green), or 2 (Blue)");
             return NULL;
@@ -2536,22 +2461,19 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
     
     // Create output array (float32, same as SDK)
     npy_intp dims[3] = {height, width, 3};
-    PyObject* result = PyArray_SimpleNew(3, dims, NPY_FLOAT32);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
     if (!result) {
-        Py_DECREF(cfa_cont);
-        Py_DECREF(pattern_cont);
         return NULL;
     }
     
-    const float* src_data = (const float*)PyArray_DATA(cfa_cont);
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
+    const float* src_data = (const float*)PyArray_DATA(cfa_cont.get());
+    float* dst_data = (float*)PyArray_DATA(result.get());
     
     // Run bilinear demosaic
     bilinear_demosaic_kernel(src_data, dst_data, height, width, cfa_colors);
     
-    Py_DECREF(cfa_cont);
-    Py_DECREF(pattern_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // =============================================================================
@@ -2750,37 +2672,34 @@ static PyObject* dng_color_op_map_polynomial(PyObject* self, PyObject* args) {
     }
     
     // Get contiguous arrays
-    PyObject* rgb_cont = PyArray_ContiguousFromAny(rgb_obj, NPY_FLOAT32, 3, 3);
-    PyObject* coeffs_cont = PyArray_ContiguousFromAny(coeffs_obj, NPY_FLOAT32, 1, 1);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny(rgb_obj, NPY_FLOAT32, 3, 3));
+    auto coeffs_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny(coeffs_obj, NPY_FLOAT32, 1, 1));
     if (!rgb_cont || !coeffs_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(coeffs_cont);
         return NULL;
     }
     
-    npy_intp* dims = PyArray_DIMS((PyArrayObject*)rgb_cont);
+    npy_intp* dims = PyArray_DIMS(rgb_cont.get());
     int height = (int)dims[0];
     int width = (int)dims[1];
     
     // Create output (copy input)
-    PyObject* result = PyArray_Copy((PyArrayObject*)rgb_cont);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_Copy(rgb_cont.get()));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(coeffs_cont);
         return NULL;
     }
     
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* coefficients = (const float*)PyArray_DATA((PyArrayObject*)coeffs_cont);
+    float* dst_data = (float*)PyArray_DATA(result.get());
+    const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
     
     apply_map_polynomial_impl(dst_data, height, width, 3,
                               top, left, bottom, right,
                               plane, planes, row_pitch, col_pitch,
                               coefficients, degree);
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(coeffs_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // MapPolynomial opcode for CFA data (OpcodeList2, pre-demosaic)
@@ -2800,37 +2719,34 @@ static PyObject* dng_color_op_map_polynomial_cfa(PyObject* self, PyObject* args)
     }
     
     // Get contiguous arrays
-    PyObject* cfa_cont = PyArray_ContiguousFromAny(cfa_obj, NPY_FLOAT32, 2, 2);
-    PyObject* coeffs_cont = PyArray_ContiguousFromAny(coeffs_obj, NPY_FLOAT32, 1, 1);
+    auto cfa_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny(cfa_obj, NPY_FLOAT32, 2, 2));
+    auto coeffs_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny(coeffs_obj, NPY_FLOAT32, 1, 1));
     if (!cfa_cont || !coeffs_cont) {
-        Py_XDECREF(cfa_cont);
-        Py_XDECREF(coeffs_cont);
         return NULL;
     }
     
-    npy_intp* dims = PyArray_DIMS((PyArrayObject*)cfa_cont);
+    npy_intp* dims = PyArray_DIMS(cfa_cont.get());
     int height = (int)dims[0];
     int width = (int)dims[1];
     
     // Create output (copy input)
-    PyObject* result = PyArray_Copy((PyArrayObject*)cfa_cont);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_Copy(cfa_cont.get()));
     if (!result) {
-        Py_DECREF(cfa_cont);
-        Py_DECREF(coeffs_cont);
         return NULL;
     }
     
-    float* dst_data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* coefficients = (const float*)PyArray_DATA((PyArrayObject*)coeffs_cont);
+    float* dst_data = (float*)PyArray_DATA(result.get());
+    const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
     
     apply_map_polynomial_impl(dst_data, height, width, 1,
                               top, left, bottom, right,
                               0, 1, row_pitch, col_pitch,
                               coefficients, degree);
     
-    Py_DECREF(cfa_cont);
-    Py_DECREF(coeffs_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // ============================================================================
@@ -3062,26 +2978,23 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
     npy_intp points_h = PyArray_DIM(gain_array, 1);
     npy_intp map_planes = PyArray_DIM(gain_array, 2);
     
-    PyArrayObject* rgb_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)rgb_array, NPY_FLOAT32, 3, 3);
-    PyArrayObject* gain_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)gain_array, NPY_FLOAT32, 3, 3);
+    auto rgb_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
+    auto gain_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)gain_array, NPY_FLOAT32, 3, 3));
     
     if (!rgb_cont || !gain_cont) {
-        Py_XDECREF(rgb_cont);
-        Py_XDECREF(gain_cont);
         return NULL;
     }
     
-    PyObject* result = PyArray_NewCopy(rgb_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(rgb_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(rgb_cont);
-        Py_DECREF(gain_cont);
         return NULL;
     }
     
-    float* data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* gain_values = (const float*)PyArray_DATA(gain_cont);
+    float* data = (float*)PyArray_DATA(result.get());
+    const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
     
     apply_gain_map_impl(data, height, width, 3,
                         gain_values, points_v, points_h, map_planes,
@@ -3090,9 +3003,7 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
                         row_pitch, col_pitch,
                         spacing_v, spacing_h, origin_v, origin_h);
     
-    Py_DECREF(rgb_cont);
-    Py_DECREF(gain_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 //=============================================================================
@@ -3123,21 +3034,21 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
     npy_intp height = PyArray_DIM(data_array, 0);
     npy_intp width = PyArray_DIM(data_array, 1);
     
-    PyArrayObject* data_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)data_array, NPY_UINT16, 2, 2);
+    auto data_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_UINT16, 2, 2));
     
     if (!data_cont) {
         return NULL;
     }
     
-    PyObject* result = PyArray_NewCopy(data_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(data_cont);
         return NULL;
     }
     
-    uint16_t* src_data = (uint16_t*)PyArray_DATA(data_cont);
-    uint16_t* dst_data = (uint16_t*)PyArray_DATA((PyArrayObject*)result);
+    uint16_t* src_data = (uint16_t*)PyArray_DATA(data_cont.get());
+    uint16_t* dst_data = (uint16_t*)PyArray_DATA(result.get());
     uint16_t bad_pixel = (uint16_t)constant;
     
     // SDK ref: dng_bad_pixels.cpp lines 146-275
@@ -3237,8 +3148,7 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
         }
     }
     
-    Py_DECREF(data_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // GainMap opcode for CFA data (OpcodeList2, pre-demosaic)
@@ -3277,26 +3187,23 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
     npy_intp points_h = PyArray_DIM(gain_array, 1);
     npy_intp map_planes = PyArray_DIM(gain_array, 2);
     
-    PyArrayObject* cfa_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)cfa_array, NPY_FLOAT32, 2, 2);
-    PyArrayObject* gain_cont = (PyArrayObject*)PyArray_ContiguousFromAny(
-        (PyObject*)gain_array, NPY_FLOAT32, 3, 3);
+    auto cfa_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)cfa_array, NPY_FLOAT32, 2, 2));
+    auto gain_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)gain_array, NPY_FLOAT32, 3, 3));
     
     if (!cfa_cont || !gain_cont) {
-        Py_XDECREF(cfa_cont);
-        Py_XDECREF(gain_cont);
         return NULL;
     }
     
-    PyObject* result = PyArray_NewCopy(cfa_cont, NPY_CORDER);
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_NewCopy(cfa_cont.get(), NPY_CORDER));
     if (!result) {
-        Py_DECREF(cfa_cont);
-        Py_DECREF(gain_cont);
         return NULL;
     }
     
-    float* data = (float*)PyArray_DATA((PyArrayObject*)result);
-    const float* gain_values = (const float*)PyArray_DATA(gain_cont);
+    float* data = (float*)PyArray_DATA(result.get());
+    const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
     
     apply_gain_map_impl(data, height, width, 1,
                         gain_values, points_v, points_h, map_planes,
@@ -3305,9 +3212,7 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
                         row_pitch, col_pitch,
                         spacing_v, spacing_h, origin_v, origin_h);
     
-    Py_DECREF(cfa_cont);
-    Py_DECREF(gain_cont);
-    return result;
+    return (PyObject*)result.release();
 }
 
 // Module method definitions
