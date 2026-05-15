@@ -487,13 +487,27 @@ def decode_dng_coreimage(
         else:
             raise ValueError(f"Unknown colorspace: {colorspace_name}")
         
-        # Apply all tone curves and lens corrections via common pipeline
-        # apply_post_rendering_operations will handle gamma decoding to linear internally
-        result = raw_render.apply_post_rendering_operations(
+        # Convert Core Image output to ProPhoto linear for post-rendering
+        rgb_prophoto_linear = raw_render.convert_colorspace(
             ci_output,
-            rendering_params=extracted_params,
-            source_colorspace=source_colorspace,
-            dest_colorspace=raw_render.ColorSpace.SRGB_GAMMA,
+            source_colorspace,
+            raw_render.ColorSpace.PROPHOTO_LINEAR
+        )
+        
+        # Apply all tone curves and lens corrections in ProPhoto linear
+        if extracted_params:
+            rgb_output = raw_render.apply_post_rendering_operations(
+                rgb_prophoto_linear,
+                extracted_params
+            )
+        else:
+            rgb_output = rgb_prophoto_linear
+        
+        # Convert to sRGB gamma with output dtype
+        result = raw_render.convert_colorspace(
+            rgb_output,
+            raw_render.ColorSpace.PROPHOTO_LINEAR,
+            raw_render.ColorSpace.SRGB_GAMMA,
             output_dtype=output_dtype
         )
         

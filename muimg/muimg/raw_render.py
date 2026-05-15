@@ -168,6 +168,54 @@ def convert_dtype(
     return result
 
 
+def compute_colorspace_matrix(
+    source_space: ColorSpace,
+    dest_space: ColorSpace
+) -> np.ndarray | None:
+    """Compute the colorspace conversion matrix.
+    
+    Computes the matrix for converting from source linear space to dest linear space,
+    including chromatic adaptation if needed.
+    
+    Args:
+        source_space: Source ColorSpace
+        dest_space: Destination ColorSpace
+        
+    Returns:
+        Matrix for converting from source linear to dest linear,
+        or None if no conversion needed (same linear space)
+    """
+    # Get linear variants for matrix computation
+    source_linear = source_space.to_linear()
+    dest_linear = dest_space.to_linear()
+    
+    # No conversion needed if same linear space
+    if source_linear == dest_linear:
+        return None
+    
+    # ProPhoto (D50) ↔ sRGB (D65)
+    if source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
+        d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
+        return XYZ_D65_TO_SRGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
+    elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
+        d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
+        return XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ SRGB_TO_XYZ_D65
+    # ProPhoto (D50) ↔ Adobe RGB (D65)
+    elif source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
+        d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
+        return XYZ_D65_TO_ADOBERGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
+    elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
+        d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
+        return XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ ADOBERGB_TO_XYZ_D65
+    # sRGB (D65) ↔ Adobe RGB (D65) - same white point, no adaptation
+    elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
+        return XYZ_D65_TO_ADOBERGB @ SRGB_TO_XYZ_D65
+    elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
+        return XYZ_D65_TO_SRGB @ ADOBERGB_TO_XYZ_D65
+    
+    return None
+
+
 def convert_colorspace(
     image: np.ndarray,
     source_space: ColorSpace,
@@ -176,6 +224,7 @@ def convert_colorspace(
 ) -> np.ndarray:
     """Convert image between color spaces with optional dtype conversion.
     
+    Convenience wrapper around compute_colorspace_matrix + transform_color.
     Handles gamma decoding, matrix transforms, chromatic adaptation, and gamma encoding
     in a single fused pass for maximum performance.
     
@@ -208,32 +257,8 @@ def convert_colorspace(
         lut_size = 256 if image.dtype == np.uint8 else 4096
         input_lut = ColorSpaceLUT(source_space, inverse=True, size=lut_size)
     
-    # Get linear variants for matrix computation
-    source_linear = source_space.to_linear()
-    dest_linear = dest_space.to_linear()
-    
-    # Determine color matrix (if color space conversion needed)
-    matrix = None
-    if source_linear != dest_linear:
-        # ProPhoto (D50) ↔ sRGB (D65)
-        if source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
-            d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
-            matrix = XYZ_D65_TO_SRGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
-        elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
-            d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
-            matrix = XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ SRGB_TO_XYZ_D65
-        # ProPhoto (D50) ↔ Adobe RGB (D65)
-        elif source_linear == ColorSpace.PROPHOTO_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
-            d50_to_d65 = compute_bradford_adaptation(D50_xy, D65_xy)
-            matrix = XYZ_D65_TO_ADOBERGB @ d50_to_d65 @ PROPHOTO_RGB_TO_XYZ_D50
-        elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.PROPHOTO_LINEAR:
-            d65_to_d50 = compute_bradford_adaptation(D65_xy, D50_xy)
-            matrix = XYZ_D50_TO_PROPHOTO_RGB @ d65_to_d50 @ ADOBERGB_TO_XYZ_D65
-        # sRGB (D65) ↔ Adobe RGB (D65) - same white point, no adaptation
-        elif source_linear == ColorSpace.SRGB_LINEAR and dest_linear == ColorSpace.ADOBERGB_LINEAR:
-            matrix = XYZ_D65_TO_ADOBERGB @ SRGB_TO_XYZ_D65
-        elif source_linear == ColorSpace.ADOBERGB_LINEAR and dest_linear == ColorSpace.SRGB_LINEAR:
-            matrix = XYZ_D65_TO_SRGB @ ADOBERGB_TO_XYZ_D65
+    # Compute colorspace conversion matrix
+    matrix = compute_colorspace_matrix(source_space, dest_space)
     
     # Determine output LUT (gamma encode if needed)
     output_lut = None
@@ -2512,47 +2537,27 @@ def apply_radial_distortion_correction(
 
 def apply_post_rendering_operations(
     rgb_input: np.ndarray,
-    rendering_params: dict = None,
-    source_colorspace: ColorSpace = ColorSpace.PROPHOTO_LINEAR,
-    dest_colorspace: ColorSpace = ColorSpace.PROPHOTO_LINEAR,
-    output_dtype: np.dtype = np.float32
+    rendering_params: dict
 ) -> np.ndarray:
-    """Apply XMP post-rendering operations with color space conversion.
+    """Apply XMP post-rendering operations in ProPhoto linear space.
     
     Processing pipeline:
-    1. Convert input from source_colorspace to ProPhoto linear
-    2. Apply tone curves in ProPhoto linear space (Adobe's approach)
-    3. Apply lens distortion correction
-    4. Convert from ProPhoto linear to dest_colorspace
-    5. Convert to output_dtype
+    1. Apply tone curves in ProPhoto linear space (Adobe's approach)
+    2. Apply lens distortion correction
     
     Tone curve processing follows Adobe's approach: curves are displayed in sRGB gamma 2.2
     space (Melissa RGB) but applied in linear ProPhoto RGB space.
     
     Args:
-        rgb_input: Input image in source_colorspace
+        rgb_input: Input image in ProPhoto linear space
         rendering_params: Dictionary containing XMP rendering parameters
-        source_colorspace: Source color space (default: ProPhoto linear)
-        dest_colorspace: Destination color space (default: ProPhoto linear)
-        output_dtype: Output data type (np.uint8, np.uint16, np.float16, np.float32)
         
     Returns:
-        Output image in dest_colorspace with output_dtype
+        Output image in ProPhoto linear space
     """
     import time
     
-    # Early return if no rendering params - just convert colorspace directly
-    if not rendering_params:
-        t0 = time.perf_counter()
-        result = convert_colorspace(rgb_input, source_colorspace, dest_colorspace, output_dtype=output_dtype)
-        logger.info(f"    Timing: prophoto_to_srgb = {(time.perf_counter() - t0)*1000:.1f}ms")
-        return result
-    
-    # Step 1: Convert input to ProPhoto linear for rendering operations
-    if source_colorspace != ColorSpace.PROPHOTO_LINEAR:
-        rgb_prophoto_linear = convert_colorspace(rgb_input, source_colorspace, ColorSpace.PROPHOTO_LINEAR)
-    else:
-        rgb_prophoto_linear = rgb_input
+    rgb_prophoto_linear = rgb_input
     
     logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
     
@@ -2644,17 +2649,7 @@ def apply_post_rendering_operations(
                 logger.info(f"    Timing: lens_correction = {(time.perf_counter() - t0)*1000:.1f}ms")
                 logger.debug("Applied radial distortion correction")
     
-    # Step 4: Convert from ProPhoto linear to dest_colorspace and output_dtype
-    t0 = time.perf_counter()
-    result = convert_colorspace(
-        rgb_output,
-        ColorSpace.PROPHOTO_LINEAR,
-        dest_colorspace,
-        output_dtype=output_dtype
-    )
-    logger.info(f"    Timing: prophoto_to_srgb = {(time.perf_counter() - t0)*1000:.1f}ms")
-    
-    return result
+    return rgb_output
 
 def _get_ifd0_tag(
     ifd0_tags: "DngPage" | "MetadataTags",
@@ -3046,9 +3041,7 @@ def _render_camera_rgb(
         # Step 3: DoBaselineRGBTone (ALWAYS applied)
         # SDK ref: dng_render.cpp lines 1949-1970, 2145-2162
         # Uses ProfileToneCurve if present, otherwise ACR3 default
-        # =====================================================================
-        t0 = time.perf_counter()
-        
+        # =====================================================================        
         # Get ProfileToneCurve from DNG tags, or use ACR3 default
         # SDK ref: dng_render.cpp lines 2153-2162
         tag_profile_curve = None
@@ -3072,27 +3065,52 @@ def _render_camera_rgb(
         # Chain: apply profile tone curve to output (combined_curve already has exposure_ramp and exposure_tone)
         combined_curve = combined_curve.compose_output(LUT(profile_curve))
         
-        rgb_toned = transform_color(
-            rgb_exposed.astype(np.float32),
-            input_lut=combined_curve,
-            hue_preserving_input_lut=True,
-            output_dtype=np.float32
-        )
-        
-        logger.info(f"    Timing: tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
-        
         # =====================================================================
-        # Step 4-5: Apply XMP post-rendering, color space conversion, and dtype conversion
+        # Step 4-5: Apply tone curve + colorspace conversion (merged when no post-rendering)
         # SDK ref: dng_render.cpp lines 2040-2068
-        # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
         # =====================================================================
-        result = apply_post_rendering_operations(
-            rgb_toned,
-            rendering_params,
-            source_colorspace=ColorSpace.PROPHOTO_LINEAR,
-            dest_colorspace=ColorSpace.SRGB_GAMMA,
+        # Check if there are actual post-rendering operations (tone curves or lens correction)
+        # Other params like exposure, temperature, orientation are handled elsewhere
+        post_rendering_keys = {
+            'ToneCurvePV2012', 'ToneCurvePV2012Red', 'ToneCurvePV2012Green', 
+            'ToneCurvePV2012Blue', 'crlcp:PerspectiveModel'
+        }
+        has_post_rendering = rendering_params and bool(post_rendering_keys & rendering_params.keys())
+        
+        if has_post_rendering:
+            # Post-rendering exists: apply tone curve first, then post-rendering
+            t0 = time.perf_counter()
+            rgb_toned = transform_color(
+                rgb_exposed.astype(np.float32),
+                input_lut=combined_curve,
+                hue_preserving_input_lut=True,
+                output_dtype=np.float32
+            )
+            logger.info(f"    Timing: tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
+            
+            # Apply post-rendering (tone curves, lens correction) in ProPhoto linear
+            rgb_to_convert = apply_post_rendering_operations(rgb_toned, rendering_params)
+            tone_input_lut = None  # No tone curve for final conversion
+            timing_label = "prophoto_to_srgb"
+        else:
+            # No post-rendering: merge tone curve + colorspace in single pass
+            rgb_to_convert = rgb_exposed.astype(np.float32)
+            tone_input_lut = combined_curve
+            timing_label = "tone_curve+srgb"
+        
+        # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
+        t0 = time.perf_counter()
+        matrix = compute_colorspace_matrix(ColorSpace.PROPHOTO_LINEAR, ColorSpace.SRGB_GAMMA)
+        output_lut = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=False, size=4096)
+        result = transform_color(
+            rgb_to_convert,
+            input_lut=tone_input_lut,
+            matrix=matrix,
+            output_lut=output_lut,
+            hue_preserving_input_lut=True if tone_input_lut else False,
             output_dtype=output_dtype
         )
+        logger.info(f"    Timing: {timing_label} = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output

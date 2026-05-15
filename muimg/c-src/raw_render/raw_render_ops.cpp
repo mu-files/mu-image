@@ -83,6 +83,30 @@ static inline void matrix_mul_rgb(float* rgb, const float* matrix) {
     rgb[2] = matrix[6]*r + matrix[7]*g + matrix[8]*b;
 }
 
+// Helper: Prepare LUT with repeated last element for bounds-safe interpolation
+// Returns pointer to LUT data and sets out_size to original size (before +1)
+static const float* prepare_lut_with_sentinel(
+    PyArrayObject* lut_array,
+    std::vector<float>& storage,
+    int& out_size
+) {
+    if (!lut_array) {
+        out_size = 0;
+        return nullptr;
+    }
+    
+    int size = (int)PyArray_SIZE(lut_array);
+    const float* src = (const float*)PyArray_DATA(lut_array);
+    
+    // Copy to vector with repeated last element for bounds safety
+    storage.resize(size + 1);
+    std::memcpy(storage.data(), src, size * sizeof(float));
+    storage[size] = src[size - 1];  // Repeat last value
+    
+    out_size = size;
+    return storage.data();
+}
+
 // Specialized: LUT only (no matrix)
 // Input and output LUTs are identical when there's no matrix
 // Use8bit256: true for uint8 input with 256-entry LUT (direct lookup, no interpolation)
@@ -99,8 +123,7 @@ static void transform_lut_only_impl(
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
-        for (int i = start; i < end; ++i) {
-            int idx = i * 3;
+        for (int i = start, idx = start * 3; i < end; ++i, idx += 3) {
             float rgb[3];
             
             // Load, scale, and apply LUT
@@ -140,8 +163,7 @@ static void transform_matrix_only_impl(
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
-        for (int i = start; i < end; ++i) {
-            int idx = i * 3;
+        for (int i = start, idx = start * 3; i < end; ++i, idx += 3) {
             float rgb[3];
             
             // Load and scale
@@ -175,8 +197,7 @@ static void transform_lut_matrix_impl(
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
-        for (int i = start; i < end; ++i) {
-            int idx = i * 3;
+        for (int i = start, idx = start * 3; i < end; ++i, idx += 3) {
             float rgb[3];
             
             // Load and apply input LUT
@@ -207,25 +228,28 @@ static void transform_lut_matrix_impl(
 }
 
 // Specialized: Matrix → LUT
-// Matrix is pre-scaled with (src_scale * (output_lut_size - 1))
-// so it outputs LUT indices directly
 template<typename SrcT, typename DstT>
 static void transform_matrix_lut_impl(
     const SrcT* input,
     DstT* output,
     int total_pixels,
-    const float* matrix_with_scale,
+    const float* matrix,
     const float* output_lut,
     int output_lut_size,
+    float src_scale,
     float dst_scale
 ) {
-    const float lut_max = (output_lut_size - 1);
+    // Pre-scale matrix with src_scale and output LUT scale
+    float out_lut_max = (output_lut_size - 1);
+    float matrix_scaled[9];
+    for (int i = 0; i < 9; i++) {
+        matrix_scaled[i] = matrix[i] * src_scale * out_lut_max;
+    }
     
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
-        for (int i = start; i < end; ++i) {
-            int idx = i * 3;
+        for (int i = start, idx = start * 3; i < end; ++i, idx += 3) {
             float rgb[3];
             
             // Load
@@ -233,13 +257,13 @@ static void transform_matrix_lut_impl(
             rgb[1] = input[idx + 1];
             rgb[2] = input[idx + 2];
             
-            // Apply matrix (outputs LUT indices directly)
-            matrix_mul_rgb(rgb, matrix_with_scale);
+            // Apply matrix (pre-scaled to output LUT indices)
+            matrix_mul_rgb(rgb, matrix_scaled);
             
-            // Clip to LUT index range
-            rgb[0] = fmaxf(0.0f, fminf(lut_max, rgb[0]));
-            rgb[1] = fmaxf(0.0f, fminf(lut_max, rgb[1]));
-            rgb[2] = fmaxf(0.0f, fminf(lut_max, rgb[2]));
+            // Clip to output LUT index range
+            rgb[0] = fmaxf(0.0f, fminf(out_lut_max, rgb[0]));
+            rgb[1] = fmaxf(0.0f, fminf(out_lut_max, rgb[1]));
+            rgb[2] = fmaxf(0.0f, fminf(out_lut_max, rgb[2]));
             
             // Apply output LUT (rgb is already in LUT index space)
             output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
@@ -263,11 +287,20 @@ static void transform_lut_matrix_lut_impl(
     float src_scale,
     float dst_scale
 ) {
+    // Pre-scale matrix with output LUT scale
+    float out_lut_max = (output_lut_size - 1);
+    float matrix_scaled[9];
+    for (int i = 0; i < 9; i++) {
+        matrix_scaled[i] = matrix[i] * out_lut_max;
+    }
+    
+    float fused_scale = src_scale * (input_lut_size - 1);
+    float in_lut_max = (input_lut_size - 1);
+    
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
-        for (int i = start; i < end; ++i) {
-            int idx = i * 3;
+        for (int i = start, idx = start * 3; i < end; ++i, idx += 3) {
             float rgb[3];
             
             // Load and apply input LUT
@@ -277,23 +310,18 @@ static void transform_lut_matrix_lut_impl(
                 rgb[1] = lut_lookup_8bit(input_lut, input[idx + 1]);
                 rgb[2] = lut_lookup_8bit(input_lut, input[idx + 2]);
             } else {
-                // Fused scale: src_scale * (lut_size - 1) in one multiply
-                // Clip to [0, lut_size-1] instead of [0, 1]
-                float fused_scale = src_scale * (input_lut_size - 1);
-                float lut_max = (input_lut_size - 1);
-                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 0] * fused_scale)));
+                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 1] * fused_scale)));
+                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 2] * fused_scale)));
             }
             
-            // Apply matrix
-            matrix_mul_rgb(rgb, matrix);
+            // Apply matrix (pre-scaled to output LUT indices)
+            matrix_mul_rgb(rgb, matrix_scaled);
             
-            // Clip to [0, 1], scale to output LUT index range, apply output LUT, and store
-            float out_lut_max = (output_lut_size - 1);
-            rgb[0] = fmaxf(0.0f, fminf(1.0f, rgb[0])) * out_lut_max;
-            rgb[1] = fmaxf(0.0f, fminf(1.0f, rgb[1])) * out_lut_max;
-            rgb[2] = fmaxf(0.0f, fminf(1.0f, rgb[2])) * out_lut_max;
+            // Clip to output LUT index range, apply output LUT, and store
+            rgb[0] = fmaxf(0.0f, fminf(out_lut_max, rgb[0]));
+            rgb[1] = fmaxf(0.0f, fminf(out_lut_max, rgb[1]));
+            rgb[2] = fmaxf(0.0f, fminf(out_lut_max, rgb[2]));
             
             output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
             output[idx + 1] = (DstT)(lut_lookup_interp(output_lut, rgb[1]) * dst_scale);
@@ -301,6 +329,158 @@ static void transform_lut_matrix_lut_impl(
         }
     }
 }
+
+//=============================================================================
+// Hue-Preserving LUT Implementations (float32 input only)
+//=============================================================================
+
+// Helper macro for hue-preserving tone mapping
+#define HUE_PRESERVING_TONE(r_in, g_in, b_in, r_out, g_out, b_out, lut, lut_scale) \
+    { \
+        r_out = lut_lookup_interp(lut, r_in * lut_scale); \
+        b_out = lut_lookup_interp(lut, b_in * lut_scale); \
+        float denom = r_in - b_in; \
+        if (denom > 1e-10f) { \
+            g_out = b_out + ((r_out - b_out) * (g_in - b_in) / denom); \
+        } else { \
+            g_out = b_out; \
+        } \
+    }
+
+// Apply hue-preserving tone curve with RGB channel sorting
+static inline void apply_hue_preserving_tone(
+    float r, float g, float b,
+    float& rr, float& gg, float& bb,
+    const float* lut,
+    float lut_scale
+) {
+    // Clip input to [0,1] once
+    r = fmaxf(0.0f, fminf(1.0f, r));
+    g = fmaxf(0.0f, fminf(1.0f, g));
+    b = fmaxf(0.0f, fminf(1.0f, b));
+    
+    // Apply hue-preserving tone mapping based on RGB sorting
+    if (r >= g) {
+        if (g > b) {
+            // Case 1: r >= g > b
+            HUE_PRESERVING_TONE(r, g, b, rr, gg, bb, lut, lut_scale);
+        } else if (b > r) {
+            // Case 2: b > r >= g
+            HUE_PRESERVING_TONE(b, r, g, bb, rr, gg, lut, lut_scale);
+        } else if (b > g) {
+            // Case 3: r >= b > g
+            HUE_PRESERVING_TONE(r, b, g, rr, bb, gg, lut, lut_scale);
+        } else {
+            // Case 4: r >= g == b
+            rr = lut_lookup_interp(lut, r * lut_scale);
+            bb = gg = lut_lookup_interp(lut, g * lut_scale);
+        }
+    } else {
+        if (r >= b) {
+            // Case 5: g > r >= b
+            HUE_PRESERVING_TONE(g, r, b, gg, rr, bb, lut, lut_scale);
+        } else if (b > g) {
+            // Case 6: b > g > r
+            HUE_PRESERVING_TONE(b, g, r, bb, gg, rr, lut, lut_scale);
+        } else {
+            // Case 7: g >= b > r
+            HUE_PRESERVING_TONE(g, b, r, gg, bb, rr, lut, lut_scale);
+        }
+    }
+}
+
+// Hue-preserving LUT only (float32 input/output only)
+static void transform_hue_preserving_lut_only_impl(
+    const float* input,
+    float* output,
+    int total_pixels,
+    const float* lut,
+    int lut_size
+) {
+    float lut_scale = (float)(lut_size - 1);
+    
+    for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
+        float rr, gg, bb;
+        apply_hue_preserving_tone(input[idx + 0], input[idx + 1], input[idx + 2], 
+                                   rr, gg, bb, lut, lut_scale);
+        
+        // Store (no clipping needed - already in [0,1] from LUT output)
+        output[idx + 0] = rr;
+        output[idx + 1] = gg;
+        output[idx + 2] = bb;
+    }
+}
+
+// Hue-preserving LUT → Matrix (templated for output dtype)
+template<typename DstT>
+static void transform_hue_preserving_lut_matrix_impl(
+    const float* input,
+    DstT* output,
+    int total_pixels,
+    const float* input_lut,
+    int input_lut_size,
+    const float* matrix,
+    float dst_scale
+) {
+    float input_lut_scale = (float)(input_lut_size - 1);
+    
+    for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
+        float rgb[3];
+        apply_hue_preserving_tone(input[idx + 0], input[idx + 1], input[idx + 2], 
+                                   rgb[0], rgb[1], rgb[2], input_lut, input_lut_scale);
+        
+        // Apply matrix
+        matrix_mul_rgb(rgb, matrix);
+        
+        // Clip and convert to output dtype
+        output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
+        output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
+        output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+    }
+}
+
+// Hue-preserving LUT → Matrix → Output LUT (templated for output dtype)
+template<typename DstT>
+static void transform_hue_preserving_lut_matrix_lut_impl(
+    const float* input,
+    DstT* output,
+    int total_pixels,
+    const float* input_lut,
+    int input_lut_size,
+    const float* matrix,
+    const float* output_lut,
+    int output_lut_size,
+    float dst_scale
+) {
+    // Pre-scale matrix with output LUT scale
+    float out_lut_max = (output_lut_size - 1);
+    float matrix_scaled[9];
+    for (int i = 0; i < 9; i++) {
+        matrix_scaled[i] = matrix[i] * out_lut_max;
+    }
+    
+    float input_lut_scale = (float)(input_lut_size - 1);
+    
+    for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
+        float rgb[3];
+        apply_hue_preserving_tone(input[idx + 0], input[idx + 1], input[idx + 2], 
+                                   rgb[0], rgb[1], rgb[2], input_lut, input_lut_scale);
+        
+        // Apply matrix (pre-scaled to output LUT indices)
+        matrix_mul_rgb(rgb, matrix_scaled);
+        
+        // Clip to output LUT index range, apply output LUT, and store
+        rgb[0] = fmaxf(0.0f, fminf(out_lut_max, rgb[0]));
+        rgb[1] = fmaxf(0.0f, fminf(out_lut_max, rgb[1]));
+        rgb[2] = fmaxf(0.0f, fminf(out_lut_max, rgb[2]));
+        
+        output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
+        output[idx + 1] = (DstT)(lut_lookup_interp(output_lut, rgb[1]) * dst_scale);
+        output[idx + 2] = (DstT)(lut_lookup_interp(output_lut, rgb[2]) * dst_scale);
+    }
+}
+
+#undef HUE_PRESERVING_TONE
 
 // Dispatcher: selects specialized function based on parameters
 static void transform_color_dispatch(
@@ -316,7 +496,8 @@ static void transform_color_dispatch(
     const float* output_lut,
     int output_lut_size,
     int src_bits,
-    int dst_bits
+    int dst_bits,
+    bool hue_preserving
 ) {
     const int total_pixels = height * width;
     
@@ -340,33 +521,69 @@ static void transform_color_dispatch(
     bool has_matrix = (matrix != NULL);
     bool has_output_lut = (output_lut != NULL);
     
-    // Prepare scaled matrix if needed
-    float scaled_matrix[9];
-    const float* matrix_to_use = matrix;
-    
-    if (has_matrix) {
-        float scale = 1.0f;
-        
-        // Fuse src_scale when no input LUT (integer → float conversion)
-        if (!has_input_lut && src_dtype != NPY_FLOAT32) {
-            scale *= src_scale;
+    // Dispatch to specialized function based on dtype combination and operations
+    // Hue-preserving mode
+    if (hue_preserving) {
+        if (src_dtype != NPY_FLOAT32) {
+            PyErr_SetString(PyExc_ValueError, "hue_preserving mode requires float32 input");
+            return;
+        }
+        if (!has_input_lut) {
+            PyErr_SetString(PyExc_ValueError, "hue_preserving mode requires input_lut");
+            return;
         }
         
-        // Fuse (output_lut_size - 1) when we have output LUT
-        // This lets matrix output LUT indices directly, skipping multiply in LUT lookup
-        if (has_output_lut) {
-            scale *= (output_lut_size - 1);
-        }
-        
-        if (scale != 1.0f) {
-            for (int i = 0; i < 9; ++i) {
-                scaled_matrix[i] = matrix[i] * scale;
+        // LUT-only case: float32 output required (no dtype conversion)
+        if (!has_matrix) {
+            if (dst_dtype != NPY_FLOAT32) {
+                PyErr_SetString(PyExc_ValueError, "hue_preserving mode without matrix requires float32 output");
+                return;
             }
-            matrix_to_use = scaled_matrix;
+            const float* float_input = (const float*)input;
+            float* float_output = (float*)output;
+            transform_hue_preserving_lut_only_impl(
+                float_input, float_output, total_pixels,
+                input_lut, input_lut_size);
+            return;
         }
+        
+        // Matrix case: dispatch on output dtype using templated implementations
+        const float* float_input = (const float*)input;
+        
+        if (has_output_lut) {
+            // LUT + Matrix + Output LUT
+            if (dst_dtype == NPY_UINT8) {
+                transform_hue_preserving_lut_matrix_lut_impl<uint8_t>(
+                    float_input, (uint8_t*)output, total_pixels,
+                    input_lut, input_lut_size, matrix, output_lut, output_lut_size, dst_scale);
+            } else if (dst_dtype == NPY_UINT16) {
+                transform_hue_preserving_lut_matrix_lut_impl<uint16_t>(
+                    float_input, (uint16_t*)output, total_pixels,
+                    input_lut, input_lut_size, matrix, output_lut, output_lut_size, dst_scale);
+            } else {  // NPY_FLOAT32
+                transform_hue_preserving_lut_matrix_lut_impl<float>(
+                    float_input, (float*)output, total_pixels,
+                    input_lut, input_lut_size, matrix, output_lut, output_lut_size, dst_scale);
+            }
+        } else {
+            // LUT + Matrix
+            if (dst_dtype == NPY_UINT8) {
+                transform_hue_preserving_lut_matrix_impl<uint8_t>(
+                    float_input, (uint8_t*)output, total_pixels,
+                    input_lut, input_lut_size, matrix, dst_scale);
+            } else if (dst_dtype == NPY_UINT16) {
+                transform_hue_preserving_lut_matrix_impl<uint16_t>(
+                    float_input, (uint16_t*)output, total_pixels,
+                    input_lut, input_lut_size, matrix, dst_scale);
+            } else {  // NPY_FLOAT32
+                transform_hue_preserving_lut_matrix_impl<float>(
+                    float_input, (float*)output, total_pixels,
+                    input_lut, input_lut_size, matrix, dst_scale);
+            }
+        }
+        return;
     }
     
-    // Dispatch to specialized function based on dtype combination and operations
     // Check for uint8 + 256-entry LUT optimization at dispatch time
     bool use_8bit_256 = (src_dtype == NPY_UINT8 && has_input_lut && input_lut_size == 256);
     
@@ -396,7 +613,7 @@ static void transform_color_dispatch(
         } else if (has_matrix && has_output_lut) { \
             transform_matrix_lut_impl<SrcT, DstT>( \
                 (const SrcT*)input, (DstT*)output, total_pixels, \
-                matrix_to_use, output_lut, output_lut_size, dst_scale); \
+                matrix, output_lut, output_lut_size, src_scale, dst_scale); \
         } else if (has_matrix) { \
             transform_matrix_only_impl<SrcT, DstT>( \
                 (const SrcT*)input, (DstT*)output, total_pixels, \
@@ -453,20 +670,22 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
     int src_bits = -1;
     int dst_bits = -1;
     PyArray_Descr* output_dtype_descr = NULL;
+    int hue_preserving = 0;
     
     static char* kwlist[] = {
         (char*)"image", (char*)"input_lut", (char*)"matrix", (char*)"output_lut",
-        (char*)"src_bits", (char*)"dst_bits", (char*)"output_dtype", NULL
+        (char*)"src_bits", (char*)"dst_bits", (char*)"output_dtype", (char*)"hue_preserving", NULL
     };
     
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|OOOiiO&", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|OOOiiO&p", kwlist,
             &PyArray_Type, &image_array,
             &input_lut_array,
             &matrix_array,
             &output_lut_array,
             &src_bits,
             &dst_bits,
-            PyArray_DescrConverter, &output_dtype_descr)) {
+            PyArray_DescrConverter, &output_dtype_descr,
+            &hue_preserving)) {
         return NULL;
     }
     
@@ -509,16 +728,7 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
             (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)input_lut_array, NPY_FLOAT32, 1, 1));
         if (!input_lut_cont) return NULL;
         
-        int size = (int)PyArray_SIZE(input_lut_cont.get());
-        const float* src = (const float*)PyArray_DATA(input_lut_cont.get());
-        
-        // Copy to vector with repeated last element
-        input_lut_storage.resize(size + 1);
-        std::memcpy(input_lut_storage.data(), src, size * sizeof(float));
-        input_lut_storage[size] = src[size - 1];  // Repeat last value
-        
-        input_lut_ptr = input_lut_storage.data();
-        input_lut_size = size;
+        input_lut_ptr = prepare_lut_with_sentinel(input_lut_cont.get(), input_lut_storage, input_lut_size);
     }
     
     // Process matrix
@@ -545,16 +755,7 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
             (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)output_lut_array, NPY_FLOAT32, 1, 1));
         if (!output_lut_cont) return NULL;
         
-        int size = (int)PyArray_SIZE(output_lut_cont.get());
-        const float* src = (const float*)PyArray_DATA(output_lut_cont.get());
-        
-        // Copy to vector with repeated last element
-        output_lut_storage.resize(size + 1);
-        std::memcpy(output_lut_storage.data(), src, size * sizeof(float));
-        output_lut_storage[size] = src[size - 1];  // Repeat last value
-        
-        output_lut_ptr = output_lut_storage.data();
-        output_lut_size = size;
+        output_lut_ptr = prepare_lut_with_sentinel(output_lut_cont.get(), output_lut_storage, output_lut_size);
     }
     
     // Allocate output array
@@ -572,7 +773,8 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
         input_lut_ptr, input_lut_size,
         matrix_ptr,
         output_lut_ptr, output_lut_size,
-        src_bits, dst_bits
+        src_bits, dst_bits,
+        (bool)hue_preserving
     );
     
     // Return result (transfer ownership)
@@ -764,23 +966,6 @@ static void apply_hue_sat_map(
     
     // Convert back to RGB
     hsv_to_rgb(h, s, v, r, g, b);
-}
-
-//=============================================================================
-// 1D Tone Curve Interpolation
-//=============================================================================
-
-// Interpolate a custom tone curve (for ProfileToneCurve)
-static float interpolate_tone_curve(float x, const float* curve, int curve_size) {
-    if (curve_size < 2) return x;
-    
-    x = std::max(0.0f, std::min(1.0f, x));
-    float idx = x * (float)(curve_size - 1);
-    int i = (int)idx;
-    if (i >= curve_size - 1) i = curve_size - 2;
-    
-    float fract = idx - (float)i;
-    return curve[i] * (1.0f - fract) + curve[i + 1] * fract;
 }
 
 //=============================================================================
@@ -1190,18 +1375,6 @@ static void apply_gain_map_cfa(
 }
 
 //=============================================================================
-// sRGB Gamma Encoding
-//=============================================================================
-
-static inline float srgb_gamma(float linear) {
-    if (linear <= 0.0031308f) {
-        return linear * 12.92f;
-    } else {
-        return 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f;
-    }
-}
-
-//=============================================================================
 // Python Module Functions
 //=============================================================================
 
@@ -1365,119 +1538,6 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     for (npy_intp i = 0; i < total; i++) {
         dst_data[i] = exposure_ramp_evaluate(src_data[i], (float)black, slope, 
                                               radius, qScale, supportOverrange != 0);
-    }
-    
-    return (PyObject*)result.release();
-}
-
-// Apply hue-preserving RGB curve (RefBaselineRGBTone from dng_reference.cpp)
-// This preserves color relationships by interpolating the middle channel
-static PyObject* dng_color_apply_curve_hue_preserving(PyObject* self, PyObject* args) {
-    PyArrayObject* rgb_array = NULL;
-    PyArrayObject* curve_array = NULL;
-    
-    if (!PyArg_ParseTuple(args, "O!O!",
-            &PyArray_Type, &rgb_array,
-            &PyArray_Type, &curve_array)) {
-        return NULL;
-    }
-    
-    if (PyArray_NDIM(rgb_array) != 3 || PyArray_DIM(rgb_array, 2) != 3) {
-        PyErr_SetString(PyExc_ValueError, "rgb must be shape (H, W, 3)");
-        return NULL;
-    }
-    if (PyArray_TYPE(rgb_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "rgb must be float32");
-        return NULL;
-    }
-    
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    int curve_size = (int)PyArray_SIZE(curve_array);
-    
-    if (curve_size < 2) {
-        PyErr_SetString(PyExc_ValueError, "Tone curve must have at least 2 points");
-        return NULL;
-    }
-    
-    auto rgb_cont = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
-    auto curve_cont = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)curve_array, NPY_FLOAT32, 1, 1));
-    
-    if (!rgb_cont || !curve_cont) {
-        return NULL;
-    }
-    
-    npy_intp dims[3] = {height, width, 3};
-    auto result = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
-    if (!result) {
-        return NULL;
-    }
-    
-    float* src_data = (float*)PyArray_DATA(rgb_cont.get());
-    float* dst_data = (float*)PyArray_DATA(result.get());
-    const float* curve = (const float*)PyArray_DATA(curve_cont.get());
-    
-    npy_intp total_pixels = height * width;
-    
-    // Process each pixel with hue-preserving tone mapping
-    // SDK ref: dng_reference.cpp RefBaselineRGBTone lines 1868-1990
-    for (npy_intp i = 0; i < total_pixels; i++) {
-        float r = std::max(0.0f, std::min(1.0f, src_data[i * 3 + 0]));
-        float g = std::max(0.0f, std::min(1.0f, src_data[i * 3 + 1]));
-        float b = std::max(0.0f, std::min(1.0f, src_data[i * 3 + 2]));
-        
-        float rr, gg, bb;
-        
-        // Macro to apply curve and preserve hue for sorted r >= g >= b case
-        #define RGBTone(r_in, g_in, b_in, r_out, g_out, b_out) \
-            { \
-                r_out = interpolate_tone_curve(r_in, curve, curve_size); \
-                b_out = interpolate_tone_curve(b_in, curve, curve_size); \
-                float denom = r_in - b_in; \
-                if (denom > 1e-10f) { \
-                    g_out = b_out + ((r_out - b_out) * (g_in - b_in) / denom); \
-                } else { \
-                    g_out = b_out; \
-                } \
-            }
-        
-        if (r >= g) {
-            if (g > b) {
-                // Case 1: r >= g > b
-                RGBTone(r, g, b, rr, gg, bb);
-            } else if (b > r) {
-                // Case 2: b > r >= g
-                RGBTone(b, r, g, bb, rr, gg);
-            } else if (b > g) {
-                // Case 3: r >= b > g
-                RGBTone(r, b, g, rr, bb, gg);
-            } else {
-                // Case 4: r >= g == b
-                rr = interpolate_tone_curve(r, curve, curve_size);
-                gg = interpolate_tone_curve(g, curve, curve_size);
-                bb = gg;
-            }
-        } else {
-            if (r >= b) {
-                // Case 5: g > r >= b
-                RGBTone(g, r, b, gg, rr, bb);
-            } else if (b > g) {
-                // Case 6: b > g > r
-                RGBTone(b, g, r, bb, gg, rr);
-            } else {
-                // Case 7: g >= b > r
-                RGBTone(g, b, r, gg, bb, rr);
-            }
-        }
-        
-        #undef RGBTone
-        
-        dst_data[i * 3 + 0] = rr;
-        dst_data[i * 3 + 1] = gg;
-        dst_data[i * 3 + 2] = bb;
     }
     
     return (PyObject*)result.release();
@@ -3228,16 +3288,6 @@ static PyMethodDef DngColorMethods[] = {
      "    val_divs (int): Number of value divisions in the map\n\n"
      "Returns:\n"
      "    ndarray: Processed RGB image with HueSatMap adjustments applied"},
-    
-    {"apply_curve_hue_preserving", dng_color_apply_curve_hue_preserving, METH_VARARGS,
-     "Apply hue-preserving RGB curve (RefBaselineRGBTone).\n\n"
-     "This preserves color relationships by applying the curve to max/min\n"
-     "channels and interpolating the middle channel.\n\n"
-     "Args:\n"
-     "    rgb (ndarray): Input RGB image, float32, shape (H, W, 3)\n"
-     "    curve (ndarray): 1D curve LUT, float32, maps [0,1] -> [0,1]\n\n"
-     "Returns:\n"
-     "    ndarray: Hue-preserving curve-mapped RGB image"},
     
     {"apply_exposure_ramp", dng_color_apply_exposure_ramp, METH_VARARGS,
      "Apply exposure ramp function (dng_function_exposure_ramp).\n\n"
