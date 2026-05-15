@@ -57,7 +57,8 @@ PyPtr<T> make_pyptr(T* obj) {
 // Optimized Color Transform Pipeline (LUT → Matrix → LUT)
 //=============================================================================
 
-// Span size for cache-friendly processing
+// Span size for processing (NOTE: span loop is unnecessary - no cache reuse benefit)
+// TODO: Remove span loops and use simple single loop for better auto-vectorization
 static const int SPAN_SIZE = 128;
 
 // Helper: LUT lookup with linear interpolation
@@ -782,6 +783,111 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
 }
 
 //=============================================================================
+// Optimized Clip + Matrix Transform
+//=============================================================================
+
+static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObject* kwargs) {
+    PyArrayObject* image_array = NULL;
+    PyArrayObject* clip_max_array = NULL;
+    PyArrayObject* matrix_array = NULL;
+    
+    static char* kwlist[] = {
+        (char*)"image", (char*)"clip_max", (char*)"matrix", NULL
+    };
+    
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!O!O!", kwlist,
+            &PyArray_Type, &image_array,
+            &PyArray_Type, &clip_max_array,
+            &PyArray_Type, &matrix_array)) {
+        return NULL;
+    }
+    
+    // Validate image
+    if (PyArray_NDIM(image_array) != 3 || PyArray_DIM(image_array, 2) != 3) {
+        PyErr_SetString(PyExc_ValueError, "Image must be (H, W, 3)");
+        return NULL;
+    }
+    if (PyArray_TYPE(image_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_ValueError, "Image must be float32");
+        return NULL;
+    }
+    
+    // Validate clip_max
+    if (PyArray_NDIM(clip_max_array) != 1 || PyArray_DIM(clip_max_array, 0) != 3) {
+        PyErr_SetString(PyExc_ValueError, "clip_max must be (3,)");
+        return NULL;
+    }
+    if (PyArray_TYPE(clip_max_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_ValueError, "clip_max must be float32");
+        return NULL;
+    }
+    
+    // Validate matrix
+    if (PyArray_NDIM(matrix_array) != 2 || 
+        PyArray_DIM(matrix_array, 0) != 3 || 
+        PyArray_DIM(matrix_array, 1) != 3) {
+        PyErr_SetString(PyExc_ValueError, "Matrix must be (3, 3)");
+        return NULL;
+    }
+    if (PyArray_TYPE(matrix_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_ValueError, "Matrix must be float32");
+        return NULL;
+    }
+    
+    // Extract dimensions
+    int height = (int)PyArray_DIM(image_array, 0);
+    int width = (int)PyArray_DIM(image_array, 1);
+    int total_pixels = height * width;
+    
+    // Make contiguous
+    auto image_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)image_array, NPY_FLOAT32, 3, 3));
+    if (!image_cont) return NULL;
+    
+    auto clip_max_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)clip_max_array, NPY_FLOAT32, 1, 1));
+    if (!clip_max_cont) return NULL;
+    
+    auto matrix_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)matrix_array, NPY_FLOAT32, 2, 2));
+    if (!matrix_cont) return NULL;
+    
+    // Get pointers
+    const float* input = (const float*)PyArray_DATA(image_cont.get());
+    const float* clip_max = (const float*)PyArray_DATA(clip_max_cont.get());
+    const float* matrix = (const float*)PyArray_DATA(matrix_cont.get());
+    
+    // Allocate output array
+    npy_intp dims[3] = {height, width, 3};
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
+    if (!result) return NULL;
+    
+    float* output = (float*)PyArray_DATA(result.get());
+    
+    // Process all pixels
+    for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
+        float rgb[3];
+        
+        // Load and clip to camera white (SDK ref: dng_reference.cpp lines 1423-1425)
+        rgb[0] = fminf(input[idx + 0], clip_max[0]);
+        rgb[1] = fminf(input[idx + 1], clip_max[1]);
+        rgb[2] = fminf(input[idx + 2], clip_max[2]);
+        
+        // Apply matrix
+        matrix_mul_rgb(rgb, matrix);
+        
+        // Clip output to [0,1] (SDK ref: dng_reference.cpp lines 1431-1433)
+        output[idx + 0] = fmaxf(0.0f, fminf(1.0f, rgb[0]));
+        output[idx + 1] = fmaxf(0.0f, fminf(1.0f, rgb[1]));
+        output[idx + 2] = fmaxf(0.0f, fminf(1.0f, rgb[2]));
+    }
+    
+    // Return result (transfer ownership)
+    return (PyObject*)result.release();
+}
+
+//=============================================================================
 // RGB <-> HSV Conversion (from dng_utils.h)
 // H range: 0-6, S/V range: 0-1
 //=============================================================================
@@ -852,10 +958,8 @@ static void apply_hue_sat_map(
     uint32_t hue_divs, uint32_t sat_divs, uint32_t val_divs
 ) {
     // Convert to HSV
+    // Input is guaranteed to be in [0,1] from clip_and_transform_color
     float h, s, v;
-    r = std::max(0.0f, r);
-    g = std::max(0.0f, g);
-    b = std::max(0.0f, b);
     rgb_to_hsv(r, g, b, h, s, v);
     
     // Scale factors for indexing
@@ -1539,50 +1643,6 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
         dst_data[i] = exposure_ramp_evaluate(src_data[i], (float)black, slope, 
                                               radius, qScale, supportOverrange != 0);
     }
-    
-    return (PyObject*)result.release();
-}
-
-// Apply linearization table to RAW CFA data
-static PyObject* dng_color_linearize(PyObject* self, PyObject* args) {
-    PyArrayObject* data_array = NULL;
-    PyArrayObject* table_array = NULL;
-    float max_val;
-    
-    if (!PyArg_ParseTuple(args, "O!O!f",
-            &PyArray_Type, &data_array,
-            &PyArray_Type, &table_array,
-            &max_val)) {
-        return NULL;
-    }
-    
-    if (PyArray_TYPE(data_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "data must be float32");
-        return NULL;
-    }
-    
-    auto data_cont = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_FLOAT32, 1, 3));
-    auto table_cont = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)table_array, NPY_FLOAT32, 1, 1));
-    
-    if (!data_cont || !table_cont) {
-        return NULL;
-    }
-    
-    // Copy data for output
-    auto result = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
-    if (!result) {
-        return NULL;
-    }
-    
-    float* result_data = (float*)PyArray_DATA(result.get());
-    const float* table = (const float*)PyArray_DATA(table_cont.get());
-    npy_intp count = PyArray_SIZE(data_cont.get());
-    int table_size = (int)PyArray_SIZE(table_cont.get());
-    
-    apply_linearization_table(result_data, count, table, table_size, max_val);
     
     return (PyObject*)result.release();
 }
@@ -3302,16 +3362,6 @@ static PyMethodDef DngColorMethods[] = {
      "Returns:\n"
      "    ndarray: Exposure-adjusted RGB image"},
     
-    {"linearize", dng_color_linearize, METH_VARARGS,
-     "Apply linearization table to RAW sensor data (Stage 1).\n\n"
-     "Converts non-linear sensor ADC values to linear light values.\n\n"
-     "Args:\n"
-     "    data (ndarray): RAW sensor data, float32\n"
-     "    table (ndarray): Linearization LUT, float32\n"
-     "    max_val (float): Maximum input value (e.g., 16383 for 14-bit)\n\n"
-     "Returns:\n"
-     "    ndarray: Linearized data"},
-    
     {"normalize_raw", (PyCFunction)dng_color_normalize_raw, METH_VARARGS | METH_KEYWORDS,
      "Normalize RAW data using black and white levels per DNG spec Chapter 5.\n\n"
      "Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel)\n\n"
@@ -3480,6 +3530,18 @@ static PyMethodDef DngColorMethods[] = {
      "    output_dtype (dtype, optional): Output dtype (default: float32)\n\n"
      "Returns:\n"
      "    ndarray: Transformed image (H, W, 3) with output_dtype"},
+    
+    {"clip_and_transform_color", (PyCFunction)clip_and_transform_color, METH_VARARGS | METH_KEYWORDS,
+     "Clip RGB channels and apply 3x3 color matrix in single pass.\n\n"
+     "Optimized for camera-to-ProPhoto RGB conversion where per-channel\n"
+     "clipping to camera white point is needed before matrix transform.\n"
+     "Eliminates temporary array allocation from np.minimum().\n\n"
+     "Args:\n"
+     "    image (ndarray): Input RGB image, float32, (H, W, 3)\n"
+     "    clip_max (ndarray): Per-channel max values, float32, (3,)\n"
+     "    matrix (ndarray): 3x3 color matrix, float32, (3, 3)\n\n"
+     "Returns:\n"
+     "    ndarray: Transformed RGB image, float32, (H, W, 3)"},
     
     {NULL, NULL, 0, NULL}
 };

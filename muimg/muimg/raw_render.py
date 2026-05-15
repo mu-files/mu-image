@@ -431,6 +431,48 @@ def transform_color(
     )
 
 
+def clip_and_transform_color(
+    image: np.ndarray,
+    clip_max: np.ndarray,
+    matrix: np.ndarray
+) -> np.ndarray:
+    """Clip RGB channels and apply 3x3 color matrix in single pass.
+    
+    Optimized for camera-to-ProPhoto RGB conversion where per-channel
+    clipping to camera white point is needed before matrix transform.
+    Eliminates temporary array allocation from np.minimum().
+    
+    Args:
+        image: Input RGB image, float32, (H, W, 3)
+        clip_max: Per-channel maximum values, float32, (3,)
+        matrix: 3x3 color transformation matrix, float32, (3, 3)
+    
+    Returns:
+        Transformed RGB image, float32, (H, W, 3)
+    
+    Examples:
+        >>> # Camera to ProPhoto RGB with white point clipping
+        >>> camera_white = np.array([1.0, 0.95, 0.98], dtype=np.float32)
+        >>> camera_to_prophoto = compute_camera_to_prophoto_matrix()
+        >>> rgb_prophoto = clip_and_transform_color(
+        ...     rgb_camera, clip_max=camera_white, matrix=camera_to_prophoto)
+    """
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(f"Image must be (H, W, 3), got {image.shape}")
+    if image.dtype != np.float32:
+        raise ValueError(f"Image must be float32, got {image.dtype}")
+    if clip_max.shape != (3,):
+        raise ValueError(f"clip_max must be (3,), got {clip_max.shape}")
+    if matrix.shape != (3, 3):
+        raise ValueError(f"Matrix must be (3, 3), got {matrix.shape}")
+    
+    return _raw_render.clip_and_transform_color(
+        image,
+        clip_max=clip_max.astype(np.float32),
+        matrix=matrix.astype(np.float32)
+    )
+
+
 def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     """Apply TIFF/EXIF orientation rotation to an image.
     
@@ -2860,9 +2902,10 @@ def _render_camera_rgb(
         camera_to_prophoto = XYZ_D50_TO_PROPHOTO_RGB @ camera_to_pcs
 
         t0 = time.perf_counter()
-        rgb_clipped = np.minimum(rgb_camera, camera_white.astype(np.float32))
-        rgb_prophoto = transform_color(
-            rgb_clipped, matrix=camera_to_prophoto.astype(np.float32), output_dtype=np.float32)
+        rgb_prophoto = clip_and_transform_color(
+            rgb_camera,
+            clip_max=camera_white.astype(np.float32),
+            matrix=camera_to_prophoto.astype(np.float32))
         logger.info(f"    Timing: camera_to_prophoto = {(time.perf_counter() - t0)*1000:.1f}ms")
         
         # =====================================================================
