@@ -2572,7 +2572,7 @@ def apply_post_rendering_operations(
                              convert_srgb_gamma_to_linear=True)
         
         rgb_output = transform_color(
-            rgb_output.astype(np.float32),
+            rgb_output,
             input_lut=main_curve_lut,
             hue_preserving_input_lut=True,
             output_dtype=np.float32
@@ -2892,7 +2892,7 @@ def _render_camera_rgb(
             
             t0 = time.perf_counter()
             rgb_prophoto = _raw_render.apply_hue_sat_map(
-                rgb_prophoto.astype(np.float32),
+                rgb_prophoto,
                 hue_sat_map,
                 hue_divs, sat_divs, val_divs
             )
@@ -2942,7 +2942,7 @@ def _render_camera_rgb(
                     byteorder=system_byteorder,
                 )
                 rgb_prophoto = _raw_render.apply_profile_gain_table_map(
-                    rgb_prophoto.astype(np.float32),
+                    rgb_prophoto,
                     pgtm["gains"],
                     pgtm["weights"],
                     int(pgtm["points_v"]),
@@ -3011,13 +3011,13 @@ def _render_camera_rgb(
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             t0 = time.perf_counter()
             rgb_exposed = transform_color(
-                rgb_prophoto.astype(np.float32), input_lut=exposure_ramp_lut, output_dtype=np.float32
+                rgb_prophoto, input_lut=exposure_ramp_lut, output_dtype=np.float32
             )
             logger.info(f"    Timing: exposure_ramp = {(time.perf_counter() - t0)*1000:.1f}ms")
             
             t0 = time.perf_counter()
             rgb_exposed = _raw_render.apply_hue_sat_map(
-                rgb_exposed.astype(np.float32),
+                rgb_exposed,
                 look_table,
                 look_hue_divs, look_sat_divs, look_val_divs
             )
@@ -3081,7 +3081,7 @@ def _render_camera_rgb(
             # Post-rendering exists: apply tone curve first, then post-rendering
             t0 = time.perf_counter()
             rgb_toned = transform_color(
-                rgb_exposed.astype(np.float32),
+                rgb_exposed,
                 input_lut=combined_curve,
                 hue_preserving_input_lut=True,
                 output_dtype=np.float32
@@ -3094,7 +3094,7 @@ def _render_camera_rgb(
             timing_label = "prophoto_to_srgb"
         else:
             # No post-rendering: merge tone curve + colorspace in single pass
-            rgb_to_convert = rgb_exposed.astype(np.float32)
+            rgb_to_convert = rgb_exposed
             tone_input_lut = combined_curve
             timing_label = "tone_curve+srgb"
         
