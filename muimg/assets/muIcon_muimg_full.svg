@@ -241,8 +241,8 @@
 </g>
 
 <!-- Project name text below the logo -->
-<g transform="scale(1, 1) translate(298, 545)">
-  <text x="0" y="0" font-family="'Quicksand', sans-serif" font-size="168" font-weight="700" text-anchor="middle" letter-spacing="0" fill="url(#textGradient)">muimg</text>
+<g transform="scale(1.12, 1) translate(264, 555)">
+  <text x="0" y="0" font-family="'Quicksand', sans-serif" font-size="168" font-weight="700" text-anchor="middle" letter-spacing="0" fill="url(#textGradient)">image</text>
 </g>
 
 </svg>
