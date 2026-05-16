@@ -241,7 +241,7 @@
 </g>
 
 <!-- Project name text below the logo -->
-<g transform="scale(1.12, 1) translate(264, 555)">
+<g transform="scale(1.13, 1.01) translate(260, 555)">
   <text x="0" y="0" font-family="'Quicksand', sans-serif" font-size="168" font-weight="700" text-anchor="middle" letter-spacing="0" fill="url(#textGradient)">image</text>
 </g>
 
