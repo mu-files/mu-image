@@ -483,18 +483,24 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     Returns:
         Rotated image array
     """
-    import cv2
+    # Early return for horizontal (no rotation needed) - avoid importing cv2
+    if orientation == Orientation.HORIZONTAL:
+        return image
+    
+    # Only import cv2 when we actually need to rotate
+    from cv2 import rotate, ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
+    
     if orientation == Orientation.ROTATE_90_CW:
-        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        return rotate(image, ROTATE_90_CLOCKWISE)
     elif orientation == Orientation.ROTATE_180:
-        return cv2.rotate(image, cv2.ROTATE_180)
+        return rotate(image, ROTATE_180)
     elif orientation == Orientation.ROTATE_270_CW:
-        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    elif orientation != Orientation.HORIZONTAL:
+        return rotate(image, ROTATE_90_COUNTERCLOCKWISE)
+    else:
         logger.warning(
             f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
         )
-    return image
+        return image
 
 
 def demosaic(
@@ -597,22 +603,22 @@ def demosaic(
     
     # OPENCV_EA: uint8 or uint16 kernel
     elif algorithm == DemosaicAlgorithm.OPENCV_EA:
-        import cv2
+        from cv2 import (demosaicing, COLOR_BAYER_RG2RGB_EA, COLOR_BAYER_BG2RGB_EA,
+                         COLOR_BAYER_GR2RGB_EA, COLOR_BAYER_GB2RGB_EA)
         bayer_map = {
-            "RGGB": cv2.COLOR_BAYER_RG2RGB_EA,
-            "BGGR": cv2.COLOR_BAYER_BG2RGB_EA,
-            "GRBG": cv2.COLOR_BAYER_GR2RGB_EA,
-            "GBRG": cv2.COLOR_BAYER_GB2RGB_EA,
+            "RGGB": COLOR_BAYER_RG2RGB_EA,
+            "BGGR": COLOR_BAYER_BG2RGB_EA,
+            "GRBG": COLOR_BAYER_GR2RGB_EA,
+            "GBRG": COLOR_BAYER_GB2RGB_EA,
         }
-        # OpenCV prefers uint16 for better precision
         if input_dtype in (np.float32, np.float64):
             logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
             data_u16 = convert_dtype(image_data, np.uint16)
-            rgb = cv2.demosaicing(data_u16, bayer_map[cfa_pattern])
+            rgb = demosaicing(data_u16, bayer_map[cfa_pattern])
             rgb = rgb[..., [2, 1, 0]]  # BGR to RGB
             rgb = convert_dtype(rgb, input_dtype)
         else:
-            rgb = cv2.demosaicing(image_data, bayer_map[cfa_pattern])
+            rgb = demosaicing(image_data, bayer_map[cfa_pattern])
             rgb = rgb[..., [2, 1, 0]]  # BGR to RGB
     
     elapsed_time = time.perf_counter() - start_time
@@ -2564,13 +2570,13 @@ def apply_radial_distortion_correction(
     y_distorted = cy + scale_factor * (y_coords - cy) * distortion_factor
     
     # Use cv2.remap with bicubic interpolation
-    import cv2
-    corrected = cv2.remap(
+    from cv2 import remap, INTER_CUBIC, BORDER_CONSTANT
+    corrected = remap(
         rgb_image,
         x_distorted,
         y_distorted,
-        interpolation=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_CONSTANT,
+        interpolation=INTER_CUBIC,
+        borderMode=BORDER_CONSTANT,
         borderValue=0
     )
     
@@ -2608,6 +2614,7 @@ def apply_post_rendering_operations(
     
     # Step 1: Apply main curve with hue preservation (if present and no per-channel curves)
     if 'ToneCurvePV2012' in rendering_params:
+        t0 = time.perf_counter()
         rgb_output = rgb_prophoto_linear.copy()
         # Build curve LUT and convert from sRGB gamma to linear space
         main_curve_lut = LUT(rendering_params['ToneCurvePV2012'], size=4096, 
@@ -2619,13 +2626,19 @@ def apply_post_rendering_operations(
             hue_preserving_input_lut=True,
             output_dtype=np.float32
         )
+        logger.info(f"    Timing: xmp_tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
         logger.debug("Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)")
     
     # Step 2: Apply per-channel curves (if present)
+    has_per_channel = False
     for channel_idx, channel_name in enumerate(['Red', 'Green', 'Blue']):
         curve_key = f'ToneCurvePV2012{channel_name}'
         
         if curve_key in rendering_params:
+            if not has_per_channel:
+                t0 = time.perf_counter()
+                has_per_channel = True
+            
             if rgb_output is rgb_prophoto_linear:
                 rgb_output = rgb_prophoto_linear.copy()
             
@@ -2641,6 +2654,9 @@ def apply_post_rendering_operations(
                 channel_curve_lut.data
             )
             logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
+    
+    if has_per_channel:
+        logger.info(f"    Timing: xmp_channel_curves = {(time.perf_counter() - t0)*1000:.1f}ms")
     
     # Stage 2 - Apply radial distortion correction (final step after tone curves)
     if 'crlcp:PerspectiveModel' in rendering_params:

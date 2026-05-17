@@ -1283,9 +1283,9 @@ class DngFile(TiffFile):
                     scale_needed = True
                 else:
                     # Downscaling: do it now before rendering
-                    import cv2
-                    rgb_camera = cv2.resize(
-                        rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
+                    from cv2 import resize, INTER_AREA
+                    rgb_camera = resize(
+                        rgb_camera, (target_w, target_h), interpolation=INTER_AREA
                     )
         
         # Render camera RGB to final output
@@ -1311,9 +1311,9 @@ class DngFile(TiffFile):
             if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                 final_w, final_h = final_h, final_w
 
-            import cv2
-            rgb_image = cv2.resize(
-                rgb_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
+            from cv2 import resize, INTER_LINEAR
+            rgb_image = resize(
+                rgb_image, (final_w, final_h), interpolation=INTER_LINEAR
             )
         
         return rgb_image
@@ -2282,7 +2282,7 @@ def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
         >>> [p.shape for p in pyramid]
         [(1000, 800, 3), (500, 400, 3), (250, 200, 3), (125, 100, 3)]
     """
-    import cv2
+    from cv2 import sepFilter2D, BORDER_REFLECT_101
     
     def make_lanczos_kernel(a: int = 4) -> np.ndarray:
         """Generate an 8-tap Lanczos kernel for 2:1 downsampling."""
@@ -2321,8 +2321,8 @@ def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
         
         # Downsample using 8-tap Lanczos filter: apply separable filter then subsample
         # anchor=(3, 3) aligns the kernel center (between indices 3 and 4) with output pixels
-        filtered = cv2.sepFilter2D(current, -1, lanczos_kernel, lanczos_kernel, 
-                                   anchor=(3, 3), borderType=cv2.BORDER_REFLECT_101)
+        filtered = sepFilter2D(current, -1, lanczos_kernel, lanczos_kernel, 
+                               anchor=(3, 3), borderType=BORDER_REFLECT_101)
         downsampled = filtered[::2, ::2]
         
         levels.append(downsampled)
@@ -2480,8 +2480,8 @@ def write_dng_from_page(
         h, w = camera_rgb.shape[:2]
         new_h, new_w = int(h * scale), int(w * scale)
         
-        import cv2
-        camera_rgb = cv2.resize(camera_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        from cv2 import resize, INTER_LINEAR
+        camera_rgb = resize(camera_rgb, (new_w, new_h), interpolation=INTER_LINEAR)
     
     # Compute pyramid levels needed and find best level for preview
     num_pyramid_levels = 1  # Level 0 is always the original

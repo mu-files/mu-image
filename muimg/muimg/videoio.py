@@ -40,10 +40,10 @@ def letterbox_frame(
     Returns:
         Image at exact target_resolution with aspect ratio preserved
     """
-    import cv2
+    from cv2 import resize, INTER_AREA
     
     if interpolation is None:
-        interpolation = cv2.INTER_AREA
+        interpolation = INTER_AREA
     
     current_height, current_width = img.shape[:2]
     target_width, target_height = target_resolution
@@ -69,9 +69,9 @@ def letterbox_frame(
     x_offset = (target_width - new_width) // 2
     
     # Resize directly into canvas region (avoids copy)
-    cv2.resize(img, (new_width, new_height), 
-              dst=canvas[y_offset:y_offset+new_height, x_offset:x_offset+new_width],
-              interpolation=interpolation)
+    resize(img, (new_width, new_height), 
+           dst=canvas[y_offset:y_offset+new_height, x_offset:x_offset+new_width],
+           interpolation=interpolation)
     
     return canvas
 
@@ -95,7 +95,7 @@ def add_text_overlay(
     Returns:
         Image with text overlay
     """
-    import cv2
+    from cv2 import FONT_HERSHEY_DUPLEX, getTextSize, rectangle, putText, LINE_AA, resize, INTER_AREA
     
     # Truncate text if needed
     if len(text) > max_chars:
@@ -110,12 +110,13 @@ def add_text_overlay(
     supersample = 2
     font_scale_hires = font_scale * supersample
     
-    font = cv2.FONT_HERSHEY_DUPLEX  # Cleaner, more modern font
+    font = FONT_HERSHEY_DUPLEX  # Cleaner, more modern font
     thickness = max(1, int(font_scale_hires * 1.5))  # Slightly thinner for cleaner look
     
     # Get text size for max_chars to ensure fixed box size (at high res)
     max_text = "A" * max_chars  # Use 'A' as representative character
-    (max_text_width_hires, text_height_hires), baseline_hires = cv2.getTextSize(max_text, font, font_scale_hires, thickness)
+    (max_text_width_hires, text_height_hires), baseline_hires = getTextSize(
+        max_text, font, font_scale_hires, thickness)
     
     # Calculate padding (2 char widths left/right, 0.5 char height top/bottom) at high res
     char_width_hires = max_text_width_hires / max_chars
@@ -151,7 +152,7 @@ def add_text_overlay(
     overlay_hires = np.zeros((box_height_hires, box_width_hires, 3), dtype=np.uint8)
     
     # Draw white background rectangle at high res
-    cv2.rectangle(
+    rectangle(
         overlay_hires,
         (0, 0),
         (box_width_hires, box_height_hires),
@@ -162,7 +163,7 @@ def add_text_overlay(
     # Draw black text at high resolution (left-aligned within the box)
     text_x_hires = pad_x_hires
     text_y_hires = pad_y_hires + text_height_hires
-    cv2.putText(
+    putText(
         overlay_hires,
         text,
         (text_x_hires, text_y_hires),
@@ -170,11 +171,11 @@ def add_text_overlay(
         font_scale_hires,
         (0, 0, 0),
         thickness,
-        cv2.LINE_AA
+        LINE_AA
     )
     
     # Downsample to final resolution for smooth appearance
-    overlay_final = cv2.resize(overlay_hires, (box_width, box_height), interpolation=cv2.INTER_AREA)
+    overlay_final = resize(overlay_hires, (box_width, box_height), interpolation=INTER_AREA)
     
     # Blend overlay with original image
     img[y:y+box_height, x:x+box_width] = overlay_final

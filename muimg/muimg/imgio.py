@@ -98,11 +98,11 @@ def write_image(
     # Handle other formats with OpenCV
     else:
         # Convert RGB to BGR for OpenCV
-        import cv2
-        bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        from cv2 import cvtColor, imencode, COLOR_RGB2BGR
+        bgr_image = cvtColor(image, COLOR_RGB2BGR)
         
         # Encode with OpenCV
-        success, encoded_buffer = cv2.imencode(format_ext, bgr_image)
+        success, encoded_buffer = imencode(format_ext, bgr_image)
         if not success:
             logger.error(f"Failed to encode image as {format_ext}")
             return False
@@ -183,26 +183,27 @@ def decode_image(
         return convert_dtype(img, output_dtype)
     
     # Fall back to cv2 for other formats
-    import cv2
+    from cv2 import (imread, imdecode, cvtColor, IMREAD_UNCHANGED,
+                     COLOR_GRAY2RGB, COLOR_BGRA2RGB, COLOR_BGR2RGB)
     if isinstance(file, (str, Path)):
-        img = cv2.imread(str(file), cv2.IMREAD_UNCHANGED)
+        img = imread(str(file), IMREAD_UNCHANGED)
     else:
         # File-like input - read and decode
         file.seek(0)
         data = file.read()
         arr = np.frombuffer(data, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+        img = imdecode(arr, IMREAD_UNCHANGED)
     
     if img is None:
         raise ValueError("Failed to decode image")
     
     # OpenCV returns BGR, convert to RGB and handle grayscale/alpha
     if img.ndim == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        img = cvtColor(img, COLOR_GRAY2RGB)
     elif img.ndim == 3 and img.shape[2] == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+        img = cvtColor(img, COLOR_BGRA2RGB)
     elif img.ndim == 3 and img.shape[2] == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cvtColor(img, COLOR_BGR2RGB)
     else:
         raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
