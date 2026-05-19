@@ -676,7 +676,7 @@ class DngPage(TiffPage):
                             use_bicubic=False,
                             opcode_list_name="OpcodeList2"
                         )
-                        ops2_timer.end_step()
+                        ops2_timer.close()
                         return self._RawStage(data=data_ops)
                     else:
                         # CFA data
@@ -684,7 +684,7 @@ class DngPage(TiffPage):
                         data_ops = raw_render.apply_opcodes_cfa(
                             stage2.data, opcodes, "OpcodeList2"
                         )
-                        ops2_timer.end_step()
+                        ops2_timer.close()
                         return self._RawStage(
                             data=data_ops, cfa_pattern=stage2.cfa_pattern
                         )
@@ -1295,7 +1295,7 @@ class DngFile(TiffFile):
                         scale_needed = True
                     else:
                         # Downscaling: do it now before rendering
-                        _timer.start_step("pre_scale (c++)")
+                        _timer.start_step("pre_scale (opencv)")
                         from cv2 import resize, INTER_AREA
                         rgb_camera = resize(
                             rgb_camera, (target_w, target_h), interpolation=INTER_AREA
@@ -1326,7 +1326,7 @@ class DngFile(TiffFile):
                 if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                     final_w, final_h = final_h, final_w
 
-                _timer.start_step("post_scale (c++)")
+                _timer.start_step("post_scale (opencv)")
                 from cv2 import resize, INTER_LINEAR
                 rgb_image = resize(
                     rgb_image, (final_w, final_h), interpolation=INTER_LINEAR
@@ -1818,8 +1818,11 @@ def write_dng(
             # Get page tags with inheritance logic
             if spec.copy_page_tags:
                 if is_ifd0:
-                    # For IFD0, also merge IFD0-specific tags
+                    # For IFD0, also merge IFD0-specific tags, if page was not ifd0 then remove
+                    # the compression tags
                     extratags = spec.page.get_ifd0_tags()
+                    if not spec.page.is_ifd0:
+                        _filter_metadata_tags(extratags, exclude_names=_COMPRESSION_INVALIDATED_TAGS)
                 extratags |= spec.page.get_page_tags()
         else:
             # IfdDataSpec
@@ -2437,7 +2440,7 @@ def write_dng_from_page(
         ifd0_tags = filter_tags_by_ifd_category(ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
     if preview:
         ifd0_tags |= preview_tags
-    _filter_metadata_tags(ifd0_tags, exclude_names=ifd0_strip_tags)
+    _filter_metadata_tags(ifd0_tags, exclude_names=(ifd0_strip_tags or set()) | _COMPRESSION_INVALIDATED_TAGS)
     ifd0_tags |= ifd0_extratags
 
     # handle main page tags

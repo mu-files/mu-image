@@ -490,7 +490,7 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     from cv2 import rotate, ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
 
     timer = get_active_timer()
-    timer.start_step("apply_tiff_orientation (c++)")
+    timer.start_step("apply_tiff_orientation (opencv)")
     if orientation == Orientation.ROTATE_90_CW:
         result = rotate(image, ROTATE_90_CLOCKWISE)
     elif orientation == Orientation.ROTATE_180:
@@ -609,12 +609,12 @@ def demosaic(
             logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
             timer.start_step("convert_dtype (pre)")
             data_u16 = convert_dtype(image_data, np.uint16)
-            timer.start_step("opencv_ea_demosaicing (c++)")
+            timer.start_step("ea_demosaicing (opencv)")
             rgb = demosaicing(data_u16, bayer_map[cfa_pattern])[..., [2, 1, 0]]
             timer.start_step("convert_dtype (post)")
             rgb = convert_dtype(rgb, input_dtype)
         else:
-            timer.start_step("demosaicing (c++)")
+            timer.start_step("ea_demosaicing (opencv)")
             rgb = demosaicing(image_data, bayer_map[cfa_pattern])[..., [2, 1, 0]]
 
     else:
@@ -2528,6 +2528,9 @@ def apply_radial_distortion_correction(
     if focal_length_mm is None:
         raise ValueError("focal_length_mm is required for radial distortion correction")
 
+    timer = get_active_timer()
+    radial_timer = timer.start_step("generate radial map")
+
     height, width = rgb_image.shape[:2]
     
     # Distortion center from normalized coordinates
@@ -2564,6 +2567,8 @@ def apply_radial_distortion_correction(
     
     # Use cv2.remap with bicubic interpolation
     from cv2 import remap, INTER_CUBIC, BORDER_CONSTANT
+        
+    timer.start_step("radial remap (opencv)")
     corrected = remap(
         rgb_image,
         x_distorted,
@@ -2572,6 +2577,7 @@ def apply_radial_distortion_correction(
         borderMode=BORDER_CONSTANT,
         borderValue=0
     )
+    radial_timer.close()
     
     return corrected
 
@@ -2655,6 +2661,8 @@ def apply_post_rendering_operations(
     
     # Stage 2 - Apply radial distortion correction (final step after tone curves)
     if 'crlcp:PerspectiveModel' in rendering_params:
+        timer.start_step("radial_distortion_correction")
+
         perspective_model = rendering_params['crlcp:PerspectiveModel']
         logger.debug(f"Found crlcp:PerspectiveModel: {perspective_model}")
         
@@ -2697,11 +2705,12 @@ def apply_post_rendering_operations(
                     logger.debug(f"SensorFormatFactor not found, using default sensor width {sensor_width_mm}mm")
                 
                 logger.debug(f"Radial distortion params: {radial_params}, scale_factor: {scale_factor}, center: ({center_x}, {center_y}), focal_length: {focal_length_mm}mm")
-                timer.start_step("apply_radial_distortion_correction (c++)")
-                rgb_output = apply_radial_distortion_correction(rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
-                timer.end_step()
+                rgb_output = apply_radial_distortion_correction(
+                    rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
                 logger.debug("Applied radial distortion correction")
-    
+        
+        timer.end_step()
+
     return rgb_output
 
 def _get_ifd0_tag(
@@ -2759,6 +2768,8 @@ def _render_camera_rgb(
     timer = get_active_timer()
 
     try:
+        setup_timer = timer.start_step("render_setup")
+        
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
         extracted_params = supported_xmp_to_dict(ifd0_tags) if use_xmp else {}
         
@@ -2779,6 +2790,8 @@ def _render_camera_rgb(
         
         # Use extracted_params for rendering (None if empty dict)
         rendering_params = extracted_params if extracted_params else None
+        setup_timer.close()
+        
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)
         # SDK ref: dng_render.cpp lines 869-1070
