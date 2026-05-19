@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260519.1110"
+version = "0.1.20260519.1231"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -16,17 +16,17 @@ license = {text = "PolyForm-Small-Business-1.0.0 (Modified)"}
 dependencies = [
     "click",                            # 113 KB
     "defusedxml",                       # 25 KB
-    "imagecodecs>=2026.3.6",            # 14 MB
-    "numpy",                            # 6.2 MB
-    "opencv-python-headless",           # 31 MB
-    "setproctitle",                     # 18 KB
+    "imagecodecs>=2026.3.6",            # 12 MB
+    "numpy",                            # 5.0 MB
+    "opencv-python-headless",           # 44 MB
+    "setproctitle",                     # 13 KB
     "tifffile>=2026.5.2",               # 260 KB
 ]
 
 [project.optional-dependencies]
 # Video encoding + Google Photos integration + Testing
 all = [
-    "av",                               # 22 MB
+    "av",                               # 18 MB
     "google-auth>=2.0.0",               # 240 KB
     "google-auth-oauthlib>=1.0.0",      # 19 KB
     "requests>=2.25.0",                 # 71 KB

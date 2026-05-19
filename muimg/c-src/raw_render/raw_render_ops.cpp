@@ -33,6 +33,10 @@
 #include <algorithm>
 #include <vector>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 //=============================================================================
 // RAII wrapper for PyObject reference counting
 //=============================================================================
@@ -76,13 +80,62 @@ static inline float lut_lookup_8bit(const float* lut, uint8_t value) {
 }
 
 
-// Helper: Apply 3x3 matrix to RGB pixel
-static inline void matrix_mul_rgb(float* rgb, const float* matrix) {
-    float r = rgb[0], g = rgb[1], b = rgb[2];
-    rgb[0] = matrix[0]*r + matrix[1]*g + matrix[2]*b;
-    rgb[1] = matrix[3]*r + matrix[4]*g + matrix[5]*b;
-    rgb[2] = matrix[6]*r + matrix[7]*g + matrix[8]*b;
-}
+// 3x3 color matrix: load once before the pixel loop, apply per pixel.
+//
+// AArch64 NEON — column-major layout (transpose trick):
+//   Store the matrix as 3 column vectors so apply() needs only
+//   1 vmulq_n + 2 vfmaq_n (vertical ops), with no horizontal reduction.
+//
+//   col0 = [m0, m3, m6, 0]   ← first column  (multiplied by r)
+//   col1 = [m1, m4, m7, 0]   ← second column (multiplied by g)
+//   col2 = [m2, m5, m8, 0]   ← third column  (multiplied by b)
+//
+//   result = col0*r + col1*g + col2*b
+//   result[0] = rgb_out[0],  result[1] = rgb_out[1],  result[2] = rgb_out[2]
+//
+// Other platforms: plain scalar fallback.
+class ColorMatrix3x3 {
+public:
+    explicit ColorMatrix3x3(const float* m) {
+#if defined(__aarch64__)
+        // Transpose row-major input into column vectors, zero-pad lane 3
+        col0_ = { m[0], m[3], m[6], 0.f };
+        col1_ = { m[1], m[4], m[7], 0.f };
+        col2_ = { m[2], m[5], m[8], 0.f };
+#else
+        std::memcpy(m_, m, 9 * sizeof(float));
+#endif
+    }
+
+    inline void apply(float* rgb, float clip_max = 1.0f) const {
+#if defined(__aarch64__)
+        // 3 vertical ops produce all 3 output channels simultaneously.
+        // vmulq_n_f32(v, s): multiply all 4 lanes of v by scalar s
+        // vfmaq_n_f32(acc, v, s): acc + v*s  (fused multiply-add)
+        float32x4_t result = vmulq_n_f32(col0_, rgb[0]);
+        result = vfmaq_n_f32(result, col1_, rgb[1]);
+        result = vfmaq_n_f32(result, col2_, rgb[2]);
+        // Clip [0, clip_max] on all 4 lanes before extracting (lane 3 unused)
+        result = vmaxq_f32(result, vdupq_n_f32(0.0f));
+        result = vminq_f32(result, vdupq_n_f32(clip_max));
+        rgb[0] = vgetq_lane_f32(result, 0);
+        rgb[1] = vgetq_lane_f32(result, 1);
+        rgb[2] = vgetq_lane_f32(result, 2);
+#else
+        float r = rgb[0], g = rgb[1], b = rgb[2];
+        rgb[0] = fmaxf(0.0f, fminf(clip_max, m_[0]*r + m_[1]*g + m_[2]*b));
+        rgb[1] = fmaxf(0.0f, fminf(clip_max, m_[3]*r + m_[4]*g + m_[5]*b));
+        rgb[2] = fmaxf(0.0f, fminf(clip_max, m_[6]*r + m_[7]*g + m_[8]*b));
+#endif
+    }
+
+private:
+#if defined(__aarch64__)
+    float32x4_t col0_, col1_, col2_;
+#else
+    float m_[9];
+#endif
+};
 
 // Helper: Prepare LUT with repeated last element for bounds-safe interpolation
 // Returns pointer to LUT data and sets out_size to original size (before +1)
@@ -161,6 +214,7 @@ static void transform_matrix_only_impl(
     float src_scale,
     float dst_scale
 ) {
+    ColorMatrix3x3 mat(matrix);
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
@@ -172,13 +226,13 @@ static void transform_matrix_only_impl(
             rgb[1] = input[idx + 1] * src_scale;
             rgb[2] = input[idx + 2] * src_scale;
             
-            // Apply matrix
-            matrix_mul_rgb(rgb, matrix);
+            // Apply matrix and clip to [0, 1]
+            mat.apply(rgb);
             
-            // Clip and store
-            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
-            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
-            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+            // Store
+            output[idx + 0] = (DstT)(rgb[0] * dst_scale);
+            output[idx + 1] = (DstT)(rgb[1] * dst_scale);
+            output[idx + 2] = (DstT)(rgb[2] * dst_scale);
         }
     }
 }
@@ -195,6 +249,7 @@ static void transform_lut_matrix_impl(
     float src_scale,
     float dst_scale
 ) {
+    ColorMatrix3x3 mat(matrix);
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
         
@@ -217,13 +272,13 @@ static void transform_lut_matrix_impl(
                 rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
             }
             
-            // Apply matrix
-            matrix_mul_rgb(rgb, matrix);
+            // Apply matrix and clip to [0, 1]
+            mat.apply(rgb);
             
-            // Clip and store
-            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
-            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
-            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+            // Store
+            output[idx + 0] = (DstT)(rgb[0] * dst_scale);
+            output[idx + 1] = (DstT)(rgb[1] * dst_scale);
+            output[idx + 2] = (DstT)(rgb[2] * dst_scale);
         }
     }
 }
@@ -246,6 +301,7 @@ static void transform_matrix_lut_impl(
     for (int i = 0; i < 9; i++) {
         matrix_scaled[i] = matrix[i] * src_scale * out_lut_max;
     }
+    ColorMatrix3x3 mat(matrix_scaled);
     
     for (int start = 0; start < total_pixels; start += SPAN_SIZE) {
         int end = std::min(start + SPAN_SIZE, total_pixels);
@@ -258,13 +314,8 @@ static void transform_matrix_lut_impl(
             rgb[1] = input[idx + 1];
             rgb[2] = input[idx + 2];
             
-            // Apply matrix (pre-scaled to output LUT indices)
-            matrix_mul_rgb(rgb, matrix_scaled);
-            
-            // Clip to output LUT index range
-            rgb[0] = fmaxf(0.0f, fminf(out_lut_max, rgb[0]));
-            rgb[1] = fmaxf(0.0f, fminf(out_lut_max, rgb[1]));
-            rgb[2] = fmaxf(0.0f, fminf(out_lut_max, rgb[2]));
+            // Apply matrix (pre-scaled to output LUT indices) and clip
+            mat.apply(rgb, out_lut_max);
             
             // Apply output LUT (rgb is already in LUT index space)
             output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
@@ -294,6 +345,7 @@ static void transform_lut_matrix_lut_impl(
     for (int i = 0; i < 9; i++) {
         matrix_scaled[i] = matrix[i] * out_lut_max;
     }
+    ColorMatrix3x3 mat(matrix_scaled);
     
     float fused_scale = src_scale * (input_lut_size - 1);
     float in_lut_max = (input_lut_size - 1);
@@ -316,13 +368,8 @@ static void transform_lut_matrix_lut_impl(
                 rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 2] * fused_scale)));
             }
             
-            // Apply matrix (pre-scaled to output LUT indices)
-            matrix_mul_rgb(rgb, matrix_scaled);
-            
-            // Clip to output LUT index range, apply output LUT, and store
-            rgb[0] = fmaxf(0.0f, fminf(out_lut_max, rgb[0]));
-            rgb[1] = fmaxf(0.0f, fminf(out_lut_max, rgb[1]));
-            rgb[2] = fmaxf(0.0f, fminf(out_lut_max, rgb[2]));
+            // Apply matrix (pre-scaled to output LUT indices) and clip
+            mat.apply(rgb, out_lut_max);
             
             output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
             output[idx + 1] = (DstT)(lut_lookup_interp(output_lut, rgb[1]) * dst_scale);
@@ -424,19 +471,19 @@ static void transform_hue_preserving_lut_matrix_impl(
     float dst_scale
 ) {
     float input_lut_scale = (float)(input_lut_size - 1);
+    ColorMatrix3x3 mat(matrix);
     
     for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
         float rgb[3];
         apply_hue_preserving_tone(input[idx + 0], input[idx + 1], input[idx + 2], 
                                    rgb[0], rgb[1], rgb[2], input_lut, input_lut_scale);
         
-        // Apply matrix
-        matrix_mul_rgb(rgb, matrix);
+        // Apply matrix and clip to [0, 1]
+        mat.apply(rgb);
         
-        // Clip and convert to output dtype
-        output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
-        output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
-        output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+        output[idx + 0] = (DstT)(rgb[0] * dst_scale);
+        output[idx + 1] = (DstT)(rgb[1] * dst_scale);
+        output[idx + 2] = (DstT)(rgb[2] * dst_scale);
     }
 }
 
@@ -459,6 +506,7 @@ static void transform_hue_preserving_lut_matrix_lut_impl(
     for (int i = 0; i < 9; i++) {
         matrix_scaled[i] = matrix[i] * out_lut_max;
     }
+    ColorMatrix3x3 mat(matrix_scaled);
     
     float input_lut_scale = (float)(input_lut_size - 1);
     
@@ -467,13 +515,8 @@ static void transform_hue_preserving_lut_matrix_lut_impl(
         apply_hue_preserving_tone(input[idx + 0], input[idx + 1], input[idx + 2], 
                                    rgb[0], rgb[1], rgb[2], input_lut, input_lut_scale);
         
-        // Apply matrix (pre-scaled to output LUT indices)
-        matrix_mul_rgb(rgb, matrix_scaled);
-        
-        // Clip to output LUT index range, apply output LUT, and store
-        rgb[0] = fmaxf(0.0f, fminf(out_lut_max, rgb[0]));
-        rgb[1] = fmaxf(0.0f, fminf(out_lut_max, rgb[1]));
-        rgb[2] = fmaxf(0.0f, fminf(out_lut_max, rgb[2]));
+        // Apply matrix (pre-scaled to output LUT indices) and clip
+        mat.apply(rgb, out_lut_max);
         
         output[idx + 0] = (DstT)(lut_lookup_interp(output_lut, rgb[0]) * dst_scale);
         output[idx + 1] = (DstT)(lut_lookup_interp(output_lut, rgb[1]) * dst_scale);
@@ -866,6 +909,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     float* output = (float*)PyArray_DATA(result.get());
     
     // Process all pixels
+    ColorMatrix3x3 mat(matrix);
     for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
         float rgb[3];
         
@@ -874,13 +918,12 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
         rgb[1] = fminf(input[idx + 1], clip_max[1]);
         rgb[2] = fminf(input[idx + 2], clip_max[2]);
         
-        // Apply matrix
-        matrix_mul_rgb(rgb, matrix);
+        // Apply matrix and clip to [0, 1] (SDK ref: dng_reference.cpp lines 1431-1433)
+        mat.apply(rgb);
         
-        // Clip output to [0,1] (SDK ref: dng_reference.cpp lines 1431-1433)
-        output[idx + 0] = fmaxf(0.0f, fminf(1.0f, rgb[0]));
-        output[idx + 1] = fmaxf(0.0f, fminf(1.0f, rgb[1]));
-        output[idx + 2] = fmaxf(0.0f, fminf(1.0f, rgb[2]));
+        output[idx + 0] = rgb[0];
+        output[idx + 1] = rgb[1];
+        output[idx + 2] = rgb[2];
     }
     
     // Return result (transfer ownership)
