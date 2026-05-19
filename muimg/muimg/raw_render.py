@@ -2529,7 +2529,7 @@ def apply_radial_distortion_correction(
         raise ValueError("focal_length_mm is required for radial distortion correction")
 
     timer = get_active_timer()
-    radial_timer = timer.start_step("generate radial map")
+    timer.start_step("generate radial map")
 
     height, width = rgb_image.shape[:2]
     
@@ -2577,7 +2577,7 @@ def apply_radial_distortion_correction(
         borderMode=BORDER_CONSTANT,
         borderValue=0
     )
-    radial_timer.close()
+    timer.end_step()
     
     return corrected
 

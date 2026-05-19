@@ -564,9 +564,13 @@ class DngPage(TiffPage):
             bits_per_sample = 16
         elif isinstance(bits_per_sample_raw, np.ndarray):
             bits_per_sample = int(bits_per_sample_raw.flat[0])
-        elif isinstance(bits_per_sample_raw, (list, tuple)):
-            bits_per_sample = int(bits_per_sample_raw[0])
+            if len(bits_per_sample_raw) > samples_per_pixel:
+                logger.warning(
+                    f"BitsPerSample count ({len(bits_per_sample_raw)}) exceeds "
+                    f"SamplesPerPixel ({samples_per_pixel})"
+                )
         else:
+            # Single value (int) - get_tag returns int for count=1 tags
             bits_per_sample = int(bits_per_sample_raw)
         
         # Check if this is float data (SampleFormat = 3)
