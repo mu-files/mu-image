@@ -23,6 +23,7 @@ from typing import Any, IO, TypeAlias
 from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 from .raw_render import DemosaicAlgorithm
+from .common import PerfTimer, get_active_timer
 from .tiff_metadata import (
     MetadataTags,
     Orientation,
@@ -495,37 +496,36 @@ class DngPage(TiffPage):
         return self._decode_segmented(decode_tile)
 
     def _stage1(self) -> DngPage._RawStage | None:
-        import time
-        
+        timer = get_active_timer()
         if self.is_cfa:
-            t0 = time.perf_counter()
+            timer.start_step("decode_cfa (c++)")
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_cfa = self._decode_jpegxl()
             elif self.compression == COMPRESSION.JPEG:
                 raw_cfa = self._decode_jpeg_cfa()
             else:
                 raw_cfa = self.asarray()
-            logger.info(f"    Timing: decode_cfa = {(time.perf_counter() - t0)*1000:.1f}ms")
+            timer.end_step()
 
             col_interleave = self.get_tag("ColumnInterleaveFactor")
             row_interleave = self.get_tag("RowInterleaveFactor")
             if col_interleave == 2 and row_interleave == 2:
-                t0 = time.perf_counter()
+                timer.start_step("deswizzle_cfa")
                 raw_cfa = deswizzle_cfa_data(raw_cfa)
-                logger.info(f"    Timing: deswizzle_cfa = {(time.perf_counter() - t0)*1000:.1f}ms")
+                timer.end_step()
 
             cfa_str = self.get_tag("CFAPattern", str)
             return self._RawStage(data=raw_cfa, cfa_pattern=cfa_str)
 
         if self.is_linear_raw:
-            t0 = time.perf_counter()
+            timer.start_step("decode_linear_raw (c++)")
             if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
                 raw_linear = self._decode_jpegxl()
             elif self.compression == COMPRESSION.JPEG:
                 raw_linear = self._decode_jpeg_linear_raw()
             else:
                 raw_linear = self.asarray()
-            logger.info(f"    Timing: decode_linear_raw = {(time.perf_counter() - t0)*1000:.1f}ms")
+            timer.end_step()
             return self._RawStage(data=raw_linear)
 
         return None
@@ -533,7 +533,7 @@ class DngPage(TiffPage):
     def _stage2(
         self, stage1: "DngPage._RawStage", apply_ops2: bool = True
     ) -> "DngPage._RawStage":
-        import time
+        timer = get_active_timer()
         photometric = self.photometric_name
         if photometric == "CFA":
             samples_per_pixel = 1
@@ -614,7 +614,7 @@ class DngPage(TiffPage):
         data = stage1.data
         opcode_list1 = self.get_tag("OpcodeList1")
         if opcode_list1 is not None:
-            t0 = time.perf_counter()
+            ops1_timer = timer.start_step("opcode_list1")
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list1))
             except Exception as e:
@@ -624,17 +624,19 @@ class DngPage(TiffPage):
             if opcodes:
                 try:
                     logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
+                    ops1_timer.start_step("apply_opcodes_cfa (c++)")
                     data = raw_render.apply_opcodes_cfa(data, opcodes, "OpcodeList1")
-                    logger.info(f"    Timing: opcode_list1 = {(time.perf_counter() - t0)*1000:.1f}ms")
+                    ops1_timer.end_step()
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
+            ops1_timer.close()
 
         active_area = self.get_tag("ActiveArea")
         if active_area is not None:
             aa_top, aa_left, aa_bottom, aa_right = active_area
             data = data[aa_top:aa_bottom, aa_left:aa_right]
 
-        t0 = time.perf_counter()
+        timer.start_step("linearize (c++)")
         normalized = raw_render._raw_render.normalize_raw(
             data=data.astype(np.float32),
             black_level=black_level,
@@ -646,7 +648,7 @@ class DngPage(TiffPage):
             black_delta_v=black_delta_v,
             linearization_table=linearization_table,
         )
-        logger.info(f"    Timing: linearize = {(time.perf_counter() - t0)*1000:.1f}ms")
+        timer.end_step()
 
         stage2 = self._RawStage(data=normalized, cfa_pattern=stage1.cfa_pattern)
 
@@ -655,7 +657,7 @@ class DngPage(TiffPage):
 
         opcode_list2 = self.get_tag("OpcodeList2")
         if opcode_list2 is not None:
-            t0 = time.perf_counter()
+            ops2_timer = timer.start_step("opcode_list2")
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
             except Exception as e:
@@ -668,24 +670,27 @@ class DngPage(TiffPage):
                                 f"is_linear_raw={self.is_linear_raw}, is_cfa={self.is_cfa}, "
                                 f"data.shape={stage2.data.shape}")
                     if self.is_linear_raw:
+                        ops2_timer.start_step("apply_opcodes (c++)")
                         data_ops = raw_render.apply_opcodes(
                             stage2.data, opcodes,
                             use_bicubic=False,
                             opcode_list_name="OpcodeList2"
                         )
-                        logger.info(f"    Timing: opcode_list2 = {(time.perf_counter() - t0)*1000:.1f}ms")
+                        ops2_timer.end_step()
                         return self._RawStage(data=data_ops)
                     else:
                         # CFA data
+                        ops2_timer.start_step("apply_opcodes_cfa (c++)")
                         data_ops = raw_render.apply_opcodes_cfa(
                             stage2.data, opcodes, "OpcodeList2"
                         )
-                        logger.info(f"    Timing: opcode_list2 = {(time.perf_counter() - t0)*1000:.1f}ms")
+                        ops2_timer.end_step()
                         return self._RawStage(
                             data=data_ops, cfa_pattern=stage2.cfa_pattern
                         )
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList2 ({type(e).__name__}): {e}")
+            ops2_timer.close()
         
         return stage2
 
@@ -779,14 +784,13 @@ class DngPage(TiffPage):
         Returns:
             Camera RGB array (H, W, 3) float32 in [0, 1], or None if extraction fails.
         """
-        import time
-        
         # Validate this is a raw page
         if not (self.is_cfa or self.is_linear_raw):
             raise ValueError(
                 f"get_camera_rgb_raw() requires CFA or LINEAR_RAW page, got {self.photometric_name}"
             )
         
+        timer = get_active_timer()
         stage1 = self._stage1()
         if stage1 is None:
             return None
@@ -803,15 +807,18 @@ class DngPage(TiffPage):
             if cfa_pattern is None:
                 cfa_pattern = "RGGB"
 
+            demosaic_timer = timer.start_step("demosaic")
             rgb_camera = raw_render.demosaic(
                 cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm
             )
+            demosaic_timer.start_step("clip_and_convert")
             rgb_camera = np.clip(rgb_camera, 0.0, 1.0).astype(np.float32, copy=False)
+            demosaic_timer.close()
 
         # Apply OpcodeList3 (Stage3 operations)
         opcode_list3 = self.get_tag("OpcodeList3")
         if opcode_list3 is not None:
-            t0 = time.perf_counter()
+            ops3_timer = timer.start_step("opcode_list3")
             try:
                 opcodes = raw_render.parse_opcode_list(bytes(opcode_list3))
             except Exception as e:
@@ -821,14 +828,16 @@ class DngPage(TiffPage):
             if opcodes:
                 try:
                     logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
+                    ops3_timer.start_step("apply_opcodes (c++)")
                     rgb_camera = raw_render.apply_opcodes(
                         rgb_camera, opcodes,
                         use_bicubic=False,
                         opcode_list_name="OpcodeList3"
                     )
-                    logger.info(f"    Timing: opcode_list3 = {(time.perf_counter() - t0)*1000:.1f}ms")
+                    ops3_timer.end_step()
                 except Exception as e:
                     logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
+            ops3_timer.close()
 
         # Apply DefaultCrop
         crop_origin = self.get_tag("DefaultCropOrigin")
@@ -841,6 +850,7 @@ class DngPage(TiffPage):
             crop_h = int(crop_size[1])
             rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
 
+        # timer.start_step("stack_unwind")
         return rgb_camera
     
     def decode_to_rgb(
@@ -935,31 +945,34 @@ class DngPage(TiffPage):
                 f"render_raw() requires CFA or LINEAR_RAW page, got {self.photometric_name}"
             )
         
-        try:
-            unsupported = raw_render.validate_dng_tags(self, strict=strict)
-        except raw_render.UnsupportedDNGTagError:
-            raise
-        
+        unsupported = raw_render.validate_dng_tags(self, strict=strict)
         if unsupported and not strict:
             logger.warning(
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
 
-        rgb_camera = self.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
-        if rgb_camera is None:
-            logger.error("Failed to extract camera RGB from DNG")
-            return None
-        
-        # Get IFD0 for rendering (color profile tags are in IFD0)
-        result = raw_render._render_camera_rgb(
-            ifd0_tags=self.ifd0,
-            raw_ifd_tags=self,
-            rgb_camera=rgb_camera,
-            output_dtype=output_dtype,
-            rendering_params=rendering_params,
-            use_xmp=use_xmp,
-        )
-        return result
+        _timer = PerfTimer("render_raw_page")
+
+        try:
+
+            rgb_camera = self.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
+            if rgb_camera is None:
+                logger.error("Failed to extract camera RGB from DNG")
+                return None
+            
+            # Get IFD0 for rendering (color profile tags are in IFD0)
+            result = raw_render._render_camera_rgb(
+                ifd0_tags=self.ifd0,
+                raw_ifd_tags=self,
+                rgb_camera=rgb_camera,
+                output_dtype=output_dtype,
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
+            )
+            return result
+        finally:
+            _timer.close()
+            _timer.log_report(logger)
 
 class DngFile(TiffFile):
 
@@ -1258,65 +1271,72 @@ class DngFile(TiffFile):
             target_h = int(main_h * scale)
         
         # Validate DNG tags
-        try:
-            unsupported = raw_render.validate_dng_tags(render_page, strict=strict)
-        except raw_render.UnsupportedDNGTagError:
-            raise
-        
+        unsupported = raw_render.validate_dng_tags(render_page, strict=strict)
         if unsupported and not strict:
             logger.warning(
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
         
-        # Get camera RGB raw from render page
-        rgb_camera = render_page.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
-        if rgb_camera is None:
-            return None
-        
-        # Apply resize if needed (when scaling and dimensions don't match)
-        scale_needed = False
-        if target_w is not None and target_h is not None:
-            render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
-            if render_w != target_w or render_h != target_h:
-                # If upscaling, defer to post-render for better performance
-                if render_w < target_w and render_h < target_h:
-                    scale_needed = True
-                else:
-                    # Downscaling: do it now before rendering
-                    from cv2 import resize, INTER_AREA
-                    rgb_camera = resize(
-                        rgb_camera, (target_w, target_h), interpolation=INTER_AREA
-                    )
-        
-        # Render camera RGB to final output
-        # use main_page for raw_ifd in case there is a PGTM, nothing else uses raw_ifd tags in RGB render path
-        rgb_image = raw_render._render_camera_rgb(
-            ifd0_tags=self.ifd0,
-            raw_ifd_tags=main_page, 
-            rgb_camera=rgb_camera,
-            output_dtype=output_dtype,
-            rendering_params=rendering_params,
-            use_xmp=use_xmp,
-        )
-        
-        # Post-render upscaling if needed
-        if scale_needed:            
-            # Check if orientation swaps dimensions (same logic as get_rendered_size)
-            orientation = self.ifd0.get_tag("Orientation")
-            if rendering_params and 'orientation' in rendering_params:
-                orientation = rendering_params['orientation']
+        _timer = PerfTimer("render_raw_file")
 
-            # Swap dimensions for 90° rotations
-            final_w, final_h = target_w, target_h
-            if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
-                final_w, final_h = final_h, final_w
-
-            from cv2 import resize, INTER_LINEAR
-            rgb_image = resize(
-                rgb_image, (final_w, final_h), interpolation=INTER_LINEAR
+        try:
+            # Get camera RGB raw from render page
+            rgb_camera = render_page.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
+            if rgb_camera is None:
+                return None
+            
+            # Apply resize if needed (when scaling and dimensions don't match)
+            scale_needed = False
+            if target_w is not None and target_h is not None:
+                render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
+                if render_w != target_w or render_h != target_h:
+                    # If upscaling, defer to post-render for better performance
+                    if render_w < target_w and render_h < target_h:
+                        scale_needed = True
+                    else:
+                        # Downscaling: do it now before rendering
+                        _timer.start_step("pre_scale (c++)")
+                        from cv2 import resize, INTER_AREA
+                        rgb_camera = resize(
+                            rgb_camera, (target_w, target_h), interpolation=INTER_AREA
+                        )
+                        _timer.end_step()
+            
+            # Render camera RGB to final output
+            # use main_page for raw_ifd in case there is a PGTM, nothing else uses raw_ifd tags in RGB render path
+            rgb_image = raw_render._render_camera_rgb(
+                ifd0_tags=self.ifd0,
+                raw_ifd_tags=main_page, 
+                rgb_camera=rgb_camera,
+                output_dtype=output_dtype,
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
             )
-        
-        return rgb_image
+            del rgb_camera
+            
+            # Post-render upscaling if needed
+            if scale_needed:            
+                # Check if orientation swaps dimensions (same logic as get_rendered_size)
+                orientation = self.ifd0.get_tag("Orientation")
+                if rendering_params and 'orientation' in rendering_params:
+                    orientation = rendering_params['orientation']
+
+                # Swap dimensions for 90° rotations
+                final_w, final_h = target_w, target_h
+                if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
+                    final_w, final_h = final_h, final_w
+
+                _timer.start_step("post_scale (c++)")
+                from cv2 import resize, INTER_LINEAR
+                rgb_image = resize(
+                    rgb_image, (final_w, final_h), interpolation=INTER_LINEAR
+                )
+                _timer.end_step()
+            
+            return rgb_image
+        finally:
+            _timer.close()
+            _timer.log_report(logger)
 
     def get_preview_rgb(
         self,

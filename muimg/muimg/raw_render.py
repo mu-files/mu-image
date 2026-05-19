@@ -11,12 +11,11 @@ from typing import Any
 
 # Package imports
 from . import _raw_render
-from .common import enum_display_name
+from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
-
 
 # =============================================================================
 # Constants
@@ -489,18 +488,22 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     
     # Only import cv2 when we actually need to rotate
     from cv2 import rotate, ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
-    
+
+    timer = get_active_timer()
+    timer.start_step("apply_tiff_orientation (c++)")
     if orientation == Orientation.ROTATE_90_CW:
-        return rotate(image, ROTATE_90_CLOCKWISE)
+        result = rotate(image, ROTATE_90_CLOCKWISE)
     elif orientation == Orientation.ROTATE_180:
-        return rotate(image, ROTATE_180)
+        result = rotate(image, ROTATE_180)
     elif orientation == Orientation.ROTATE_270_CW:
-        return rotate(image, ROTATE_90_COUNTERCLOCKWISE)
+        result = rotate(image, ROTATE_90_COUNTERCLOCKWISE)
     else:
         logger.warning(
             f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
         )
-        return image
+        result = image
+    timer.end_step()
+    return result
 
 
 def demosaic(
@@ -525,8 +528,6 @@ def demosaic(
     Returns:
         RGB array with same dtype as input
     """
-    import time
-    
     # Validate inputs
     if image_data.ndim != 2:
         raise ValueError(
@@ -555,25 +556,21 @@ def demosaic(
             f"Supported algorithms are: {list(DemosaicAlgorithm)}."
         )
     
-    # Track input dtype for output conversion
     input_dtype = image_data.dtype
-    
-    start_time = time.perf_counter()
-    
-    # DNGSDK_BILINEAR: float32 kernel, outputs float32
+    timer = get_active_timer()
+
     if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
         cfa_codes = get_cfa_pattern_codes(cfa_pattern)
-        # Convert to float32 for processing
-        data_f32 = convert_dtype(image_data, np.float32)
-        rgb = _raw_render.bilinear_demosaic(
-            data_f32, np.array(cfa_codes, dtype=np.int32)
-        )
-        # Convert back to input dtype
-        rgb = convert_dtype(rgb, input_dtype)
-    
-    # RCD: float32 kernel (expects 0-1 normalized data)
-    # RCD is GPL-licensed and optional - see README for setup instructions
+        timer.start_step("convert_dtype (pre)")
+        data_f32 = convert_dtype(image_data, np.float32)  # bilinear expects float32
+        timer.start_step("bilinear_demosaic (c++)")
+        rgb = _raw_render.bilinear_demosaic(data_f32, np.array(cfa_codes, dtype=np.int32))
+        timer.start_step("convert_dtype (post)")
+        rgb = convert_dtype(rgb, input_dtype)  # convert back to input dtype
+
     elif algorithm == DemosaicAlgorithm.RCD:
+        # RCD: float32 kernel (expects 0-1 normalized data)
+        # RCD is GPL-licensed and optional - see README for setup instructions
         try:
             from . import _rcd
         except ImportError:
@@ -582,51 +579,47 @@ def demosaic(
                 "enabled separately. See README.md for instructions to enable RCD, "
                 "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
             )
-        # Convert to float32 (0-1 range) for RCD
-        data_f32 = convert_dtype(image_data, np.float32)
+        timer.start_step("convert_dtype (pre)")
+        data_f32 = convert_dtype(image_data, np.float32)  # RCD expects float32 in 0-1 range
+        timer.start_step("rcd_demosaic (c++)")
         rgb = _rcd.rcd_demosaic(data_f32, cfa_pattern)
-        # Convert back to input dtype
-        rgb = convert_dtype(rgb, input_dtype)
-    
-    # VNG: uint16 only kernel
+        timer.start_step("convert_dtype (post)")
+        rgb = convert_dtype(rgb, input_dtype)  # convert back to input dtype
+
     elif algorithm == DemosaicAlgorithm.VNG:
-        # Only warn for lossy conversions (float to uint16)
+        # VNG: uint16 kernel
         if input_dtype in (np.float32, np.float64):
             logger.debug(f"VNG requires uint16; converting from {input_dtype}")
-        # Convert to uint16 for VNG
-        data_u16 = convert_dtype(image_data, np.uint16)
-
         from . import _vng
+        timer.start_step("convert_dtype (pre)")
+        data_u16 = convert_dtype(image_data, np.uint16)  # VNG expects uint16
+        timer.start_step("vng_demosaic (c++)")
         rgb = _vng.vng_demosaic(data_u16, cfa_pattern)
-        # Convert back to input dtype
-        rgb = convert_dtype(rgb, input_dtype)
-    
-    # OPENCV_EA: uint8 or uint16 kernel
+        timer.start_step("convert_dtype (post)")
+        rgb = convert_dtype(rgb, input_dtype)  # convert back to input dtype
+
     elif algorithm == DemosaicAlgorithm.OPENCV_EA:
         from cv2 import (demosaicing, COLOR_BAYER_RG2RGB_EA, COLOR_BAYER_BG2RGB_EA,
                          COLOR_BAYER_GR2RGB_EA, COLOR_BAYER_GB2RGB_EA)
         bayer_map = {
-            "RGGB": COLOR_BAYER_RG2RGB_EA,
-            "BGGR": COLOR_BAYER_BG2RGB_EA,
-            "GRBG": COLOR_BAYER_GR2RGB_EA,
-            "GBRG": COLOR_BAYER_GB2RGB_EA,
+            "RGGB": COLOR_BAYER_RG2RGB_EA, "BGGR": COLOR_BAYER_BG2RGB_EA,
+            "GRBG": COLOR_BAYER_GR2RGB_EA, "GBRG": COLOR_BAYER_GB2RGB_EA,
         }
         if input_dtype in (np.float32, np.float64):
             logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
+            timer.start_step("convert_dtype (pre)")
             data_u16 = convert_dtype(image_data, np.uint16)
-            rgb = demosaicing(data_u16, bayer_map[cfa_pattern])
-            rgb = rgb[..., [2, 1, 0]]  # BGR to RGB
+            timer.start_step("opencv_ea_demosaicing (c++)")
+            rgb = demosaicing(data_u16, bayer_map[cfa_pattern])[..., [2, 1, 0]]
+            timer.start_step("convert_dtype (post)")
             rgb = convert_dtype(rgb, input_dtype)
         else:
-            rgb = demosaicing(image_data, bayer_map[cfa_pattern])
-            rgb = rgb[..., [2, 1, 0]]  # BGR to RGB
-    
-    elapsed_time = time.perf_counter() - start_time
-    logger.info(
-        f"Demosaic ({algorithm}): {elapsed_time*1000:.1f}ms for "
-        f"{image_data.shape[1]}x{image_data.shape[0]}"
-    )
-    
+            timer.start_step("demosaicing (c++)")
+            rgb = demosaicing(image_data, bayer_map[cfa_pattern])[..., [2, 1, 0]]
+
+    else:
+        raise ValueError(f"Unsupported demosaic algorithm: {algorithm}")
+
     return rgb
 
 # =============================================================================
@@ -2603,7 +2596,7 @@ def apply_post_rendering_operations(
     Returns:
         Output image in ProPhoto linear space
     """
-    import time
+    timer = get_active_timer()
     
     rgb_prophoto_linear = rgb_input
     
@@ -2614,29 +2607,31 @@ def apply_post_rendering_operations(
     
     # Step 1: Apply main curve with hue preservation (if present and no per-channel curves)
     if 'ToneCurvePV2012' in rendering_params:
-        t0 = time.perf_counter()
+        xmp_tone_timer = timer.start_step("xmp_tone_curve")
         rgb_output = rgb_prophoto_linear.copy()
         # Build curve LUT and convert from sRGB gamma to linear space
         main_curve_lut = LUT(rendering_params['ToneCurvePV2012'], size=4096, 
                              convert_srgb_gamma_to_linear=True)
         
+        xmp_tone_timer.start_step("transform_color (c++)")
         rgb_output = transform_color(
             rgb_output,
             input_lut=main_curve_lut,
             hue_preserving_input_lut=True,
             output_dtype=np.float32
         )
-        logger.info(f"    Timing: xmp_tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
+        xmp_tone_timer.close()
         logger.debug("Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)")
     
     # Step 2: Apply per-channel curves (if present)
     has_per_channel = False
+    channel_timer = None
     for channel_idx, channel_name in enumerate(['Red', 'Green', 'Blue']):
         curve_key = f'ToneCurvePV2012{channel_name}'
         
         if curve_key in rendering_params:
             if not has_per_channel:
-                t0 = time.perf_counter()
+                channel_timer = timer.start_step("xmp_channel_curves")
                 has_per_channel = True
             
             if rgb_output is rgb_prophoto_linear:
@@ -2655,8 +2650,8 @@ def apply_post_rendering_operations(
             )
             logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
     
-    if has_per_channel:
-        logger.info(f"    Timing: xmp_channel_curves = {(time.perf_counter() - t0)*1000:.1f}ms")
+    if channel_timer is not None:
+        channel_timer.close()
     
     # Stage 2 - Apply radial distortion correction (final step after tone curves)
     if 'crlcp:PerspectiveModel' in rendering_params:
@@ -2702,9 +2697,9 @@ def apply_post_rendering_operations(
                     logger.debug(f"SensorFormatFactor not found, using default sensor width {sensor_width_mm}mm")
                 
                 logger.debug(f"Radial distortion params: {radial_params}, scale_factor: {scale_factor}, center: ({center_x}, {center_y}), focal_length: {focal_length_mm}mm")
-                t0 = time.perf_counter()
+                timer.start_step("apply_radial_distortion_correction (c++)")
                 rgb_output = apply_radial_distortion_correction(rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
-                logger.info(f"    Timing: lens_correction = {(time.perf_counter() - t0)*1000:.1f}ms")
+                timer.end_step()
                 logger.debug("Applied radial distortion correction")
     
     return rgb_output
@@ -2761,7 +2756,7 @@ def _render_camera_rgb(
     rendering_params: dict = None,
     use_xmp: bool = True,
 ) -> np.ndarray:
-    import time
+    timer = get_active_timer()
 
     try:
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
@@ -2788,6 +2783,7 @@ def _render_camera_rgb(
         # Setup: Compute matrices (port of dng_render_task::Start)
         # SDK ref: dng_render.cpp lines 869-1070
         # =====================================================================
+        cam2pro_timer = timer.start_step("camera_to_prophoto")
         
         # Get ColorMatrix1 (XYZ to Camera, 3x3)
         color_matrix1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ColorMatrix1")
@@ -2916,13 +2912,14 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp lines 912-913
         # fCameraToRGB = ProPhoto.MatrixFromPCS() * CameraToPCS()
         camera_to_prophoto = XYZ_D50_TO_PROPHOTO_RGB @ camera_to_pcs
-
-        t0 = time.perf_counter()
+        
+        cam2pro_timer.start_step("clip_and_transform_color (c++)")
         rgb_prophoto = clip_and_transform_color(
             rgb_camera,
             clip_max=camera_white.astype(np.float32),
             matrix=camera_to_prophoto.astype(np.float32))
-        logger.info(f"    Timing: camera_to_prophoto = {(time.perf_counter() - t0)*1000:.1f}ms")
+        cam2pro_timer.close()
+        del rgb_camera
         
         # =====================================================================
         # Step 1.5: DoBaselineHueSatMap (ProfileHueSatMap)
@@ -2933,6 +2930,7 @@ def _render_camera_rgb(
         hue_sat_data1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData1")
         
         if hue_sat_dims is not None and hue_sat_data1 is not None:
+            hsm_timer = timer.start_step("hue_sat_map")
             hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
             hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
             hue_sat_data2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData2")
@@ -2948,14 +2946,15 @@ def _render_camera_rgb(
                 hue_sat_map = hue_sat_data1
             
             logger.debug(f"ProfileHueSatMap: {hue_divs}x{sat_divs}x{val_divs}")
-            
-            t0 = time.perf_counter()
+
+            hsm_timer.start_step("apply_hue_sat_map (c++)")
             rgb_prophoto = _raw_render.apply_hue_sat_map(
                 rgb_prophoto,
                 hue_sat_map,
                 hue_divs, sat_divs, val_divs
             )
-            logger.info(f"    Timing: hue_sat_map = {(time.perf_counter() - t0)*1000:.1f}ms")
+            hsm_timer.end_step()
+            hsm_timer.close()
         
         # =====================================================================
         # Step 1.6: DoBaselineProfileGainTableMap
@@ -2989,7 +2988,7 @@ def _render_camera_rgb(
                 pgtm_data = raw_ifd_tags.get_tag("ProfileGainTableMap")
         
         if pgtm_data is not None:
-            t0 = time.perf_counter()
+            pgtm_timer = timer.start_step("profile_gain_table_map")
             try:
                 # PGTM data is already normalized to system byte order by get_page_tags()
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
@@ -3000,6 +2999,7 @@ def _render_camera_rgb(
                     is_version2=is_version2,
                     byteorder=system_byteorder,
                 )
+                pgtm_timer.start_step("apply_profile_gain_table_map (c++)")
                 rgb_prophoto = _raw_render.apply_profile_gain_table_map(
                     rgb_prophoto,
                     pgtm["gains"],
@@ -3016,7 +3016,7 @@ def _render_camera_rgb(
                 )
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap ({type(e).__name__}): {e}")
-            logger.info(f"    Timing: profile_gain_table_map = {(time.perf_counter() - t0)*1000:.1f}ms")
+            pgtm_timer.close()
 
         # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
@@ -3041,10 +3041,12 @@ def _render_camera_rgb(
 
         # Compute exposure_ramp LUT
         # Pass rgb_prophoto for adaptive exposure blending
+        timer.start_step("compute_exposure_ramp_lut")
         exposure_ramp_lut = compute_exposure_ramp_lut(
             exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
             rgb_prophoto=rgb_prophoto
         )
+        timer.end_step()
         logger.debug(f"Exposure_ramp LUT: first={exposure_ramp_lut[0]:.6f}, last={exposure_ramp_lut[-1]:.6f}, "
                     f"mean={np.mean(exposure_ramp_lut):.6f}")
 
@@ -3068,19 +3070,19 @@ def _render_camera_rgb(
         if look_table is not None:
             # Must apply exposure_ramp separately when look_table exists
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
-            t0 = time.perf_counter()
+            timer.start_step("exposure_ramp (c++)")
             rgb_exposed = transform_color(
                 rgb_prophoto, input_lut=exposure_ramp_lut, output_dtype=np.float32
             )
-            logger.info(f"    Timing: exposure_ramp = {(time.perf_counter() - t0)*1000:.1f}ms")
+            timer.end_step()
             
-            t0 = time.perf_counter()
+            timer.start_step("look_table (c++)")
             rgb_exposed = _raw_render.apply_hue_sat_map(
                 rgb_exposed,
                 look_table,
                 look_hue_divs, look_sat_divs, look_val_divs
             )
-            logger.info(f"    Timing: look_table = {(time.perf_counter() - t0)*1000:.1f}ms")
+            timer.end_step()
             
             # Start combined curve with identity (exposure_ramp already applied to pixels)
             combined_curve = LUT(None, size=4096)
@@ -3091,6 +3093,7 @@ def _render_camera_rgb(
             # Start combined curve with exposure_ramp
             combined_curve = LUT(exposure_ramp_lut)
         
+        timer.start_step("build_combined_lut")
         # Chain: apply exposure_tone to output
         combined_curve = combined_curve.compose_output(
             lambda y: exposure_tone(y, exposure, highlight_preserving_exposure)
@@ -3123,6 +3126,7 @@ def _render_camera_rgb(
         
         # Chain: apply profile tone curve to output (combined_curve already has exposure_ramp and exposure_tone)
         combined_curve = combined_curve.compose_output(LUT(profile_curve))
+        timer.end_step()
         
         # =====================================================================
         # Step 4-5: Apply tone curve + colorspace conversion (merged when no post-rendering)
@@ -3138,29 +3142,34 @@ def _render_camera_rgb(
         
         if has_post_rendering:
             # Post-rendering exists: apply tone curve first, then post-rendering
-            t0 = time.perf_counter()
+            timer.start_step("tone_curve (c++)")
             rgb_toned = transform_color(
                 rgb_exposed,
                 input_lut=combined_curve,
                 hue_preserving_input_lut=True,
                 output_dtype=np.float32
             )
-            logger.info(f"    Timing: tone_curve = {(time.perf_counter() - t0)*1000:.1f}ms")
-            
+            timer.end_step()
+            del rgb_exposed
+
             # Apply post-rendering (tone curves, lens correction) in ProPhoto linear
             rgb_to_convert = apply_post_rendering_operations(rgb_toned, rendering_params)
+            del rgb_toned
+
             tone_input_lut = None  # No tone curve for final conversion
             timing_label = "prophoto_to_srgb"
         else:
             # No post-rendering: merge tone curve + colorspace in single pass
             rgb_to_convert = rgb_exposed
+            del rgb_exposed
             tone_input_lut = combined_curve
             timing_label = "tone_curve+srgb"
         
         # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
-        t0 = time.perf_counter()
+        convert_timer = timer.start_step(timing_label)
         matrix = compute_colorspace_matrix(ColorSpace.PROPHOTO_LINEAR, ColorSpace.SRGB_GAMMA)
         output_lut = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=False, size=4096)
+        convert_timer.start_step("transform_color (c++)")
         result = transform_color(
             rgb_to_convert,
             input_lut=tone_input_lut,
@@ -3169,19 +3178,19 @@ def _render_camera_rgb(
             hue_preserving_input_lut=True if tone_input_lut else False,
             output_dtype=output_dtype
         )
-        logger.info(f"    Timing: {timing_label} = {(time.perf_counter() - t0)*1000:.1f}ms")
-        
+        convert_timer.close()
+        del rgb_to_convert
+
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
-        t0 = time.perf_counter()
         # Check rendering_params first, fall back to EXIF orientation
         orientation = rendering_params.get('orientation') if rendering_params else None
         if orientation is None:
             orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
-        logger.info(f"    Timing: orientation = {(time.perf_counter() - t0)*1000:.1f}ms")
         
+        # timer.start_step("stack_unwind")
         return result
 
     except Exception as e:

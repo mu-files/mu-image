@@ -154,9 +154,9 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                     tifffile.imwrite(str(roundtrip_muimg_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muimg_tif.name} ({roundtrip_decoded.shape})")
                 else:
-                    print(f"    -> muimg roundtrip decode returned None")
+                    pytest.fail(f"muimg roundtrip decode returned None for IFD {i}")
             except Exception as e:
-                print(f"    -> muimg roundtrip decode failed: {e}")
+                pytest.fail(f"muimg roundtrip decode failed for IFD {i}: {e}")
             
             # 3a. Compare original muimg decode vs roundtrip muimg decode
             if roundtrip_decoded is not None and decoded.shape == roundtrip_decoded.shape:
