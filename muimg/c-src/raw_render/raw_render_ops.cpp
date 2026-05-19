@@ -113,7 +113,38 @@ public:
 #endif
     }
 
-    inline void apply(float* rgb, float clip_max = 1.0f) const {
+    // Overload for clip_and_transform_color: clips input to per-channel
+    // input_clip before the matrix multiply, then clips output to [0, 1].
+    // On NEON, input_clip_max is a float32x4_t preloaded once before the pixel loop
+    // via vld1q_f32(clip_max_ptr) — lane 3 is unused (zero-padded).
+#if defined(__aarch64__)
+    inline void apply(const float* input, float* output,
+                      float32x4_t input_clip_max) const {
+        // Load input, clip to camera white, then matrix + output clip
+        alignas(16) float in4[4] = { input[0], input[1], input[2], 0.f };
+        float32x4_t rgb = vminq_f32(vld1q_f32(in4), input_clip_max);
+        float32x4_t result = vmulq_n_f32(col0_, vgetq_lane_f32(rgb, 0));
+        result = vfmaq_n_f32(result, col1_, vgetq_lane_f32(rgb, 1));
+        result = vfmaq_n_f32(result, col2_, vgetq_lane_f32(rgb, 2));
+        result = vmaxq_f32(result, vdupq_n_f32(0.0f));
+        result = vminq_f32(result, vdupq_n_f32(1.0f));
+        output[0] = vgetq_lane_f32(result, 0);
+        output[1] = vgetq_lane_f32(result, 1);
+        output[2] = vgetq_lane_f32(result, 2);
+    }
+#else
+    inline void apply(const float* input, float* output,
+                      const float* input_clip_max) const {
+        float r = fminf(input[0], input_clip_max[0]);
+        float g = fminf(input[1], input_clip_max[1]);
+        float b = fminf(input[2], input_clip_max[2]);
+        output[0] = fmaxf(0.0f, fminf(1.0f, m_[0]*r + m_[1]*g + m_[2]*b));
+        output[1] = fmaxf(0.0f, fminf(1.0f, m_[3]*r + m_[4]*g + m_[5]*b));
+        output[2] = fmaxf(0.0f, fminf(1.0f, m_[6]*r + m_[7]*g + m_[8]*b));
+    }
+#endif
+
+    inline void apply(float* rgb, float output_clip_max = 1.0f) const {
 #if defined(__aarch64__)
         // 3 vertical ops produce all 3 output channels simultaneously.
         // vmulq_n_f32(v, s): multiply all 4 lanes of v by scalar s
@@ -121,17 +152,17 @@ public:
         float32x4_t result = vmulq_n_f32(col0_, rgb[0]);
         result = vfmaq_n_f32(result, col1_, rgb[1]);
         result = vfmaq_n_f32(result, col2_, rgb[2]);
-        // Clip [0, clip_max] on all 4 lanes before extracting (lane 3 unused)
+        // Clip [0, output_clip_max] on all 4 lanes before extracting (lane 3 unused)
         result = vmaxq_f32(result, vdupq_n_f32(0.0f));
-        result = vminq_f32(result, vdupq_n_f32(clip_max));
+        result = vminq_f32(result, vdupq_n_f32(output_clip_max));
         rgb[0] = vgetq_lane_f32(result, 0);
         rgb[1] = vgetq_lane_f32(result, 1);
         rgb[2] = vgetq_lane_f32(result, 2);
 #else
         float r = rgb[0], g = rgb[1], b = rgb[2];
-        rgb[0] = fmaxf(0.0f, fminf(clip_max, m_[0]*r + m_[1]*g + m_[2]*b));
-        rgb[1] = fmaxf(0.0f, fminf(clip_max, m_[3]*r + m_[4]*g + m_[5]*b));
-        rgb[2] = fmaxf(0.0f, fminf(clip_max, m_[6]*r + m_[7]*g + m_[8]*b));
+        rgb[0] = fmaxf(0.0f, fminf(output_clip_max, m_[0]*r + m_[1]*g + m_[2]*b));
+        rgb[1] = fmaxf(0.0f, fminf(output_clip_max, m_[3]*r + m_[4]*g + m_[5]*b));
+        rgb[2] = fmaxf(0.0f, fminf(output_clip_max, m_[6]*r + m_[7]*g + m_[8]*b));
 #endif
     }
 
@@ -916,20 +947,19 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     
     // Process all pixels
     ColorMatrix3x3 mat(matrix);
+#if defined(__aarch64__)
+    // Preload per-channel input clip vector once (lane 3 unused, zero-padded)
+    alignas(16) float clip4[4] = { clip_max[0], clip_max[1], clip_max[2], 0.f };
+    float32x4_t input_clip_max = vld1q_f32(clip4);
+#endif
     for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
-        float rgb[3];
-        
-        // Load and clip to camera white (SDK ref: dng_reference.cpp lines 1423-1425)
-        rgb[0] = fminf(input[idx + 0], clip_max[0]);
-        rgb[1] = fminf(input[idx + 1], clip_max[1]);
-        rgb[2] = fminf(input[idx + 2], clip_max[2]);
-        
-        // Apply matrix and clip to [0, 1] (SDK ref: dng_reference.cpp lines 1431-1433)
-        mat.apply(rgb);
-        
-        output[idx + 0] = rgb[0];
-        output[idx + 1] = rgb[1];
-        output[idx + 2] = rgb[2];
+        // Input clip + matrix multiply + output clip [0,1] in one pass
+        // (SDK ref: dng_reference.cpp lines 1423-1425, 1431-1433)
+#if defined(__aarch64__)
+        mat.apply(input + idx, output + idx, input_clip_max);
+#else
+        mat.apply(input + idx, output + idx, clip_max);
+#endif
     }
     
     // Return result (transfer ownership)
