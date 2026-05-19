@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 #if defined(__aarch64__)
@@ -98,10 +99,15 @@ class ColorMatrix3x3 {
 public:
     explicit ColorMatrix3x3(const float* m) {
 #if defined(__aarch64__)
-        // Transpose row-major input into column vectors, zero-pad lane 3
-        col0_ = { m[0], m[3], m[6], 0.f };
-        col1_ = { m[1], m[4], m[7], 0.f };
-        col2_ = { m[2], m[5], m[8], 0.f };
+        // Transpose row-major input into column vectors, zero-pad lane 3.
+        // Use vld1q_f32 from a local array for GCC compatibility
+        // (brace-initializer assignment to float32x4_t is a Clang extension).
+        alignas(16) float c0[4] = { m[0], m[3], m[6], 0.f };
+        alignas(16) float c1[4] = { m[1], m[4], m[7], 0.f };
+        alignas(16) float c2[4] = { m[2], m[5], m[8], 0.f };
+        col0_ = vld1q_f32(c0);
+        col1_ = vld1q_f32(c1);
+        col2_ = vld1q_f32(c2);
 #else
         std::memcpy(m_, m, 9 * sizeof(float));
 #endif
