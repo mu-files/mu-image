@@ -335,6 +335,7 @@ class ScopedPerfTimer:
         self.logger = logger_instance
         self.timer: PerfTimer | None = None
         self.auto_log = auto_log
+        self.created_timer = False  # Track if we created this timer
         
     def __enter__(self) -> PerfTimer:
         # Repeat get_active_timer logic to avoid creating orphan timer
@@ -346,15 +347,17 @@ class ScopedPerfTimer:
             while node._active_child is not None and node._active_child.end_time is None:
                 node = node._active_child
             self.timer = node
+            self.created_timer = False
         else:
             # No active timer, create new root timer
             self.timer = PerfTimer(self.name)
+            self.created_timer = True
         return self.timer
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.timer is not None:
-            # Only close timers we created (root timers with depth == -1)
-            if self.timer.depth == -1:
+            # Only close timers we created
+            if self.created_timer:
                 self.timer.close()
                 # Only log if auto_log is True
                 if self.auto_log:
