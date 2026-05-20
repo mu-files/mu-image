@@ -23,7 +23,7 @@ from typing import Any, IO, TypeAlias
 from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 from .raw_render import DemosaicAlgorithm
-from .common import PerfTimer, get_active_timer
+from .common import PerfTimer, get_active_timer, scoped_perf_timer
 from .tiff_metadata import (
     MetadataTags,
     Orientation,
@@ -955,9 +955,7 @@ class DngPage(TiffPage):
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
 
-        _timer = PerfTimer("render_raw_page")
-
-        try:
+        with scoped_perf_timer("render_raw_page", logger):
 
             rgb_camera = self.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
             if rgb_camera is None:
@@ -974,9 +972,6 @@ class DngPage(TiffPage):
                 use_xmp=use_xmp,
             )
             return result
-        finally:
-            _timer.close()
-            _timer.log_report(logger)
 
 class DngFile(TiffFile):
 

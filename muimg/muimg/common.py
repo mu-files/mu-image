@@ -318,3 +318,58 @@ def get_active_timer() -> PerfTimer:
         node = node._active_child
     return node
 
+
+class ScopedPerfTimer:
+    """Context manager that provides scoped performance timing.
+    
+    Uses existing active timer if available, otherwise creates new root timer.
+    Only logs report for root timers (depth == -1) unless auto_log is disabled.
+    
+    Usage:
+        with scoped_perf_timer("my_operation", logger) as timer:
+            # ... work ...
+    """
+    
+    def __init__(self, name: str, logger_instance, auto_log: bool = True):
+        self.name = name
+        self.logger = logger_instance
+        self.timer: PerfTimer | None = None
+        self.auto_log = auto_log
+        
+    def __enter__(self) -> PerfTimer:
+        # Repeat get_active_timer logic to avoid creating orphan timer
+        ref = getattr(_thread_local, 'active_timer_node', None)
+        root = ref() if ref is not None else None
+        if root is not None:
+            # Find the active child
+            node = root
+            while node._active_child is not None and node._active_child.end_time is None:
+                node = node._active_child
+            self.timer = node
+        else:
+            # No active timer, create new root timer
+            self.timer = PerfTimer(self.name)
+        return self.timer
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.timer is not None:
+            # Only close timers we created (root timers with depth == -1)
+            if self.timer.depth == -1:
+                self.timer.close()
+                # Only log if auto_log is True
+                if self.auto_log:
+                    self.timer.log_report(self.logger)
+    
+    def enter(self) -> PerfTimer:
+        """Start the timer manually (equivalent to __enter__)."""
+        return self.__enter__()
+    
+    def close(self, exc_type=None, exc_val=None, exc_tb=None):
+        """End the timer manually (equivalent to __exit__)."""
+        return self.__exit__(exc_type, exc_val, exc_tb)
+
+
+def scoped_perf_timer(name: str, logger_instance, auto_log: bool = True) -> ScopedPerfTimer:
+    """Create a ScopedPerfTimer context manager."""
+    return ScopedPerfTimer(name, logger_instance, auto_log)
+
