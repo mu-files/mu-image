@@ -691,8 +691,8 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
 @click.option(
     "--demosaic-algorithm",
     type=str,
-    default="OPENCV_EA",
-    help="Demosaic algorithm (OPENCV_EA, VNG, RCD)",
+    default="DNGSDK_BILINEAR",
+    help="Demosaic algorithm (DNGSDK_BILINEAR, OPENCV_EA, VNG, RCD)",
 )
 @click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
 @click.option(

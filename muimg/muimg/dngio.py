@@ -812,11 +812,12 @@ class DngPage(TiffPage):
                 cfa_pattern = "RGGB"
 
             demosaic_timer = timer.start_step("demosaic")
+            # Bilinear guarantees [0,1] output through averaging - skip clip
+            clip_value = None if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR else 1.0
             rgb_camera = raw_render.demosaic(
-                cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm
+                cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm,
+                clip_max=clip_value, return_dtype=np.float32
             )
-            demosaic_timer.start_step("clip_and_convert")
-            rgb_camera = np.clip(rgb_camera, 0.0, 1.0).astype(np.float32, copy=False)
             demosaic_timer.close()
 
         # Apply OpcodeList3 (Stage3 operations)
@@ -2395,7 +2396,7 @@ def write_dng_from_page(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.DNGSDK_BILINEAR,
     preview: PreviewParams | None = None,
     pyramid: PyramidParams | None = None,
     copy_ifd0_tags: bool = True,
@@ -2539,7 +2540,7 @@ def write_dng_from_page(
         # Generate pyramid
         timer.start_step("generate_pyramid")
         pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels)
-        logger.info(f"Generated {len(pyramid_images)} pyramid levels")
+        logger.info(f"Generated {len(pyramid_images)} pyramid levels (including original)")
         timer.end_step()
         
         # Build main raw data spec from transcoded data if we don't already have a page spec

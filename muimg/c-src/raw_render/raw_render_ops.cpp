@@ -31,11 +31,15 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <vector>
 
 #if defined(__aarch64__)
 #include <arm_neon.h>
+#define NEON 1  // Global switch: 1=enabled, 0=disabled
+#else
+#define NEON 0
 #endif
 
 //=============================================================================
@@ -98,7 +102,7 @@ static inline float lut_lookup_8bit(const float* lut, uint8_t value) {
 class ColorMatrix3x3 {
 public:
     explicit ColorMatrix3x3(const float* m) {
-#if defined(__aarch64__)
+#if NEON
         // Transpose row-major input into column vectors, zero-pad lane 3.
         // Use vld1q_f32 from a local array for GCC compatibility
         // (brace-initializer assignment to float32x4_t is a Clang extension).
@@ -117,7 +121,7 @@ public:
     // input_clip before the matrix multiply, then clips output to [0, 1].
     // On NEON, input_clip_max is a float32x4_t preloaded once before the pixel loop
     // via vld1q_f32(clip_max_ptr) — lane 3 is unused (zero-padded).
-#if defined(__aarch64__)
+#if NEON
     inline void apply(const float* input, float* output,
                       float32x4_t input_clip_max) const {
         // Load input, clip to camera white, then matrix + output clip
@@ -145,7 +149,7 @@ public:
 #endif
 
     inline void apply(float* rgb, float output_clip_max = 1.0f) const {
-#if defined(__aarch64__)
+#if NEON
         // 3 vertical ops produce all 3 output channels simultaneously.
         // vmulq_n_f32(v, s): multiply all 4 lanes of v by scalar s
         // vfmaq_n_f32(acc, v, s): acc + v*s  (fused multiply-add)
@@ -167,7 +171,7 @@ public:
     }
 
 private:
-#if defined(__aarch64__)
+#if NEON
     float32x4_t col0_, col1_, col2_;
 #else
     float m_[9];
@@ -563,6 +567,20 @@ static void transform_hue_preserving_lut_matrix_lut_impl(
 
 #undef HUE_PRESERVING_TONE
 
+// Helper: Get max value for a dtype and optional bit depth (unified with convert_dtype)
+static float get_max_value(int dtype, int bits_per_element) {
+    if (dtype == NPY_FLOAT32 || dtype == NPY_FLOAT64) {
+        return 1.0f;
+    }
+    // Integer type
+    int bits = (bits_per_element > 0) ? bits_per_element : (
+        (dtype == NPY_UINT8) ? 8 : (
+            (dtype == NPY_UINT16) ? 16 : 32
+        )
+    );
+    return (float)((1 << bits) - 1);
+}
+
 // Dispatcher: selects specialized function based on parameters
 static void transform_color_dispatch(
     const void* input,
@@ -582,20 +600,9 @@ static void transform_color_dispatch(
 ) {
     const int total_pixels = height * width;
     
-    // Calculate scale factors
-    float src_scale = 1.0f;
-    if (src_dtype == NPY_UINT8) {
-        src_scale = 1.0f / (src_bits > 0 ? ((1 << src_bits) - 1) : 255.0f);
-    } else if (src_dtype == NPY_UINT16) {
-        src_scale = 1.0f / (src_bits > 0 ? ((1 << src_bits) - 1) : 65535.0f);
-    }
-    
-    float dst_scale = 1.0f;
-    if (dst_dtype == NPY_UINT8) {
-        dst_scale = (dst_bits > 0 ? ((1 << dst_bits) - 1) : 255.0f);
-    } else if (dst_dtype == NPY_UINT16) {
-        dst_scale = (dst_bits > 0 ? ((1 << dst_bits) - 1) : 65535.0f);
-    }
+    // Calculate scale factors using unified helper
+    float src_scale = 1.0f / get_max_value(src_dtype, src_bits);
+    float dst_scale = get_max_value(dst_dtype, dst_bits);
     
     // Determine which specialized function to use
     bool has_input_lut = (input_lut != NULL);
@@ -863,6 +870,270 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
 }
 
 //=============================================================================
+// Convert dtype with optional clip
+//=============================================================================
+
+//=============================================================================
+// Dtype Converter with optional clipping - NEON optimized for AArch64
+//=============================================================================
+//
+// Templated class for converting arrays of values between dtypes with scaling
+// and optional clipping. Optimized for AArch64 NEON.
+//
+// Usage pattern (similar to ColorMatrix3x3):
+//   DtypeConverter<uint8_t, uint16_t> converter(scale, clip_max);
+//   converter.convert(src, dst, count);
+//
+template<typename SrcT, typename DstT>
+class DtypeConverter {
+public:
+    DtypeConverter(float scale, float clip_max)
+        : scale_(scale), clip_max_(clip_max), do_clip_(clip_max >= 0.0f) {}
+
+    // Convert an array of elements
+    void convert(const SrcT* __restrict src, DstT* __restrict dst, int count) const {
+#if NEON
+        convert_neon(src, dst, count);
+#else
+        convert_scalar(src, dst, count);
+#endif
+    }
+
+private:
+    float scale_;
+    float clip_max_;
+    bool do_clip_;
+
+    // Scalar fallback - separate loops to avoid branch inside hot path
+    void convert_scalar(const SrcT* __restrict src, DstT* __restrict dst, int count) const {
+        // Special case: uint16_t -> float with unrolling for better auto-vectorization
+        if constexpr (std::is_same_v<SrcT, uint16_t> && std::is_same_v<DstT, float>) {
+            int i = 0;
+            for (; i <= count - 4; i += 4) {
+                float s0 = (float)src[i + 0];
+                float s1 = (float)src[i + 1];
+                float s2 = (float)src[i + 2];
+                float s3 = (float)src[i + 3];
+                dst[i + 0] = s0 * scale_;
+                dst[i + 1] = s1 * scale_;
+                dst[i + 2] = s2 * scale_;
+                dst[i + 3] = s3 * scale_;
+            }
+            for (; i < count; i++) {
+                dst[i] = (float)src[i] * scale_;
+            }
+        } else if (do_clip_) {
+            for (int i = 0; i < count; i++) {
+                dst[i] = (DstT)fminf(clip_max_, src[i] * scale_);
+            }
+        } else {
+            for (int i = 0; i < count; i++) {
+                dst[i] = (DstT)(src[i] * scale_);
+            }
+        }
+    }
+
+#if NEON
+    // NEON implementation - single path with merged clip logic
+    void convert_neon(const SrcT* src, DstT* dst,int count) const {
+        float32x4_t vscale = vdupq_n_f32(scale_);
+        // Clip limit is either clip_max (if specified) or dst_max (for safe conversion)
+        float clip_limit = do_clip_ ? clip_max_ : 
+            (std::is_same_v<DstT, uint8_t> ? 255.0f : 
+             std::is_same_v<DstT, uint16_t> ? 65535.0f : 
+             std::numeric_limits<float>::max());
+        float32x4_t vclip = vdupq_n_f32(clip_limit);
+        
+        int i = 0;
+        for (; i <= count - 4; i += 4) {
+            float32x4_t vsrc = load_src_neon(src + i);
+            float32x4_t vscaled = vmulq_f32(vsrc, vscale);
+            vscaled = vminq_f32(vscaled, vclip);  // clip to limit
+            store_dst_neon(dst + i, vscaled);
+        }
+        // Tail with scalar
+        if (i < count) {
+            convert_scalar(src + i, dst + i, count - i);
+        }
+    }
+
+    // Helper: Load source values as float32x4
+    float32x4_t load_src_neon(const SrcT* src) const {
+        if constexpr (std::is_same_v<SrcT, uint8_t>) {
+            // Load 8 uint8 values, use lower 4, convert to float32
+            uint8x8_t v8 = vld1_u8(src);  // Load 8 bytes
+            uint16x8_t v16_8 = vmovl_u8(v8);  // Widen to uint16x8
+            uint16x4_t v16 = vget_low_u16(v16_8);  // Get lower 4 uint16
+            uint32x4_t v32 = vmovl_u16(v16);  // Widen to uint32
+            return vcvtq_f32_u32(v32);  // Convert to float32
+        } else if constexpr (std::is_same_v<SrcT, uint16_t>) {
+            // Load 4 uint16 values, convert to float32
+            uint16x4_t v16 = vld1_u16(src);  // Load 4 uint16
+            uint32x4_t v32 = vmovl_u16(v16);  // Widen to uint32
+            return vcvtq_f32_u32(v32);  // Convert to float32
+        } else if constexpr (std::is_same_v<SrcT, float>) {
+            return vld1q_f32(src);  // Load 4 floats directly
+        }
+    }
+
+    // Helper: Store float32x4 as destination type
+    // Input val is already clipped to [0, clip_limit] in main loop, just convert
+    void store_dst_neon(DstT* dst, float32x4_t val) const {
+        if constexpr (std::is_same_v<DstT, uint8_t>) {
+            // Convert to uint8 (val is already in [0, 255] range)
+            uint32x4_t v32 = vcvtq_u32_f32(val);
+            uint16x4_t v16 = vmovn_u32(v32);
+            uint8x8_t v8 = vmovn_u16(vcombine_u16(v16, v16));
+            vst1_u8(dst, v8);
+        } else if constexpr (std::is_same_v<DstT, uint16_t>) {
+            // Convert to uint16 (val is already in [0, 65535] range)
+            uint32x4_t v32 = vcvtq_u32_f32(val);
+            uint16x4_t v16 = vqmovn_u32(v32);
+            vst1_u16(dst, v16);
+        } else if constexpr (std::is_same_v<DstT, float>) {
+            vst1q_f32(dst, val);  // Already clipped, store directly
+        }
+    }
+#endif
+};
+
+
+static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObject* kwargs) {
+    PyArrayObject* image_array = NULL;
+    int dest_dtype_int = NPY_FLOAT32;
+    int src_bits = -1;  // -1 means use dtype default
+    int dst_bits = -1;
+    float clip_max = -1.0f;  // < 0 means no clipping, else clip to [0, clip_max]
+    
+    static char* kwlist[] = {
+        (char*)"image", (char*)"dest_dtype", 
+        (char*)"src_bits", (char*)"dst_bits", (char*)"clip_max",
+        NULL
+    };
+    
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|iiif", kwlist,
+            &PyArray_Type, &image_array,
+            &dest_dtype_int, &src_bits, &dst_bits, &clip_max)) {
+        return NULL;
+    }
+    
+    // Validate image is 2D or 3D
+    int ndim = PyArray_NDIM(image_array);
+    if (ndim != 2 && ndim != 3) {
+        PyErr_SetString(PyExc_ValueError, "Image must be 2D (H, W) or 3D (H, W, C)");
+        return NULL;
+    }
+    
+    int height = (int)PyArray_DIM(image_array, 0);
+    int width = (int)PyArray_DIM(image_array, 1);
+    int channels = (ndim == 3) ? (int)PyArray_DIM(image_array, 2) : 1;
+    int total_pixels = height * width * channels;
+    
+    int src_dtype = PyArray_TYPE(image_array);
+    int dst_dtype = dest_dtype_int;
+    
+    // Validate dtypes are supported (uint8, uint16, float32)
+    bool src_valid = (src_dtype == NPY_UINT8) || (src_dtype == NPY_UINT16) || (src_dtype == NPY_FLOAT32);
+    bool dst_valid = (dst_dtype == NPY_UINT8) || (dst_dtype == NPY_UINT16) || (dst_dtype == NPY_FLOAT32);
+    if (!src_valid) {
+        PyErr_SetString(PyExc_TypeError, "Unsupported source dtype (must be uint8, uint16, or float32)");
+        return NULL;
+    }
+    if (!dst_valid) {
+        PyErr_SetString(PyExc_TypeError, "Unsupported destination dtype (must be uint8, uint16, or float32)");
+        return NULL;
+    }
+    
+    // Ensure contiguous input (accept 2D or 3D)
+    auto image_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)image_array, src_dtype, 2, 3));
+    if (!image_cont) return NULL;
+    
+    // Create output array with same dimensionality as input
+    npy_intp dims[3];
+    dims[0] = height;
+    dims[1] = width;
+    if (ndim == 3) {
+        dims[2] = channels;
+    }
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(ndim, dims, dst_dtype));
+    if (!result) return NULL;
+    
+    const void* src_data = PyArray_DATA(image_cont.get());
+    void* dst_data = PyArray_DATA(result.get());
+    
+    // Determine effective bits for fast path check
+    int src_effective_bits = (src_bits > 0) ? src_bits : 
+        ((src_dtype == NPY_UINT8) ? 8 : (src_dtype == NPY_UINT16) ? 16 : 
+         (src_dtype == NPY_FLOAT32) ? 0 : 32);
+    int dst_effective_bits = (dst_bits > 0) ? dst_bits : 
+        ((dst_dtype == NPY_UINT8) ? 8 : (dst_dtype == NPY_UINT16) ? 16 : 
+         (dst_dtype == NPY_FLOAT32) ? 0 : 32);
+    
+    // Fast path: same dtype, same bits, no clip - just memcpy
+    if (src_dtype == dst_dtype && src_effective_bits == dst_effective_bits && clip_max < 0.0f) {
+        size_t elem_size = (src_dtype == NPY_UINT8) ? 1 : 
+                          (src_dtype == NPY_UINT16) ? 2 : 4;
+        size_t bytes = total_pixels * elem_size;
+        memcpy(dst_data, src_data, bytes);
+        return (PyObject*)result.release();
+    }
+    
+    // Get max values for scaling (needed for conversion kernels)
+    float src_max = get_max_value(src_dtype, src_bits);
+    float dst_max = get_max_value(dst_dtype, dst_bits);
+    float scale = dst_max / src_max;
+    
+    // Skip clipping if clip_max >= destination max for integer types
+    // (For float, we always allow clipping even above 1.0 for HDR handling)
+    if (clip_max >= 0.0f && dst_dtype != NPY_FLOAT32 && clip_max >= dst_max) {
+        clip_max = -1.0f;
+    }
+    
+    // Conversion kernels using DtypeConverter with NEON optimization
+    if (src_dtype == NPY_UINT8) {
+        const uint8_t* src = (const uint8_t*)src_data;
+        if (dst_dtype == NPY_UINT8) {
+            DtypeConverter<uint8_t, uint8_t> converter(scale, clip_max);
+            converter.convert(src, (uint8_t*)dst_data, total_pixels);
+        } else if (dst_dtype == NPY_UINT16) {
+            DtypeConverter<uint8_t, uint16_t> converter(scale, clip_max);
+            converter.convert(src, (uint16_t*)dst_data, total_pixels);
+        } else {  // NPY_FLOAT32
+            DtypeConverter<uint8_t, float> converter(scale, clip_max);
+            converter.convert(src, (float*)dst_data, total_pixels);
+        }
+    } else if (src_dtype == NPY_UINT16) {
+        const uint16_t* src = (const uint16_t*)src_data;
+        if (dst_dtype == NPY_UINT8) {
+            DtypeConverter<uint16_t, uint8_t> converter(scale, clip_max);
+            converter.convert(src, (uint8_t*)dst_data, total_pixels);
+        } else if (dst_dtype == NPY_UINT16) {
+            DtypeConverter<uint16_t, uint16_t> converter(scale, clip_max);
+            converter.convert(src, (uint16_t*)dst_data, total_pixels);
+        } else {  // NPY_FLOAT32
+            DtypeConverter<uint16_t, float> converter(scale, clip_max);
+            converter.convert(src, (float*)dst_data, total_pixels);
+        }
+    } else {  // NPY_FLOAT32
+        const float* src = (const float*)src_data;
+        if (dst_dtype == NPY_UINT8) {
+            DtypeConverter<float, uint8_t> converter(scale, clip_max);
+            converter.convert(src, (uint8_t*)dst_data, total_pixels);
+        } else if (dst_dtype == NPY_UINT16) {
+            DtypeConverter<float, uint16_t> converter(scale, clip_max);
+            converter.convert(src, (uint16_t*)dst_data, total_pixels);
+        } else {  // NPY_FLOAT32
+            DtypeConverter<float, float> converter(scale, clip_max);
+            converter.convert(src, (float*)dst_data, total_pixels);
+        }
+    }
+    
+    return (PyObject*)result.release();
+}
+
+//=============================================================================
 // Optimized Clip + Matrix Transform
 //=============================================================================
 
@@ -947,7 +1218,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     
     // Process all pixels
     ColorMatrix3x3 mat(matrix);
-#if defined(__aarch64__)
+#if NEON
     // Preload per-channel input clip vector once (lane 3 unused, zero-padded)
     alignas(16) float clip4[4] = { clip_max[0], clip_max[1], clip_max[2], 0.f };
     float32x4_t input_clip_max = vld1q_f32(clip4);
@@ -955,7 +1226,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
         // Input clip + matrix multiply + output clip [0,1] in one pass
         // (SDK ref: dng_reference.cpp lines 1423-1425, 1431-1433)
-#if defined(__aarch64__)
+#if NEON
         mat.apply(input + idx, output + idx, input_clip_max);
 #else
         mat.apply(input + idx, output + idx, clip_max);
@@ -3621,6 +3892,19 @@ static PyMethodDef DngColorMethods[] = {
      "    matrix (ndarray): 3x3 color matrix, float32, (3, 3)\n\n"
      "Returns:\n"
      "    ndarray: Transformed RGB image, float32, (H, W, 3)"},
+    
+    {"convert_dtype", (PyCFunction)convert_dtype_with_clip, METH_VARARGS | METH_KEYWORDS,
+     "Convert image dtype with optional clip.\n\n"
+     "Handles uint8, uint16, float32 conversions with proper scaling.\n"
+     "Optional clip to [0, 1] range before conversion.\n\n"
+     "Args:\n"
+     "    image (ndarray): Input image (H, W, C), uint8/uint16/float32\n"
+     "    dest_dtype (int): Destination numpy dtype (e.g., NPY_FLOAT32)\n"
+     "    src_bits (int, optional): Source bit depth (-1 = use dtype default)\n"
+     "    dst_bits (int, optional): Dest bit depth (-1 = use dtype default)\n"
+     "    clip (int, optional): Clip to [0, 1] before conversion (0 or 1)\n\n"
+     "Returns:\n"
+     "    ndarray: Converted image with dest_dtype"},
     
     {NULL, NULL, 0, NULL}
 };
