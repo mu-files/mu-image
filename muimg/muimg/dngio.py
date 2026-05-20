@@ -2211,39 +2211,42 @@ def write_dng_from_array(
         num_compression_workers: Number of parallel compression workers (default: 1)
     """
     
-    # Create uncompressed temporary page spec (compression removed)
-    temp_data_spec = IfdDataSpec(
-        data=data_spec.data,
-        photometric=data_spec.photometric,
-        cfa_pattern=data_spec.cfa_pattern,
-        extratags=data_spec.extratags,
-        bits_per_sample=data_spec.bits_per_sample,
-    )
-    
-    # Create in-memory uncompressed DngFile from the temp spec
-    dng_file = create_dng(ifd0_spec=temp_data_spec)
-    
-    # Extract the main page
-    main_page = dng_file.get_main_page()
-    if main_page is None:
-        raise RuntimeError("Failed to create DNG from array data")
-    
-    # Create IfdPageSpec with TRANSCODE mode
-    # Data is already uncompressed in temp DNG, ready for (re)compression
-    # Fast path in write_dng_from_page handles compression-only changes without demosaicing
-    page_spec = IfdPageSpec(
-        page=main_page,
-        transcode_encoding=data_spec.encoding,
-        extratags=None,  # Already in the page
-    )  
-    # Delegate to write_dng_from_page with extracted values
-    write_dng_from_page(
-        destination_file=destination_file,
-        page=page_spec,
-        preview=preview,
-        pyramid=pyramid,
-        num_compression_workers=num_compression_workers
-    )
+    with scoped_perf_timer("write_dng_from_array", logger) as timer:
+        # Create uncompressed temporary page spec (compression removed)
+        temp_data_spec = IfdDataSpec(
+            data=data_spec.data,
+            photometric=data_spec.photometric,
+            cfa_pattern=data_spec.cfa_pattern,
+            extratags=data_spec.extratags,
+            bits_per_sample=data_spec.bits_per_sample,
+        )
+        
+        # Create in-memory uncompressed DngFile from the temp spec
+        timer.start_step("create_dng")
+        dng_file = create_dng(ifd0_spec=temp_data_spec)
+        timer.end_step()
+        
+        # Extract the main page
+        main_page = dng_file.get_main_page()
+        if main_page is None:
+            raise RuntimeError("Failed to create DNG from array data")
+        
+        # Create IfdPageSpec with TRANSCODE mode
+        # Data is already uncompressed in temp DNG, ready for (re)compression
+        # Fast path in write_dng_from_page handles compression-only changes without demosaicing
+        page_spec = IfdPageSpec(
+            page=main_page,
+            transcode_encoding=data_spec.encoding,
+            extratags=None,  # Already in the page
+        )  
+        # Delegate to write_dng_from_page with extracted values
+        write_dng_from_page(
+            destination_file=destination_file,
+            page=page_spec,
+            preview=preview,
+            pyramid=pyramid,
+            num_compression_workers=num_compression_workers
+        )
 
 def create_dng_from_array(
     data_spec: IfdDataSpec,
@@ -2325,6 +2328,8 @@ def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
     # Generate 8-tap Lanczos-4 kernel once (reuse for all levels)
     lanczos_kernel = make_lanczos_kernel(a=4)
 
+    timer = get_active_timer()
+
     current = image
     while len(levels) < num_levels:
         h, w = current.shape[:2]
@@ -2343,9 +2348,11 @@ def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
         
         # Downsample using 8-tap Lanczos filter: apply separable filter then subsample
         # anchor=(3, 3) aligns the kernel center (between indices 3 and 4) with output pixels
+        timer.start_step(f"pyramid_level_{len(levels)}_filter")
         filtered = sepFilter2D(current, -1, lanczos_kernel, lanczos_kernel, 
                                anchor=(3, 3), borderType=BORDER_REFLECT_101)
         downsampled = filtered[::2, ::2]
+        timer.end_step()
         
         levels.append(downsampled)
         current = downsampled
@@ -2416,204 +2423,222 @@ def write_dng_from_page(
         RuntimeError: If DNG processing fails
     """
     
-    # Ensure we have an IfdPageSpec
-    source_page_spec = page if isinstance(page, IfdPageSpec) else IfdPageSpec(page=page)
-    
-    if not (source_page_spec.page.is_cfa or source_page_spec.page.is_linear_raw):
-        raise ValueError(
-            f"Page must be CFA or LINEAR_RAW, got photometric={source_page_spec.page.photometric_name}"
-        )
+    with scoped_perf_timer("write_dng_from_page", logger) as timer:
 
-    # do we change the main page pixels?
-    main_needs_transform = ((demosaic and source_page_spec.page.is_cfa) or scale != 1.0)
-
-    # generate custom preview tags
-    preview_tags = MetadataTags()
-    preview_tags.add_tag("PreviewApplicationName", "muimg")
-    preview_tags.add_tag("PreviewApplicationVersion", "1.0.0")
-
-    # handle ifd0 tags
-    ifd0_tags = MetadataTags()
-    if copy_ifd0_tags:
-        ifd0_tags = source_page_spec.page.get_ifd0_tags()
-        ifd0_tags = filter_tags_by_ifd_category(ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
-    if preview:
-        ifd0_tags |= preview_tags
-    _filter_metadata_tags(ifd0_tags, exclude_names=(ifd0_strip_tags or set()) | _COMPRESSION_INVALIDATED_TAGS)
-    ifd0_tags |= ifd0_extratags
-
-    # handle main page tags
-    main_page_tags = MetadataTags()
-    if source_page_spec.copy_page_tags:
-        main_page_tags |= source_page_spec.page.get_page_tags()
-
-        main_page_categories = ["any"]
-        if source_page_spec.page.is_linear_raw or main_needs_transform:
-            main_page_categories += ["dng_raw"]
-        elif source_page_spec.page.is_cfa:
-            main_page_categories += ["dng_raw", "dng_raw:cfa"]
-        main_page_tags = filter_tags_by_ifd_category(main_page_tags, main_page_categories)
-        _filter_metadata_tags(main_page_tags, exclude_names=source_page_spec.strip_tags)
-    if not preview:
-        main_page_tags = ifd0_tags | main_page_tags # if duplicate tags main page takes precedence
-    main_page_tags |= source_page_spec.extratags    
-
-    # handle pyramid tags
-    pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
-
-    # If no demosaic/scale needed then the main_spec is the incoming page spec
-    if not main_needs_transform:
-        logger.info("Using fast path for main spec (no demosaic/scale)")
-        main_spec = replace(
-            source_page_spec, 
-            subfiletype=SubFileType.MAIN_IMAGE, 
-            extratags=main_page_tags,
-            copy_page_tags=False)
+        # Ensure we have an IfdPageSpec
+        source_page_spec = page if isinstance(page, IfdPageSpec) else IfdPageSpec(page=page)
         
-        # Fast path: no preview/pyramid - write and return immediately
-        if preview is None and not (pyramid and pyramid.levels > 0):
+        if not (source_page_spec.page.is_cfa or source_page_spec.page.is_linear_raw):
+            raise ValueError(
+                f"Page must be CFA or LINEAR_RAW, got photometric={source_page_spec.page.photometric_name}"
+            )
+
+        # do we change the main page pixels?
+        main_needs_transform = ((demosaic and source_page_spec.page.is_cfa) or scale != 1.0)
+
+        # generate custom preview tags
+        preview_tags = MetadataTags()
+        preview_tags.add_tag("PreviewApplicationName", "muimg")
+        preview_tags.add_tag("PreviewApplicationVersion", "1.0.0")
+
+        # handle ifd0 tags
+        ifd0_tags = MetadataTags()
+        if copy_ifd0_tags:
+            ifd0_tags = source_page_spec.page.get_ifd0_tags()
+            ifd0_tags = filter_tags_by_ifd_category(
+                ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
+        if preview:
+            ifd0_tags |= preview_tags
+        _filter_metadata_tags(
+            ifd0_tags, exclude_names=(ifd0_strip_tags or set()) | _COMPRESSION_INVALIDATED_TAGS)
+        ifd0_tags |= ifd0_extratags
+
+        # handle main page tags
+        main_page_tags = MetadataTags()
+        if source_page_spec.copy_page_tags:
+            main_page_tags |= source_page_spec.page.get_page_tags()
+
+            main_page_categories = ["any"]
+            if source_page_spec.page.is_linear_raw or main_needs_transform:
+                main_page_categories += ["dng_raw"]
+            elif source_page_spec.page.is_cfa:
+                main_page_categories += ["dng_raw", "dng_raw:cfa"]
+            main_page_tags = filter_tags_by_ifd_category(main_page_tags, main_page_categories)
+            _filter_metadata_tags(main_page_tags, exclude_names=source_page_spec.strip_tags)
+        if not preview:
+            main_page_tags = ifd0_tags | main_page_tags # if duplicates main page takes precedence
+        main_page_tags |= source_page_spec.extratags    
+
+        # handle pyramid tags
+        pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
+
+        # If no demosaic/scale needed then the main_spec is the incoming page spec
+        if not main_needs_transform:
+            logger.info("Using fast path for main spec (no demosaic/scale)")
+            main_spec = replace(
+                source_page_spec, 
+                subfiletype=SubFileType.MAIN_IMAGE, 
+                extratags=main_page_tags,
+                copy_page_tags=False)
+            
+            # Fast path: no preview/pyramid - write and return immediately
+            if preview is None and not (pyramid and pyramid.levels > 0):
+                timer.start_step("write_dng_fast_path")
+                write_dng(
+                    destination_file=destination_file,
+                    ifd0_spec=main_spec,
+                    num_compression_workers=num_compression_workers
+                )
+                timer.end_step()
+                if isinstance(destination_file, io.BytesIO):
+                    logger.info("Successfully wrote DNG to stream")
+                else:
+                    logger.info(f"Successfully wrote DNG to {destination_file}")
+                return
+        else:
+            # Only strip stage and digest tags if we transcoded (transformed the data)
+            tags_to_strip = STAGE1_STAGE2_TAGS | STAGE3_TAGS | _DIGEST_TAGS
+        
+            # Filter tags
+            _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
+            _filter_metadata_tags(main_page_tags, exclude_names=tags_to_strip)
+
+        # Extract camera RGB (always needed if we didn't take fast return path)
+        timer.start_step("extract_camera_rgb")
+        logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
+        camera_rgb = source_page_spec.page.get_camera_rgb_raw(demosaic_algorithm)
+        if camera_rgb is None:
+            raise RuntimeError("Failed to extract camera RGB")
+        timer.end_step()
+        
+        # Apply scaling if needed
+        if scale != 1.0:
+            timer.start_step("apply_scaling")
+            logger.info(f"Applying scale: {scale}")
+            h, w = camera_rgb.shape[:2]
+            new_h, new_w = int(h * scale), int(w * scale)
+            
+            from cv2 import resize, INTER_LINEAR
+            camera_rgb = resize(camera_rgb, (new_w, new_h), interpolation=INTER_LINEAR)
+            timer.end_step()
+        
+        # Compute pyramid levels needed and find best level for preview
+        num_pyramid_levels = 1  # Level 0 is always the original
+        preview_level_idx = 0  # Default to level 0 if no preview
+        
+        # Calculate levels needed for preview
+        if preview:
+            # Direct mapping: FULL=0, HALF=1, QUARTER=2, EIGHTH=3
+            preview_level_idx = preview.scale
+            num_pyramid_levels = preview_level_idx + 1
+        
+        # Take max with requested pyramid levels
+        if pyramid:
+            num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
+        
+        # Generate pyramid
+        timer.start_step("generate_pyramid")
+        pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels)
+        logger.info(f"Generated {len(pyramid_images)} pyramid levels")
+        timer.end_step()
+        
+        # Build main raw data spec from transcoded data if we don't already have a page spec
+        if main_needs_transform:
+            # Transformed data - extract compression from source
+            raw_uint16 = raw_render.convert_dtype(pyramid_images[0], np.uint16)
+            if source_page_spec.transcode_encoding:
+                # Explicit TRANSCODE mode - use specified encoding
+                main_encoding = source_page_spec.transcode_encoding
+            else:
+                # COPY mode - preserve source compression, no args
+                main_encoding = PageEncoding(
+                    compression=source_page_spec.page.compression,
+                    compression_args=None
+                )
+
+            main_spec = IfdDataSpec(
+                data=raw_uint16,
+                photometric="LINEAR_RAW",
+                subfiletype=SubFileType.MAIN_IMAGE,
+                encoding=main_encoding,
+                extratags = main_page_tags
+            )
+        
+        # Build pyramid level specs (levels 1+)
+        pyramid_specs = []
+        if pyramid and pyramid.levels > 0:
+            for level_idx in range(1, len(pyramid_images)):
+                pyramid_uint16 = raw_render.convert_dtype(pyramid_images[level_idx], np.uint16)
+                pyramid_spec = IfdDataSpec(
+                    data=pyramid_uint16,
+                    photometric="LINEAR_RAW",
+                    subfiletype=SubFileType.PREVIEW_IMAGE,
+                    encoding=pyramid.encoding,
+                    extratags=pyramid_tags,
+                )
+                pyramid_specs.append(pyramid_spec)
+        
+        # Generate rendered preview if requested
+        if not preview:
+            # No preview: IFD0 = main, SubIFD0+ = pyramid
+            timer.start_step("write_dng_no_preview")
             write_dng(
                 destination_file=destination_file,
                 ifd0_spec=main_spec,
+                subifds=pyramid_specs,
                 num_compression_workers=num_compression_workers
             )
-            if isinstance(destination_file, io.BytesIO):
-                logger.info("Successfully wrote DNG to stream")
-            else:
-                logger.info(f"Successfully wrote DNG to {destination_file}")
-            return
-    else:
-        # Only strip stage and digest tags if we transcoded (transformed the data)
-        tags_to_strip = STAGE1_STAGE2_TAGS | STAGE3_TAGS | _DIGEST_TAGS
-    
-        # Filter tags
-        _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
-        _filter_metadata_tags(main_page_tags, exclude_names=tags_to_strip)
-
-    # Extract camera RGB (always needed if we didn't take fast return path)
-    logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
-    camera_rgb = source_page_spec.page.get_camera_rgb_raw(demosaic_algorithm)
-    if camera_rgb is None:
-        raise RuntimeError("Failed to extract camera RGB")
-    
-    # Apply scaling if needed
-    if scale != 1.0:
-        logger.info(f"Applying scale: {scale}")
-        h, w = camera_rgb.shape[:2]
-        new_h, new_w = int(h * scale), int(w * scale)
-        
-        from cv2 import resize, INTER_LINEAR
-        camera_rgb = resize(camera_rgb, (new_w, new_h), interpolation=INTER_LINEAR)
-    
-    # Compute pyramid levels needed and find best level for preview
-    num_pyramid_levels = 1  # Level 0 is always the original
-    preview_level_idx = 0  # Default to level 0 if no preview
-    
-    # Calculate levels needed for preview
-    if preview:
-        # Direct mapping: FULL=0, HALF=1, QUARTER=2, EIGHTH=3
-        preview_level_idx = preview.scale
-        num_pyramid_levels = preview_level_idx + 1
-    
-    # Take max with requested pyramid levels
-    if pyramid:
-        num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
-    
-    # Generate pyramid
-    pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels)
-    logger.info(f"Generated {len(pyramid_images)} pyramid levels")
-    
-    # Build main raw data spec from transcoded data if we don't already have a page spec
-    if main_needs_transform:
-        # Transformed data - extract compression from source
-        raw_uint16 = raw_render.convert_dtype(pyramid_images[0], np.uint16)
-        if source_page_spec.transcode_encoding:
-            # Explicit TRANSCODE mode - use specified encoding
-            main_encoding = source_page_spec.transcode_encoding
+            timer.end_step()
         else:
-            # COPY mode - preserve source compression, no args
-            main_encoding = PageEncoding(
-                compression=source_page_spec.page.compression,
-                compression_args=None
+            # Use pre-calculated best pyramid level
+            preview_rgb = pyramid_images[preview_level_idx]
+            
+            logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({preview_rgb.shape[:2]})")
+            
+            # Create copy of ifd0_tags with Orientation equal to HORIZONTAL
+            # since the Orientation tag is persisted across the copy
+            ifd0_tags_no_orientation = ifd0_tags.copy()
+            ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
+            
+            # Render with color transforms
+            timer.start_step("render_preview")
+            rendered_preview = raw_render._render_camera_rgb(
+                ifd0_tags=ifd0_tags_no_orientation,
+                raw_ifd_tags=source_page_spec.page.get_page_tags(),
+                rgb_camera=preview_rgb,
+                output_dtype=np.uint8,
+                rendering_params=preview.rendering_params,
+                use_xmp=preview.use_xmp,
             )
-
-        main_spec = IfdDataSpec(
-            data=raw_uint16,
-            photometric="LINEAR_RAW",
-            subfiletype=SubFileType.MAIN_IMAGE,
-            encoding=main_encoding,
-            extratags = main_page_tags
-        )
-    
-    # Build pyramid level specs (levels 1+)
-    pyramid_specs = []
-    if pyramid and pyramid.levels > 0:
-        for level_idx in range(1, len(pyramid_images)):
-            pyramid_uint16 = raw_render.convert_dtype(pyramid_images[level_idx], np.uint16)
-            pyramid_spec = IfdDataSpec(
-                data=pyramid_uint16,
-                photometric="LINEAR_RAW",
+            timer.end_step()
+            
+            # Create preview spec for IFD0
+            preview_encoding = PageEncoding(
+                compression=preview.compression,
+                compression_args=preview.compression_args
+            ) if preview.compression else None
+            preview_spec = IfdDataSpec(
+                data=rendered_preview,
+                photometric="RGB",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
-                encoding=pyramid.encoding,
-                extratags=pyramid_tags,
+                encoding=preview_encoding,
+                extratags=ifd0_tags,
             )
-            pyramid_specs.append(pyramid_spec)
-    
-    # Generate rendered preview if requested
-    if not preview:
-        # No preview: IFD0 = main, SubIFD0+ = pyramid
-        write_dng(
-            destination_file=destination_file,
-            ifd0_spec=main_spec,
-            subifds=pyramid_specs,
-            num_compression_workers=num_compression_workers
-        )
-    else:
-        # Use pre-calculated best pyramid level
-        preview_rgb = pyramid_images[preview_level_idx]
+            
+            # Write: IFD0 = preview, SubIFD0 = main, SubIFD1+ = pyramid
+            timer.start_step("write_dng_with_preview")
+            write_dng(
+                destination_file=destination_file,
+                ifd0_spec=preview_spec,
+                subifds=[main_spec] + pyramid_specs,
+                num_compression_workers=num_compression_workers
+            )
+            timer.end_step()
         
-        logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({preview_rgb.shape[:2]})")
-        
-        # Create copy of ifd0_tags with Orientation equal to HORIZONTAL
-        # since the Orientation tag is persisted across the copy
-        ifd0_tags_no_orientation = ifd0_tags.copy()
-        ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
-        
-        # Render with color transforms
-        rendered_preview = raw_render._render_camera_rgb(
-            ifd0_tags=ifd0_tags_no_orientation,
-            raw_ifd_tags=source_page_spec.page.get_page_tags(),
-            rgb_camera=preview_rgb,
-            output_dtype=np.uint8,
-            rendering_params=preview.rendering_params,
-            use_xmp=preview.use_xmp,
-        )
-        
-        # Create preview spec for IFD0
-        preview_encoding = PageEncoding(
-            compression=preview.compression,
-            compression_args=preview.compression_args
-        ) if preview.compression else None
-        preview_spec = IfdDataSpec(
-            data=rendered_preview,
-            photometric="RGB",
-            subfiletype=SubFileType.PREVIEW_IMAGE,
-            encoding=preview_encoding,
-            extratags=ifd0_tags,
-        )
-        
-        # Write: IFD0 = preview, SubIFD0 = main, SubIFD1+ = pyramid
-        write_dng(
-            destination_file=destination_file,
-            ifd0_spec=preview_spec,
-            subifds=[main_spec] + pyramid_specs,
-            num_compression_workers=num_compression_workers
-        )
-    
-    if isinstance(destination_file, io.BytesIO):
-        logger.info("Successfully wrote DNG to stream")
-    else:
-        logger.info(f"Successfully wrote DNG to {destination_file}")
+        if isinstance(destination_file, io.BytesIO):
+            logger.info("Successfully wrote DNG to stream")
+        else:
+            logger.info(f"Successfully wrote DNG to {destination_file}")
 
 
 def create_dng_from_page(
