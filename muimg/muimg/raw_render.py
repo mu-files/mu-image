@@ -101,12 +101,16 @@ def convert_dtype(
         result = convert_dtype(image_f32, np.uint8, clip_max=255.0)
     """
     dest_dtype = np.dtype(dest_dtype)
-    
+
+    # Early-out: same float dtype with no clip - return input unchanged
+    if image.dtype == dest_dtype and clip_max is None and image.dtype in (np.float16, np.float32, np.float64):
+        return image
+
     # Handle float16 by converting through float32 (same pattern as convert_colorspace)
     input_was_float16 = image.dtype == np.float16
     if input_was_float16:
         image = image.astype(np.float32)
-    
+
     output_is_float16 = dest_dtype == np.float16
     if output_is_float16:
         dest_dtype = np.dtype(np.float32)
@@ -124,12 +128,20 @@ def convert_dtype(
     if image.dtype not in dtype_to_npy:
         raise TypeError(f"Unsupported source dtype: {image.dtype}. Must be uint8, uint16, float16, or float32")
     
-    # Compute actual bits from dtype when not specified (numpy gives bytes)
-    src_bits = image.dtype.itemsize * 8 if src_bits_per_element is None else int(src_bits_per_element)
-    dst_bits = dest_dtype.itemsize * 8 if dest_bits_per_element is None else int(dest_bits_per_element)
+    # Compute bits from dtype. For ints: use itemsize*8. For floats: use -1 (default).
+    if src_bits_per_element is None:
+        src_bits = -1 if image.dtype in (np.float32, np.float64, np.float16) else image.dtype.itemsize * 8
+    else:
+        src_bits = int(src_bits_per_element)
+
+    if dest_bits_per_element is None:
+        dst_bits = -1 if dest_dtype in (np.float32, np.float64, np.float16) else dest_dtype.itemsize * 8
+    else:
+        dst_bits = int(dest_bits_per_element)
     
-    # Early-out: same dtype, same bits, no clip - return input unchanged
-    if (image.dtype == dest_dtype and src_bits == dst_bits and clip_max is None):
+    # Early-out: same dtype, same bits, no clip, and not float16 output - return input unchanged
+    # (float16 requires conversion back to float16 at the end, so can't early-out)
+    if image.dtype == dest_dtype and src_bits == dst_bits and clip_max is None and not output_is_float16:
         return image
     
     # Use -1 for no clipping, else pass the clip value

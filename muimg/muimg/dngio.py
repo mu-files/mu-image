@@ -14,7 +14,7 @@ import numpy as np
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import Enum, IntEnum, StrEnum
+from enum import auto, Enum, IntEnum, StrEnum
 from pathlib import Path
 from tifffile import COMPRESSION, TiffFile, TiffPage, TiffWriter
 from typing import Any, IO, TypeAlias
@@ -67,6 +67,13 @@ class RawStageSelector(StrEnum):
         """Look up enum member by string value."""
         from .common import enum_from_string
         return enum_from_string(cls, value)
+
+
+class PyramidFilter(Enum):
+    """Filter types for pyramid generation."""
+    LANCZOS8 = auto()
+    LANCZOS4 = auto()
+    CATMULL_ROM = auto()
 
 
 # =============================================================================
@@ -2188,10 +2195,12 @@ class PyramidParams:
         levels: Number of pyramid levels to generate (0=none)
         encoding: PageEncoding for pyramid levels (None = no compression)
         extratags: Additional metadata tags to add to each pyramid level
+        filter: Filter type for pyramid downscaling (default: CATMULL_ROM)
     """
     levels: int = 0
     encoding: PageEncoding | None = None
     extratags: MetadataTags | None = None
+    filter: PyramidFilter = PyramidFilter.CATMULL_ROM
 
 
 def write_dng_from_array(
@@ -2284,15 +2293,20 @@ def create_dng_from_array(
     return DngFile(buffer)
 
 
-def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
-    """Generate image pyramid levels using 8-tap Lanczos downsampling.
+def _generate_pyramid(
+    image: np.ndarray,
+    num_levels: int,
+    filter: PyramidFilter = PyramidFilter.CATMULL_ROM,
+) -> list[np.ndarray]:
+    """Generate image pyramid levels using configurable downsampling filter.
     
     Creates a pyramid where each level is exactly 1/2 x 1/2 of the previous level,
-    using an 8-tap Lanczos windowed sinc filter for high-quality downsampling.
+    using a separable filter for high-quality downsampling.
     
     Args:
         image: Input image (any dtype, 2D or 3D)
         num_levels: Maximum number of pyramid levels to generate (including level 0)
+        filter: Filter type for downsampling (LANCZOS8, LANCZOS4, CATMULL_ROM)
     
     Returns:
         List of pyramid levels where:
@@ -2308,50 +2322,44 @@ def _generate_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
         >>> [p.shape for p in pyramid]
         [(1000, 800, 3), (500, 400, 3), (250, 200, 3), (125, 100, 3)]
     """
-    from cv2 import sepFilter2D, BORDER_REFLECT_101
-    
-    def make_lanczos_kernel(a: int = 4) -> np.ndarray:
-        """Generate an 8-tap Lanczos kernel for 2:1 downsampling."""
-        # Kernel positions for 8-tap, centered between pixels at half-pixel offsets
-        positions = np.arange(-a + 0.5, a, 1.0)  # [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5]
-        
-        # Lanczos function: L(x) = sinc(x) * sinc(x/a)
-        # numpy.sinc(x) computes sin(πx)/(πx)
-        kernel = np.sinc(positions) * np.sinc(positions / a)
-        
-        # Normalize to sum to 1.0
-        kernel = kernel / kernel.sum()
-        
-        return kernel.astype(np.float32)
-    
-    levels = [image]
-    
-    # Generate 8-tap Lanczos-4 kernel once (reuse for all levels)
-    lanczos_kernel = make_lanczos_kernel(a=4)
-
     timer = get_active_timer()
 
+    timer.start_step("opencv_import")
+    from cv2 import sepFilter2D, BORDER_REFLECT_101
+    timer.end_step()
+
+
+    def make_lanczos_kernel(a: int) -> np.ndarray:
+        """Generate a Lanczos kernel for 2:1 downsampling."""
+        positions = np.arange(-a + 0.5, a, 1.0)
+        kernel = np.sinc(positions) * np.sinc(positions / a)
+        kernel = kernel / kernel.sum()
+        return kernel.astype(np.float32)
+    
+    # Select kernel based on filter type
+    if filter == PyramidFilter.CATMULL_ROM:
+        kernel = np.array([-0.0625, 0.5625, 0.5625, -0.0625], dtype=np.float32)
+        anchor = (1, 1)
+    elif filter == PyramidFilter.LANCZOS4:
+        kernel = make_lanczos_kernel(a=2)  # 4-tap
+        anchor = (1, 1)
+    else:  # LANCZOS8 (default)
+        kernel = make_lanczos_kernel(a=4)  # 8-tap
+        anchor = (3, 3)
+    
+    levels = [image]
     current = image
+    
     while len(levels) < num_levels:
         h, w = current.shape[:2]
-        
-        # Check stopping condition: min dimension <= 16
         if min(h, w) <= 16:
             break
-        
-        # Calculate next level dimensions (round up on division)
-        next_h = (h + 1) // 2
-        next_w = (w + 1) // 2
-        
-        # Check if next level would be too small
+        next_h, next_w = (h + 1) // 2, (w + 1) // 2
         if min(next_h, next_w) <= 16:
             break
         
-        # Downsample using 8-tap Lanczos filter: apply separable filter then subsample
-        # anchor=(3, 3) aligns the kernel center (between indices 3 and 4) with output pixels
-        timer.start_step(f"pyramid_level_{len(levels)}_filter")
-        filtered = sepFilter2D(current, -1, lanczos_kernel, lanczos_kernel, 
-                               anchor=(3, 3), borderType=BORDER_REFLECT_101)
+        timer.start_step(f"pyramid_level_{len(levels)}_filter_{filter.name}")
+        filtered = sepFilter2D(current, -1, kernel, kernel, anchor=anchor, borderType=BORDER_REFLECT_101)
         downsampled = filtered[::2, ::2]
         timer.end_step()
         
@@ -2537,9 +2545,10 @@ def write_dng_from_page(
         if pyramid:
             num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
         
-        # Generate pyramid
+        # Generate pyramid - use CATMULL_ROM for faster preview generation
         timer.start_step("generate_pyramid")
-        pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels)
+        filter_type = pyramid.filter if pyramid else PyramidFilter.CATMULL_ROM
+        pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels, filter=filter_type)
         logger.info(f"Generated {len(pyramid_images)} pyramid levels (including original)")
         timer.end_step()
         
