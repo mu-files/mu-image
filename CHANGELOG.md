@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased] - 2026-05-19
+## [0.1.20260519.1642] - 2026-05-19
 
 ### Added
 - **Performance Timing**: Comprehensive hierarchical timing of DNG rendering pipeline. Run `muimg dng convert -v` to get a per-step breakdown (decode, linearize, color transforms, tone curves, etc.) with milliseconds and percentage of total render time.
