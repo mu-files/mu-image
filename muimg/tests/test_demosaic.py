@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 import tifffile
 
-from muimg import DngFile
+from muimg.dngio import DngFile
 from muimg.raw_render import demosaic, convert_dtype, DemosaicAlgorithm
 from conftest import compute_diff_stats
 
