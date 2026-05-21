@@ -205,12 +205,13 @@ static const float* prepare_lut_with_sentinel(
 // Specialized: LUT only (no matrix)
 // Input and output LUTs are identical when there's no matrix
 // Use8bit256: true for uint8 input with 256-entry LUT (direct lookup, no interpolation)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_only_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* lut,
+    const float* __restrict lut,
     int lut_size,
     float src_scale,
     float dst_scale
@@ -246,12 +247,13 @@ static void transform_lut_only_impl(
 }
 
 // Specialized: Matrix only (no LUTs)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT>
 static void transform_matrix_only_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* matrix,
+    const float* __restrict matrix,
     float src_scale,
     float dst_scale
 ) {
@@ -279,14 +281,15 @@ static void transform_matrix_only_impl(
 }
 
 // Specialized: LUT → Matrix
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_matrix_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
+    const float* __restrict matrix,
     float src_scale,
     float dst_scale
 ) {
@@ -325,13 +328,14 @@ static void transform_lut_matrix_impl(
 }
 
 // Specialized: Matrix → LUT
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT>
 static void transform_matrix_lut_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     float src_scale,
     float dst_scale
@@ -367,15 +371,16 @@ static void transform_matrix_lut_impl(
 }
 
 // Specialized: LUT → Matrix → LUT (full pipeline)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_matrix_lut_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     float src_scale,
     float dst_scale
@@ -479,11 +484,12 @@ static inline void apply_hue_preserving_tone(
 }
 
 // Hue-preserving LUT only (float32 input/output only)
+// NOTE: src and dst must not overlap (__restrict contract)
 static void transform_hue_preserving_lut_only_impl(
-    const float* input,
-    float* output,
+    const float* __restrict input,
+    float* __restrict output,
     int total_pixels,
-    const float* lut,
+    const float* __restrict lut,
     int lut_size
 ) {
     float lut_scale = (float)(lut_size - 1);
@@ -501,14 +507,15 @@ static void transform_hue_preserving_lut_only_impl(
 }
 
 // Hue-preserving LUT → Matrix (templated for output dtype)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename DstT>
 static void transform_hue_preserving_lut_matrix_impl(
-    const float* input,
-    DstT* output,
+    const float* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
+    const float* __restrict matrix,
     float dst_scale
 ) {
     float input_lut_scale = (float)(input_lut_size - 1);
@@ -529,15 +536,16 @@ static void transform_hue_preserving_lut_matrix_impl(
 }
 
 // Hue-preserving LUT → Matrix → Output LUT (templated for output dtype)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename DstT>
 static void transform_hue_preserving_lut_matrix_lut_impl(
-    const float* input,
-    DstT* output,
+    const float* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     float dst_scale
 ) {
@@ -582,17 +590,18 @@ static float get_max_value(int dtype, int bits_per_element) {
 }
 
 // Dispatcher: selects specialized function based on parameters
+// NOTE: src and dst must not overlap (__restrict contract)
 static void transform_color_dispatch(
-    const void* input,
-    void* output,
+    const void* __restrict input,
+    void* __restrict output,
     int height,
     int width,
     int src_dtype,
     int dst_dtype,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     int src_bits,
     int dst_bits,
@@ -935,7 +944,7 @@ private:
 
 #if NEON
     // NEON implementation - single path with merged clip logic
-    void convert_neon(const SrcT* src, DstT* dst,int count) const {
+    void convert_neon(const SrcT* __restrict src, DstT* __restrict dst,int count) const {
         float32x4_t vscale = vdupq_n_f32(scale_);
         // Clip limit is either clip_max (if specified) or dst_max (for safe conversion)
         float clip_limit = do_clip_ ? clip_max_ : 
@@ -1600,11 +1609,12 @@ static void init_bicubic_weights_2d() {
 // Uses radial polynomial model: ratio = kr0 + kr2*r^2 + kr4*r^4 + kr6*r^6 (EVEN powers)
 // Each color plane has its own coefficients for lateral CA correction
 // center_x, center_y: optical center in normalized [0,1] coordinates
+// NOTE: src and dst must not overlap (__restrict contract)
 static void warp_rectilinear(
-    const float* src, float* dst,
+    const float* __restrict src, float* __restrict dst,
     npy_intp height, npy_intp width, int channels,
-    const double* radial_params, int num_planes, int num_coeffs,  // [num_planes][num_coeffs]
-    const double* tangential_params,  // [num_planes][2] or NULL
+    const double* __restrict radial_params, int num_planes, int num_coeffs,  // [num_planes][num_coeffs]
+    const double* __restrict tangential_params,  // [num_planes][2] or NULL
     double center_x, double center_y,
     bool use_bicubic = true  // SDK ref: dng_lens_correction.cpp line 1251 uses dng_resample_bicubic
 ) {
@@ -2740,10 +2750,11 @@ static inline int get_cfa_color(const int* cfa_colors, int row, int col) {
 //
 // SDK operates on float32 throughout (dng_pixel_buffer with ttFloat)
 //
+// NOTE: src and dst must not overlap (__restrict contract)
 static void bilinear_demosaic_kernel(
-    const float* src, float* dst,
+    const float* __restrict src, float* __restrict dst,
     npy_intp height, npy_intp width,
-    const int* cfa_colors
+    const int* __restrict cfa_colors
 ) {
     // Process each output pixel
     for (npy_intp row = 0; row < height; row++) {
