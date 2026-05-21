@@ -3,10 +3,9 @@
 
 """DNG compression utilities for tiled and stripped image data."""
 
-import imagecodecs
 import numpy as np
 
-from tifffile import COMPRESSION
+from .deps import imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
 
 def swizzle_cfa_data(
@@ -119,7 +118,7 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
 
 def compress_ifd(
     data: np.ndarray,
-    compression: COMPRESSION,
+    compression: tifffile.COMPRESSION,
     compression_args: dict | None,
     bits_per_sample: int,
     photometric: str,
@@ -149,7 +148,7 @@ def compress_ifd(
     # Track whether we need to swizzle CFA data per-tile
     needs_swizzle = (
         photometric == "CFA" and 
-        compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG)
+        compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG)
     )
     
     h, w = data.shape[:2]
@@ -204,7 +203,7 @@ def compress_ifd(
     # Define compression function for a single segment
     def compress_segment(segment: np.ndarray) -> bytes:
         """Compress a single segment based on compression type."""
-        if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+        if compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
             # JXL compression
             jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
             jxl_effort = compression_args.get('effort', 5) if compression_args else 5
@@ -218,7 +217,7 @@ def compress_ifd(
                     segment, distance=jxl_distance, effort=jxl_effort, bitspersample=bits_per_sample
                 )
                 
-        elif compression == COMPRESSION.JPEG:
+        elif compression == tifffile.COMPRESSION.JPEG:
             # JPEG compression
             lossless = compression_args.get('lossless', True) if compression_args else True
             seg_data = segment
@@ -244,7 +243,7 @@ def compress_ifd(
                     outcolorspace='RGB'
                 )
                 
-        elif compression == COMPRESSION.NONE:
+        elif compression == tifffile.COMPRESSION.NONE:
             # Uncompressed - handle byte order and bit packing
             # 1. Convert to target byte order
             seg = normalize_array_to_target_byteorder(segment, target_byteorder)

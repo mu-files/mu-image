@@ -7,7 +7,6 @@ This module provides functionality for reading, writing, and processing DNG file
 """
 from __future__ import annotations
 
-import imagecodecs
 import io
 import logging
 import numpy as np
@@ -16,8 +15,14 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import auto, Enum, IntEnum, StrEnum
 from pathlib import Path
-from tifffile import COMPRESSION, TiffFile, TiffPage, TiffWriter
 from typing import Any, IO, TypeAlias
+
+from .deps import (
+    cv2_proxy as cv2,
+    imagecodecs_proxy as imagecodecs,
+    tifffile_proxy as tifffile,
+)
+
 
 # Package imports
 from . import raw_render
@@ -80,7 +85,7 @@ class PyramidFilter(Enum):
 # Core DNG Classes
 # =============================================================================
 
-class DngPage(TiffPage):
+class DngPage(tifffile.TiffPage):
     """TiffPage subclass with DNG-specific functionality.
     
     Provides convenient access to DNG tags with automatic translation,
@@ -99,7 +104,7 @@ class DngPage(TiffPage):
         """Create DngPage instance without calling TiffPage.__init__."""
         return object.__new__(cls)
     
-    def __init__(self, tiff_page: TiffPage):
+    def __init__(self, tiff_page: tifffile.TiffPage):
         """Initialize DngPage by copying TiffPage state.
         
         Args:
@@ -506,9 +511,9 @@ class DngPage(TiffPage):
         timer = get_active_timer()
         if self.is_cfa:
             timer.start_step("decode_cfa (c++)")
-            if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            if self.compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
                 raw_cfa = self._decode_jpegxl()
-            elif self.compression == COMPRESSION.JPEG:
+            elif self.compression == tifffile.COMPRESSION.JPEG:
                 raw_cfa = self._decode_jpeg_cfa()
             else:
                 raw_cfa = self.asarray()
@@ -526,9 +531,9 @@ class DngPage(TiffPage):
 
         if self.is_linear_raw:
             timer.start_step("decode_linear_raw (c++)")
-            if self.compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            if self.compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
                 raw_linear = self._decode_jpegxl()
-            elif self.compression == COMPRESSION.JPEG:
+            elif self.compression == tifffile.COMPRESSION.JPEG:
                 raw_linear = self._decode_jpeg_linear_raw()
             else:
                 raw_linear = self.asarray()
@@ -981,7 +986,7 @@ class DngPage(TiffPage):
             )
             return result
 
-class DngFile(TiffFile):
+class DngFile(tifffile.TiffFile):
 
     """A TIFF file with DNG-specific extensions and helper methods."""
 
@@ -1303,9 +1308,8 @@ class DngFile(TiffFile):
                     else:
                         # Downscaling: do it now before rendering
                         _timer.start_step("pre_scale (opencv)")
-                        from cv2 import resize, INTER_AREA
-                        rgb_camera = resize(
-                            rgb_camera, (target_w, target_h), interpolation=INTER_AREA
+                        rgb_camera = cv2.resize(
+                            rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
                         )
                         _timer.end_step()
             
@@ -1334,9 +1338,8 @@ class DngFile(TiffFile):
                     final_w, final_h = final_h, final_w
 
                 _timer.start_step("post_scale (opencv)")
-                from cv2 import resize, INTER_LINEAR
-                rgb_image = resize(
-                    rgb_image, (final_w, final_h), interpolation=INTER_LINEAR
+                rgb_image = cv2.resize(
+                    rgb_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
                 )
                 _timer.end_step()
             
@@ -1584,7 +1587,7 @@ class PageEncoding:
     Groups compression type, codec-specific arguments, and tile/strip layout.
     
     Args:
-        compression: Compression type (None = COMPRESSION.NONE)
+        compression: Compression type (None = tifffile.COMPRESSION.NONE)
         compression_args: Codec-specific args. For JXL, defaults to 
             {'distance': 0.0, 'effort': 4} (lossless) if not specified.
         tile_size: Tile dimensions (height, width). Mutually exclusive with rows_per_strip.
@@ -1594,24 +1597,24 @@ class PageEncoding:
         - If both tile_size and rows_per_strip are None, uses single-strip layout (full image).
         - tile_size and rows_per_strip cannot both be specified.
     """
-    compression: COMPRESSION | None = None
+    compression: tifffile.COMPRESSION | None = None
     compression_args: dict | None = None
     tile_size: tuple[int, int] | None = None
     rows_per_strip: int | None = None
     
-    def get_compression(self) -> tuple[COMPRESSION, dict | None]:
+    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict | None]:
         """Get compression type and args with defaults applied.
         
         Returns:
             Tuple of (compression, compression_args). Compression defaults to
-            COMPRESSION.NONE if None. For JXL compression, args default to
+            tifffile.COMPRESSION.NONE if None. For JXL compression, args default to
             {'distance': 0.0, 'effort': 4} (lossless) if not specified.
         """
-        comp = self.compression if self.compression is not None else COMPRESSION.NONE
+        comp = self.compression if self.compression is not None else tifffile.COMPRESSION.NONE
         args = self.compression_args
         
         # Apply JXL defaults if no args specified
-        if comp in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) and args is None:
+        if comp in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG) and args is None:
             args = {'distance': 0.0, 'effort': 4}
         
         return (comp, args)
@@ -1652,7 +1655,7 @@ class IfdPageSpec:
             )
         return False
     
-    def get_compression(self) -> tuple[COMPRESSION, dict | None]:
+    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict | None]:
         """Get compression and args for this spec.
         
         Returns:
@@ -1674,7 +1677,7 @@ class IfdDataSpec:
         photometric: Photometric interpretation ("CFA", "LINEAR_RAW", "RGB", "YCBCR")
         subfiletype: NewSubFileType value (0=main, 1=preview)
         cfa_pattern: CFA pattern (only used for photometric="CFA")
-        encoding: PageEncoding for compression. None means no compression (COMPRESSION.NONE).
+        encoding: PageEncoding for compression. None means no compression (tifffile.COMPRESSION.NONE).
         extratags: Additional metadata tags to add
         bits_per_sample: Bits per sample (e.g., 10, 12, 14 for raw data). None means
             infer from dtype (uint8→8, uint16→16, float16→16, float32→32). Use this to
@@ -1692,15 +1695,15 @@ class IfdDataSpec:
         """Check if this spec requires transcoding (always False for array data)."""
         return False
     
-    def get_compression(self) -> tuple[COMPRESSION, dict | None]:
+    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict | None]:
         """Get compression and args for this spec.
         
         Returns:
             Tuple of (compression, compression_args). If encoding is None,
-            returns (COMPRESSION.NONE, None). Otherwise returns encoding's
+            returns (tifffile.COMPRESSION.NONE, None). Otherwise returns encoding's
             compression with defaults applied.
         """
-        return self.encoding.get_compression() if self.encoding else (COMPRESSION.NONE, None)
+        return self.encoding.get_compression() if self.encoding else (tifffile.COMPRESSION.NONE, None)
 
 
 # IFD specification type alias (defined after the classes)
@@ -1727,7 +1730,7 @@ def write_dng(
         num_compression_workers: Number of parallel compression workers (default: 1).
     """
     def _write_page_ifd(
-        writer: TiffWriter,
+        writer: tifffile.TiffWriter,
         page: "DngPage",
         *,
         raw_ifd_args: dict,
@@ -1738,7 +1741,7 @@ def write_dng(
         
         # For uncompressed data, use asarray() to handle byte order conversion
         # For compressed data, copy raw bytes (compression is byte-order independent)
-        if page.compression == COMPRESSION.NONE:
+        if page.compression == tifffile.COMPRESSION.NONE:
             data = page.asarray()
         else:
             # Read raw compressed segments
@@ -1763,7 +1766,7 @@ def write_dng(
         )
 
         segment_type = "tiled" if page.is_tiled else "stripped"
-        compression_type = "uncompressed" if page.compression == COMPRESSION.NONE else "compressed"
+        compression_type = "uncompressed" if page.compression == tifffile.COMPRESSION.NONE else "compressed"
         logger.debug(
             f"Successfully copied {segment_type} {compression_type} data ({sum(page.databytecounts)} bytes)"
         )
@@ -1799,7 +1802,7 @@ def write_dng(
 
 
     def _write_ifd_from_spec(
-        writer: TiffWriter,
+        writer: tifffile.TiffWriter,
         spec: IfdSpec,
         *,
         is_ifd0: bool = False,
@@ -1865,7 +1868,7 @@ def write_dng(
                 # Case 1: main image is data AND (ifd0 is a page with copytags OR main is doing compression)
                 if isinstance(main_spec, IfdDataSpec):
                     comp, _ = main_spec.get_compression()
-                    has_compression = comp != COMPRESSION.NONE
+                    has_compression = comp != tifffile.COMPRESSION.NONE
                     if (isinstance(spec, IfdPageSpec) and spec.copy_page_tags) or has_compression:
                         digest_invalid = True
                 # Case 2: main image is a page with transcode
@@ -1891,10 +1894,10 @@ def write_dng(
         
         # Normalize compression type and args (skip for COPY mode)
         if not (isinstance(spec, IfdPageSpec) and not spec.requires_transcode()):
-            if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+            if compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
                 # Normalize JXL compression variants to JPEGXL_DNG
-                compression = COMPRESSION.JPEGXL_DNG
-            elif compression == COMPRESSION.JPEG:
+                compression = tifffile.COMPRESSION.JPEGXL_DNG
+            elif compression == tifffile.COMPRESSION.JPEG:
                 # Default to lossless JPEG for raw data if no args provided
                 if compression_args is None and photometric in ("LINEAR_RAW", "CFA"):
                     compression_args = {'lossless': True}
@@ -2028,11 +2031,11 @@ def write_dng(
             # Segment and compress data
             dng_photometric_types = photometric in ("CFA", "LINEAR_RAW")
             
-            if (compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG, COMPRESSION.JPEG) 
-                and dng_photometric_types) or compression == COMPRESSION.NONE:
+            if (compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG, tifffile.COMPRESSION.JPEG) 
+                and dng_photometric_types) or compression == tifffile.COMPRESSION.NONE:
                 
                 # Add compression-specific tags before encoding
-                if compression in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG):
+                if compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
                     jxl_distance = compression_args.get('distance', 0.0) if compression_args else 0.0
                     jxl_effort = compression_args.get('effort', 5) if compression_args else 5
                     
@@ -2091,12 +2094,12 @@ def write_dng(
     
     # Check if any IFD uses JXL compression
     needs_v1_7_1 = any(
-        s.get_compression()[0] in (COMPRESSION.JPEGXL, COMPRESSION.JPEGXL_DNG) 
+        s.get_compression()[0] in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG) 
         for s in all_specs
     )
 
     try:
-        with TiffWriter(destination_file, bigtiff=False, byteorder='<') as tif:
+        with tifffile.TiffWriter(destination_file, bigtiff=False, byteorder='<') as tif:
 
             # Write IFD0
             _write_ifd_from_spec(
@@ -2181,7 +2184,7 @@ class PreviewParams:
         use_xmp: Use XMP metadata for preview rendering (default: True)
     """
     scale: PreviewScale = PreviewScale.QUARTER
-    compression: COMPRESSION | None = None
+    compression: tifffile.COMPRESSION | None = None
     compression_args: dict | None = None
     rendering_params: dict | None = None
     use_xmp: bool = True
@@ -2324,11 +2327,6 @@ def _generate_pyramid(
     """
     timer = get_active_timer()
 
-    timer.start_step("opencv_import")
-    from cv2 import sepFilter2D, BORDER_REFLECT_101
-    timer.end_step()
-
-
     def make_lanczos_kernel(a: int) -> np.ndarray:
         """Generate a Lanczos kernel for 2:1 downsampling."""
         positions = np.arange(-a + 0.5, a, 1.0)
@@ -2359,7 +2357,8 @@ def _generate_pyramid(
             break
         
         timer.start_step(f"pyramid_level_{len(levels)}_filter_{filter.name}")
-        filtered = sepFilter2D(current, -1, kernel, kernel, anchor=anchor, borderType=BORDER_REFLECT_101)
+        filtered = cv2.sepFilter2D(
+            current, -1, kernel, kernel, anchor=anchor, borderType=cv2.BORDER_REFLECT_101)
         downsampled = filtered[::2, ::2]
         timer.end_step()
         
@@ -2527,8 +2526,7 @@ def write_dng_from_page(
             h, w = camera_rgb.shape[:2]
             new_h, new_w = int(h * scale), int(w * scale)
             
-            from cv2 import resize, INTER_LINEAR
-            camera_rgb = resize(camera_rgb, (new_w, new_h), interpolation=INTER_LINEAR)
+            camera_rgb = cv2.resize(camera_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             timer.end_step()
         
         # Compute pyramid levels needed and find best level for preview
@@ -2684,8 +2682,8 @@ def create_dng_from_page(
         
     Example:
         >>> page = dng_file.get_main_page()
-        >>> preview = PreviewParams(scale=PreviewScale.QUARTER, compression=COMPRESSION.JPEG)
-        >>> pyramid = PyramidParams(levels=2, encoding=PageEncoding(compression=COMPRESSION.JPEGXL_DNG))
+        >>> preview = PreviewParams(scale=PreviewScale.QUARTER, compression=tifffile.COMPRESSION.JPEG)
+        >>> pyramid = PyramidParams(levels=2, encoding=PageEncoding(compression=tifffile.COMPRESSION.JPEGXL_DNG))
         >>> new_dng = create_dng_from_page(page, scale=0.5, preview=preview, pyramid=pyramid)
     """
     buffer = io.BytesIO()

@@ -13,6 +13,7 @@ from typing import Any
 from . import _raw_render
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
+from .deps import cv2_proxy as cv2
 from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
@@ -484,17 +485,14 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     if orientation == Orientation.HORIZONTAL:
         return image
     
-    # Only import cv2 when we actually need to rotate
-    from cv2 import rotate, ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
-
     timer = get_active_timer()
     timer.start_step("apply_tiff_orientation (opencv)")
     if orientation == Orientation.ROTATE_90_CW:
-        result = rotate(image, ROTATE_90_CLOCKWISE)
+        result = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     elif orientation == Orientation.ROTATE_180:
-        result = rotate(image, ROTATE_180)
+        result = cv2.rotate(image, cv2.ROTATE_180)
     elif orientation == Orientation.ROTATE_270_CW:
-        result = rotate(image, ROTATE_90_COUNTERCLOCKWISE)
+        result = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
     else:
         logger.warning(
             f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
@@ -600,15 +598,13 @@ def demosaic(
         timer.end_step()
 
     elif algorithm == DemosaicAlgorithm.OPENCV_EA:
-        from cv2 import (demosaicing, COLOR_BAYER_RG2RGB_EA, COLOR_BAYER_BG2RGB_EA,
-                         COLOR_BAYER_GR2RGB_EA, COLOR_BAYER_GB2RGB_EA)
         # Swapped Bayer patterns produce output compatible with pipeline
         # Avoids costly [..., [2, 1, 0]] channel reordering after demosaicing
         bayer_map_bgr = {
-            "RGGB": COLOR_BAYER_BG2RGB_EA,  # RGGB→BGR
-            "BGGR": COLOR_BAYER_RG2RGB_EA,  # BGGR→BGR
-            "GRBG": COLOR_BAYER_GB2RGB_EA,  # GRBG→BGR
-            "GBRG": COLOR_BAYER_GR2RGB_EA,  # GBRG→BGR
+            "RGGB": cv2.COLOR_BAYER_BG2RGB_EA,  # RGGB→BGR
+            "BGGR": cv2.COLOR_BAYER_RG2RGB_EA,  # BGGR→BGR
+            "GRBG": cv2.COLOR_BAYER_GB2RGB_EA,  # GRBG→BGR
+            "GBRG": cv2.COLOR_BAYER_GR2RGB_EA,  # GBRG→BGR
         }
         if input_dtype in (np.float32, np.float64):
             logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
@@ -617,11 +613,11 @@ def demosaic(
 
             # demosaic output: (h, w, 3) uint16
             timer.start_step("ea_demosaicing (opencv)")
-            rgb = demosaicing(data_u16, bayer_map_bgr[cfa_pattern])
+            rgb = cv2.demosaicing(data_u16, bayer_map_bgr[cfa_pattern])
             timer.end_step()
         else:
             timer.start_step("ea_demosaicing (opencv)")
-            rgb = demosaicing(image_data, bayer_map_bgr[cfa_pattern])  # BGR output
+            rgb = cv2.demosaicing(image_data, bayer_map_bgr[cfa_pattern])  # BGR output
             timer.end_step()
 
     else:
@@ -2577,15 +2573,13 @@ def apply_radial_distortion_correction(
     y_distorted = cy + scale_factor * (y_coords - cy) * distortion_factor
     
     # Use cv2.remap with bicubic interpolation
-    from cv2 import remap, INTER_CUBIC, BORDER_CONSTANT
-        
     timer.start_step("radial remap (opencv)")
-    corrected = remap(
+    corrected = cv2.remap(
         rgb_image,
         x_distorted,
         y_distorted,
-        interpolation=INTER_CUBIC,
-        borderMode=BORDER_CONSTANT,
+        interpolation=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
         borderValue=0
     )
     timer.end_step()

@@ -1,3 +1,7 @@
+import time as _time
+_app_start_time = _time.perf_counter()
+from . import deps as _deps  # Start background loading of slow dependencies immediately
+
 # Released under a modified PolyForm Small Business License.
 # Free for small businesses, individuals, and academics. See LICENSE for details.
 

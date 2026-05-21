@@ -10,6 +10,7 @@ from pathlib import Path
 
 import click
 
+from .deps import tifffile_proxy as tifffile
 from .raw_render import DemosaicAlgorithm
 
 logger = logging.getLogger(__name__)
@@ -573,7 +574,6 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
       muimg dng raw-stage input.dng output.tif linearized-plus-ops --demosaic RCD
     """
     import numpy as np
-    import tifffile
     from .dngio import DngFile, RawStageSelector
     from . import raw_render
     
@@ -763,6 +763,9 @@ def dng_copy(
     """
     from . import dngio
     from .tiff_metadata import MetadataTags
+    import muimg
+    from .common import PerfTimer
+    timer = PerfTimer("dng_copy", start_time=muimg._app_start_time)
     
     # Map algorithm string to enum
     demosaic_algorithm_enum = DemosaicAlgorithm.lookup(demosaic_algorithm)
@@ -791,8 +794,7 @@ def dng_copy(
     
     try:
         # Build compression args and determine compression type
-        from tifffile import COMPRESSION
-        
+        COMPRESSION = tifffile.COMPRESSION
         compression = None
         compression_args = None
         
@@ -870,6 +872,8 @@ def dng_copy(
                 ifd0_strip_tags=strip_tags_set,
             )
         click.echo(f"Successfully copied DNG to {output_dng}")
+        timer.close()
+        timer.log_report(logger)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         logger.exception("Failed to copy DNG")

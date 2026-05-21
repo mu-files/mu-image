@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import numpy as np
-import tifffile
 
 from pathlib import Path
 from typing import IO, Callable, Iterable, Any
@@ -15,6 +14,7 @@ from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, resolve_tag, TiffType
+from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +76,6 @@ def write_image(
     
     # Handle JXL format
     elif format_ext in ('.jxl',):
-        import imagecodecs
-        
         # Encode to JXL with lossless compression
         jxl_data = imagecodecs.jpegxl_encode(
             image,
@@ -98,11 +96,10 @@ def write_image(
     # Handle other formats with OpenCV
     else:
         # Convert RGB to BGR for OpenCV
-        from cv2 import cvtColor, imencode, COLOR_RGB2BGR
-        bgr_image = cvtColor(image, COLOR_RGB2BGR)
+        bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         
         # Encode with OpenCV
-        success, encoded_buffer = imencode(format_ext, bgr_image)
+        success, encoded_buffer = cv2.imencode(format_ext, bgr_image)
         if not success:
             logger.error(f"Failed to encode image as {format_ext}")
             return False
@@ -157,7 +154,6 @@ def decode_image(
     # Check if it's a JXL file
     if isinstance(file, (str, Path)) and str(file).lower().endswith('.jxl'):
         # Decode JXL using imagecodecs
-        import imagecodecs
         if isinstance(file, (str, Path)):
             with open(file, 'rb') as f:
                 jxl_data = f.read()
@@ -174,7 +170,6 @@ def decode_image(
     
     # Check if it's a TIFF file - use tifffile to avoid OpenCV warnings about EXIF tags
     if isinstance(file, (str, Path)) and str(file).lower().endswith(('.tif', '.tiff')):
-        import tifffile
         img = tifffile.imread(file)
         if img is None:
             raise ValueError("Failed to decode TIFF image")
@@ -183,27 +178,25 @@ def decode_image(
         return convert_dtype(img, output_dtype)
     
     # Fall back to cv2 for other formats
-    from cv2 import (imread, imdecode, cvtColor, IMREAD_UNCHANGED,
-                     COLOR_GRAY2RGB, COLOR_BGRA2RGB, COLOR_BGR2RGB)
     if isinstance(file, (str, Path)):
-        img = imread(str(file), IMREAD_UNCHANGED)
+        img = cv2.imread(str(file), cv2.IMREAD_UNCHANGED)
     else:
         # File-like input - read and decode
         file.seek(0)
         data = file.read()
         arr = np.frombuffer(data, dtype=np.uint8)
-        img = imdecode(arr, IMREAD_UNCHANGED)
+        img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
     
     if img is None:
         raise ValueError("Failed to decode image")
     
     # OpenCV returns BGR, convert to RGB and handle grayscale/alpha
     if img.ndim == 2:
-        img = cvtColor(img, COLOR_GRAY2RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
     elif img.ndim == 3 and img.shape[2] == 4:
-        img = cvtColor(img, COLOR_BGRA2RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
     elif img.ndim == 3 and img.shape[2] == 3:
-        img = cvtColor(img, COLOR_BGR2RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     else:
         raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
