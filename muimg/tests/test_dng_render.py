@@ -14,7 +14,7 @@ import tifffile
 import imagecodecs
 import logging
 
-import muimg
+from muimg.dngio import DngFile, decode_dng
 from muimg.raw_render import DemosaicAlgorithm
 from conftest import (
     compute_diff_stats,
@@ -145,7 +145,7 @@ def test_muimg_vs_photoshop(
         pytest.skip(f"Photoshop reference not found: {jxl_path}")
 
     # Render with MUIMG
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         result = dng.render_raw(
             output_dtype=np.uint16,
             demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
@@ -208,7 +208,7 @@ def test_coreimage_vs_photoshop(
         pytest.skip(f"Photoshop reference not found: {jxl_path}")
 
     # Render with Core Image (use_xmp=True, no highlight preservation)
-    result, _ = muimg.decode_dng(
+    result, _ = decode_dng(
         file=str(dng_path),
         output_dtype=np.uint16,
         use_coreimage_if_available=True,
@@ -264,7 +264,7 @@ def test_muimg_vs_dng_validate(
         pytest.skip(f"Test DNG not found: {dng_path}")
 
     # Render with MUIMG (use_xmp=False, no highlight preservation)
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         muimg_result = dng.render_raw(
             output_dtype=np.uint16,
             demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
@@ -324,7 +324,7 @@ def test_coreimage_vs_dng_validate(
         pytest.skip(f"Test DNG not found: {dng_path}")
 
     # Render with Core Image (use_xmp=False, no highlight preservation)
-    ci_result, _ = muimg.decode_dng(
+    ci_result, _ = decode_dng(
         file=str(dng_path),
         output_dtype=np.uint16,
         use_coreimage_if_available=True,

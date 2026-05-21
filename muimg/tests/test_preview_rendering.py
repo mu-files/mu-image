@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import tifffile
 
-import muimg
+from muimg.dngio import DngFile
 from conftest import compute_diff_stats
 
 # Test data directory
@@ -123,7 +123,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
     
     print(f"\nTesting preview rendering with: {test_file.name}")
     
-    with muimg.DngFile(test_file) as dng:
+    with DngFile(test_file) as dng:
         pages = dng.get_flattened_pages()
         main_page = dng.get_main_page()
         
@@ -360,7 +360,7 @@ def test_decode_to_rgb_on_raw_page():
     if not test_file.exists():
         pytest.skip(f"Test file not available: {test_file}")
     
-    with muimg.DngFile(test_file) as dng:
+    with DngFile(test_file) as dng:
         pages = dng.get_flattened_pages()
         
         # Find a CFA page (main page)
@@ -383,7 +383,7 @@ def test_render_raw_on_preview_page():
     if not test_file.exists():
         pytest.skip(f"Test file not available: {test_file}")
     
-    with muimg.DngFile(test_file) as dng:
+    with DngFile(test_file) as dng:
         pages = dng.get_flattened_pages()
         
         # Find an RGB preview page (IFD0)
@@ -407,7 +407,7 @@ def test_dngfile_decode_to_rgb_on_raw_ifd0():
     found_raw_ifd0 = False
     for test_file in test_files:
         try:
-            with muimg.DngFile(test_file) as dng:
+            with DngFile(test_file) as dng:
                 pages = dng.get_flattened_pages()
                 if pages and (pages[0].is_cfa or pages[0].is_linear_raw):
                     # Found a file with raw IFD0

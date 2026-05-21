@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import muimg
+from muimg.dngio import DngFile, IfdDataSpec, write_dng_from_array
+from muimg.tiff_metadata import MetadataTags, XmpMetadata
+from muimg.raw_render import supported_xmp_from_dict, supported_xmp_to_dict, add_supported_xmp_from_dict
 
 
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
@@ -20,7 +22,7 @@ def test_dump_xmp_properties(filename: str):
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
 
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         xmp = dng.get_xmp()
         assert xmp is not None
         props = getattr(xmp, "_attributes", None)
@@ -64,23 +66,23 @@ def test_xmp_roundtrip_metadatatags():
     }
     
     # Step 1: Create XmpMetadata from dict
-    xmp_metadata = muimg.supported_xmp_from_dict(original_dict)
+    xmp_metadata = supported_xmp_from_dict(original_dict)
     
     # Validate XmpMetadata was created
     assert xmp_metadata is not None
-    assert isinstance(xmp_metadata, muimg.XmpMetadata)
+    assert isinstance(xmp_metadata, XmpMetadata)
     
     # Step 2: Add to MetadataTags
-    tags = muimg.MetadataTags()
+    tags = MetadataTags()
     tags.add_xmp(xmp_metadata)
     
     # Step 3: Retrieve XMP from MetadataTags
     retrieved_xmp = tags.get_xmp()
     assert retrieved_xmp is not None
-    assert isinstance(retrieved_xmp, muimg.XmpMetadata)
+    assert isinstance(retrieved_xmp, XmpMetadata)
     
     # Step 4: Convert back to dict
-    result_dict = muimg.supported_xmp_to_dict(retrieved_xmp)
+    result_dict = supported_xmp_to_dict(retrieved_xmp)
     
     # Step 5: Validate values match
     # Check supported properties (converted to float by supported_xmp_to_dict)
@@ -161,19 +163,19 @@ def test_xmp_roundtrip_dng_file():
     }
     
     # Create MetadataTags and add XMP
-    tags = muimg.MetadataTags()
-    muimg.add_supported_xmp_from_dict(tags, xmp_dict)
+    tags = MetadataTags()
+    add_supported_xmp_from_dict(tags, xmp_dict)
     
     # Write DNG to test_outputs directory
     output_dir = Path(__file__).parent / "test_outputs" / "test_xmp_roundtrip"
     output_dir.mkdir(parents=True, exist_ok=True)
     dng_path = output_dir / "test_xmp_roundtrip.dng"
-    data_spec = muimg.IfdDataSpec(
+    data_spec = IfdDataSpec(
         data=linear_rgb,
         photometric="linear_raw",
         extratags=tags,
     )
-    muimg.write_dng_from_array(
+    write_dng_from_array(
         destination_file=str(dng_path),
         data_spec=data_spec,
     )
@@ -183,11 +185,11 @@ def test_xmp_roundtrip_dng_file():
     print(f"Created DNG file: {dng_path} ({dng_path.stat().st_size} bytes)")
     
     # Read back the DNG file
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         # Get XMP metadata directly from DngFile
         retrieved_xmp = dng.get_xmp()
         assert retrieved_xmp is not None
-        assert isinstance(retrieved_xmp, muimg.XmpMetadata)
+        assert isinstance(retrieved_xmp, XmpMetadata)
         
         # Validate the raw XMP XML format contains 0-255 integer tone curve points
         from muimg.tiff_metadata import xmp_metadata_to_packet
@@ -215,7 +217,7 @@ def test_xmp_roundtrip_dng_file():
         print(f"Verified XMP XML format: tone curve points stored as 0-255 integers")
         
         # Convert to dict for comparison
-        result_dict = muimg.supported_xmp_to_dict(retrieved_xmp)
+        result_dict = supported_xmp_to_dict(retrieved_xmp)
         
         # Validate values match (converted to float by supported_xmp_to_dict)
         assert result_dict['Temperature'] == float(xmp_dict['Temperature'])

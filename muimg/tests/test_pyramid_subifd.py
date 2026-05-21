@@ -11,8 +11,7 @@ import cv2
 import numpy as np
 import pytest
 
-import muimg
-from muimg.dngio import IfdPageSpec, IfdDataSpec, SubFileType
+from muimg.dngio import DngFile, IfdPageSpec, IfdDataSpec, SubFileType, write_dng
 from muimg.raw_render import DemosaicAlgorithm
 from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
@@ -79,7 +78,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
 
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         page = dng.get_main_page()
         assert page is not None
 
@@ -130,13 +129,13 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
             )
             subifds.insert(0, preview_spec)
 
-        muimg.write_dng(
+        write_dng(
             destination_file=out_path,
             ifd0_spec=ifd0_spec,
             subifds=subifds,
         )
 
-    with muimg.DngFile(out_path) as out_dng:
+    with DngFile(out_path) as out_dng:
         out_pages = out_dng.get_flattened_pages()
         linear_pages = [p for p in out_pages if p.is_linear_raw]
         
@@ -164,7 +163,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
     if not dng_path.exists():
         pytest.skip(f"Test file not available: {filename}")
 
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         page = dng.get_main_page()
         assert page is not None
         if not page.is_cfa:
@@ -236,13 +235,13 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
             for level in pyramid_levels
         ]
 
-        muimg.write_dng(
+        write_dng(
             destination_file=out_path,
             ifd0_spec=ifd0_spec,
             subifds=subifds,
         )
 
-    with muimg.DngFile(out_path) as out_dng:
+    with DngFile(out_path) as out_dng:
         out_main = out_dng.get_main_page()
         assert out_main is not None
 

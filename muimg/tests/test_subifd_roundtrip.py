@@ -14,8 +14,7 @@ import numpy as np
 import pytest
 import tifffile
 
-import muimg
-from muimg.dngio import IfdPageSpec, write_dng, SubFileType
+from muimg.dngio import DngFile, IfdPageSpec, write_dng, SubFileType
 from conftest import (
     DNG_VALIDATE_PATH,
     compute_diff_stats,
@@ -78,7 +77,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
     ignored_warnings = test_config["ignored_warnings"]
     strip_tags = set(test_config["strip_tags"]) if test_config["strip_tags"] else None
     
-    with muimg.DngFile(dng_path) as dng:
+    with DngFile(dng_path) as dng:
         pages = dng.get_flattened_pages()
         print(f"\n{dng_path.name}: {len(pages)} IFDs")
         
@@ -132,7 +131,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                 # If source had digest, page was main, and we didn't strip it, roundtrip should have it
                 source_digest = page.get_tag('NewRawImageDigest')
                 if source_digest is not None and page.is_main_image and 'NewRawImageDigest' not in (strip_tags or set()):
-                    with muimg.DngFile(roundtrip_dng) as rt_dng:
+                    with DngFile(roundtrip_dng) as rt_dng:
                         roundtrip_digest = rt_dng.get_tag('NewRawImageDigest')
                         if roundtrip_digest is None:
                             pytest.fail(
@@ -147,7 +146,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
             roundtrip_muimg_tif = output_dir / f"{stem}_ifd{i}_roundtrip_muimg.tif"
             roundtrip_decoded = None
             try:
-                with muimg.DngFile(roundtrip_dng) as roundtrip_dng_file:
+                with DngFile(roundtrip_dng) as roundtrip_dng_file:
                     roundtrip_decoded = roundtrip_dng_file.render_raw(output_dtype=np.uint16, strict=False, use_xmp=False,
                                                                   rendering_params={'highlight_preserving_exposure': False})
                 if roundtrip_decoded is not None:
