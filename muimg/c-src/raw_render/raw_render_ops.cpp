@@ -1465,6 +1465,7 @@ static void apply_linearization_table(
 //   black_delta_h: per-column delta array, length=width (or NULL if not used)
 //   black_delta_v: per-row delta array, length=height (or NULL if not used)
 //   white_level: per-sample white level array, length=samples_per_pixel
+//   white_count: always == samples_per_pixel per DNG spec (WhiteLevel count = SamplesPerPixel)
 //   samples_per_pixel: number of samples (1 for CFA, 3 for LinearRaw)
 //
 // SDK ref: dng_linearize_plane.cpp, dng_linearization_info
@@ -1476,50 +1477,128 @@ static void normalize_black_white(
     const float* white_level, int white_count,
     const uint16_t* linearization_table = nullptr, int linearization_table_size = 0
 ) {
-    for (npy_intp row = 0; row < height; row++) {
-        // Get row delta (0 if not provided)
-        float delta_v = 0.0f;
-        if (black_delta_v != NULL && delta_v_count > 0) {
-            delta_v = black_delta_v[row % delta_v_count];
+    bool has_delta_h = (black_delta_h != nullptr && delta_h_count > 0);
+    bool has_delta_v = (black_delta_v != nullptr && delta_v_count > 0);
+    bool has_lut = (linearization_table != nullptr && linearization_table_size > 0);
+    bool has_extras = has_delta_h || has_delta_v || has_lut;
+
+    // Fast path: spp==1, no deltas/LUT, repeat dim 1x1 or 2x2
+    if (!has_extras && samples_per_pixel == 1 &&
+        ((black_repeat_rows == 2 && black_repeat_cols == 2) ||
+         (black_repeat_rows == 1 && black_repeat_cols == 1))) {
+        // CFA path: assumes 2x2 repeat pattern (promotes 1x1 to 2x2)
+        float bl[4]; // [row][col] in 2x2
+        if (black_repeat_rows == 1 && black_repeat_cols == 1) {
+            bl[0] = bl[1] = bl[2] = bl[3] = black_level[0];
+        } else {
+            bl[0] = black_level[0]; // row0, col0
+            bl[1] = black_level[1]; // row0, col1
+            bl[2] = black_level[2]; // row1, col0
+            bl[3] = black_level[3]; // row1, col1
         }
-        
-        // Black level row index in repeating pattern
-        int black_row = (int)(row % black_repeat_rows);
-        
-        for (npy_intp col = 0; col < width; col++) {
-            // Get column delta (0 if not provided)
-            float delta_h = 0.0f;
-            if (black_delta_h != NULL && delta_h_count > 0) {
-                delta_h = black_delta_h[col % delta_h_count];
+
+        float white0 = white_level[0];
+
+        // Even rows: bl[0] (col0), bl[1] (col1)
+        float black_even0 = bl[0];
+        float black_even1 = bl[1];
+        float inv_even0 = (white0 - black_even0 > 0.0f) ? 1.0f / (white0 - black_even0) : 0.0f;
+        float inv_even1 = (white0 - black_even1 > 0.0f) ? 1.0f / (white0 - black_even1) : 0.0f;
+
+        // Odd rows: bl[2] (col0), bl[3] (col1)
+        float black_odd0 = bl[2];
+        float black_odd1 = bl[3];
+        float inv_odd0 = (white0 - black_odd0 > 0.0f) ? 1.0f / (white0 - black_odd0) : 0.0f;
+        float inv_odd1 = (white0 - black_odd1 > 0.0f) ? 1.0f / (white0 - black_odd1) : 0.0f;
+
+        for (npy_intp row = 0; row < height; row++) {
+            float b0, b1, inv0, inv1;
+            if (row & 1) {
+                b0 = black_odd0;  b1 = black_odd1;
+                inv0 = inv_odd0;  inv1 = inv_odd1;
+            } else {
+                b0 = black_even0; b1 = black_even1;
+                inv0 = inv_even0; inv1 = inv_even1;
             }
-            
-            // Black level column index in repeating pattern
+
+            npy_intp pixel_base = row * width;
+            for (npy_intp col = 0; col < width - 1; col += 2) {
+                float p0 = data[pixel_base + col];
+                float p1 = data[pixel_base + col + 1];
+                data[pixel_base + col]     = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv0));
+                data[pixel_base + col + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv1));
+            }
+            if (width & 1) {
+                float p = data[pixel_base + width - 1];
+                data[pixel_base + width - 1] = std::max(0.0f, std::min(1.0f, (p - b0) * inv0));
+            }
+        }
+        return;
+    }
+
+    // Fast path: spp==3, no deltas/LUT, repeat dim 1x1
+    if (!has_extras && samples_per_pixel == 3 &&
+        black_repeat_rows == 1 && black_repeat_cols == 1) {
+        // Linear RGB path: single black level per sample
+        float b0 = black_level[0];
+        float b1 = black_level[1];
+        float b2 = black_level[2];
+
+        float inv_r0 = (white_level[0] - b0 > 0.0f) ? 1.0f / (white_level[0] - b0) : 0.0f;
+        float inv_r1 = (white_level[1] - b1 > 0.0f) ? 1.0f / (white_level[1] - b1) : 0.0f;
+        float inv_r2 = (white_level[2] - b2 > 0.0f) ? 1.0f / (white_level[2] - b2) : 0.0f;
+
+        for (npy_intp row = 0; row < height; row++) {
+            npy_intp pixel_base = row * width * 3;
+            for (npy_intp col = 0; col < width; col++) {
+                npy_intp idx = pixel_base + col * 3;
+                float p0 = data[idx + 0];
+                float p1 = data[idx + 1];
+                float p2 = data[idx + 2];
+
+                data[idx + 0] = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv_r0));
+                data[idx + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv_r1));
+                data[idx + 2] = std::max(0.0f, std::min(1.0f, (p2 - b2) * inv_r2));
+            }
+        }
+        return;
+    }
+
+    // General path: handles all cases (deltas, LUT, arbitrary repeat dims/spp)
+    // Pre-allocate full-width delta_h array to eliminate modulo in inner loop
+    std::vector<float> delta_h_full(width, 0.0f);
+    if (has_delta_h) {
+        for (npy_intp col = 0; col < width; col++) {
+            delta_h_full[col] = black_delta_h[col % delta_h_count];
+        }
+    }
+
+    for (npy_intp row = 0; row < height; row++) {
+        float delta_v = has_delta_v ? black_delta_v[row % delta_v_count] : 0.0f;
+        int black_row = (int)(row % black_repeat_rows);
+
+        for (npy_intp col = 0; col < width; col++) {
+            float dh = delta_h_full[col];
             int black_col = (int)(col % black_repeat_cols);
-            
+
             for (int sample = 0; sample < samples_per_pixel; sample++) {
                 npy_intp pixel_idx = (row * width + col) * samples_per_pixel + sample;
-                
+
                 // Apply LinearizationTable if present (before black/white normalization)
                 // SDK ref: dng_linearize_plane::Process - LUT lookup on raw ADC values
                 float pixel_val = data[pixel_idx];
-                if (linearization_table != nullptr && linearization_table_size > 0) {
+                if (has_lut) {
                     int lut_idx = (int)pixel_val;
-                    // Clamp to table bounds (upper bound common when table < max pixel value)
                     if (lut_idx >= linearization_table_size) lut_idx = linearization_table_size - 1;
                     pixel_val = (float)linearization_table[lut_idx];
                 }
-                
+
                 // BlackLevel index: [row][col][sample] in row-major order
                 int black_idx = (black_row * black_repeat_cols + black_col) * samples_per_pixel + sample;
                 float black = black_level[black_idx];
-                
-                // WhiteLevel per sample
                 float white = white_level[sample % white_count];
-                
-                // Total black level including deltas
-                float total_black = black + delta_h + delta_v;
-                
-                // Normalize to [0, 1]
+                float total_black = black + dh + delta_v;
+
                 float range = white - total_black;
                 if (range > 0.0f) {
                     data[pixel_idx] = (pixel_val - total_black) / range;

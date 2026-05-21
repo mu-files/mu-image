@@ -606,13 +606,20 @@ class DngPage(tifffile.TiffPage):
         else:
             white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
             white_level = np.where(white_level < 0, default_white, white_level)
-            if len(white_level) < samples_per_pixel:
-                white_level = np.concatenate(
-                    [
-                        white_level,
-                        np.full(samples_per_pixel - len(white_level), default_white, dtype=np.float32),
-                    ]
+            if len(white_level) != samples_per_pixel:
+                logger.warning(
+                    f"WhiteLevel count ({len(white_level)}) != "
+                    f"SamplesPerPixel ({samples_per_pixel})"
                 )
+                if len(white_level) > samples_per_pixel:
+                    white_level = white_level[:samples_per_pixel]
+                else:
+                    pad = np.full(
+                        samples_per_pixel - len(white_level),
+                        white_level[-1],
+                        dtype=np.float32,
+                    )
+                    white_level = np.concatenate([white_level, pad])
 
         black_delta_h = self.get_tag("BlackLevelDeltaH")
         black_delta_v = self.get_tag("BlackLevelDeltaV")
