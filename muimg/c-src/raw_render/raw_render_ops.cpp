@@ -139,12 +139,12 @@ public:
 #else
     inline void apply(const float* input, float* output,
                       const float* input_clip_max) const {
-        float r = fminf(input[0], input_clip_max[0]);
-        float g = fminf(input[1], input_clip_max[1]);
-        float b = fminf(input[2], input_clip_max[2]);
-        output[0] = fmaxf(0.0f, fminf(1.0f, m_[0]*r + m_[1]*g + m_[2]*b));
-        output[1] = fmaxf(0.0f, fminf(1.0f, m_[3]*r + m_[4]*g + m_[5]*b));
-        output[2] = fmaxf(0.0f, fminf(1.0f, m_[6]*r + m_[7]*g + m_[8]*b));
+        float r = std::min(input[0], input_clip_max[0]);
+        float g = std::min(input[1], input_clip_max[1]);
+        float b = std::min(input[2], input_clip_max[2]);
+        output[0] = std::clamp(m_[0]*r + m_[1]*g + m_[2]*b, 0.0f, 1.0f);
+        output[1] = std::clamp(m_[3]*r + m_[4]*g + m_[5]*b, 0.0f, 1.0f);
+        output[2] = std::clamp(m_[6]*r + m_[7]*g + m_[8]*b, 0.0f, 1.0f);
     }
 #endif
 
@@ -164,9 +164,9 @@ public:
         rgb[2] = vgetq_lane_f32(result, 2);
 #else
         float r = rgb[0], g = rgb[1], b = rgb[2];
-        rgb[0] = fmaxf(0.0f, fminf(output_clip_max, m_[0]*r + m_[1]*g + m_[2]*b));
-        rgb[1] = fmaxf(0.0f, fminf(output_clip_max, m_[3]*r + m_[4]*g + m_[5]*b));
-        rgb[2] = fmaxf(0.0f, fminf(output_clip_max, m_[6]*r + m_[7]*g + m_[8]*b));
+        rgb[0] = std::clamp(m_[0]*r + m_[1]*g + m_[2]*b, 0.0f, output_clip_max);
+        rgb[1] = std::clamp(m_[3]*r + m_[4]*g + m_[5]*b, 0.0f, output_clip_max);
+        rgb[2] = std::clamp(m_[6]*r + m_[7]*g + m_[8]*b, 0.0f, output_clip_max);
 #endif
     }
 
@@ -232,15 +232,15 @@ static void transform_lut_only_impl(
                 // Clip to [0, lut_size-1] instead of [0, 1]
                 float fused_scale = src_scale * (lut_size - 1);
                 float lut_max = (lut_size - 1);
-                rgb[0] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(lut, std::clamp(input[idx + 0] * fused_scale, 0.0f, lut_max));
+                rgb[1] = lut_lookup_interp(lut, std::clamp(input[idx + 1] * fused_scale, 0.0f, lut_max));
+                rgb[2] = lut_lookup_interp(lut, std::clamp(input[idx + 2] * fused_scale, 0.0f, lut_max));
             }
             
             // Clip and store
-            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
-            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
-            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+            output[idx + 0] = (DstT)(std::clamp(rgb[0], 0.0f, 1.0f) * dst_scale);
+            output[idx + 1] = (DstT)(std::clamp(rgb[1], 0.0f, 1.0f) * dst_scale);
+            output[idx + 2] = (DstT)(std::clamp(rgb[2], 0.0f, 1.0f) * dst_scale);
         }
     }
 }
@@ -308,9 +308,9 @@ static void transform_lut_matrix_impl(
                 // Clip to [0, lut_size-1] instead of [0, 1]
                 float fused_scale = src_scale * (input_lut_size - 1);
                 float lut_max = (input_lut_size - 1);
-                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(input_lut, std::clamp(input[idx + 0] * fused_scale, 0.0f, lut_max));
+                rgb[1] = lut_lookup_interp(input_lut, std::clamp(input[idx + 1] * fused_scale, 0.0f, lut_max));
+                rgb[2] = lut_lookup_interp(input_lut, std::clamp(input[idx + 2] * fused_scale, 0.0f, lut_max));
             }
             
             // Apply matrix and clip to [0, 1]
@@ -404,9 +404,9 @@ static void transform_lut_matrix_lut_impl(
                 rgb[1] = lut_lookup_8bit(input_lut, input[idx + 1]);
                 rgb[2] = lut_lookup_8bit(input_lut, input[idx + 2]);
             } else {
-                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(input_lut, std::clamp(input[idx + 0] * fused_scale, 0.0f, in_lut_max));
+                rgb[1] = lut_lookup_interp(input_lut, std::clamp(input[idx + 1] * fused_scale, 0.0f, in_lut_max));
+                rgb[2] = lut_lookup_interp(input_lut, std::clamp(input[idx + 2] * fused_scale, 0.0f, in_lut_max));
             }
             
             // Apply matrix (pre-scaled to output LUT indices) and clip
@@ -444,9 +444,9 @@ static inline void apply_hue_preserving_tone(
     float lut_scale
 ) {
     // Clip input to [0,1] once
-    r = fmaxf(0.0f, fminf(1.0f, r));
-    g = fmaxf(0.0f, fminf(1.0f, g));
-    b = fmaxf(0.0f, fminf(1.0f, b));
+    r = std::clamp(r, 0.0f, 1.0f);
+    g = std::clamp(g, 0.0f, 1.0f);
+    b = std::clamp(b, 0.0f, 1.0f);
     
     // Apply hue-preserving tone mapping based on RGB sorting
     if (r >= g) {
@@ -924,7 +924,7 @@ private:
             }
         } else if (do_clip_) {
             for (int i = 0; i < count; i++) {
-                dst[i] = (DstT)fminf(clip_max_, src[i] * scale_);
+                dst[i] = (DstT)std::min(src[i] * scale_, clip_max_);
             }
         } else {
             for (int i = 0; i < count; i++) {
