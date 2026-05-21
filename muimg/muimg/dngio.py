@@ -659,18 +659,46 @@ class DngPage(tifffile.TiffPage):
             aa_top, aa_left, aa_bottom, aa_right = active_area
             data = data[aa_top:aa_bottom, aa_left:aa_right]
 
-        timer.start_step("linearize (c++)")
-        normalized = raw_render._raw_render.normalize_raw(
-            data=data.astype(np.float32),
-            black_level=black_level,
-            black_repeat_rows=black_repeat_rows,
-            black_repeat_cols=black_repeat_cols,
-            samples_per_pixel=samples_per_pixel,
-            white_level=white_level,
-            black_delta_h=black_delta_h,
-            black_delta_v=black_delta_v,
-            linearization_table=linearization_table,
+        # Fast path: trivial normalization (black=0, white=default, no
+        # deltas/LUT, uint16 data) can use optimized convert_dtype instead
+        is_pure_convert = (
+            samples_per_pixel == 3
+            and data.dtype == np.uint16
+            and black_delta_h is None
+            and black_delta_v is None
+            and (linearization_table is None or len(linearization_table) == 0)
+            and np.all(black_level == 0.0)
+            and np.all(white_level == default_white)
         )
+
+        timer.start_step("linearize (c++)")
+        if is_pure_convert:
+            normalized = raw_render.convert_dtype(
+                data,
+                np.float32,
+                src_bits_per_element=bits_per_sample,
+            )
+        else:
+            # normalize_raw accepts uint16 or float32 natively;
+            # convert edge-case dtypes to the nearest supported type
+            norm_data = data
+            if norm_data.dtype == np.uint8:
+                norm_data = norm_data.astype(np.uint16)
+            elif norm_data.dtype == np.float16:
+                norm_data = norm_data.astype(np.float32)
+            elif norm_data.dtype not in (np.uint16, np.float32):
+                norm_data = norm_data.astype(np.float32)
+            normalized = raw_render._raw_render.normalize_raw(
+                data=norm_data,
+                black_level=black_level,
+                black_repeat_rows=black_repeat_rows,
+                black_repeat_cols=black_repeat_cols,
+                samples_per_pixel=samples_per_pixel,
+                white_level=white_level,
+                black_delta_h=black_delta_h,
+                black_delta_v=black_delta_v,
+                linearization_table=linearization_table,
+            )
         timer.end_step()
 
         stage2 = self._RawStage(data=normalized, cfa_pattern=stage1.cfa_pattern)

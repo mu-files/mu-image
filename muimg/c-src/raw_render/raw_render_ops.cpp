@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #if defined(__aarch64__)
@@ -1458,19 +1459,38 @@ static void apply_linearization_table(
 // Normalize RAW data using black and white levels per DNG spec Chapter 5.
 // Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel[...])
 //
+// Templated on SrcT (uint16_t or float) to allow fused int->float conversion.
+// Reads from src, writes normalized float32 to dst. src and dst may alias when SrcT=float.
+//
 // Parameters:
-//   data: raw pixel data, shape (height, width, samples_per_pixel) or (height, width) if samples=1
+//   src: input raw pixel data (uint16_t or float)
+//   dst: output float32 pixel data, same shape as src
+//   height, width: image dimensions
+//   samples_per_pixel: 1 for CFA, 3 for LinearRaw
 //   black_level: 3D array [repeat_rows][repeat_cols][samples_per_pixel] stored row-major
 //   black_repeat_rows, black_repeat_cols: dimensions of the repeating black level pattern
 //   black_delta_h: per-column delta array, length=width (or NULL if not used)
 //   black_delta_v: per-row delta array, length=height (or NULL if not used)
 //   white_level: per-sample white level array, length=samples_per_pixel
 //   white_count: always == samples_per_pixel per DNG spec (WhiteLevel count = SamplesPerPixel)
-//   samples_per_pixel: number of samples (1 for CFA, 3 for LinearRaw)
 //
 // SDK ref: dng_linearize_plane.cpp, dng_linearization_info
+template <typename SrcT>
+static inline float load_pixel(const SrcT* ptr, npy_intp idx);
+
+template <>
+inline float load_pixel<float>(const float* ptr, npy_intp idx) {
+    return ptr[idx];
+}
+
+template <>
+inline float load_pixel<uint16_t>(const uint16_t* ptr, npy_intp idx) {
+    return (float)ptr[idx];
+}
+
+template <typename SrcT>
 static void normalize_black_white(
-    float* data, npy_intp height, npy_intp width, int samples_per_pixel,
+    const SrcT* src, float* dst, npy_intp height, npy_intp width, int samples_per_pixel,
     const float* black_level, int black_repeat_rows, int black_repeat_cols,
     const float* black_delta_h, npy_intp delta_h_count,
     const float* black_delta_v, npy_intp delta_v_count,
@@ -1521,16 +1541,60 @@ static void normalize_black_white(
                 inv0 = inv_even0; inv1 = inv_even1;
             }
 
-            npy_intp pixel_base = row * width;
-            for (npy_intp col = 0; col < width - 1; col += 2) {
-                float p0 = data[pixel_base + col];
-                float p1 = data[pixel_base + col + 1];
-                data[pixel_base + col]     = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv0));
-                data[pixel_base + col + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv1));
+            const SrcT* src_row = src + row * width;
+            float* dst_row = dst + row * width;
+            npy_intp col = 0;
+
+#if NEON
+            // Process 8 pixels (4 col-pairs) per iteration
+            // Interleave black/inv for even/odd columns: [b0,b1,b0,b1]
+            float32x4_t v_black = {b0, b1, b0, b1};
+            float32x4_t v_inv   = {inv0, inv1, inv0, inv1};
+            float32x4_t v_zero  = vdupq_n_f32(0.0f);
+            float32x4_t v_one   = vdupq_n_f32(1.0f);
+
+            if constexpr (std::is_same_v<SrcT, uint16_t>) {
+                for (; col <= width - 8; col += 8) {
+                    // Load 8 uint16 values and convert to 2x float32x4
+                    uint16x8_t u16 = vld1q_u16(src_row + col);
+                    float32x4_t p_lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(u16)));
+                    float32x4_t p_hi = vcvtq_f32_u32(vmovl_u16(vget_high_u16(u16)));
+
+                    float32x4_t r_lo = vmulq_f32(vsubq_f32(p_lo, v_black), v_inv);
+                    float32x4_t r_hi = vmulq_f32(vsubq_f32(p_hi, v_black), v_inv);
+
+                    r_lo = vmaxq_f32(v_zero, vminq_f32(v_one, r_lo));
+                    r_hi = vmaxq_f32(v_zero, vminq_f32(v_one, r_hi));
+
+                    vst1q_f32(dst_row + col, r_lo);
+                    vst1q_f32(dst_row + col + 4, r_hi);
+                }
+            } else {
+                for (; col <= width - 8; col += 8) {
+                    float32x4_t p_lo = vld1q_f32(src_row + col);
+                    float32x4_t p_hi = vld1q_f32(src_row + col + 4);
+
+                    float32x4_t r_lo = vmulq_f32(vsubq_f32(p_lo, v_black), v_inv);
+                    float32x4_t r_hi = vmulq_f32(vsubq_f32(p_hi, v_black), v_inv);
+
+                    r_lo = vmaxq_f32(v_zero, vminq_f32(v_one, r_lo));
+                    r_hi = vmaxq_f32(v_zero, vminq_f32(v_one, r_hi));
+
+                    vst1q_f32(dst_row + col, r_lo);
+                    vst1q_f32(dst_row + col + 4, r_hi);
+                }
+            }
+#endif
+            // Scalar tail
+            for (; col < width - 1; col += 2) {
+                float p0 = load_pixel(src_row, col);
+                float p1 = load_pixel(src_row, col + 1);
+                dst_row[col]     = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv0));
+                dst_row[col + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv1));
             }
             if (width & 1) {
-                float p = data[pixel_base + width - 1];
-                data[pixel_base + width - 1] = std::max(0.0f, std::min(1.0f, (p - b0) * inv0));
+                float p = load_pixel(src_row, width - 1);
+                dst_row[width - 1] = std::max(0.0f, std::min(1.0f, (p - b0) * inv0));
             }
         }
         return;
@@ -1552,13 +1616,13 @@ static void normalize_black_white(
             npy_intp pixel_base = row * width * 3;
             for (npy_intp col = 0; col < width; col++) {
                 npy_intp idx = pixel_base + col * 3;
-                float p0 = data[idx + 0];
-                float p1 = data[idx + 1];
-                float p2 = data[idx + 2];
+                float p0 = load_pixel(src, idx + 0);
+                float p1 = load_pixel(src, idx + 1);
+                float p2 = load_pixel(src, idx + 2);
 
-                data[idx + 0] = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv_r0));
-                data[idx + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv_r1));
-                data[idx + 2] = std::max(0.0f, std::min(1.0f, (p2 - b2) * inv_r2));
+                dst[idx + 0] = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv_r0));
+                dst[idx + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv_r1));
+                dst[idx + 2] = std::max(0.0f, std::min(1.0f, (p2 - b2) * inv_r2));
             }
         }
         return;
@@ -1586,7 +1650,7 @@ static void normalize_black_white(
 
                 // Apply LinearizationTable if present (before black/white normalization)
                 // SDK ref: dng_linearize_plane::Process - LUT lookup on raw ADC values
-                float pixel_val = data[pixel_idx];
+                float pixel_val = load_pixel(src, pixel_idx);
                 if (has_lut) {
                     int lut_idx = (int)pixel_val;
                     if (lut_idx >= linearization_table_size) lut_idx = linearization_table_size - 1;
@@ -1601,11 +1665,11 @@ static void normalize_black_white(
 
                 float range = white - total_black;
                 if (range > 0.0f) {
-                    data[pixel_idx] = (pixel_val - total_black) / range;
+                    dst[pixel_idx] = (pixel_val - total_black) / range;
                 } else {
-                    data[pixel_idx] = 0.0f;
+                    dst[pixel_idx] = 0.0f;
                 }
-                data[pixel_idx] = std::max(0.0f, std::min(1.0f, data[pixel_idx]));
+                dst[pixel_idx] = std::max(0.0f, std::min(1.0f, dst[pixel_idx]));
             }
         }
     }
@@ -2090,7 +2154,7 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
 // SDK ref: dng_linearize_plane.cpp, dng_linearization_info
 //
 // Args:
-//   data: RAW pixel data, float32, shape (H, W) or (H, W, samples_per_pixel)
+//   data: RAW pixel data, uint16 or float32, shape (H, W) or (H, W, samples_per_pixel)
 //   black_level: BlackLevel pattern, float32, shape (repeat_rows, repeat_cols, samples_per_pixel)
 //                or flattened 1D array in row-col-sample order
 //   black_repeat_rows: number of rows in repeating pattern (from BlackLevelRepeatDim[0])
@@ -2130,9 +2194,10 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    // Validate data array
-    if (PyArray_TYPE(data_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "data must be float32");
+    // Validate data array - accept uint16 or float32
+    int src_type = PyArray_TYPE(data_array);
+    if (src_type != NPY_UINT16 && src_type != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "data must be uint16 or float32");
         return NULL;
     }
     
@@ -2151,9 +2216,9 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    // Make contiguous copies
+    // Make contiguous input (preserve original dtype)
     auto data_cont = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_FLOAT32, 2, 3));
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, src_type, 2, 3));
     auto black_cont = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)black_array, NPY_FLOAT32, 1, 3));
     auto white_cont = make_pyptr<PyArrayObject>(
@@ -2208,14 +2273,15 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         lin_table_size = (int)PyArray_SIZE(lin_table_cont.get());
     }
     
-    // Copy data for output
+    // Allocate float32 output array with same shape as input
     auto result = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
+        (PyArrayObject*)PyArray_NewLikeArray(data_cont.get(), NPY_CORDER, 
+            PyArray_DescrFromType(NPY_FLOAT32), 0));
     if (!result) {
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA(result.get());
+    float* dst = (float*)PyArray_DATA(result.get());
     const float* black = (const float*)PyArray_DATA(black_cont.get());
     const float* white = (const float*)PyArray_DATA(white_cont.get());
     const float* delta_h = delta_h_cont ? (const float*)PyArray_DATA(delta_h_cont.get()) : NULL;
@@ -2224,12 +2290,24 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     
     const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont.get()) : nullptr;
     
-    normalize_black_white(result_data, height, width, samples_per_pixel,
-                         black, black_repeat_rows, black_repeat_cols,
-                         delta_h, delta_h_count,
-                         delta_v, delta_v_count,
-                         white, white_count,
-                         lin_table, lin_table_size);
+    // Dispatch to templated kernel based on input dtype
+    if (src_type == NPY_UINT16) {
+        const uint16_t* src = (const uint16_t*)PyArray_DATA(data_cont.get());
+        normalize_black_white<uint16_t>(src, dst, height, width, samples_per_pixel,
+                             black, black_repeat_rows, black_repeat_cols,
+                             delta_h, delta_h_count,
+                             delta_v, delta_v_count,
+                             white, white_count,
+                             lin_table, lin_table_size);
+    } else {
+        const float* src = (const float*)PyArray_DATA(data_cont.get());
+        normalize_black_white<float>(src, dst, height, width, samples_per_pixel,
+                             black, black_repeat_rows, black_repeat_cols,
+                             delta_h, delta_h_count,
+                             delta_v, delta_v_count,
+                             white, white_count,
+                             lin_table, lin_table_size);
+    }
     
     return (PyObject*)result.release();
 }
@@ -3806,7 +3884,7 @@ static PyMethodDef DngColorMethods[] = {
      "Normalize RAW data using black and white levels per DNG spec Chapter 5.\n\n"
      "Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel)\n\n"
      "Args:\n"
-     "    data (ndarray): RAW pixel data, float32, (H,W) or (H,W,samples_per_pixel)\n"
+     "    data (ndarray): RAW pixel data, uint16 or float32, (H,W) or (H,W,samples_per_pixel)\n"
      "    black_level (ndarray): BlackLevel pattern, float32, flattened in row-col-sample order\n"
      "    black_repeat_rows (int): Number of rows in repeating pattern (from BlackLevelRepeatDim[0])\n"
      "    black_repeat_cols (int): Number of cols in repeating pattern (from BlackLevelRepeatDim[1])\n"
