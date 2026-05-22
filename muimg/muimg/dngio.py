@@ -2037,7 +2037,6 @@ def _write_dng_with_params(
     camera_rgb = raw_render._raw_to_camera_rgb(
         main_spec.extratags, raw_data, photometric, cfa_pattern, demosaic_algorithm
     )
-    camera_rgb = raw_render.convert_dtype(camera_rgb, np.uint16)
     timer.end_step()
     
     # if we are transforming then the main_spec is always a DataSpec with the transformed data
@@ -2071,7 +2070,7 @@ def _write_dng_with_params(
 
         # change main_spec 
         main_spec = IfdDataSpec(
-            data=camera_rgb,
+            data=raw_render.convert_dtype(camera_rgb, np.uint16),
             photometric="LINEAR_RAW",
             subfiletype=SubFileType.MAIN_IMAGE,
             encoding=main_encoding,
@@ -2116,7 +2115,7 @@ def _write_dng_with_params(
 
         for level_idx in range(1, len(pyramid_images)):
             pyramid_spec = IfdDataSpec(
-                data=pyramid_images[level_idx],
+                data=raw_render.convert_dtype(pyramid_images[level_idx], np.uint16),
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 encoding=pyramid.encoding,
@@ -2144,15 +2143,11 @@ def _write_dng_with_params(
         ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
         
         # Render with color transforms
-        timer.start_step("convert_preview")
-        preview_float = raw_render.convert_dtype(
-            pyramid_images[preview_level_idx], np.float32)
-
         timer.start_step("render_preview")
         rendered_preview = raw_render._render_camera_rgb(
             ifd0_tags=ifd0_tags_no_orientation,
             raw_ifd_tags=main_spec.extratags,
-            rgb_camera=preview_float,
+            rgb_camera=pyramid_images[preview_level_idx],
             output_dtype=np.uint8,
             rendering_params=preview.rendering_params,
             use_xmp=preview.use_xmp,
