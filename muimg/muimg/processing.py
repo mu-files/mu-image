@@ -111,24 +111,27 @@ class ProcessingPipeline:
         self.num_workers = num_workers
         self.task_name = task_name
 
-        if queue_size is None:
-            queue_size = num_workers * 4
-        self.task_queue = queue.Queue(maxsize=queue_size)
-
-        # For monitoring
-        self._stop_event = threading.Event()
+        self._processing_time = 0
         self._task_queue_samples = []
         self._task_queue_empty_time = 0
-        self._processing_time = 0
-
-        # Writer-specific setup
         self.writer_queue = None
-        if self.writer:
-            if writer_queue_size is None:
-                writer_queue_size = queue_size
-            self.writer_queue = queue.Queue(maxsize=writer_queue_size)
-            self._writer_queue_samples = []
-            self._writer_queue_empty_time = 0
+
+        # Skip queue/threading allocation for synchronous mode
+        if num_workers > 0:
+            if queue_size is None:
+                queue_size = num_workers * 4
+            self.task_queue = queue.Queue(maxsize=queue_size)
+
+            # For monitoring
+            self._stop_event = threading.Event()
+
+            # Writer-specific setup
+            if self.writer:
+                if writer_queue_size is None:
+                    writer_queue_size = queue_size
+                self.writer_queue = queue.Queue(maxsize=writer_queue_size)
+                self._writer_queue_samples = []
+                self._writer_queue_empty_time = 0
 
     def _producer_thread(self):
         """Internal method to run the producer and populate the task queue."""
@@ -198,13 +201,45 @@ class ProcessingPipeline:
                 if writer_qsize == 0:
                     self._writer_queue_empty_time += interval
 
+    def _run_sync(self):
+        """Run the pipeline synchronously on the calling thread.
+        
+        Used when num_workers == 0. Executes producer→consumer→writer
+        sequentially without any threading overhead.
+        """
+        import time
+        start_time = time.time()
+        
+        task_desc = f" ({self.task_name})" if self.task_name else ""
+        logger.info(
+            f"Running pipeline{task_desc} synchronously..."
+        )
+        
+        if isinstance(self.producer, ProcessingPipeline):
+            raise TypeError(
+                "Upstream ProcessingPipeline as producer is not supported "
+                "in synchronous mode (num_workers=0)."
+            )
+        
+        for item in self.producer() if self.producer else ():
+            result = self.consumer(item)
+            if self.writer and result is not None:
+                self.writer(result)
+        
+        self._processing_time = time.time() - start_time
+        logger.info(f"Pipeline{task_desc} processing complete!")
+
     def run(self):
         """Starts and runs the entire processing pipeline.
         
+        If num_workers is 0, runs synchronously on the calling thread.
         If producer is a ProcessingPipeline, both pipelines run in parallel with
         the upstream pipeline enqueuing its consumer results into this pipeline's
         task queue (while still running its own writer side effects).
         """
+        if self.num_workers == 0:
+            return self._run_sync()
+        
         import time
         start_time = time.time()
         

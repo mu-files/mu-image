@@ -153,52 +153,36 @@ def compress_ifd(
     
     h, w = data.shape[:2]
     
-    # Use sequential processing if num_workers=1 or single segment
-    use_pipeline = (
-        num_compression_workers > 1 and
-        (tile_size is not None or rows_per_strip is not None)
-    )
+    # Default to single strip covering entire image
+    if tile_size is None and rows_per_strip is None:
+        rows_per_strip = h
     
-    # Helper: Extract and prepare tile data (with padding for tiles only)
-    def extract_tile(ty: int, tx: int, tile_h: int, tile_w: int) -> np.ndarray:
-        """Extract and prepare a tile segment with padding."""
+    # Helper: Extract and prepare a segment (tile or strip)
+    def extract_segment(ty: int, tx: int, seg_h: int, seg_w: int) -> np.ndarray:
+        """Extract a segment with optional padding for tiles."""
         # Calculate actual bounds (don't go beyond image dimensions)
-        y_end = min(ty + tile_h, h)
-        x_end = min(tx + tile_w, w)
+        y_end = min(ty + seg_h, h)
+        x_end = min(tx + seg_w, w)
         
-        # Apply per-tile swizzling if needed
+        # Apply per-segment swizzling if needed
         if needs_swizzle:
-            tile = swizzle_cfa_data(data, (ty, y_end, tx, x_end))
+            seg = swizzle_cfa_data(data, (ty, y_end, tx, x_end))
         else:
-            tile = data[ty:y_end, tx:x_end]
+            seg = data[ty:y_end, tx:x_end]
         
-        # TIFF spec requires padding edge tiles to nominal tile size
-        actual_h, actual_w = tile.shape[:2]
-        if actual_h < tile_h or actual_w < tile_w:
-            # Pad edge tiles with zeros
-            if len(tile.shape) == 3:
-                padded = np.zeros((tile_h, tile_w, tile.shape[2]), dtype=tile.dtype)
-                padded[:actual_h, :actual_w, :] = tile
-            else:
-                padded = np.zeros((tile_h, tile_w), dtype=tile.dtype)
-                padded[:actual_h, :actual_w] = tile
-            tile = padded
+        # TIFF spec requires padding edge tiles (but not strips)
+        if tile_size is not None:
+            actual_h, actual_w = seg.shape[:2]
+            if actual_h < seg_h or actual_w < seg_w:
+                if len(seg.shape) == 3:
+                    padded = np.zeros((seg_h, seg_w, seg.shape[2]), dtype=seg.dtype)
+                    padded[:actual_h, :actual_w, :] = seg
+                else:
+                    padded = np.zeros((seg_h, seg_w), dtype=seg.dtype)
+                    padded[:actual_h, :actual_w] = seg
+                seg = padded
         
-        return tile
-    
-    # Helper: Extract strip data (no padding for strips)
-    def extract_strip(y: int, strip_h: int) -> np.ndarray:
-        """Extract a strip segment without padding."""
-        # Calculate actual bounds
-        y_end = min(y + strip_h, h)
-        
-        # Apply swizzling if needed
-        if needs_swizzle:
-            strip = swizzle_cfa_data(data, (y, y_end, 0, w))
-        else:
-            strip = data[y:y_end]
-        
-        return strip
+        return seg
     
     # Define compression function for a single segment
     def compress_segment(segment: np.ndarray) -> bytes:
@@ -261,87 +245,64 @@ def compress_ifd(
         else:
             # Other compression types (shouldn't happen for DNG files)
             return segment.tobytes()
+
+    # Use parallel workers only for multi-segment layouts with >1 worker.
+    # Single-segment cases (no tiles, or strip covering full image) run synchronously.
+    if ((tile_size is None and rows_per_strip >= h) or
+        (tile_size is not None and tile_size[0] >= h and tile_size[1] >= w)):
+        num_workers = 0
+    else:
+        num_workers = 0 if num_compression_workers <= 1 else num_compression_workers
     
-    if not use_pipeline:
-        # Sequential processing (original behavior)
-        encoded_segments = []
-        
+    # Producer: Generate segment metadata
+    # extract_segment() clamps to image bounds via min(), so edge segments
+    # are naturally smaller. For tiles, extract_segment() then zero-pads
+    # back to nominal size (TIFF spec). For strips, no padding is applied.
+    def segment_producer():
+        seg_id = 0
         if tile_size is not None:
-            # Tiled layout - split into 2D grid and compress each tile
             tile_h, tile_w = tile_size
             for ty in range(0, h, tile_h):
                 for tx in range(0, w, tile_w):
-                    tile = extract_tile(ty, tx, tile_h, tile_w)
-                    encoded_segments.append(compress_segment(tile))
-        elif rows_per_strip is not None:
-            # Stripped layout - split into horizontal strips and compress each
-            for y in range(0, h, rows_per_strip):
-                strip = extract_strip(y, rows_per_strip)
-                encoded_segments.append(compress_segment(strip))
+                    yield (seg_id, ty, tx, tile_h, tile_w)
+                    seg_id += 1
         else:
-            # Single segment (full image)
-            if needs_swizzle:
-                segment = swizzle_cfa_data(data)
-            else:
-                segment = data
-            encoded_segments.append(compress_segment(segment))
-        
-        return encoded_segments
+            for y in range(0, h, rows_per_strip):
+                yield (seg_id, y, 0, rows_per_strip, w)
+                seg_id += 1
     
-    else:
-        # Parallel processing using ProcessingPipeline
-        from .processing import ProcessingPipeline
-        
-        # Producer: Generate tile/strip metadata
-        def tile_producer():
-            tile_id = 0
-            if tile_size is not None:
-                tile_h, tile_w = tile_size
-                for ty in range(0, h, tile_h):
-                    for tx in range(0, w, tile_w):
-                        yield (tile_id, 'tile', ty, tx, tile_h, tile_w)
-                        tile_id += 1
-            elif rows_per_strip is not None:
-                for y in range(0, h, rows_per_strip):
-                    yield (tile_id, 'strip', y, 0, rows_per_strip, 0)
-                    tile_id += 1
-        
-        # Consumer: Extract and compress tile/strip
-        def tile_consumer(task):
-            tile_id, seg_type, ty, tx, seg_h, seg_w = task
-            if seg_type == 'tile':
-                segment = extract_tile(ty, tx, seg_h, seg_w)
-            else:  # strip
-                segment = extract_strip(ty, seg_h)
-            compressed = compress_segment(segment)
-            return (tile_id, compressed)
-        
-        # Writer: Buffer and assemble tiles in order
-        tile_buffer = {}
-        next_expected_id = 0
-        result_segments = []
-        
-        def tile_writer(result):
-            nonlocal next_expected_id
-            if result is None:
-                return
-            
-            tile_id, compressed = result
-            tile_buffer[tile_id] = compressed
-            
-            # Write all consecutive tiles starting from next expected
-            while next_expected_id in tile_buffer:
-                result_segments.append(tile_buffer.pop(next_expected_id))
-                next_expected_id += 1
-        
-        # Run pipeline
-        pipeline = ProcessingPipeline(
-            producer=tile_producer,
-            consumer=tile_consumer,
-            writer=tile_writer,
-            num_workers=num_compression_workers,
-            task_name="Tile Compression"
+    # Consumer: Extract and compress segment
+    def segment_consumer(task):
+        seg_id, ty, tx, seg_h, seg_w = task
+        segment = extract_segment(ty, tx, seg_h, seg_w)
+        compressed = compress_segment(segment)
+        return (seg_id, compressed)
+    
+    # Pre-allocate result array and compute segment count
+    if tile_size is not None:
+        tile_h, tile_w = tile_size
+        num_segments = (
+            ((h + tile_h - 1) // tile_h) * ((w + tile_w - 1) // tile_w)
         )
-        pipeline.run()
-        
-        return result_segments
+    else:
+        num_segments = (h + rows_per_strip - 1) // rows_per_strip
+    result_segments = [None] * num_segments
+    
+    # Writer: Write directly into pre-allocated slot
+    def segment_writer(result):
+        seg_id, compressed = result
+        result_segments[seg_id] = compressed
+    
+    # Run pipeline (synchronous when num_workers=0, threaded otherwise)
+    from .processing import ProcessingPipeline
+    pipeline = ProcessingPipeline(
+        producer=segment_producer,
+        consumer=segment_consumer,
+        writer=segment_writer,
+        num_workers=num_workers,
+        task_name="Tile Compression"
+    )
+    pipeline.run()
+    
+    return result_segments
+
