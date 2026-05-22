@@ -13,7 +13,7 @@ import numpy as np
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import auto, Enum, IntEnum, StrEnum
+from enum import auto, Enum, IntEnum
 from pathlib import Path
 from typing import Any, IO, TypeAlias
 
@@ -61,18 +61,6 @@ DngInput: TypeAlias = str | Path | IO[bytes] | "DngFile" | "DngPage"
 # Constants
 # =============================================================================
 
-class RawStageSelector(StrEnum):
-    """Raw processing stage selectors."""
-    RAW = "raw"
-    LINEARIZED = "linearized"
-    LINEARIZED_PLUS_OPS = "linearized_plus_ops"
-    
-    @classmethod
-    def lookup(cls, value: str) -> "RawStageSelector":
-        """Look up enum member by string value."""
-        from .common import enum_from_string
-        return enum_from_string(cls, value)
-
 
 class PyramidFilter(Enum):
     """Filter types for pyramid generation."""
@@ -94,11 +82,6 @@ class DngPage(tifffile.TiffPage):
     Inherits all TiffPage attributes and methods. Created by "upgrading"
     an existing TiffPage instance.
     """
-    
-    @dataclass(frozen=True, slots=True)
-    class _RawStage:
-        data: np.ndarray
-        cfa_pattern: str | None = None
     
     def __new__(cls, *args, **kwargs):
         """Create DngPage instance without calling TiffPage.__init__."""
@@ -453,365 +436,81 @@ class DngPage(tifffile.TiffPage):
             
             return output
     
-    def _decode_jpegxl(self) -> np.ndarray:
-        """Decode JPEG XL compressed image data, handling tiled images.
-        
-        Matches dng_validate behavior: for sub-byte-aligned data (9-15 bits),
-        upscales decoded values to the container bit depth (16-bit).
-        
-        Returns:
-            Decoded image array.
-        """
-        return self._decode_segmented(imagecodecs.jpegxl_decode)
-    
-    def _decode_jpeg_cfa(self) -> np.ndarray:
-        """Decode JPEG-compressed CFA data.
-        
-        JPEG CFA data is encoded with 2-component interleaving where each CFA pixel is stored
-        as a single pixel with 2 components. This is reshaped to (height, width).
-        
-        Returns:
-            Decoded CFA image array.
-        """
-        def decode_tile(tile_data: bytes) -> np.ndarray:
-            tile = imagecodecs.jpeg_decode(
-                tile_data,
-                bitspersample=self.bitspersample
-            )
-            # Handle JPEG CFA format: (height, width/2, 2) -> (height, width)
-            # Use the actual decoded dimensions instead of predetermined segment size
-            if tile.ndim == 3 and tile.shape[2] == 2:
-                h, w_half, _ = tile.shape
-                tile = tile.reshape(h, w_half * 2)
-
-            return tile
-        
-        return self._decode_segmented(decode_tile)
-    
-    def _decode_jpeg_linear_raw(self) -> np.ndarray:
-        """Decode JPEG-compressed LINEAR_RAW (RGB) data with proper colorspace.
-        
-        Specifies colorspace=2 (RGB) and outcolorspace=2 (RGB) to avoid R/B channel swap.
-        Following tifffile's approach for JPEG LINEAR_RAW decoding.
-        
-        Returns:
-            Decoded LINEAR_RAW image array with shape (height, width, 3).
-        """
-        def decode_tile(tile_data: bytes) -> np.ndarray:
-            return imagecodecs.jpeg_decode(
-                tile_data,
-                bitspersample=self.bitspersample,
-                colorspace=2,  # PHOTOMETRIC.RGB
-                outcolorspace=2  # PHOTOMETRIC.RGB
-            )
-        
-        return self._decode_segmented(decode_tile)
-
-    def _stage1(self) -> DngPage._RawStage | None:
-        timer = get_active_timer()
-        if self.is_cfa:
-            timer.start_step("decode_cfa (c++)")
-            if self.compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
-                raw_cfa = self._decode_jpegxl()
-            elif self.compression == tifffile.COMPRESSION.JPEG:
-                raw_cfa = self._decode_jpeg_cfa()
-            else:
-                raw_cfa = self.asarray()
-            timer.end_step()
-
-            col_interleave = self.get_tag("ColumnInterleaveFactor")
-            row_interleave = self.get_tag("RowInterleaveFactor")
-            if col_interleave == 2 and row_interleave == 2:
-                timer.start_step("deswizzle_cfa")
-                raw_cfa = deswizzle_cfa_data(raw_cfa)
-                timer.end_step()
-
-            cfa_str = self.get_tag("CFAPattern", str)
-            return self._RawStage(data=raw_cfa, cfa_pattern=cfa_str)
-
-        if self.is_linear_raw:
-            timer.start_step("decode_linear_raw (c++)")
-            if self.compression in (tifffile.COMPRESSION.JPEGXL, tifffile.COMPRESSION.JPEGXL_DNG):
-                raw_linear = self._decode_jpegxl()
-            elif self.compression == tifffile.COMPRESSION.JPEG:
-                raw_linear = self._decode_jpeg_linear_raw()
-            else:
-                raw_linear = self.asarray()
-            timer.end_step()
-            return self._RawStage(data=raw_linear)
-
-        return None
-
-    def _stage2(
-        self, stage1: "DngPage._RawStage", apply_ops2: bool = True
-    ) -> "DngPage._RawStage":
-        timer = get_active_timer()
-        photometric = self.photometric_name
-        if photometric == "CFA":
-            samples_per_pixel = 1
-        else:
-            samples_per_pixel = int(self.get_tag("SamplesPerPixel") or 1)
-
-        black_repeat_dim = self.get_tag("BlackLevelRepeatDim")
-        if black_repeat_dim is None:
-            black_repeat_dim = (1, 1)
-        black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, "__len__") else 1
-        black_repeat_cols = (
-            int(black_repeat_dim[1])
-            if hasattr(black_repeat_dim, "__len__") and len(black_repeat_dim) > 1
-            else 1
-        )
-        expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
-
-        black_level_raw = self.get_tag("BlackLevel")
-        if black_level_raw is None:
-            black_level = np.zeros(expected_black_size, dtype=np.float32)
-        else:
-            black_level = np.atleast_1d(black_level_raw).astype(np.float32).ravel()
-            if len(black_level) != expected_black_size:
-                black_level = np.zeros(expected_black_size, dtype=np.float32)
-
-        bits_per_sample_raw = self.get_tag("BitsPerSample")
-        if bits_per_sample_raw is None:
-            bits_per_sample = 16
-        elif isinstance(bits_per_sample_raw, np.ndarray):
-            bits_per_sample = int(bits_per_sample_raw.flat[0])
-            if len(bits_per_sample_raw) > samples_per_pixel:
-                logger.warning(
-                    f"BitsPerSample count ({len(bits_per_sample_raw)}) exceeds "
-                    f"SamplesPerPixel ({samples_per_pixel})"
-                )
-        else:
-            # Single value (int) - get_tag returns int for count=1 tags
-            bits_per_sample = int(bits_per_sample_raw)
-        
-        # Check if this is float data (SampleFormat = 3)
-        sample_format = self.get_tag("SampleFormat")
-        if sample_format is not None:
-            # SampleFormat can be a single value or array
-            if isinstance(sample_format, (list, tuple, np.ndarray)):
-                sample_format = sample_format[0]
-        
-        # Match DNG SDK default: float uses 1.0, integer uses (2^bits - 1)
-        # DNG SDK reference: dng_ifd.cpp lines 3466-3468
-        if sample_format == 3:
-            default_white = 1.0
-        else:
-            # Integer data (SampleFormat=1) or missing SampleFormat tag
-            default_white = float((1 << bits_per_sample) - 1)
-
-        white_level_raw = self.get_tag("WhiteLevel")
-        if white_level_raw is None:
-            white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
-        else:
-            white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
-            white_level = np.where(white_level < 0, default_white, white_level)
-            if len(white_level) != samples_per_pixel:
-                logger.warning(
-                    f"WhiteLevel count ({len(white_level)}) != "
-                    f"SamplesPerPixel ({samples_per_pixel})"
-                )
-                if len(white_level) > samples_per_pixel:
-                    white_level = white_level[:samples_per_pixel]
-                else:
-                    pad = np.full(
-                        samples_per_pixel - len(white_level),
-                        white_level[-1],
-                        dtype=np.float32,
+    def _decode_raw(self) -> np.ndarray:
+        """Decode raw image data based on compression type."""
+        if self.compression in (
+            tifffile.COMPRESSION.JPEGXL,
+            tifffile.COMPRESSION.JPEGXL_DNG,
+        ):
+            return self._decode_segmented(imagecodecs.jpegxl_decode)
+        elif self.compression == tifffile.COMPRESSION.JPEG:
+            if self.is_cfa:
+                def decode_tile(tile_data: bytes) -> np.ndarray:
+                    tile = imagecodecs.jpeg_decode(
+                        tile_data,
+                        bitspersample=self.bitspersample
                     )
-                    white_level = np.concatenate([white_level, pad])
-
-        black_delta_h = self.get_tag("BlackLevelDeltaH")
-        black_delta_v = self.get_tag("BlackLevelDeltaV")
-        if black_delta_h is not None:
-            black_delta_h = np.atleast_1d(black_delta_h).astype(np.float32)
-        if black_delta_v is not None:
-            black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
-
-        linearization_table = self.get_tag("LinearizationTable")
-        if linearization_table is not None:
-            linearization_table = np.asarray(linearization_table, dtype=np.uint16)
-
-        # Apply OpcodeList1 to raw sensor data (before linearization)
-        # Note: OpcodeList1 is always applied (not gated by apply_ops2)
-        data = stage1.data
-        opcode_list1 = self.get_tag("OpcodeList1")
-        if opcode_list1 is not None:
-            ops1_timer = timer.start_step("opcode_list1")
-            try:
-                opcodes = raw_render.parse_opcode_list(bytes(opcode_list1))
-            except Exception as e:
-                logger.warning(f"Failed to parse OpcodeList1 ({type(e).__name__}): {e}")
-                opcodes = None
-            
-            if opcodes:
-                try:
-                    logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
-                    ops1_timer.start_step("apply_opcodes_cfa (c++)")
-                    data = raw_render.apply_opcodes_cfa(data, opcodes, "OpcodeList1")
-                    ops1_timer.end_step()
-                except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
-            ops1_timer.close()
-
-        active_area = self.get_tag("ActiveArea")
-        if active_area is not None:
-            aa_top, aa_left, aa_bottom, aa_right = active_area
-            data = data[aa_top:aa_bottom, aa_left:aa_right]
-
-        # Fast path: trivial normalization (black=0, white=default, no
-        # deltas/LUT, uint16 data) can use optimized convert_dtype instead
-        is_pure_convert = (
-            samples_per_pixel == 3
-            and data.dtype == np.uint16
-            and black_delta_h is None
-            and black_delta_v is None
-            and (linearization_table is None or len(linearization_table) == 0)
-            and np.all(black_level == 0.0)
-            and np.all(white_level == default_white)
-        )
-
-        timer.start_step("linearize (c++)")
-        if is_pure_convert:
-            normalized = raw_render.convert_dtype(
-                data,
-                np.float32,
-                src_bits_per_element=bits_per_sample,
-            )
+                    # JPEG CFA format: (height, width/2, 2) -> (height, width)
+                    if tile.ndim == 3 and tile.shape[2] == 2:
+                        h, w_half, _ = tile.shape
+                        tile = tile.reshape(h, w_half * 2)
+                    return tile
+            else:
+                def decode_tile(tile_data: bytes) -> np.ndarray:
+                    return imagecodecs.jpeg_decode(
+                        tile_data,
+                        bitspersample=self.bitspersample,
+                        colorspace=2,  # RGB - bypass YCbCr conversion
+                        outcolorspace=2
+                    )
+            return self._decode_segmented(decode_tile)
         else:
-            # normalize_raw accepts uint16 or float32 natively;
-            # convert edge-case dtypes to the nearest supported type
-            norm_data = data
-            if norm_data.dtype == np.uint8:
-                norm_data = norm_data.astype(np.uint16)
-            elif norm_data.dtype == np.float16:
-                norm_data = norm_data.astype(np.float32)
-            elif norm_data.dtype not in (np.uint16, np.float32):
-                norm_data = norm_data.astype(np.float32)
-            normalized = raw_render._raw_render.normalize_raw(
-                data=norm_data,
-                black_level=black_level,
-                black_repeat_rows=black_repeat_rows,
-                black_repeat_cols=black_repeat_cols,
-                samples_per_pixel=samples_per_pixel,
-                white_level=white_level,
-                black_delta_h=black_delta_h,
-                black_delta_v=black_delta_v,
-                linearization_table=linearization_table,
-            )
-        timer.end_step()
+            return self.asarray()
 
-        stage2 = self._RawStage(data=normalized, cfa_pattern=stage1.cfa_pattern)
-
-        if not apply_ops2:
-            return stage2
-
-        opcode_list2 = self.get_tag("OpcodeList2")
-        if opcode_list2 is not None:
-            ops2_timer = timer.start_step("opcode_list2")
-            try:
-                opcodes = raw_render.parse_opcode_list(bytes(opcode_list2))
-            except Exception as e:
-                logger.warning(f"Failed to parse OpcodeList2 ({type(e).__name__}): {e}")
-                opcodes = None
-            
-            if opcodes:
-                try:
-                    logger.debug(f"OpcodeList2: {len(opcodes)} opcodes, "
-                                f"is_linear_raw={self.is_linear_raw}, is_cfa={self.is_cfa}, "
-                                f"data.shape={stage2.data.shape}")
-                    if self.is_linear_raw:
-                        ops2_timer.start_step("apply_opcodes (c++)")
-                        data_ops = raw_render.apply_opcodes(
-                            stage2.data, opcodes,
-                            use_bicubic=False,
-                            opcode_list_name="OpcodeList2"
-                        )
-                        ops2_timer.close()
-                        return self._RawStage(data=data_ops)
-                    else:
-                        # CFA data
-                        ops2_timer.start_step("apply_opcodes_cfa (c++)")
-                        data_ops = raw_render.apply_opcodes_cfa(
-                            stage2.data, opcodes, "OpcodeList2"
-                        )
-                        ops2_timer.close()
-                        return self._RawStage(
-                            data=data_ops, cfa_pattern=stage2.cfa_pattern
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList2 ({type(e).__name__}): {e}")
-            ops2_timer.close()
-        
-        return stage2
-
-    def get_cfa(
-        self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> tuple[np.ndarray, str] | None:
+    def get_cfa(self) -> tuple[np.ndarray, str] | None:
         """Extract CFA data and pattern from this page.
-
-        Args:
-            stage: Which stage of the raw pipeline to return.
-
-                - RawStageSelector.RAW: Stored samples (decoded).
-                - RawStageSelector.LINEARIZED: Raw + linearize + range map
-                  (ActiveArea-cropped, float32 in [0, 1]).
-                - RawStageSelector.LINEARIZED_PLUS_OPS: LINEARIZED + OpcodeList2 (if present)
-                  (float32 in [0, 1]).
 
         Returns:
             Tuple of (cfa_array, cfa_pattern_str) or None if not a CFA page.
             cfa_pattern_str is e.g., 'RGGB', 'BGGR'.
         """
-        stage1 = self._stage1()
-        if stage1 is None:
+        if not self.is_cfa:
             return None
 
-        if stage == RawStageSelector.RAW:
-            stage_out = stage1
-        elif stage == RawStageSelector.LINEARIZED:
-            stage_out = self._stage2(stage1, apply_ops2=False)
-        elif stage == RawStageSelector.LINEARIZED_PLUS_OPS:
-            stage_out = self._stage2(stage1, apply_ops2=True)
-        else:
-            raise ValueError(f"Unknown stage selector: {stage}")
+        timer = get_active_timer()
+        timer.start_step("decode_cfa (c++)")
+        raw_cfa = self._decode_raw()
+        timer.end_step()
 
-        if stage_out.cfa_pattern is None:
+        if raw_cfa is None:
             return None
 
-        return stage_out.data, stage_out.cfa_pattern
+        col_interleave = self.get_tag("ColumnInterleaveFactor")
+        row_interleave = self.get_tag("RowInterleaveFactor")
+        if col_interleave == 2 and row_interleave == 2:
+            timer.start_step("deswizzle_cfa")
+            raw_cfa = deswizzle_cfa_data(raw_cfa)
+            timer.end_step()
+
+        cfa_pattern = self.get_tag("CFAPattern", str) or "RGGB"
+
+        return raw_cfa, cfa_pattern
     
-    def get_linear_raw(
-        self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> np.ndarray | None:
+    def get_linear_raw(self) -> np.ndarray | None:
         """Extract LINEAR_RAW data from this page.
 
-        Args:
-            stage: Which stage of the raw pipeline to return.
-
-                - RawStageSelector.RAW: Stored samples (decoded).
-                - RawStageSelector.LINEARIZED: Raw + linearize + range map
-                  (ActiveArea-cropped, float32 in [0, 1]).
-                - RawStageSelector.LINEARIZED_PLUS_OPS: LINEARIZED + OpcodeList2 (if present)
-                  (float32 in [0, 1]).
-        
         Returns:
             Raw linear data array or None if not a LINEAR_RAW page.
         """
         if not self.is_linear_raw:
             return None
 
-        stage1 = self._stage1()
-        if stage1 is None:
-            return None
+        timer = get_active_timer()
+        timer.start_step("decode_linear_raw (c++)")
+        raw_linear = self._decode_raw()
+        timer.end_step()
 
-        if stage == RawStageSelector.RAW:
-            return stage1.data
-        if stage == RawStageSelector.LINEARIZED:
-            return self._stage2(stage1, apply_ops2=False).data
-        if stage == RawStageSelector.LINEARIZED_PLUS_OPS:
-            return self._stage2(stage1, apply_ops2=True).data
-        raise ValueError(f"Unknown stage selector: {stage}")
+        return raw_linear
 
     def get_camera_rgb_raw(
         self, 
@@ -838,72 +537,25 @@ class DngPage(tifffile.TiffPage):
         # Validate this is a raw page
         if not (self.is_cfa or self.is_linear_raw):
             raise ValueError(
-                f"get_camera_rgb_raw() requires CFA or LINEAR_RAW page, got {self.photometric_name}"
+                f"get_camera_rgb_raw() requires CFA or LINEAR_RAW page, "
+                f"got {self.photometric_name}"
             )
-        
-        timer = get_active_timer()
-        stage1 = self._stage1()
-        if stage1 is None:
-            return None
-        stage2 = self._stage2(stage1)
 
-        photometric = self.photometric_name
-
-        if photometric == "LINEAR_RAW":
-            rgb_camera = stage2.data
-            rgb_camera = np.clip(rgb_camera, 0.0, 1.0).astype(np.float32, copy=False)
+        # Get raw data
+        cfa_pattern = None
+        if self.is_linear_raw:
+            data = self.get_linear_raw()
+            if data is None:
+                return None
         else:
-            cfa_normalized = stage2.data
-            cfa_pattern = stage2.cfa_pattern
-            if cfa_pattern is None:
-                cfa_pattern = "RGGB"
+            cfa_result = self.get_cfa()
+            if cfa_result is None:
+                return None
+            data, cfa_pattern = cfa_result
 
-            demosaic_timer = timer.start_step("demosaic")
-            # Bilinear guarantees [0,1] output through averaging - skip clip
-            clip_value = None if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR else 1.0
-            rgb_camera = raw_render.demosaic(
-                cfa_normalized, cfa_pattern, algorithm=demosaic_algorithm,
-                clip_max=clip_value, return_dtype=np.float32
-            )
-            demosaic_timer.close()
-
-        # Apply OpcodeList3 (Stage3 operations)
-        opcode_list3 = self.get_tag("OpcodeList3")
-        if opcode_list3 is not None:
-            ops3_timer = timer.start_step("opcode_list3")
-            try:
-                opcodes = raw_render.parse_opcode_list(bytes(opcode_list3))
-            except Exception as e:
-                logger.warning(f"Failed to parse OpcodeList3 ({type(e).__name__}): {e}")
-                opcodes = None
-            
-            if opcodes:
-                try:
-                    logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
-                    ops3_timer.start_step("apply_opcodes (c++)")
-                    rgb_camera = raw_render.apply_opcodes(
-                        rgb_camera, opcodes,
-                        use_bicubic=False,
-                        opcode_list_name="OpcodeList3"
-                    )
-                    ops3_timer.end_step()
-                except Exception as e:
-                    logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
-            ops3_timer.close()
-
-        # Apply DefaultCrop
-        crop_origin = self.get_tag("DefaultCropOrigin")
-        crop_size = self.get_tag("DefaultCropSize")
-
-        if crop_origin is not None and crop_size is not None:
-            crop_x = int(crop_origin[0])
-            crop_y = int(crop_origin[1])
-            crop_w = int(crop_size[0])
-            crop_h = int(crop_size[1])
-            rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
-
-        # timer.start_step("stack_unwind")
-        return rgb_camera
+        return raw_render._raw_to_camera_rgb(
+            self, data, self.photometric_name, cfa_pattern, demosaic_algorithm
+        )
     
     def decode_to_rgb(
         self,
@@ -1223,25 +875,13 @@ class DngFile(tifffile.TiffFile):
         method = getattr(page, method_name)
         return method(*args, **kwargs)
         
-    def get_cfa(
-        self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> tuple[np.ndarray, str] | None:
+    def get_cfa(self) -> tuple[np.ndarray, str] | None:
         """See `DngPage.get_cfa`."""
-        return self._forward_main_page(
-            "get_cfa",
-            stage=stage,
-            require=lambda p: p.is_cfa,
-        )
+        return self._forward_main_page("get_cfa")
 
-    def get_linear_raw(
-        self, stage: RawStageSelector = RawStageSelector.RAW
-    ) -> np.ndarray | None:
+    def get_linear_raw(self) -> np.ndarray | None:
         """See `DngPage.get_linear_raw`."""
-        return self._forward_main_page(
-            "get_linear_raw",
-            stage=stage,
-            require=lambda p: p.is_linear_raw,
-        )
+        return self._forward_main_page("get_linear_raw")
 
     def get_camera_rgb_raw(
         self,
@@ -2241,96 +1881,6 @@ class PyramidParams:
     filter: PyramidFilter = PyramidFilter.CATMULL_ROM
 
 
-def write_dng_from_array(
-    destination_file: str | Path | io.BytesIO,
-    data_spec: IfdDataSpec,
-    *,
-    preview: PreviewParams | None = None,
-    pyramid: PyramidParams | None = None,
-    num_compression_workers: int = 1,
-) -> None:
-    """Write raw array data to a DNG file with optional preview and pyramid generation.
-    
-    Args:
-        destination_file: Path or io.BytesIO object where to save the DNG file
-        data_spec: IfdDataSpec containing raw image data and metadata
-        preview: PreviewParams for preview generation (None = no preview)
-        pyramid: PyramidParams for pyramid generation (None = no pyramid)
-        num_compression_workers: Number of parallel compression workers (default: 1)
-    """
-    
-    with scoped_perf_timer("write_dng_from_array", logger) as timer:
-        # Create uncompressed temporary page spec (compression removed)
-        temp_data_spec = IfdDataSpec(
-            data=data_spec.data,
-            photometric=data_spec.photometric,
-            cfa_pattern=data_spec.cfa_pattern,
-            extratags=data_spec.extratags,
-            bits_per_sample=data_spec.bits_per_sample,
-        )
-        
-        # Create in-memory uncompressed DngFile from the temp spec
-        timer.start_step("create_dng")
-        dng_file = create_dng(ifd0_spec=temp_data_spec)
-        timer.end_step()
-        
-        # Extract the main page
-        main_page = dng_file.get_main_page()
-        if main_page is None:
-            raise RuntimeError("Failed to create DNG from array data")
-        
-        # Create IfdPageSpec with TRANSCODE mode
-        # Data is already uncompressed in temp DNG, ready for (re)compression
-        # Fast path in write_dng_from_page handles compression-only changes without demosaicing
-        page_spec = IfdPageSpec(
-            page=main_page,
-            transcode_encoding=data_spec.encoding,
-            extratags=None,  # Already in the page
-        )  
-        # Delegate to write_dng_from_page with extracted values
-        write_dng_from_page(
-            destination_file=destination_file,
-            page=page_spec,
-            preview=preview,
-            pyramid=pyramid,
-            num_compression_workers=num_compression_workers
-        )
-
-def create_dng_from_array(
-    data_spec: IfdDataSpec,
-    *,
-    preview: PreviewParams | None = None,
-    pyramid: PyramidParams | None = None,
-) -> "DngFile":
-    """Create a DNG file from array data in memory and return as DngFile object.
-    
-    This is a convenience wrapper around write_dng_from_array that writes to an
-    in-memory BytesIO stream and returns the result as a DngFile.
-    
-    Args:
-        data_spec: IfdDataSpec containing raw image data and metadata
-        preview: Optional preview generation parameters
-        pyramid: Optional pyramid level generation parameters
-        
-    Returns:
-        DngFile object loaded from the in-memory DNG
-        
-    Example:
-        >>> data_spec = IfdDataSpec(data=raw_array, photometric="CFA", ...)
-        >>> preview = PreviewParams(scale=PreviewScale.QUARTER)  # Presence means generate preview
-        >>> dng = create_dng_from_array(data_spec, preview=preview)
-    """
-    buffer = io.BytesIO()
-    write_dng_from_array(
-        destination_file=buffer,
-        data_spec=data_spec,
-        preview=preview,
-        pyramid=pyramid,
-    )
-    buffer.seek(0)
-    return DngFile(buffer)
-
-
 def _generate_pyramid(
     image: np.ndarray,
     num_levels: int,
@@ -2432,6 +1982,310 @@ STAGE3_TAGS = {
 }
 
 
+def _write_dng_with_params(
+    destination_file: str | Path | io.BytesIO,
+    main_spec: IfdSpec,
+    *,
+    ifd0_tags: MetadataTags,
+    scale: float = 1.0,
+    demosaic: bool = False,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.DNGSDK_BILINEAR,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
+    num_compression_workers: int = 1,
+) -> None:
+    """Write DNG with transforms, preview, and pyramid from a page spec.
+
+    Extracts camera RGB from main_spec, applies scaling/demosaic, generates
+    pyramid levels, and writes the final DNG with optional preview.
+
+    Args:
+        destination_file: Destination path or io.BytesIO
+        main_spec: Source IFD spec (IfdPageSpec or IfdDataSpec).
+        ifd0_tags: IFD0-level metadata tags.
+        scale: Scale factor (default: 1.0)
+        demosaic: If True, convert CFA to LINEAR_RAW
+        demosaic_algorithm: Demosaic algorithm to use
+        preview: Preview generation parameters.
+        pyramid: Pyramid generation parameters.
+        num_compression_workers: Number of parallel compression workers.
+    """
+    timer = get_active_timer()
+
+    # Extract camera RGB (always needed if we didn't take fast return path)
+    timer.start_step("extract_camera_rgb")
+    logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
+    cfa_pattern = None
+    if isinstance(main_spec, IfdPageSpec):
+        if main_spec.page.is_linear_raw:
+            raw_data = main_spec.page.get_linear_raw()
+        else:
+            cfa_result = main_spec.page.get_cfa()
+            if cfa_result is None:
+                raise RuntimeError("Failed to extract CFA data")
+            raw_data, cfa_pattern = cfa_result
+        if raw_data is None:
+            raise RuntimeError("Failed to extract raw data")
+        
+        photometric = main_spec.page.photometric_name
+    else:
+        raw_data = main_spec.data
+        photometric = main_spec.photometric
+        if photometric == "CFA":
+            cfa_pattern = main_spec.cfa_pattern
+
+    camera_rgb = raw_render._raw_to_camera_rgb(
+        main_spec.extratags, raw_data, photometric, cfa_pattern, demosaic_algorithm
+    )
+    camera_rgb = raw_render.convert_dtype(camera_rgb, np.uint16)
+    timer.end_step()
+    
+    # if we are transforming then the main_spec is always a DataSpec with the transformed data
+    if ((demosaic and photometric == "CFA") or scale != 1.0):
+
+        # Apply scaling if needed
+        if scale != 1.0:
+            timer.start_step("apply_scaling")
+            logger.info(f"Applying scale: {scale}")
+            h, w = camera_rgb.shape[:2]
+            new_h, new_w = int(h * scale), int(w * scale)
+            
+            camera_rgb = cv2.resize(camera_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            timer.end_step()
+
+        if isinstance(main_spec, IfdPageSpec):
+            if main_spec.transcode_encoding:
+                main_encoding = main_spec.transcode_encoding
+            else:
+                main_encoding = PageEncoding(
+                    compression=main_spec.page.compression,
+                    compression_args=None
+                )
+        else:
+            main_encoding = main_spec.encoding
+
+        # Strip stage/digest tags since we are writing a new linear_raw DNG
+        tags_to_strip = STAGE1_STAGE2_TAGS | STAGE3_TAGS | _DIGEST_TAGS
+        _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
+        _filter_metadata_tags(main_spec.extratags, exclude_names=tags_to_strip)
+
+        # change main_spec 
+        main_spec = IfdDataSpec(
+            data=camera_rgb,
+            photometric="LINEAR_RAW",
+            subfiletype=SubFileType.MAIN_IMAGE,
+            encoding=main_encoding,
+            extratags=main_spec.extratags
+        )
+
+    # generate preview tags for muimg engine
+    preview_tags = MetadataTags()
+    preview_tags.add_tag("PreviewApplicationName", "muimg")
+    preview_tags.add_tag("PreviewApplicationVersion", "1.0.0")
+
+    # Compute pyramid levels needed 
+    num_pyramid_levels = 1  # Level 0 is always the original
+    preview_level_idx = 0  # Default to level 0 if no preview
+    
+    # Calculate levels needed for preview
+    if preview:
+        # if preview it is ifd0, also add in preview tags
+        ifd0_tags |= preview_tags
+
+        # Direct mapping: FULL=0, HALF=1, QUARTER=2, EIGHTH=3
+        preview_level_idx = preview.scale
+        num_pyramid_levels = preview_level_idx + 1
+    
+    # Take max with requested pyramid levels
+    if pyramid:
+        num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
+    
+    # Generate pyramid - use CATMULL_ROM for faster preview generation
+    timer.start_step("generate_pyramid")
+    filter_type = pyramid.filter if pyramid else PyramidFilter.CATMULL_ROM
+    pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels, filter=filter_type)
+    logger.info(f"Generated {len(pyramid_images)} pyramid levels (including original)")
+    timer.end_step()
+    
+    # Build pyramid level specs (levels 1+)
+    pyramid_specs = []
+    if pyramid and pyramid.levels > 0:
+
+        # create pyramid tags
+        pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
+
+        for level_idx in range(1, len(pyramid_images)):
+            pyramid_spec = IfdDataSpec(
+                data=pyramid_images[level_idx],
+                photometric="LINEAR_RAW",
+                subfiletype=SubFileType.PREVIEW_IMAGE,
+                encoding=pyramid.encoding,
+                extratags=pyramid_tags,
+            )
+            pyramid_specs.append(pyramid_spec)
+    
+    # Generate rendered preview if requested
+    if not preview:
+        # No preview: IFD0 = main, SubIFD0+ = pyramid
+        timer.start_step("write_dng_no_preview")
+        write_dng(
+            destination_file=destination_file,
+            ifd0_spec=main_spec,
+            subifds=pyramid_specs,
+            num_compression_workers=num_compression_workers
+        )
+        timer.end_step()
+    else:            
+        logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({pyramid_images[preview_level_idx].shape[:2]})")
+        
+        # Create copy of ifd0_tags with Orientation equal to HORIZONTAL
+        # since the Orientation tag is persisted across the copy
+        ifd0_tags_no_orientation = ifd0_tags.copy()
+        ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
+        
+        # Render with color transforms
+        timer.start_step("convert_preview")
+        preview_float = raw_render.convert_dtype(
+            pyramid_images[preview_level_idx], np.float32)
+
+        timer.start_step("render_preview")
+        rendered_preview = raw_render._render_camera_rgb(
+            ifd0_tags=ifd0_tags_no_orientation,
+            raw_ifd_tags=main_spec.extratags,
+            rgb_camera=preview_float,
+            output_dtype=np.uint8,
+            rendering_params=preview.rendering_params,
+            use_xmp=preview.use_xmp,
+        )
+        timer.end_step()
+        
+        # Create preview spec for IFD0
+        preview_encoding = PageEncoding(
+            compression=preview.compression,
+            compression_args=preview.compression_args
+        ) if preview.compression else None
+        preview_spec = IfdDataSpec(
+            data=rendered_preview,
+            photometric="RGB",
+            subfiletype=SubFileType.PREVIEW_IMAGE,
+            encoding=preview_encoding,
+            extratags=ifd0_tags,
+        )
+        
+        # Write: IFD0 = preview, SubIFD0 = main, SubIFD1+ = pyramid
+        timer.start_step("write_dng_with_preview")
+        write_dng(
+            destination_file=destination_file,
+            ifd0_spec=preview_spec,
+            subifds=[main_spec] + pyramid_specs,
+            num_compression_workers=num_compression_workers
+        )
+        timer.end_step()
+    
+    if isinstance(destination_file, io.BytesIO):
+        logger.info("Successfully wrote DNG to stream")
+    else:
+        logger.info(f"Successfully wrote DNG to {destination_file}")
+
+
+def write_dng_from_array(
+    destination_file: str | Path | io.BytesIO,
+    data_spec: IfdDataSpec,
+    *,
+    scale: float = 1.0,
+    demosaic: bool = False,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.DNGSDK_BILINEAR,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
+    num_compression_workers: int = 1,
+) -> None:
+    """Write raw array data to a DNG file with optional preview and pyramid generation.
+    
+    Args:
+        destination_file: Path or io.BytesIO object where to save the DNG file
+        data_spec: IfdDataSpec containing raw image data and metadata
+        preview: PreviewParams for preview generation (None = no preview)
+        pyramid: PyramidParams for pyramid generation (None = no pyramid)
+        num_compression_workers: Number of parallel compression workers (default: 1)
+    """
+
+    with scoped_perf_timer("write_dng_from_array", logger) as timer:
+        # fast path - only one ifd requested and no data transformations
+        if not (preview or pyramid or scale != 1.0 or (demosaic and data_spec.photometric == "CFA")):
+            write_dng(
+                destination_file,
+                ifd0_spec=data_spec,
+                num_compression_workers=num_compression_workers,
+            )
+            return
+
+        # filter metadata tags into those that belong in ifd0 and those in main page
+        ifd0_tags = MetadataTags()
+        main_page_tags = MetadataTags()
+        if data_spec.extratags:
+            ifd0_tags |= data_spec.extratags
+            ifd0_tags = filter_tags_by_ifd_category(
+                ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
+
+            main_page_tags |= data_spec.extratags
+            main_page_categories = ["any", "dng_raw"]
+            if data_spec.photometric == "CFA" and not demosaic:
+                main_page_categories += ["dng_raw:cfa"]
+            main_page_tags = filter_tags_by_ifd_category(main_page_tags, main_page_categories)
+            if not preview:
+                main_page_tags = ifd0_tags | main_page_tags # if duplicates main page takes precedence
+
+        # update data_spec with filtered main page tags
+        updated_spec = replace(data_spec, extratags=main_page_tags)
+
+        _write_dng_with_params(
+            destination_file=destination_file,
+            main_spec=updated_spec,
+            ifd0_tags=ifd0_tags,
+            scale=scale,
+            demosaic=demosaic,
+            demosaic_algorithm=demosaic_algorithm,
+            preview=preview,
+            pyramid=pyramid,
+            num_compression_workers=num_compression_workers,
+        )
+
+
+def create_dng_from_array(
+    data_spec: IfdDataSpec,
+    *,
+    preview: PreviewParams | None = None,
+    pyramid: PyramidParams | None = None,
+) -> "DngFile":
+    """Create a DNG file from array data in memory and return as DngFile object.
+    
+    This is a convenience wrapper around write_dng_from_array that writes to an
+    in-memory BytesIO stream and returns the result as a DngFile.
+    
+    Args:
+        data_spec: IfdDataSpec containing raw image data and metadata
+        preview: Optional preview generation parameters
+        pyramid: Optional pyramid level generation parameters
+        
+    Returns:
+        DngFile object loaded from the in-memory DNG
+        
+    Example:
+        >>> data_spec = IfdDataSpec(data=raw_array, photometric="CFA", ...)
+        >>> preview = PreviewParams(scale=PreviewScale.QUARTER)  # Presence means generate preview
+        >>> dng = create_dng_from_array(data_spec, preview=preview)
+    """
+    buffer = io.BytesIO()
+    write_dng_from_array(
+        destination_file=buffer,
+        data_spec=data_spec,
+        preview=preview,
+        pyramid=pyramid,
+    )
+    buffer.seek(0)
+    return DngFile(buffer)
+
+
 def write_dng_from_page(
     destination_file: str | Path | io.BytesIO,
     page: IfdPageSpec | DngPage,
@@ -2477,12 +2331,7 @@ def write_dng_from_page(
             )
 
         # do we change the main page pixels?
-        main_needs_transform = ((demosaic and source_page_spec.page.is_cfa) or scale != 1.0)
-
-        # generate custom preview tags
-        preview_tags = MetadataTags()
-        preview_tags.add_tag("PreviewApplicationName", "muimg")
-        preview_tags.add_tag("PreviewApplicationVersion", "1.0.0")
+        main_needs_scale_or_demosaic = ((demosaic and source_page_spec.page.is_cfa) or scale != 1.0)
 
         # handle ifd0 tags
         ifd0_tags = MetadataTags()
@@ -2490,8 +2339,7 @@ def write_dng_from_page(
             ifd0_tags = source_page_spec.page.get_ifd0_tags()
             ifd0_tags = filter_tags_by_ifd_category(
                 ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
-        if preview:
-            ifd0_tags |= preview_tags
+
         _filter_metadata_tags(
             ifd0_tags, exclude_names=(ifd0_strip_tags or set()) | _COMPRESSION_INVALIDATED_TAGS)
         ifd0_tags |= ifd0_extratags
@@ -2502,7 +2350,7 @@ def write_dng_from_page(
             main_page_tags |= source_page_spec.page.get_page_tags()
 
             main_page_categories = ["any"]
-            if source_page_spec.page.is_linear_raw or main_needs_transform:
+            if source_page_spec.page.is_linear_raw or main_needs_scale_or_demosaic:
                 main_page_categories += ["dng_raw"]
             elif source_page_spec.page.is_cfa:
                 main_page_categories += ["dng_raw", "dng_raw:cfa"]
@@ -2512,17 +2360,15 @@ def write_dng_from_page(
             main_page_tags = ifd0_tags | main_page_tags # if duplicates main page takes precedence
         main_page_tags |= source_page_spec.extratags    
 
-        # handle pyramid tags
-        pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
+        # create a new main page spec that is our incoming spec with correct subfiletype and tags
+        main_spec = replace(
+            source_page_spec, 
+            subfiletype=SubFileType.MAIN_IMAGE, 
+            extratags=main_page_tags,
+            copy_page_tags=False)
 
-        # If no demosaic/scale needed then the main_spec is the incoming page spec
-        if not main_needs_transform:
+        if not main_needs_scale_or_demosaic:
             logger.info("Using fast path for main spec (no demosaic/scale)")
-            main_spec = replace(
-                source_page_spec, 
-                subfiletype=SubFileType.MAIN_IMAGE, 
-                extratags=main_page_tags,
-                copy_page_tags=False)
             
             # Fast path: no preview/pyramid - write and return immediately
             if preview is None and not (pyramid and pyramid.levels > 0):
@@ -2538,150 +2384,18 @@ def write_dng_from_page(
                 else:
                     logger.info(f"Successfully wrote DNG to {destination_file}")
                 return
-        else:
-            # Only strip stage and digest tags if we transcoded (transformed the data)
-            tags_to_strip = STAGE1_STAGE2_TAGS | STAGE3_TAGS | _DIGEST_TAGS
-        
-            # Filter tags
-            _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
-            _filter_metadata_tags(main_page_tags, exclude_names=tags_to_strip)
 
-        # Extract camera RGB (always needed if we didn't take fast return path)
-        timer.start_step("extract_camera_rgb")
-        logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
-        camera_rgb = source_page_spec.page.get_camera_rgb_raw(demosaic_algorithm)
-        if camera_rgb is None:
-            raise RuntimeError("Failed to extract camera RGB")
-        timer.end_step()
-        
-        # Apply scaling if needed
-        if scale != 1.0:
-            timer.start_step("apply_scaling")
-            logger.info(f"Applying scale: {scale}")
-            h, w = camera_rgb.shape[:2]
-            new_h, new_w = int(h * scale), int(w * scale)
-            
-            camera_rgb = cv2.resize(camera_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            timer.end_step()
-        
-        # Compute pyramid levels needed and find best level for preview
-        num_pyramid_levels = 1  # Level 0 is always the original
-        preview_level_idx = 0  # Default to level 0 if no preview
-        
-        # Calculate levels needed for preview
-        if preview:
-            # Direct mapping: FULL=0, HALF=1, QUARTER=2, EIGHTH=3
-            preview_level_idx = preview.scale
-            num_pyramid_levels = preview_level_idx + 1
-        
-        # Take max with requested pyramid levels
-        if pyramid:
-            num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
-        
-        # Generate pyramid - use CATMULL_ROM for faster preview generation
-        timer.start_step("generate_pyramid")
-        filter_type = pyramid.filter if pyramid else PyramidFilter.CATMULL_ROM
-        pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels, filter=filter_type)
-        logger.info(f"Generated {len(pyramid_images)} pyramid levels (including original)")
-        timer.end_step()
-        
-        # Build main raw data spec from transcoded data if we don't already have a page spec
-        if main_needs_transform:
-            # Transformed data - extract compression from source
-            raw_uint16 = raw_render.convert_dtype(pyramid_images[0], np.uint16)
-            if source_page_spec.transcode_encoding:
-                # Explicit TRANSCODE mode - use specified encoding
-                main_encoding = source_page_spec.transcode_encoding
-            else:
-                # COPY mode - preserve source compression, no args
-                main_encoding = PageEncoding(
-                    compression=source_page_spec.page.compression,
-                    compression_args=None
-                )
-
-            main_spec = IfdDataSpec(
-                data=raw_uint16,
-                photometric="LINEAR_RAW",
-                subfiletype=SubFileType.MAIN_IMAGE,
-                encoding=main_encoding,
-                extratags = main_page_tags
-            )
-        
-        # Build pyramid level specs (levels 1+)
-        pyramid_specs = []
-        if pyramid and pyramid.levels > 0:
-            for level_idx in range(1, len(pyramid_images)):
-                pyramid_uint16 = raw_render.convert_dtype(pyramid_images[level_idx], np.uint16)
-                pyramid_spec = IfdDataSpec(
-                    data=pyramid_uint16,
-                    photometric="LINEAR_RAW",
-                    subfiletype=SubFileType.PREVIEW_IMAGE,
-                    encoding=pyramid.encoding,
-                    extratags=pyramid_tags,
-                )
-                pyramid_specs.append(pyramid_spec)
-        
-        # Generate rendered preview if requested
-        if not preview:
-            # No preview: IFD0 = main, SubIFD0+ = pyramid
-            timer.start_step("write_dng_no_preview")
-            write_dng(
-                destination_file=destination_file,
-                ifd0_spec=main_spec,
-                subifds=pyramid_specs,
-                num_compression_workers=num_compression_workers
-            )
-            timer.end_step()
-        else:
-            # Use pre-calculated best pyramid level
-            preview_rgb = pyramid_images[preview_level_idx]
-            
-            logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({preview_rgb.shape[:2]})")
-            
-            # Create copy of ifd0_tags with Orientation equal to HORIZONTAL
-            # since the Orientation tag is persisted across the copy
-            ifd0_tags_no_orientation = ifd0_tags.copy()
-            ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
-            
-            # Render with color transforms
-            timer.start_step("render_preview")
-            rendered_preview = raw_render._render_camera_rgb(
-                ifd0_tags=ifd0_tags_no_orientation,
-                raw_ifd_tags=source_page_spec.page.get_page_tags(),
-                rgb_camera=preview_rgb,
-                output_dtype=np.uint8,
-                rendering_params=preview.rendering_params,
-                use_xmp=preview.use_xmp,
-            )
-            timer.end_step()
-            
-            # Create preview spec for IFD0
-            preview_encoding = PageEncoding(
-                compression=preview.compression,
-                compression_args=preview.compression_args
-            ) if preview.compression else None
-            preview_spec = IfdDataSpec(
-                data=rendered_preview,
-                photometric="RGB",
-                subfiletype=SubFileType.PREVIEW_IMAGE,
-                encoding=preview_encoding,
-                extratags=ifd0_tags,
-            )
-            
-            # Write: IFD0 = preview, SubIFD0 = main, SubIFD1+ = pyramid
-            timer.start_step("write_dng_with_preview")
-            write_dng(
-                destination_file=destination_file,
-                ifd0_spec=preview_spec,
-                subifds=[main_spec] + pyramid_specs,
-                num_compression_workers=num_compression_workers
-            )
-            timer.end_step()
-        
-        if isinstance(destination_file, io.BytesIO):
-            logger.info("Successfully wrote DNG to stream")
-        else:
-            logger.info(f"Successfully wrote DNG to {destination_file}")
+        _write_dng_with_params(
+            destination_file=destination_file,
+            main_spec=main_spec,
+            ifd0_tags=ifd0_tags,
+            scale=scale,
+            demosaic=demosaic,
+            demosaic_algorithm=demosaic_algorithm,
+            preview=preview,
+            pyramid=pyramid,
+            num_compression_workers=num_compression_workers,
+        )
 
 
 def create_dng_from_page(

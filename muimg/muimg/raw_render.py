@@ -2762,6 +2762,285 @@ def _get_ifd0_tag(
     
     return value
 
+def _linearize(
+    tags: "DngPage" | "MetadataTags",
+    data: np.ndarray,
+    photometric: str,
+) -> np.ndarray:
+    """Linearize raw sensor data: apply OpcodeList1, normalize, apply OpcodeList2.
+
+    Args:
+        tags: Tag source (raw IFD page or MetadataTags) providing linearization tags.
+        data: Raw decoded image data.
+        photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
+
+    Returns:
+        Normalized float32 array with opcode lists applied.
+    """
+    timer = get_active_timer()
+    is_cfa = photometric == "CFA"
+    is_linear_raw = photometric == "LINEAR_RAW"
+
+    # Apply OpcodeList1 to raw sensor data (before linearization)
+    # OpcodeList1 is CFA-only (gain maps, per-row noise correction)
+    opcode_list1 = tags.get_tag("OpcodeList1")
+    if opcode_list1 is not None and not is_cfa:
+        logger.warning("OpcodeList1 present on non-CFA page; skipping")
+    if opcode_list1 is not None and is_cfa:
+        ops1_timer = timer.start_step("opcode_list1")
+        try:
+            opcodes = parse_opcode_list(bytes(opcode_list1))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList1 ({type(e).__name__}): {e}")
+            opcodes = None
+
+        if opcodes:
+            try:
+                logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
+                ops1_timer.start_step("apply_opcodes_cfa (c++)")
+                data = apply_opcodes_cfa(data, opcodes, "OpcodeList1")
+                ops1_timer.end_step()
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
+        ops1_timer.close()
+
+    if is_cfa:
+        samples_per_pixel = 1
+    else:
+        samples_per_pixel = int(tags.get_tag("SamplesPerPixel") or 1)
+
+    black_repeat_dim = tags.get_tag("BlackLevelRepeatDim")
+    if black_repeat_dim is None:
+        black_repeat_dim = (1, 1)
+    black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, "__len__") else 1
+    black_repeat_cols = (
+        int(black_repeat_dim[1])
+        if hasattr(black_repeat_dim, "__len__") and len(black_repeat_dim) > 1
+        else 1
+    )
+    expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
+
+    black_level_raw = tags.get_tag("BlackLevel")
+    if black_level_raw is None:
+        black_level = np.zeros(expected_black_size, dtype=np.float32)
+    else:
+        black_level = np.atleast_1d(black_level_raw).astype(np.float32).ravel()
+        if len(black_level) != expected_black_size:
+            black_level = np.zeros(expected_black_size, dtype=np.float32)
+
+    bps = tags.get_tag("BitsPerSample")
+    if bps is None:
+        bits_per_sample = 16
+    elif isinstance(bps, np.ndarray):
+        bits_per_sample = int(bps.flat[0])
+    else:
+        bits_per_sample = int(bps)
+
+    # Check if this is float data (SampleFormat = 3)
+    sample_format = tags.get_tag("SampleFormat")
+    if sample_format is not None:
+        # SampleFormat can be a single value or array
+        if isinstance(sample_format, (list, tuple, np.ndarray)):
+            sample_format = sample_format[0]
+
+    # Match DNG SDK default: float uses 1.0, integer uses (2^bits - 1)
+    # DNG SDK reference: dng_ifd.cpp lines 3466-3468
+    if sample_format == 3:
+        default_white = 1.0
+    else:
+        # Integer data (SampleFormat=1) or missing SampleFormat tag
+        default_white = float((1 << bits_per_sample) - 1)
+
+    white_level_raw = tags.get_tag("WhiteLevel")
+    if white_level_raw is None:
+        white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
+    else:
+        white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
+        white_level = np.where(white_level < 0, default_white, white_level)
+        if len(white_level) != samples_per_pixel:
+            logger.warning(
+                f"WhiteLevel count ({len(white_level)}) != "
+                f"SamplesPerPixel ({samples_per_pixel})"
+            )
+            if len(white_level) > samples_per_pixel:
+                white_level = white_level[:samples_per_pixel]
+            else:
+                pad = np.full(
+                    samples_per_pixel - len(white_level),
+                    white_level[-1],
+                    dtype=np.float32,
+                )
+                white_level = np.concatenate([white_level, pad])
+
+    black_delta_h = tags.get_tag("BlackLevelDeltaH")
+    black_delta_v = tags.get_tag("BlackLevelDeltaV")
+    if black_delta_h is not None:
+        black_delta_h = np.atleast_1d(black_delta_h).astype(np.float32)
+    if black_delta_v is not None:
+        black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
+
+    linearization_table = tags.get_tag("LinearizationTable")
+    if linearization_table is not None:
+        linearization_table = np.asarray(linearization_table, dtype=np.uint16)
+
+    active_area = tags.get_tag("ActiveArea")
+    if active_area is not None:
+        aa_top, aa_left, aa_bottom, aa_right = active_area
+        data = data[aa_top:aa_bottom, aa_left:aa_right]
+
+    # Fast path: trivial normalization (black=0, white=default, no
+    # deltas/LUT, uint16 data) can use optimized convert_dtype instead
+    is_pure_convert = (
+        samples_per_pixel == 3
+        and data.dtype == np.uint16
+        and black_delta_h is None
+        and black_delta_v is None
+        and (linearization_table is None or len(linearization_table) == 0)
+        and np.all(black_level == 0.0)
+        and np.all(white_level == default_white)
+    )
+
+    timer.start_step("linearize (c++)")
+    if is_pure_convert:
+        normalized = convert_dtype(
+            data,
+            np.float32,
+            src_bits_per_element=bits_per_sample,
+        )
+    else:
+        # normalize_raw accepts uint16 or float32 natively;
+        # convert edge-case dtypes to the nearest supported type
+        norm_data = data
+        if norm_data.dtype == np.uint8:
+            norm_data = norm_data.astype(np.uint16)
+        elif norm_data.dtype == np.float16:
+            norm_data = norm_data.astype(np.float32)
+        elif norm_data.dtype not in (np.uint16, np.float32):
+            norm_data = norm_data.astype(np.float32)
+        normalized = _raw_render.normalize_raw(
+            data=norm_data,
+            black_level=black_level,
+            black_repeat_rows=black_repeat_rows,
+            black_repeat_cols=black_repeat_cols,
+            samples_per_pixel=samples_per_pixel,
+            white_level=white_level,
+            black_delta_h=black_delta_h,
+            black_delta_v=black_delta_v,
+            linearization_table=linearization_table,
+        )
+    timer.end_step()
+
+    opcode_list2 = tags.get_tag("OpcodeList2")
+    if opcode_list2 is not None:
+        ops2_timer = timer.start_step("opcode_list2")
+        try:
+            opcodes = parse_opcode_list(bytes(opcode_list2))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList2 ({type(e).__name__}): {e}")
+            opcodes = None
+
+        if opcodes:
+            try:
+                logger.debug(f"OpcodeList2: {len(opcodes)} opcodes, "
+                            f"is_linear_raw={is_linear_raw}, is_cfa={is_cfa}, "
+                            f"data.shape={normalized.shape}")
+                if is_linear_raw:
+                    ops2_timer.start_step("apply_opcodes (c++)")
+                    normalized = apply_opcodes(
+                        normalized, opcodes,
+                        use_bicubic=False,
+                        opcode_list_name="OpcodeList2"
+                    )
+                    ops2_timer.close()
+                    return normalized
+                else:
+                    # CFA data
+                    ops2_timer.start_step("apply_opcodes_cfa (c++)")
+                    normalized = apply_opcodes_cfa(
+                        normalized, opcodes, "OpcodeList2"
+                    )
+                    ops2_timer.close()
+                    return normalized
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList2 ({type(e).__name__}): {e}")
+        ops2_timer.close()
+
+    return normalized
+
+
+def _raw_to_camera_rgb(
+    tags: "DngPage" | "MetadataTags",
+    data: np.ndarray,
+    photometric: str,
+    cfa_pattern: str | None,
+    demosaic_algorithm: "DemosaicAlgorithm",
+) -> np.ndarray:
+    """Linearize raw data, demosaic if CFA, apply OpcodeList3 and DefaultCrop.
+
+    Args:
+        tags: Tag source (raw IFD page or MetadataTags) providing linearization/opcode tags.
+        data: Raw decoded image data.
+        photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
+        cfa_pattern: CFA pattern string (e.g. "RGGB"), required if photometric == "CFA".
+        demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
+
+    Returns:
+        Camera RGB array (H, W, 3) float32 in [0, 1].
+    """
+    timer = get_active_timer()
+
+    normalized = _linearize(tags, data, photometric)
+
+    if photometric == "CFA":
+        demosaic_timer = timer.start_step("demosaic")
+        # Bilinear guarantees [0,1] output through averaging - skip clip
+        clip_value = None if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR else 1.0
+        rgb_camera = demosaic(
+            normalized, cfa_pattern, algorithm=demosaic_algorithm,
+            clip_max=clip_value, return_dtype=np.float32
+        )
+        demosaic_timer.close()
+    else:
+        rgb_camera = normalized
+
+    # Apply OpcodeList3 (Stage3 operations)
+    opcode_list3 = tags.get_tag("OpcodeList3")
+    if opcode_list3 is not None:
+        ops3_timer = timer.start_step("opcode_list3")
+        try:
+            opcodes = parse_opcode_list(bytes(opcode_list3))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList3 ({type(e).__name__}): {e}")
+            opcodes = None
+
+        if opcodes:
+            try:
+                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
+                ops3_timer.start_step("apply_opcodes (c++)")
+                rgb_camera = apply_opcodes(
+                    rgb_camera, opcodes,
+                    use_bicubic=False,
+                    opcode_list_name="OpcodeList3"
+                )
+                ops3_timer.end_step()
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
+        ops3_timer.close()
+
+    # Apply DefaultCrop
+    crop_origin = tags.get_tag("DefaultCropOrigin")
+    crop_size = tags.get_tag("DefaultCropSize")
+
+    if crop_origin is not None and crop_size is not None:
+        crop_x = int(crop_origin[0])
+        crop_y = int(crop_origin[1])
+        crop_w = int(crop_size[0])
+        crop_h = int(crop_size[1])
+        rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+
+    return rgb_camera
+
+
 def _render_camera_rgb(
     ifd0_tags: "DngPage" | "MetadataTags",
     rgb_camera: np.ndarray,

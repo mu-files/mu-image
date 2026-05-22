@@ -509,10 +509,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
         print("\nStep 2: Writing new DNG with 3-level JXL pyramid...")
         write_dng_from_page(
             output_path,
-            IfdPageSpec(
-                page=source_page,
-                extratags=source_ifd0.get_page_tags()
-            ),
+            source_page,
             pyramid=PyramidParams(
                 levels=3,
                 encoding=PageEncoding(
@@ -753,6 +750,8 @@ def test_render_raw_scaling_consistency(tmp_path):
         render_with_preview = dng_with_preview.render_raw(output_dtype=np.uint8)
         assert render_with_preview is not None
         print(f"  Render with preview shape: {render_with_preview.shape}")
+        rs = main_page.get_rendered_size(apply_orientation=False)
+        print(f"  Main page get_rendered_size(): {rs}, scaled 0.25: ({rs[0]//4}, {rs[1]//4})")
         
         print("  Comparing with SubIFD[2] render...")
         diff_stats = compute_diff_stats(render_subifd2, render_with_preview)

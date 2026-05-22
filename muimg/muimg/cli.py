@@ -553,7 +553,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 @dng.command(name="raw-stage")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
-@click.argument("stage", type=click.Choice(["raw", "linearized", "linearized-plus-ops", "camera-rgb"]))
+@click.argument("stage", type=click.Choice(["raw", "camera-rgb"]))
 @click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
 @click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (OPENCV_EA, VNG, RCD, AHD)")
 def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
@@ -562,19 +562,16 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     \b
     Stages:
       raw                   - Raw sensor data (decoded, no processing)
-      linearized            - After linearization and normalization
-      linearized-plus-ops   - After OpcodeList2 (includes MapPolynomial)
-      camera-rgb            - Demosaiced camera RGB
+      camera-rgb            - Linearized + demosaiced camera RGB
     
     \b
     Examples:
-      muimg dng raw-stage input.dng output.tif linearized
+      muimg dng raw-stage input.dng output.tif raw
       muimg dng raw-stage input.dng output.tif camera-rgb --ifd subifd2
-      muimg dng raw-stage input.dng output.tif linearized --demosaic OPENCV_EA
-      muimg dng raw-stage input.dng output.tif linearized-plus-ops --demosaic RCD
+      muimg dng raw-stage input.dng output.tif raw --demosaic OPENCV_EA
     """
     import numpy as np
-    from .dngio import DngFile, RawStageSelector
+    from .dngio import DngFile
     from . import raw_render
     
     # Parse IFD specification before opening file
@@ -608,8 +605,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
             cfa_pattern = None
             
             if stage == "camera-rgb":
-                # Special case: camera-rgb uses get_camera_rgb_raw()
-                # Use specified demosaic algorithm or default to OPENCV_EA
+                # camera-rgb: linearize + demosaic (full pipeline)
                 if demosaic is not None:
                     algorithm = DemosaicAlgorithm.lookup(demosaic)
                 else:
@@ -619,19 +615,13 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                     click.echo("Error: Failed to extract camera RGB", err=True)
                     sys.exit(1)
             else:
-                # Map stage names to RawStageSelector
-                stage_map = {
-                    "raw": RawStageSelector.RAW,
-                    "linearized": RawStageSelector.LINEARIZED,
-                    "linearized-plus-ops": RawStageSelector.LINEARIZED_PLUS_OPS,
-                }
-                
-                stage_selector = stage_map[stage]
-                
+                # raw: decoded sensor data
                 if page.is_cfa:
-                    # CFA: use get_cfa() with stage selector
-                    cfa_data, cfa_pattern = page.get_cfa(stage_selector)
-                    data = cfa_data
+                    cfa_result = page.get_cfa()
+                    if cfa_result is None:
+                        click.echo("Error: Failed to extract CFA data", err=True)
+                        sys.exit(1)
+                    data, cfa_pattern = cfa_result
                     
                     # Apply demosaic if requested
                     if demosaic is not None:
@@ -640,12 +630,11 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                             data, cfa_pattern, algorithm=algorithm
                         )
                 else:
-                    # LINEAR_RAW: use get_linear_raw() with stage selector
                     if demosaic is not None:
                         click.echo("Warning: --demosaic ignored for LINEAR_RAW page (already RGB)", err=True)
-                    data = page.get_linear_raw(stage_selector)
+                    data = page.get_linear_raw()
                     if data is None:
-                        click.echo(f"Error: Failed to extract {stage} stage", err=True)
+                        click.echo("Error: Failed to extract raw data", err=True)
                         sys.exit(1)
             
             if data is None:
@@ -898,6 +887,7 @@ def dng_convert(
     import numpy as np
     import time
     from .dngio import DngFile
+    from .tiff_metadata import Orientation
     from .imgio import convert_dng
     
     # Map bit depth to numpy dtype

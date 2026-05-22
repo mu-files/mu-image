@@ -414,9 +414,8 @@ def test_orientation_handling(tmp_path):
 
 
 def test_raw_stage(tmp_path):
-    """Test dng raw-stage CLI command for all stages.
+    """Test dng raw-stage CLI command for raw and camera-rgb stages.
     
-    Tests all 4 stages: raw, linearized, linearized-plus-ops, camera-rgb
     Compares CLI output with direct API calls.
     """
     test_dng = DNGFILES_DIR / "canon_eos_r5_cfa_ljpeg_6ifds.dng"
@@ -434,13 +433,11 @@ def test_raw_stage(tmp_path):
         
         print(f"\nTesting raw-stage on: {page.photometric_name}, size={page.imagewidth}x{page.imagelength}")
         
-        # Import needed for API calls
-        from muimg.dngio import RawStageSelector
         from muimg.raw_render import DemosaicAlgorithm, convert_dtype
         import tifffile
         
         # Test each stage
-        stages = ["raw", "linearized", "linearized-plus-ops", "camera-rgb"]
+        stages = ["raw", "camera-rgb"]
         
         for stage in stages:
             print(f"\n  Testing stage: {stage}")
@@ -463,20 +460,15 @@ def test_raw_stage(tmp_path):
             
             # 2. Get data via API
             if stage == "camera-rgb":
-                # Use get_camera_rgb_raw() with default demosaic
                 api_data = page.get_camera_rgb_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
             else:
-                # Look up stage selector (convert hyphens to underscores for enum)
-                stage_enum_value = stage.replace("-", "_")
-                stage_selector = RawStageSelector.lookup(stage_enum_value)
-                
-                # Get CFA data
-                cfa_data, _ = page.get_cfa(stage_selector)
-                api_data = cfa_data
+                cfa_result = page.get_cfa()
+                assert cfa_result is not None
+                api_data, _ = cfa_result
             
             assert api_data is not None, f"API returned None for {stage}"
             
-            # 3. Convert API data from float to uint16
+            # 3. Convert API data to uint16
             api_data_uint16 = convert_dtype(api_data, np.uint16)
             
             # 4. Load CLI output
