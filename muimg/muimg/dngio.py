@@ -1361,7 +1361,7 @@ class IfdDataSpec:
     data: np.ndarray
     photometric: str
     subfiletype: int = 0
-    cfa_pattern: str = "RGGB"
+    cfa_pattern: str | None = None
     encoding: PageEncoding | None = None
     extratags: MetadataTags | None = None
     bits_per_sample: int | None = None
@@ -1589,6 +1589,9 @@ def write_dng(
             compression_args,
         )
         
+        # Extract BitsPerSample before stripping (tifffile manages this tag)
+        meta_bps = ifd_tags.get_tag("BitsPerSample")
+        
         # Step 3: Strip remaining _TIFFWRITER_MANAGED_TAGS
         _filter_metadata_tags(ifd_tags, exclude_names=_TIFFWRITER_MANAGED_TAGS)
         
@@ -1635,21 +1638,25 @@ def write_dng(
                     f"Unsupported dtype {spec.data.dtype}. Supported: uint8, uint16, float16, float32"
                 )
             
-            # Use explicit bits_per_sample if provided, otherwise infer from dtype
-            if spec.bits_per_sample is not None:
-                bits_per_sample = spec.bits_per_sample
-                
-                # Validate bits_per_sample is compatible with dtype
+            # Resolve bits_per_sample: spec field > metadata tag > dtype
+            if spec.bits_per_sample is None and meta_bps is None:
+                bits_per_sample = spec.data.dtype.itemsize * 8
+            else:
+                if spec.bits_per_sample is not None:
+                    bits_per_sample = spec.bits_per_sample
+                else:
+                    bits_per_sample = int(
+                        meta_bps.flat[0] if isinstance(meta_bps, np.ndarray) else meta_bps)
+
+                # Validate bits_per_sample against dtype
                 dtype_bits = spec.data.dtype.itemsize * 8
                 if spec.data.dtype in (np.float16, np.float32):
-                    # Float types: bits_per_sample must match dtype exactly
                     if bits_per_sample != dtype_bits:
                         raise ValueError(
                             f"bits_per_sample={bits_per_sample} incompatible with float dtype "
                             f"{spec.data.dtype} (must be {dtype_bits})"
                         )
                 else:
-                    # Integer types: bits_per_sample must be <= dtype capacity
                     if bits_per_sample > dtype_bits:
                         raise ValueError(
                             f"bits_per_sample={bits_per_sample} exceeds dtype {spec.data.dtype} "
@@ -1657,14 +1664,20 @@ def write_dng(
                         )
                     if bits_per_sample < 8:
                         raise ValueError(f"bits_per_sample must be >= 8, got {bits_per_sample}")
-            else:
-                bits_per_sample = spec.data.dtype.itemsize * 8
                         
             # Add CFA tags for array data with CFA photometric
             if photometric == "CFA":
-                ifd_tags.add_tag("CFAPattern", spec.cfa_pattern)
-                ifd_tags.add_tag("CFARepeatPatternDim", (2, 2))
-                ifd_tags.add_tag("CFAPlaneColor", bytes([0, 1, 2]))
+                # Resolve CFA pattern: spec > metadata tag > default RGGB
+                cfa_pattern = (
+                    spec.cfa_pattern
+                    or ifd_tags.get_tag("CFAPattern")
+                    or "RGGB"
+                )
+                ifd_tags.add_tag("CFAPattern", cfa_pattern)
+                if ifd_tags.get_tag("CFARepeatPatternDim") is None:
+                    ifd_tags.add_tag("CFARepeatPatternDim", (2, 2))
+                if ifd_tags.get_tag("CFAPlaneColor") is None:
+                    ifd_tags.add_tag("CFAPlaneColor", bytes([0, 1, 2]))
 
             uncomp_data = spec.data
 
@@ -2328,6 +2341,8 @@ def write_dng_from_page(
         # do we change the main page pixels?
         main_needs_scale_or_demosaic = ((demosaic and source_page_spec.page.is_cfa) or scale != 1.0)
 
+        # TODO: consider stripping compression invalidated and tiff tags from user supplied extra tags
+
         # handle ifd0 tags
         ifd0_tags = MetadataTags()
         if copy_ifd0_tags:
@@ -2362,11 +2377,11 @@ def write_dng_from_page(
             extratags=main_page_tags,
             copy_page_tags=False)
 
-        if not main_needs_scale_or_demosaic:
-            logger.info("Using fast path for main spec (no demosaic/scale)")
-            
+        if not main_needs_scale_or_demosaic:            
             # Fast path: no preview/pyramid - write and return immediately
             if preview is None and not (pyramid and pyramid.levels > 0):
+                logger.info("Using fast path for main spec (no extra params given)")
+
                 timer.start_step("write_dng_fast_path")
                 write_dng(
                     destination_file=destination_file,
