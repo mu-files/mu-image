@@ -2239,6 +2239,7 @@ def write_dng_from_array(
             ifd0_tags |= data_spec.extratags
             ifd0_tags = filter_tags_by_ifd_category(
                 ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
+            _filter_metadata_tags(ifd0_tags, exclude_names=_TIFFWRITER_MANAGED_TAGS)
 
             main_page_tags |= data_spec.extratags
             main_page_categories = ["any", "dng_raw"]
@@ -2354,6 +2355,7 @@ def write_dng_from_page(
             ifd0_tags = source_page_spec.page.get_ifd0_tags()
             ifd0_tags = filter_tags_by_ifd_category(
                 ifd0_tags, ["any", "dng_ifd0", "ifd0", "exif", "dng_profile"])
+            _filter_metadata_tags(ifd0_tags, exclude_names=_TIFFWRITER_MANAGED_TAGS)
 
         _filter_metadata_tags(
             ifd0_tags, exclude_names=(ifd0_strip_tags or set()) | _COMPRESSION_INVALIDATED_TAGS)
