@@ -16,7 +16,7 @@ from typing import Set
 import numpy as np
 import pytest
 
-import muimg
+from muimg.dngio import DngFile
 from muimg.tiff_metadata import (
     TIFF_TAG_TYPE_REGISTRY,
     TagSpec,
@@ -108,7 +108,7 @@ class TestTagRegistryCompatibility:
         total_tags = 0
         validated_tags = 0
         
-        with muimg.DngFile(dng_path) as dng:
+        with DngFile(dng_path) as dng:
             for page in dng.get_flattened_pages():
                 for tag in page.tags.values():
                     tag_name = LOCAL_TIFF_TAGS.get(tag.code)
@@ -323,7 +323,7 @@ class TestMatrixTagCount:
         """Verify registry count matches actual tag count in DNG files."""
         mismatches = []
         
-        with muimg.DngFile(dng_path) as dng:
+        with DngFile(dng_path) as dng:
             for page in dng.get_flattened_pages():
                 for tag in page.tags.values():
                     tag_name = LOCAL_TIFF_TAGS.get(tag.code)

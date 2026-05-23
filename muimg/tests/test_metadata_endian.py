@@ -17,7 +17,6 @@ import struct
 import tifffile
 
 import sys
-import muimg
 from muimg.tiff_metadata import MetadataTags
 from muimg.dngio import write_dng_from_array, DngFile, IfdDataSpec
 

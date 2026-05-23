@@ -13,6 +13,7 @@ from typing import Any
 from . import _raw_render
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
+from .deps import cv2_proxy as cv2
 from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
 
 logger = logging.getLogger(__name__)
@@ -68,22 +69,26 @@ def convert_dtype(
     image: np.ndarray,
     dest_dtype: np.dtype,
     src_bits_per_element: int | None = None,
-    dest_bits_per_element: int | None = None
+    dest_bits_per_element: int | None = None,
+    clip_max: float | None = None
 ) -> np.ndarray:
-    """Convert image between data types with proper normalization.
+    """Convert image between data types with proper normalization and optional clipping.
     
     Handles conversion between uint8, uint16, and float types with
-    appropriate scaling to preserve value ranges.
+    appropriate scaling to preserve value ranges. Uses optimized C++
+    implementation with NEON support on AArch64.
     
     Args:
-        image: Input image
-        dest_dtype: Destination data type (np.uint8, np.uint16, np.float16, np.float32)
+        image: Input image (must be 3D: H, W, C)
+        dest_dtype: Destination data type (np.uint8, np.uint16, np.float32)
         src_bits_per_element: Custom bit depth for source data (e.g., 12 for 12-bit data
-            in uint16 container). Must be None for float types and <= container bit depth
-            for integer types. Defaults to container bit depth if None.
+            in uint16 container). Must be None for float types. Defaults to container
+            bit depth if None.
         dest_bits_per_element: Custom bit depth for destination data. Must be None for
-            float types and <= container bit depth for integer types. Defaults to
-            container bit depth if None.
+            float types. Defaults to container bit depth if None.
+        clip_max: Maximum value to clip to in destination space. If None, no clipping
+            is performed. For integer destinations, values are clipped to [0, clip_max].
+            For float destinations, only upper bound clipping is applied.
         
     Returns:
         Converted image with dest_dtype
@@ -92,77 +97,69 @@ def convert_dtype(
         # Convert 12-bit data stored in uint16 to 8-bit uint8
         image_u16 = np.array([0, 2047, 4095], dtype=np.uint16)
         result = convert_dtype(image_u16, np.uint8, src_bits_per_element=12)
-        # Scales from 0-4095 range to 0-255 range
+        
+        # Convert float to uint8 with clipping
+        result = convert_dtype(image_f32, np.uint8, clip_max=255.0)
     """
-    source_dtype = image.dtype
     dest_dtype = np.dtype(dest_dtype)
+
+    # Early-out: same float dtype with no clip - return input unchanged
+    if image.dtype == dest_dtype and clip_max is None and image.dtype in (np.float16, np.float32, np.float64):
+        return image
+
+    # Handle float16 by converting through float32 (same pattern as convert_colorspace)
+    input_was_float16 = image.dtype == np.float16
+    if input_was_float16:
+        image = image.astype(np.float32)
+
+    output_is_float16 = dest_dtype == np.float16
+    if output_is_float16:
+        dest_dtype = np.dtype(np.float32)
     
-    # Skip if dtypes match and effective bits match
-    if source_dtype == dest_dtype:
-        src_bits = src_bits_per_element if src_bits_per_element is not None else source_dtype.itemsize * 8
-        dest_bits = dest_bits_per_element if dest_bits_per_element is not None else dest_dtype.itemsize * 8
-        if src_bits == dest_bits:
-            return image
+    # Map numpy dtype to NPY type number for C++ function
+    dtype_to_npy = {
+        np.dtype(np.uint8): 2,      # NPY_UINT8
+        np.dtype(np.uint16): 4,     # NPY_UINT16
+        np.dtype(np.float32): 11,  # NPY_FLOAT32
+    }
     
-    # Validate bits_per_element parameters
-    if source_dtype in (np.float16, np.float32, np.float64):
-        if src_bits_per_element is not None:
-            raise ValueError(
-                f"src_bits_per_element must be None for float dtype {source_dtype}, got {src_bits_per_element}"
-            )
+    if dest_dtype not in dtype_to_npy:
+        raise TypeError(f"Unsupported destination dtype: {dest_dtype}. Must be uint8, uint16, float16, or float32")
+    
+    if image.dtype not in dtype_to_npy:
+        raise TypeError(f"Unsupported source dtype: {image.dtype}. Must be uint8, uint16, float16, or float32")
+    
+    # Compute bits from dtype. For ints: use itemsize*8. For floats: use -1 (default).
+    if src_bits_per_element is None:
+        src_bits = -1 if image.dtype in (np.float32, np.float64, np.float16) else image.dtype.itemsize * 8
     else:
-        # Integer type - validate bits_per_element if provided
-        container_bits = source_dtype.itemsize * 8
-        if src_bits_per_element is not None and src_bits_per_element > container_bits:
-            raise ValueError(
-                f"src_bits_per_element ({src_bits_per_element}) exceeds container bit depth ({container_bits}) for {source_dtype}"
-            )
-    
-    if dest_dtype in (np.float16, np.float32, np.float64):
-        if dest_bits_per_element is not None:
-            raise ValueError(
-                f"dest_bits_per_element must be None for float dtype {dest_dtype}, got {dest_bits_per_element}"
-            )
+        src_bits = int(src_bits_per_element)
+
+    if dest_bits_per_element is None:
+        dst_bits = -1 if dest_dtype in (np.float32, np.float64, np.float16) else dest_dtype.itemsize * 8
     else:
-        # Integer type - validate bits_per_element if provided
-        container_bits = dest_dtype.itemsize * 8
-        if dest_bits_per_element is not None and dest_bits_per_element > container_bits:
-            raise ValueError(
-                f"dest_bits_per_element ({dest_bits_per_element}) exceeds container bit depth ({container_bits}) for {dest_dtype}"
-            )
+        dst_bits = int(dest_bits_per_element)
     
-    # Helper to get max value for a dtype and optional custom bit depth
-    def get_max_value(dtype, bits_per_element):
-        if dtype in (np.float16, np.float32, np.float64):
-            return 1.0
-        bits = bits_per_element if bits_per_element is not None else dtype.itemsize * 8
-        return float((1 << bits) - 1)
+    # Early-out: same dtype, same bits, no clip, and not float16 output - return input unchanged
+    # (float16 requires conversion back to float16 at the end, so can't early-out)
+    if image.dtype == dest_dtype and src_bits == dst_bits and clip_max is None and not output_is_float16:
+        return image
     
-    # Determine source and dest max values using bit-shift formula
-    source_max = get_max_value(source_dtype, src_bits_per_element)
-    dest_max = get_max_value(dest_dtype, dest_bits_per_element)
+    # Use -1 for no clipping, else pass the clip value
+    clip_value = -1.0 if clip_max is None else float(clip_max)
     
-    # Compute direct scale factor
-    scale = dest_max / source_max
+    # Call C++ implementation (handles both 2D and 3D)
+    result = _raw_render.convert_dtype(
+        image,
+        dtype_to_npy[dest_dtype],
+        src_bits,
+        dst_bits,
+        clip_value
+    )
     
-    # Apply conversion in one step
-    if dest_dtype in (np.uint8, np.uint16):
-        # For integer outputs, clip and scale in one operation
-        result = image.astype(np.float32)
-        if source_dtype in (np.uint8, np.uint16):
-            # Integer to integer: direct scale
-            result = (result * scale).astype(dest_dtype)
-        else:
-            # Float to integer: clip then scale
-            result = (np.clip(result, 0.0, 1.0) * dest_max).astype(dest_dtype)
-    else:
-        # For float outputs
-        if source_dtype in (np.uint8, np.uint16):
-            # Integer to float: scale down
-            result = (image.astype(np.float32) * scale).astype(dest_dtype)
-        else:
-            # Float to float: just convert dtype
-            result = image.astype(dest_dtype)
+    # Convert back to float16 if that was the requested output
+    if output_is_float16:
+        result = result.astype(np.float16)
     
     return result
 
@@ -237,6 +234,8 @@ def convert_colorspace(
     Returns:
         Converted image (H, W, 3) in destination color space with output_dtype
     """
+    output_dtype = np.dtype(output_dtype)
+    
     if source_space == dest_space and image.dtype == output_dtype:
         return image
     
@@ -245,9 +244,9 @@ def convert_colorspace(
     if input_was_float16:
         image = image.astype(np.float32)
     
-    output_is_float16 = output_dtype == np.float16
+    output_is_float16 = output_dtype == np.dtype(np.float16)
     if output_is_float16:
-        output_dtype = np.float32
+        output_dtype = np.dtype(np.float32)
     
     # Determine input LUT (gamma decode if needed)
     input_lut = None
@@ -360,7 +359,7 @@ def transform_color(
     if image.ndim != 3 or image.shape[2] != 3:
         raise ValueError(f"Image must be (H, W, 3), got shape {image.shape}")
     
-    if image.dtype not in (np.uint8, np.uint16, np.float32):
+    if image.dtype not in (np.dtype(np.uint8), np.dtype(np.uint16), np.dtype(np.float32)):
         raise ValueError(f"Image dtype must be uint8, uint16, or float32, got {image.dtype}")
     
     # Ensure at least one transform is provided
@@ -371,13 +370,13 @@ def transform_color(
     if hue_preserving_input_lut:
         if input_lut is None:
             raise ValueError("hue_preserving_input_lut=True requires input_lut")
-        if image.dtype != np.float32:
+        if image.dtype != np.dtype(np.float32):
             raise ValueError(f"hue_preserving_input_lut=True requires float32 input, got {image.dtype}")
         # Float32 output only required for LUT-only case (no matrix)
         if matrix is None:
             if output_lut is not None:
                 raise ValueError("hue_preserving_input_lut=True with no matrix requires no output_lut")
-            if output_dtype != np.float32:
+            if np.dtype(output_dtype) != np.dtype(np.float32):
                 raise ValueError(f"hue_preserving_input_lut=True with no matrix requires float32 output, got {output_dtype}")
     
     # Extract LUT data arrays
@@ -486,17 +485,14 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     if orientation == Orientation.HORIZONTAL:
         return image
     
-    # Only import cv2 when we actually need to rotate
-    from cv2 import rotate, ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
-
     timer = get_active_timer()
     timer.start_step("apply_tiff_orientation (opencv)")
     if orientation == Orientation.ROTATE_90_CW:
-        result = rotate(image, ROTATE_90_CLOCKWISE)
+        result = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     elif orientation == Orientation.ROTATE_180:
-        result = rotate(image, ROTATE_180)
+        result = cv2.rotate(image, cv2.ROTATE_180)
     elif orientation == Orientation.ROTATE_270_CW:
-        result = rotate(image, ROTATE_90_COUNTERCLOCKWISE)
+        result = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
     else:
         logger.warning(
             f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
@@ -507,16 +503,19 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 
 
 def demosaic(
-    image_data: np.ndarray, 
+    image_data: np.ndarray,
     cfa_pattern: str,
     algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+    clip_max: float | None = None,
+    return_dtype: np.dtype | None = None,
 ) -> np.ndarray:
     """Demosaic CFA data to RGB.
-    
-    Accepts uint8, uint16, or float32 input. Output dtype matches input dtype.
+
+    Accepts uint8, uint16, or float32 input. Output dtype matches input dtype
+    by default, or can be specified via return_dtype.
     Algorithms that don't support the input dtype will convert internally
     (with a warning logged).
-     
+
     Args:
         image_data: 2D raw CFA data array (uint8, uint16, or float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
@@ -525,8 +524,10 @@ def demosaic(
             - DemosaicAlgorithm.VNG: Variable Number of Gradients, uint16 only
             - DemosaicAlgorithm.RCD: Best quality/speed, supports float32 natively (optional dependency)
             - DemosaicAlgorithm.DNGSDK_BILINEAR: DNG SDK bilinear, float32 only
+        clip_max: Optional max value to clip output to (e.g., 1.0 for float32)
+        return_dtype: Optional output dtype. If None, matches input dtype.
     Returns:
-        RGB array with same dtype as input
+        RGB array with dtype matching return_dtype or input dtype
     """
     # Validate inputs
     if image_data.ndim != 2:
@@ -555,8 +556,9 @@ def demosaic(
             f"algorithm must be a DemosaicAlgorithm enum, but got {type(algorithm).__name__}. "
             f"Supported algorithms are: {list(DemosaicAlgorithm)}."
         )
-    
+
     input_dtype = image_data.dtype
+    output_dtype = return_dtype if return_dtype is not None else input_dtype
     timer = get_active_timer()
 
     if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
@@ -565,8 +567,7 @@ def demosaic(
         data_f32 = convert_dtype(image_data, np.float32)  # bilinear expects float32
         timer.start_step("bilinear_demosaic (c++)")
         rgb = _raw_render.bilinear_demosaic(data_f32, np.array(cfa_codes, dtype=np.int32))
-        timer.start_step("convert_dtype (post)")
-        rgb = convert_dtype(rgb, input_dtype)  # convert back to input dtype
+        timer.end_step()
 
     elif algorithm == DemosaicAlgorithm.RCD:
         # RCD: float32 kernel (expects 0-1 normalized data)
@@ -583,8 +584,7 @@ def demosaic(
         data_f32 = convert_dtype(image_data, np.float32)  # RCD expects float32 in 0-1 range
         timer.start_step("rcd_demosaic (c++)")
         rgb = _rcd.rcd_demosaic(data_f32, cfa_pattern)
-        timer.start_step("convert_dtype (post)")
-        rgb = convert_dtype(rgb, input_dtype)  # convert back to input dtype
+        timer.end_step()
 
     elif algorithm == DemosaicAlgorithm.VNG:
         # VNG: uint16 kernel
@@ -595,30 +595,37 @@ def demosaic(
         data_u16 = convert_dtype(image_data, np.uint16)  # VNG expects uint16
         timer.start_step("vng_demosaic (c++)")
         rgb = _vng.vng_demosaic(data_u16, cfa_pattern)
-        timer.start_step("convert_dtype (post)")
-        rgb = convert_dtype(rgb, input_dtype)  # convert back to input dtype
+        timer.end_step()
 
     elif algorithm == DemosaicAlgorithm.OPENCV_EA:
-        from cv2 import (demosaicing, COLOR_BAYER_RG2RGB_EA, COLOR_BAYER_BG2RGB_EA,
-                         COLOR_BAYER_GR2RGB_EA, COLOR_BAYER_GB2RGB_EA)
-        bayer_map = {
-            "RGGB": COLOR_BAYER_RG2RGB_EA, "BGGR": COLOR_BAYER_BG2RGB_EA,
-            "GRBG": COLOR_BAYER_GR2RGB_EA, "GBRG": COLOR_BAYER_GB2RGB_EA,
+        # Swapped Bayer patterns produce output compatible with pipeline
+        # Avoids costly [..., [2, 1, 0]] channel reordering after demosaicing
+        bayer_map_bgr = {
+            "RGGB": cv2.COLOR_BAYER_BG2RGB_EA,  # RGGB→BGR
+            "BGGR": cv2.COLOR_BAYER_RG2RGB_EA,  # BGGR→BGR
+            "GRBG": cv2.COLOR_BAYER_GB2RGB_EA,  # GRBG→BGR
+            "GBRG": cv2.COLOR_BAYER_GR2RGB_EA,  # GBRG→BGR
         }
         if input_dtype in (np.float32, np.float64):
             logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
             timer.start_step("convert_dtype (pre)")
             data_u16 = convert_dtype(image_data, np.uint16)
+
+            # demosaic output: (h, w, 3) uint16
             timer.start_step("ea_demosaicing (opencv)")
-            rgb = demosaicing(data_u16, bayer_map[cfa_pattern])[..., [2, 1, 0]]
-            timer.start_step("convert_dtype (post)")
-            rgb = convert_dtype(rgb, input_dtype)
+            rgb = cv2.demosaicing(data_u16, bayer_map_bgr[cfa_pattern])
+            timer.end_step()
         else:
             timer.start_step("ea_demosaicing (opencv)")
-            rgb = demosaicing(image_data, bayer_map[cfa_pattern])[..., [2, 1, 0]]
+            rgb = cv2.demosaicing(image_data, bayer_map_bgr[cfa_pattern])  # BGR output
+            timer.end_step()
 
     else:
         raise ValueError(f"Unsupported demosaic algorithm: {algorithm}")
+
+    timer.start_step("convert_dtype (post)")
+    rgb = convert_dtype(rgb, output_dtype, clip_max=clip_max)
+    timer.end_step()
 
     return rgb
 
@@ -2566,15 +2573,13 @@ def apply_radial_distortion_correction(
     y_distorted = cy + scale_factor * (y_coords - cy) * distortion_factor
     
     # Use cv2.remap with bicubic interpolation
-    from cv2 import remap, INTER_CUBIC, BORDER_CONSTANT
-        
     timer.start_step("radial remap (opencv)")
-    corrected = remap(
+    corrected = cv2.remap(
         rgb_image,
         x_distorted,
         y_distorted,
-        interpolation=INTER_CUBIC,
-        borderMode=BORDER_CONSTANT,
+        interpolation=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
         borderValue=0
     )
     timer.end_step()
@@ -2756,6 +2761,285 @@ def _get_ifd0_tag(
         value = raw_ifd_tags.get_tag(tag, return_type)
     
     return value
+
+def _linearize(
+    tags: "DngPage" | "MetadataTags",
+    data: np.ndarray,
+    photometric: str,
+) -> np.ndarray:
+    """Linearize raw sensor data: apply OpcodeList1, normalize, apply OpcodeList2.
+
+    Args:
+        tags: Tag source (raw IFD page or MetadataTags) providing linearization tags.
+        data: Raw decoded image data.
+        photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
+
+    Returns:
+        Normalized float32 array with opcode lists applied.
+    """
+    timer = get_active_timer()
+    is_cfa = photometric == "CFA"
+    is_linear_raw = photometric == "LINEAR_RAW"
+
+    # Apply OpcodeList1 to raw sensor data (before linearization)
+    # OpcodeList1 is CFA-only (gain maps, per-row noise correction)
+    opcode_list1 = tags.get_tag("OpcodeList1")
+    if opcode_list1 is not None and not is_cfa:
+        logger.warning("OpcodeList1 present on non-CFA page; skipping")
+    if opcode_list1 is not None and is_cfa:
+        ops1_timer = timer.start_step("opcode_list1")
+        try:
+            opcodes = parse_opcode_list(bytes(opcode_list1))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList1 ({type(e).__name__}): {e}")
+            opcodes = None
+
+        if opcodes:
+            try:
+                logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
+                ops1_timer.start_step("apply_opcodes_cfa (c++)")
+                data = apply_opcodes_cfa(data, opcodes, "OpcodeList1")
+                ops1_timer.end_step()
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
+        ops1_timer.close()
+
+    if is_cfa:
+        samples_per_pixel = 1
+    else:
+        samples_per_pixel = int(tags.get_tag("SamplesPerPixel") or 1)
+
+    black_repeat_dim = tags.get_tag("BlackLevelRepeatDim")
+    if black_repeat_dim is None:
+        black_repeat_dim = (1, 1)
+    black_repeat_rows = int(black_repeat_dim[0]) if hasattr(black_repeat_dim, "__len__") else 1
+    black_repeat_cols = (
+        int(black_repeat_dim[1])
+        if hasattr(black_repeat_dim, "__len__") and len(black_repeat_dim) > 1
+        else 1
+    )
+    expected_black_size = black_repeat_rows * black_repeat_cols * samples_per_pixel
+
+    black_level_raw = tags.get_tag("BlackLevel")
+    if black_level_raw is None:
+        black_level = np.zeros(expected_black_size, dtype=np.float32)
+    else:
+        black_level = np.atleast_1d(black_level_raw).astype(np.float32).ravel()
+        if len(black_level) != expected_black_size:
+            black_level = np.zeros(expected_black_size, dtype=np.float32)
+
+    bps = tags.get_tag("BitsPerSample")
+    if bps is None:
+        bits_per_sample = 16
+    elif isinstance(bps, np.ndarray):
+        bits_per_sample = int(bps.flat[0])
+    else:
+        bits_per_sample = int(bps)
+
+    # Check if this is float data (SampleFormat = 3)
+    sample_format = tags.get_tag("SampleFormat")
+    if sample_format is not None:
+        # SampleFormat can be a single value or array
+        if isinstance(sample_format, (list, tuple, np.ndarray)):
+            sample_format = sample_format[0]
+
+    # Match DNG SDK default: float uses 1.0, integer uses (2^bits - 1)
+    # DNG SDK reference: dng_ifd.cpp lines 3466-3468
+    if sample_format == 3:
+        default_white = 1.0
+    else:
+        # Integer data (SampleFormat=1) or missing SampleFormat tag
+        default_white = float((1 << bits_per_sample) - 1)
+
+    white_level_raw = tags.get_tag("WhiteLevel")
+    if white_level_raw is None:
+        white_level = np.full(samples_per_pixel, default_white, dtype=np.float32)
+    else:
+        white_level = np.atleast_1d(white_level_raw).astype(np.float32).ravel()
+        white_level = np.where(white_level < 0, default_white, white_level)
+        if len(white_level) != samples_per_pixel:
+            logger.warning(
+                f"WhiteLevel count ({len(white_level)}) != "
+                f"SamplesPerPixel ({samples_per_pixel})"
+            )
+            if len(white_level) > samples_per_pixel:
+                white_level = white_level[:samples_per_pixel]
+            else:
+                pad = np.full(
+                    samples_per_pixel - len(white_level),
+                    white_level[-1],
+                    dtype=np.float32,
+                )
+                white_level = np.concatenate([white_level, pad])
+
+    black_delta_h = tags.get_tag("BlackLevelDeltaH")
+    black_delta_v = tags.get_tag("BlackLevelDeltaV")
+    if black_delta_h is not None:
+        black_delta_h = np.atleast_1d(black_delta_h).astype(np.float32)
+    if black_delta_v is not None:
+        black_delta_v = np.atleast_1d(black_delta_v).astype(np.float32)
+
+    linearization_table = tags.get_tag("LinearizationTable")
+    if linearization_table is not None:
+        linearization_table = np.asarray(linearization_table, dtype=np.uint16)
+
+    active_area = tags.get_tag("ActiveArea")
+    if active_area is not None:
+        aa_top, aa_left, aa_bottom, aa_right = active_area
+        data = data[aa_top:aa_bottom, aa_left:aa_right]
+
+    # Fast path: trivial normalization (black=0, white=default, no
+    # deltas/LUT, uint16 data) can use optimized convert_dtype instead
+    is_pure_convert = (
+        samples_per_pixel == 3
+        and data.dtype == np.uint16
+        and black_delta_h is None
+        and black_delta_v is None
+        and (linearization_table is None or len(linearization_table) == 0)
+        and np.all(black_level == 0.0)
+        and np.all(white_level == default_white)
+    )
+
+    timer.start_step("linearize (c++)")
+    if is_pure_convert:
+        normalized = convert_dtype(
+            data,
+            np.float32,
+            src_bits_per_element=bits_per_sample,
+        )
+    else:
+        # normalize_raw accepts uint16 or float32 natively;
+        # convert edge-case dtypes to the nearest supported type
+        norm_data = data
+        if norm_data.dtype == np.uint8:
+            norm_data = norm_data.astype(np.uint16)
+        elif norm_data.dtype == np.float16:
+            norm_data = norm_data.astype(np.float32)
+        elif norm_data.dtype not in (np.uint16, np.float32):
+            norm_data = norm_data.astype(np.float32)
+        normalized = _raw_render.normalize_raw(
+            data=norm_data,
+            black_level=black_level,
+            black_repeat_rows=black_repeat_rows,
+            black_repeat_cols=black_repeat_cols,
+            samples_per_pixel=samples_per_pixel,
+            white_level=white_level,
+            black_delta_h=black_delta_h,
+            black_delta_v=black_delta_v,
+            linearization_table=linearization_table,
+        )
+    timer.end_step()
+
+    opcode_list2 = tags.get_tag("OpcodeList2")
+    if opcode_list2 is not None:
+        ops2_timer = timer.start_step("opcode_list2")
+        try:
+            opcodes = parse_opcode_list(bytes(opcode_list2))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList2 ({type(e).__name__}): {e}")
+            opcodes = None
+
+        if opcodes:
+            try:
+                logger.debug(f"OpcodeList2: {len(opcodes)} opcodes, "
+                            f"is_linear_raw={is_linear_raw}, is_cfa={is_cfa}, "
+                            f"data.shape={normalized.shape}")
+                if is_linear_raw:
+                    ops2_timer.start_step("apply_opcodes (c++)")
+                    normalized = apply_opcodes(
+                        normalized, opcodes,
+                        use_bicubic=False,
+                        opcode_list_name="OpcodeList2"
+                    )
+                    ops2_timer.close()
+                    return normalized
+                else:
+                    # CFA data
+                    ops2_timer.start_step("apply_opcodes_cfa (c++)")
+                    normalized = apply_opcodes_cfa(
+                        normalized, opcodes, "OpcodeList2"
+                    )
+                    ops2_timer.close()
+                    return normalized
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList2 ({type(e).__name__}): {e}")
+        ops2_timer.close()
+
+    return normalized
+
+
+def _raw_to_camera_rgb(
+    tags: "DngPage" | "MetadataTags",
+    data: np.ndarray,
+    photometric: str,
+    cfa_pattern: str | None,
+    demosaic_algorithm: "DemosaicAlgorithm",
+) -> np.ndarray:
+    """Linearize raw data, demosaic if CFA, apply OpcodeList3 and DefaultCrop.
+
+    Args:
+        tags: Tag source (raw IFD page or MetadataTags) providing linearization/opcode tags.
+        data: Raw decoded image data.
+        photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
+        cfa_pattern: CFA pattern string (e.g. "RGGB"), required if photometric == "CFA".
+        demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
+
+    Returns:
+        Camera RGB array (H, W, 3) float32 in [0, 1].
+    """
+    timer = get_active_timer()
+
+    normalized = _linearize(tags, data, photometric)
+
+    if photometric == "CFA":
+        demosaic_timer = timer.start_step("demosaic")
+        # Bilinear guarantees [0,1] output through averaging - skip clip
+        clip_value = None if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR else 1.0
+        rgb_camera = demosaic(
+            normalized, cfa_pattern, algorithm=demosaic_algorithm,
+            clip_max=clip_value, return_dtype=np.float32
+        )
+        demosaic_timer.close()
+    else:
+        rgb_camera = normalized
+
+    # Apply OpcodeList3 (Stage3 operations)
+    opcode_list3 = tags.get_tag("OpcodeList3")
+    if opcode_list3 is not None:
+        ops3_timer = timer.start_step("opcode_list3")
+        try:
+            opcodes = parse_opcode_list(bytes(opcode_list3))
+        except Exception as e:
+            logger.warning(f"Failed to parse OpcodeList3 ({type(e).__name__}): {e}")
+            opcodes = None
+
+        if opcodes:
+            try:
+                logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
+                ops3_timer.start_step("apply_opcodes (c++)")
+                rgb_camera = apply_opcodes(
+                    rgb_camera, opcodes,
+                    use_bicubic=False,
+                    opcode_list_name="OpcodeList3"
+                )
+                ops3_timer.end_step()
+            except Exception as e:
+                logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
+        ops3_timer.close()
+
+    # Apply DefaultCrop
+    crop_origin = tags.get_tag("DefaultCropOrigin")
+    crop_size = tags.get_tag("DefaultCropSize")
+
+    if crop_origin is not None and crop_size is not None:
+        crop_x = int(crop_origin[0])
+        crop_y = int(crop_origin[1])
+        crop_w = int(crop_size[0])
+        crop_h = int(crop_size[1])
+        rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+
+    return rgb_camera
+
 
 def _render_camera_rgb(
     ifd0_tags: "DngPage" | "MetadataTags",

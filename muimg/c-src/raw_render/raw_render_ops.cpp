@@ -31,11 +31,16 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <limits>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #if defined(__aarch64__)
 #include <arm_neon.h>
+#define NEON 1  // Global switch: 1=enabled, 0=disabled
+#else
+#define NEON 0
 #endif
 
 //=============================================================================
@@ -98,7 +103,7 @@ static inline float lut_lookup_8bit(const float* lut, uint8_t value) {
 class ColorMatrix3x3 {
 public:
     explicit ColorMatrix3x3(const float* m) {
-#if defined(__aarch64__)
+#if NEON
         // Transpose row-major input into column vectors, zero-pad lane 3.
         // Use vld1q_f32 from a local array for GCC compatibility
         // (brace-initializer assignment to float32x4_t is a Clang extension).
@@ -117,7 +122,7 @@ public:
     // input_clip before the matrix multiply, then clips output to [0, 1].
     // On NEON, input_clip_max is a float32x4_t preloaded once before the pixel loop
     // via vld1q_f32(clip_max_ptr) — lane 3 is unused (zero-padded).
-#if defined(__aarch64__)
+#if NEON
     inline void apply(const float* input, float* output,
                       float32x4_t input_clip_max) const {
         // Load input, clip to camera white, then matrix + output clip
@@ -135,17 +140,17 @@ public:
 #else
     inline void apply(const float* input, float* output,
                       const float* input_clip_max) const {
-        float r = fminf(input[0], input_clip_max[0]);
-        float g = fminf(input[1], input_clip_max[1]);
-        float b = fminf(input[2], input_clip_max[2]);
-        output[0] = fmaxf(0.0f, fminf(1.0f, m_[0]*r + m_[1]*g + m_[2]*b));
-        output[1] = fmaxf(0.0f, fminf(1.0f, m_[3]*r + m_[4]*g + m_[5]*b));
-        output[2] = fmaxf(0.0f, fminf(1.0f, m_[6]*r + m_[7]*g + m_[8]*b));
+        float r = std::min(input[0], input_clip_max[0]);
+        float g = std::min(input[1], input_clip_max[1]);
+        float b = std::min(input[2], input_clip_max[2]);
+        output[0] = std::clamp(m_[0]*r + m_[1]*g + m_[2]*b, 0.0f, 1.0f);
+        output[1] = std::clamp(m_[3]*r + m_[4]*g + m_[5]*b, 0.0f, 1.0f);
+        output[2] = std::clamp(m_[6]*r + m_[7]*g + m_[8]*b, 0.0f, 1.0f);
     }
 #endif
 
     inline void apply(float* rgb, float output_clip_max = 1.0f) const {
-#if defined(__aarch64__)
+#if NEON
         // 3 vertical ops produce all 3 output channels simultaneously.
         // vmulq_n_f32(v, s): multiply all 4 lanes of v by scalar s
         // vfmaq_n_f32(acc, v, s): acc + v*s  (fused multiply-add)
@@ -160,14 +165,14 @@ public:
         rgb[2] = vgetq_lane_f32(result, 2);
 #else
         float r = rgb[0], g = rgb[1], b = rgb[2];
-        rgb[0] = fmaxf(0.0f, fminf(output_clip_max, m_[0]*r + m_[1]*g + m_[2]*b));
-        rgb[1] = fmaxf(0.0f, fminf(output_clip_max, m_[3]*r + m_[4]*g + m_[5]*b));
-        rgb[2] = fmaxf(0.0f, fminf(output_clip_max, m_[6]*r + m_[7]*g + m_[8]*b));
+        rgb[0] = std::clamp(m_[0]*r + m_[1]*g + m_[2]*b, 0.0f, output_clip_max);
+        rgb[1] = std::clamp(m_[3]*r + m_[4]*g + m_[5]*b, 0.0f, output_clip_max);
+        rgb[2] = std::clamp(m_[6]*r + m_[7]*g + m_[8]*b, 0.0f, output_clip_max);
 #endif
     }
 
 private:
-#if defined(__aarch64__)
+#if NEON
     float32x4_t col0_, col1_, col2_;
 #else
     float m_[9];
@@ -201,12 +206,13 @@ static const float* prepare_lut_with_sentinel(
 // Specialized: LUT only (no matrix)
 // Input and output LUTs are identical when there's no matrix
 // Use8bit256: true for uint8 input with 256-entry LUT (direct lookup, no interpolation)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_only_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* lut,
+    const float* __restrict lut,
     int lut_size,
     float src_scale,
     float dst_scale
@@ -228,26 +234,27 @@ static void transform_lut_only_impl(
                 // Clip to [0, lut_size-1] instead of [0, 1]
                 float fused_scale = src_scale * (lut_size - 1);
                 float lut_max = (lut_size - 1);
-                rgb[0] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(lut, std::clamp(input[idx + 0] * fused_scale, 0.0f, lut_max));
+                rgb[1] = lut_lookup_interp(lut, std::clamp(input[idx + 1] * fused_scale, 0.0f, lut_max));
+                rgb[2] = lut_lookup_interp(lut, std::clamp(input[idx + 2] * fused_scale, 0.0f, lut_max));
             }
             
             // Clip and store
-            output[idx + 0] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[0])) * dst_scale);
-            output[idx + 1] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[1])) * dst_scale);
-            output[idx + 2] = (DstT)(fmaxf(0.0f, fminf(1.0f, rgb[2])) * dst_scale);
+            output[idx + 0] = (DstT)(std::clamp(rgb[0], 0.0f, 1.0f) * dst_scale);
+            output[idx + 1] = (DstT)(std::clamp(rgb[1], 0.0f, 1.0f) * dst_scale);
+            output[idx + 2] = (DstT)(std::clamp(rgb[2], 0.0f, 1.0f) * dst_scale);
         }
     }
 }
 
 // Specialized: Matrix only (no LUTs)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT>
 static void transform_matrix_only_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* matrix,
+    const float* __restrict matrix,
     float src_scale,
     float dst_scale
 ) {
@@ -275,14 +282,15 @@ static void transform_matrix_only_impl(
 }
 
 // Specialized: LUT → Matrix
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_matrix_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
+    const float* __restrict matrix,
     float src_scale,
     float dst_scale
 ) {
@@ -304,9 +312,9 @@ static void transform_lut_matrix_impl(
                 // Clip to [0, lut_size-1] instead of [0, 1]
                 float fused_scale = src_scale * (input_lut_size - 1);
                 float lut_max = (input_lut_size - 1);
-                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(input_lut, std::clamp(input[idx + 0] * fused_scale, 0.0f, lut_max));
+                rgb[1] = lut_lookup_interp(input_lut, std::clamp(input[idx + 1] * fused_scale, 0.0f, lut_max));
+                rgb[2] = lut_lookup_interp(input_lut, std::clamp(input[idx + 2] * fused_scale, 0.0f, lut_max));
             }
             
             // Apply matrix and clip to [0, 1]
@@ -321,13 +329,14 @@ static void transform_lut_matrix_impl(
 }
 
 // Specialized: Matrix → LUT
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT>
 static void transform_matrix_lut_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     float src_scale,
     float dst_scale
@@ -363,15 +372,16 @@ static void transform_matrix_lut_impl(
 }
 
 // Specialized: LUT → Matrix → LUT (full pipeline)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename SrcT, typename DstT, bool Use8bit256>
 static void transform_lut_matrix_lut_impl(
-    const SrcT* input,
-    DstT* output,
+    const SrcT* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     float src_scale,
     float dst_scale
@@ -400,9 +410,9 @@ static void transform_lut_matrix_lut_impl(
                 rgb[1] = lut_lookup_8bit(input_lut, input[idx + 1]);
                 rgb[2] = lut_lookup_8bit(input_lut, input[idx + 2]);
             } else {
-                rgb[0] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 0] * fused_scale)));
-                rgb[1] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 1] * fused_scale)));
-                rgb[2] = lut_lookup_interp(input_lut, fmaxf(0.0f, fminf(in_lut_max, input[idx + 2] * fused_scale)));
+                rgb[0] = lut_lookup_interp(input_lut, std::clamp(input[idx + 0] * fused_scale, 0.0f, in_lut_max));
+                rgb[1] = lut_lookup_interp(input_lut, std::clamp(input[idx + 1] * fused_scale, 0.0f, in_lut_max));
+                rgb[2] = lut_lookup_interp(input_lut, std::clamp(input[idx + 2] * fused_scale, 0.0f, in_lut_max));
             }
             
             // Apply matrix (pre-scaled to output LUT indices) and clip
@@ -440,9 +450,9 @@ static inline void apply_hue_preserving_tone(
     float lut_scale
 ) {
     // Clip input to [0,1] once
-    r = fmaxf(0.0f, fminf(1.0f, r));
-    g = fmaxf(0.0f, fminf(1.0f, g));
-    b = fmaxf(0.0f, fminf(1.0f, b));
+    r = std::clamp(r, 0.0f, 1.0f);
+    g = std::clamp(g, 0.0f, 1.0f);
+    b = std::clamp(b, 0.0f, 1.0f);
     
     // Apply hue-preserving tone mapping based on RGB sorting
     if (r >= g) {
@@ -475,11 +485,12 @@ static inline void apply_hue_preserving_tone(
 }
 
 // Hue-preserving LUT only (float32 input/output only)
+// NOTE: src and dst must not overlap (__restrict contract)
 static void transform_hue_preserving_lut_only_impl(
-    const float* input,
-    float* output,
+    const float* __restrict input,
+    float* __restrict output,
     int total_pixels,
-    const float* lut,
+    const float* __restrict lut,
     int lut_size
 ) {
     float lut_scale = (float)(lut_size - 1);
@@ -497,14 +508,15 @@ static void transform_hue_preserving_lut_only_impl(
 }
 
 // Hue-preserving LUT → Matrix (templated for output dtype)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename DstT>
 static void transform_hue_preserving_lut_matrix_impl(
-    const float* input,
-    DstT* output,
+    const float* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
+    const float* __restrict matrix,
     float dst_scale
 ) {
     float input_lut_scale = (float)(input_lut_size - 1);
@@ -525,15 +537,16 @@ static void transform_hue_preserving_lut_matrix_impl(
 }
 
 // Hue-preserving LUT → Matrix → Output LUT (templated for output dtype)
+// NOTE: src and dst must not overlap (__restrict contract)
 template<typename DstT>
 static void transform_hue_preserving_lut_matrix_lut_impl(
-    const float* input,
-    DstT* output,
+    const float* __restrict input,
+    DstT* __restrict output,
     int total_pixels,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     float dst_scale
 ) {
@@ -563,18 +576,33 @@ static void transform_hue_preserving_lut_matrix_lut_impl(
 
 #undef HUE_PRESERVING_TONE
 
+// Helper: Get max value for a dtype and optional bit depth (unified with convert_dtype)
+static float get_max_value(int dtype, int bits_per_element) {
+    if (dtype == NPY_FLOAT32 || dtype == NPY_FLOAT64) {
+        return 1.0f;
+    }
+    // Integer type
+    int bits = (bits_per_element > 0) ? bits_per_element : (
+        (dtype == NPY_UINT8) ? 8 : (
+            (dtype == NPY_UINT16) ? 16 : 32
+        )
+    );
+    return (float)((1 << bits) - 1);
+}
+
 // Dispatcher: selects specialized function based on parameters
+// NOTE: src and dst must not overlap (__restrict contract)
 static void transform_color_dispatch(
-    const void* input,
-    void* output,
+    const void* __restrict input,
+    void* __restrict output,
     int height,
     int width,
     int src_dtype,
     int dst_dtype,
-    const float* input_lut,
+    const float* __restrict input_lut,
     int input_lut_size,
-    const float* matrix,
-    const float* output_lut,
+    const float* __restrict matrix,
+    const float* __restrict output_lut,
     int output_lut_size,
     int src_bits,
     int dst_bits,
@@ -582,20 +610,9 @@ static void transform_color_dispatch(
 ) {
     const int total_pixels = height * width;
     
-    // Calculate scale factors
-    float src_scale = 1.0f;
-    if (src_dtype == NPY_UINT8) {
-        src_scale = 1.0f / (src_bits > 0 ? ((1 << src_bits) - 1) : 255.0f);
-    } else if (src_dtype == NPY_UINT16) {
-        src_scale = 1.0f / (src_bits > 0 ? ((1 << src_bits) - 1) : 65535.0f);
-    }
-    
-    float dst_scale = 1.0f;
-    if (dst_dtype == NPY_UINT8) {
-        dst_scale = (dst_bits > 0 ? ((1 << dst_bits) - 1) : 255.0f);
-    } else if (dst_dtype == NPY_UINT16) {
-        dst_scale = (dst_bits > 0 ? ((1 << dst_bits) - 1) : 65535.0f);
-    }
+    // Calculate scale factors using unified helper
+    float src_scale = 1.0f / get_max_value(src_dtype, src_bits);
+    float dst_scale = get_max_value(dst_dtype, dst_bits);
     
     // Determine which specialized function to use
     bool has_input_lut = (input_lut != NULL);
@@ -863,6 +880,270 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
 }
 
 //=============================================================================
+// Convert dtype with optional clip
+//=============================================================================
+
+//=============================================================================
+// Dtype Converter with optional clipping - NEON optimized for AArch64
+//=============================================================================
+//
+// Templated class for converting arrays of values between dtypes with scaling
+// and optional clipping. Optimized for AArch64 NEON.
+//
+// Usage pattern (similar to ColorMatrix3x3):
+//   DtypeConverter<uint8_t, uint16_t> converter(scale, clip_max);
+//   converter.convert(src, dst, count);
+//
+template<typename SrcT, typename DstT>
+class DtypeConverter {
+public:
+    DtypeConverter(float scale, float clip_max)
+        : scale_(scale), clip_max_(clip_max), do_clip_(clip_max >= 0.0f) {}
+
+    // Convert an array of elements
+    void convert(const SrcT* __restrict src, DstT* __restrict dst, int count) const {
+#if NEON
+        convert_neon(src, dst, count);
+#else
+        convert_scalar(src, dst, count);
+#endif
+    }
+
+private:
+    float scale_;
+    float clip_max_;
+    bool do_clip_;
+
+    // Scalar fallback - separate loops to avoid branch inside hot path
+    void convert_scalar(const SrcT* __restrict src, DstT* __restrict dst, int count) const {
+        // Special case: uint16_t -> float with unrolling for better auto-vectorization
+        if constexpr (std::is_same_v<SrcT, uint16_t> && std::is_same_v<DstT, float>) {
+            int i = 0;
+            for (; i <= count - 4; i += 4) {
+                float s0 = (float)src[i + 0];
+                float s1 = (float)src[i + 1];
+                float s2 = (float)src[i + 2];
+                float s3 = (float)src[i + 3];
+                dst[i + 0] = s0 * scale_;
+                dst[i + 1] = s1 * scale_;
+                dst[i + 2] = s2 * scale_;
+                dst[i + 3] = s3 * scale_;
+            }
+            for (; i < count; i++) {
+                dst[i] = (float)src[i] * scale_;
+            }
+        } else if (do_clip_) {
+            for (int i = 0; i < count; i++) {
+                dst[i] = (DstT)std::min(src[i] * scale_, clip_max_);
+            }
+        } else {
+            for (int i = 0; i < count; i++) {
+                dst[i] = (DstT)(src[i] * scale_);
+            }
+        }
+    }
+
+#if NEON
+    // NEON implementation - single path with merged clip logic
+    void convert_neon(const SrcT* __restrict src, DstT* __restrict dst,int count) const {
+        float32x4_t vscale = vdupq_n_f32(scale_);
+        // Clip limit is either clip_max (if specified) or dst_max (for safe conversion)
+        float clip_limit = do_clip_ ? clip_max_ : 
+            (std::is_same_v<DstT, uint8_t> ? 255.0f : 
+             std::is_same_v<DstT, uint16_t> ? 65535.0f : 
+             std::numeric_limits<float>::max());
+        float32x4_t vclip = vdupq_n_f32(clip_limit);
+        
+        int i = 0;
+        for (; i <= count - 4; i += 4) {
+            float32x4_t vsrc = load_src_neon(src + i);
+            float32x4_t vscaled = vmulq_f32(vsrc, vscale);
+            vscaled = vminq_f32(vscaled, vclip);  // clip to limit
+            store_dst_neon(dst + i, vscaled);
+        }
+        // Tail with scalar
+        if (i < count) {
+            convert_scalar(src + i, dst + i, count - i);
+        }
+    }
+
+    // Helper: Load source values as float32x4
+    float32x4_t load_src_neon(const SrcT* src) const {
+        if constexpr (std::is_same_v<SrcT, uint8_t>) {
+            // Load 8 uint8 values, use lower 4, convert to float32
+            uint8x8_t v8 = vld1_u8(src);  // Load 8 bytes
+            uint16x8_t v16_8 = vmovl_u8(v8);  // Widen to uint16x8
+            uint16x4_t v16 = vget_low_u16(v16_8);  // Get lower 4 uint16
+            uint32x4_t v32 = vmovl_u16(v16);  // Widen to uint32
+            return vcvtq_f32_u32(v32);  // Convert to float32
+        } else if constexpr (std::is_same_v<SrcT, uint16_t>) {
+            // Load 4 uint16 values, convert to float32
+            uint16x4_t v16 = vld1_u16(src);  // Load 4 uint16
+            uint32x4_t v32 = vmovl_u16(v16);  // Widen to uint32
+            return vcvtq_f32_u32(v32);  // Convert to float32
+        } else if constexpr (std::is_same_v<SrcT, float>) {
+            return vld1q_f32(src);  // Load 4 floats directly
+        }
+    }
+
+    // Helper: Store float32x4 as destination type
+    // Input val is already clipped to [0, clip_limit] in main loop, just convert
+    void store_dst_neon(DstT* dst, float32x4_t val) const {
+        if constexpr (std::is_same_v<DstT, uint8_t>) {
+            // Convert to uint8 (val is already in [0, 255] range)
+            uint32x4_t v32 = vcvtq_u32_f32(val);
+            uint16x4_t v16 = vmovn_u32(v32);
+            uint8x8_t v8 = vmovn_u16(vcombine_u16(v16, v16));
+            vst1_u8(dst, v8);
+        } else if constexpr (std::is_same_v<DstT, uint16_t>) {
+            // Convert to uint16 (val is already in [0, 65535] range)
+            uint32x4_t v32 = vcvtq_u32_f32(val);
+            uint16x4_t v16 = vqmovn_u32(v32);
+            vst1_u16(dst, v16);
+        } else if constexpr (std::is_same_v<DstT, float>) {
+            vst1q_f32(dst, val);  // Already clipped, store directly
+        }
+    }
+#endif
+};
+
+
+static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObject* kwargs) {
+    PyArrayObject* image_array = NULL;
+    int dest_dtype_int = NPY_FLOAT32;
+    int src_bits = -1;  // -1 means use dtype default
+    int dst_bits = -1;
+    float clip_max = -1.0f;  // < 0 means no clipping, else clip to [0, clip_max]
+    
+    static char* kwlist[] = {
+        (char*)"image", (char*)"dest_dtype", 
+        (char*)"src_bits", (char*)"dst_bits", (char*)"clip_max",
+        NULL
+    };
+    
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!|iiif", kwlist,
+            &PyArray_Type, &image_array,
+            &dest_dtype_int, &src_bits, &dst_bits, &clip_max)) {
+        return NULL;
+    }
+    
+    // Validate image is 2D or 3D
+    int ndim = PyArray_NDIM(image_array);
+    if (ndim != 2 && ndim != 3) {
+        PyErr_SetString(PyExc_ValueError, "Image must be 2D (H, W) or 3D (H, W, C)");
+        return NULL;
+    }
+    
+    int height = (int)PyArray_DIM(image_array, 0);
+    int width = (int)PyArray_DIM(image_array, 1);
+    int channels = (ndim == 3) ? (int)PyArray_DIM(image_array, 2) : 1;
+    int total_pixels = height * width * channels;
+    
+    int src_dtype = PyArray_TYPE(image_array);
+    int dst_dtype = dest_dtype_int;
+    
+    // Validate dtypes are supported (uint8, uint16, float32)
+    bool src_valid = (src_dtype == NPY_UINT8) || (src_dtype == NPY_UINT16) || (src_dtype == NPY_FLOAT32);
+    bool dst_valid = (dst_dtype == NPY_UINT8) || (dst_dtype == NPY_UINT16) || (dst_dtype == NPY_FLOAT32);
+    if (!src_valid) {
+        PyErr_SetString(PyExc_TypeError, "Unsupported source dtype (must be uint8, uint16, or float32)");
+        return NULL;
+    }
+    if (!dst_valid) {
+        PyErr_SetString(PyExc_TypeError, "Unsupported destination dtype (must be uint8, uint16, or float32)");
+        return NULL;
+    }
+    
+    // Ensure contiguous input (accept 2D or 3D)
+    auto image_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)image_array, src_dtype, 2, 3));
+    if (!image_cont) return NULL;
+    
+    // Create output array with same dimensionality as input
+    npy_intp dims[3];
+    dims[0] = height;
+    dims[1] = width;
+    if (ndim == 3) {
+        dims[2] = channels;
+    }
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(ndim, dims, dst_dtype));
+    if (!result) return NULL;
+    
+    const void* src_data = PyArray_DATA(image_cont.get());
+    void* dst_data = PyArray_DATA(result.get());
+    
+    // Determine effective bits for fast path check
+    int src_effective_bits = (src_bits > 0) ? src_bits : 
+        ((src_dtype == NPY_UINT8) ? 8 : (src_dtype == NPY_UINT16) ? 16 : 
+         (src_dtype == NPY_FLOAT32) ? 0 : 32);
+    int dst_effective_bits = (dst_bits > 0) ? dst_bits : 
+        ((dst_dtype == NPY_UINT8) ? 8 : (dst_dtype == NPY_UINT16) ? 16 : 
+         (dst_dtype == NPY_FLOAT32) ? 0 : 32);
+    
+    // Fast path: same dtype, same bits, no clip - just memcpy
+    if (src_dtype == dst_dtype && src_effective_bits == dst_effective_bits && clip_max < 0.0f) {
+        size_t elem_size = (src_dtype == NPY_UINT8) ? 1 : 
+                          (src_dtype == NPY_UINT16) ? 2 : 4;
+        size_t bytes = total_pixels * elem_size;
+        memcpy(dst_data, src_data, bytes);
+        return (PyObject*)result.release();
+    }
+    
+    // Get max values for scaling (needed for conversion kernels)
+    float src_max = get_max_value(src_dtype, src_bits);
+    float dst_max = get_max_value(dst_dtype, dst_bits);
+    float scale = dst_max / src_max;
+    
+    // Skip clipping if clip_max >= destination max for integer types
+    // (For float, we always allow clipping even above 1.0 for HDR handling)
+    if (clip_max >= 0.0f && dst_dtype != NPY_FLOAT32 && clip_max >= dst_max) {
+        clip_max = -1.0f;
+    }
+    
+    // Conversion kernels using DtypeConverter with NEON optimization
+    if (src_dtype == NPY_UINT8) {
+        const uint8_t* src = (const uint8_t*)src_data;
+        if (dst_dtype == NPY_UINT8) {
+            DtypeConverter<uint8_t, uint8_t> converter(scale, clip_max);
+            converter.convert(src, (uint8_t*)dst_data, total_pixels);
+        } else if (dst_dtype == NPY_UINT16) {
+            DtypeConverter<uint8_t, uint16_t> converter(scale, clip_max);
+            converter.convert(src, (uint16_t*)dst_data, total_pixels);
+        } else {  // NPY_FLOAT32
+            DtypeConverter<uint8_t, float> converter(scale, clip_max);
+            converter.convert(src, (float*)dst_data, total_pixels);
+        }
+    } else if (src_dtype == NPY_UINT16) {
+        const uint16_t* src = (const uint16_t*)src_data;
+        if (dst_dtype == NPY_UINT8) {
+            DtypeConverter<uint16_t, uint8_t> converter(scale, clip_max);
+            converter.convert(src, (uint8_t*)dst_data, total_pixels);
+        } else if (dst_dtype == NPY_UINT16) {
+            DtypeConverter<uint16_t, uint16_t> converter(scale, clip_max);
+            converter.convert(src, (uint16_t*)dst_data, total_pixels);
+        } else {  // NPY_FLOAT32
+            DtypeConverter<uint16_t, float> converter(scale, clip_max);
+            converter.convert(src, (float*)dst_data, total_pixels);
+        }
+    } else {  // NPY_FLOAT32
+        const float* src = (const float*)src_data;
+        if (dst_dtype == NPY_UINT8) {
+            DtypeConverter<float, uint8_t> converter(scale, clip_max);
+            converter.convert(src, (uint8_t*)dst_data, total_pixels);
+        } else if (dst_dtype == NPY_UINT16) {
+            DtypeConverter<float, uint16_t> converter(scale, clip_max);
+            converter.convert(src, (uint16_t*)dst_data, total_pixels);
+        } else {  // NPY_FLOAT32
+            DtypeConverter<float, float> converter(scale, clip_max);
+            converter.convert(src, (float*)dst_data, total_pixels);
+        }
+    }
+    
+    return (PyObject*)result.release();
+}
+
+//=============================================================================
 // Optimized Clip + Matrix Transform
 //=============================================================================
 
@@ -947,7 +1228,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     
     // Process all pixels
     ColorMatrix3x3 mat(matrix);
-#if defined(__aarch64__)
+#if NEON
     // Preload per-channel input clip vector once (lane 3 unused, zero-padded)
     alignas(16) float clip4[4] = { clip_max[0], clip_max[1], clip_max[2], 0.f };
     float32x4_t input_clip_max = vld1q_f32(clip4);
@@ -955,7 +1236,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     for (int i = 0, idx = 0; i < total_pixels; ++i, idx += 3) {
         // Input clip + matrix multiply + output clip [0,1] in one pass
         // (SDK ref: dng_reference.cpp lines 1423-1425, 1431-1433)
-#if defined(__aarch64__)
+#if NEON
         mat.apply(input + idx, output + idx, input_clip_max);
 #else
         mat.apply(input + idx, output + idx, clip_max);
@@ -1178,75 +1459,217 @@ static void apply_linearization_table(
 // Normalize RAW data using black and white levels per DNG spec Chapter 5.
 // Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel[...])
 //
+// Templated on SrcT (uint16_t or float) to allow fused int->float conversion.
+// Reads from src, writes normalized float32 to dst. src and dst may alias when SrcT=float.
+//
 // Parameters:
-//   data: raw pixel data, shape (height, width, samples_per_pixel) or (height, width) if samples=1
+//   src: input raw pixel data (uint16_t or float)
+//   dst: output float32 pixel data, same shape as src
+//   height, width: image dimensions
+//   samples_per_pixel: 1 for CFA, 3 for LinearRaw
 //   black_level: 3D array [repeat_rows][repeat_cols][samples_per_pixel] stored row-major
 //   black_repeat_rows, black_repeat_cols: dimensions of the repeating black level pattern
 //   black_delta_h: per-column delta array, length=width (or NULL if not used)
 //   black_delta_v: per-row delta array, length=height (or NULL if not used)
 //   white_level: per-sample white level array, length=samples_per_pixel
-//   samples_per_pixel: number of samples (1 for CFA, 3 for LinearRaw)
+//   white_count: always == samples_per_pixel per DNG spec (WhiteLevel count = SamplesPerPixel)
 //
 // SDK ref: dng_linearize_plane.cpp, dng_linearization_info
+template <typename SrcT>
+static inline float load_pixel(const SrcT* ptr, npy_intp idx);
+
+template <>
+inline float load_pixel<float>(const float* ptr, npy_intp idx) {
+    return ptr[idx];
+}
+
+template <>
+inline float load_pixel<uint16_t>(const uint16_t* ptr, npy_intp idx) {
+    return (float)ptr[idx];
+}
+
+template <typename SrcT>
 static void normalize_black_white(
-    float* data, npy_intp height, npy_intp width, int samples_per_pixel,
+    const SrcT* src, float* dst, npy_intp height, npy_intp width, int samples_per_pixel,
     const float* black_level, int black_repeat_rows, int black_repeat_cols,
     const float* black_delta_h, npy_intp delta_h_count,
     const float* black_delta_v, npy_intp delta_v_count,
     const float* white_level, int white_count,
     const uint16_t* linearization_table = nullptr, int linearization_table_size = 0
 ) {
-    for (npy_intp row = 0; row < height; row++) {
-        // Get row delta (0 if not provided)
-        float delta_v = 0.0f;
-        if (black_delta_v != NULL && delta_v_count > 0) {
-            delta_v = black_delta_v[row % delta_v_count];
+    bool has_delta_h = (black_delta_h != nullptr && delta_h_count > 0);
+    bool has_delta_v = (black_delta_v != nullptr && delta_v_count > 0);
+    bool has_lut = (linearization_table != nullptr && linearization_table_size > 0);
+    bool has_extras = has_delta_h || has_delta_v || has_lut;
+
+    // Fast path: spp==1, no deltas/LUT, repeat dim 1x1 or 2x2
+    if (!has_extras && samples_per_pixel == 1 &&
+        ((black_repeat_rows == 2 && black_repeat_cols == 2) ||
+         (black_repeat_rows == 1 && black_repeat_cols == 1))) {
+        // CFA path: assumes 2x2 repeat pattern (promotes 1x1 to 2x2)
+        float bl[4]; // [row][col] in 2x2
+        if (black_repeat_rows == 1 && black_repeat_cols == 1) {
+            bl[0] = bl[1] = bl[2] = bl[3] = black_level[0];
+        } else {
+            bl[0] = black_level[0]; // row0, col0
+            bl[1] = black_level[1]; // row0, col1
+            bl[2] = black_level[2]; // row1, col0
+            bl[3] = black_level[3]; // row1, col1
         }
-        
-        // Black level row index in repeating pattern
-        int black_row = (int)(row % black_repeat_rows);
-        
-        for (npy_intp col = 0; col < width; col++) {
-            // Get column delta (0 if not provided)
-            float delta_h = 0.0f;
-            if (black_delta_h != NULL && delta_h_count > 0) {
-                delta_h = black_delta_h[col % delta_h_count];
+
+        float white0 = white_level[0];
+
+        // Even rows: bl[0] (col0), bl[1] (col1)
+        float black_even0 = bl[0];
+        float black_even1 = bl[1];
+        float inv_even0 = (white0 - black_even0 > 0.0f) ? 1.0f / (white0 - black_even0) : 0.0f;
+        float inv_even1 = (white0 - black_even1 > 0.0f) ? 1.0f / (white0 - black_even1) : 0.0f;
+
+        // Odd rows: bl[2] (col0), bl[3] (col1)
+        float black_odd0 = bl[2];
+        float black_odd1 = bl[3];
+        float inv_odd0 = (white0 - black_odd0 > 0.0f) ? 1.0f / (white0 - black_odd0) : 0.0f;
+        float inv_odd1 = (white0 - black_odd1 > 0.0f) ? 1.0f / (white0 - black_odd1) : 0.0f;
+
+        for (npy_intp row = 0; row < height; row++) {
+            float b0, b1, inv0, inv1;
+            if (row & 1) {
+                b0 = black_odd0;  b1 = black_odd1;
+                inv0 = inv_odd0;  inv1 = inv_odd1;
+            } else {
+                b0 = black_even0; b1 = black_even1;
+                inv0 = inv_even0; inv1 = inv_even1;
             }
-            
-            // Black level column index in repeating pattern
+
+            const SrcT* src_row = src + row * width;
+            float* dst_row = dst + row * width;
+            npy_intp col = 0;
+
+#if NEON
+            // Process 8 pixels (4 col-pairs) per iteration
+            // Interleave black/inv for even/odd columns: [b0,b1,b0,b1]
+            float32x4_t v_black = {b0, b1, b0, b1};
+            float32x4_t v_inv   = {inv0, inv1, inv0, inv1};
+            float32x4_t v_zero  = vdupq_n_f32(0.0f);
+            float32x4_t v_one   = vdupq_n_f32(1.0f);
+
+            if constexpr (std::is_same_v<SrcT, uint16_t>) {
+                for (; col <= width - 8; col += 8) {
+                    // Load 8 uint16 values and convert to 2x float32x4
+                    uint16x8_t u16 = vld1q_u16(src_row + col);
+                    float32x4_t p_lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(u16)));
+                    float32x4_t p_hi = vcvtq_f32_u32(vmovl_u16(vget_high_u16(u16)));
+
+                    float32x4_t r_lo = vmulq_f32(vsubq_f32(p_lo, v_black), v_inv);
+                    float32x4_t r_hi = vmulq_f32(vsubq_f32(p_hi, v_black), v_inv);
+
+                    r_lo = vmaxq_f32(v_zero, vminq_f32(v_one, r_lo));
+                    r_hi = vmaxq_f32(v_zero, vminq_f32(v_one, r_hi));
+
+                    vst1q_f32(dst_row + col, r_lo);
+                    vst1q_f32(dst_row + col + 4, r_hi);
+                }
+            } else {
+                for (; col <= width - 8; col += 8) {
+                    float32x4_t p_lo = vld1q_f32(src_row + col);
+                    float32x4_t p_hi = vld1q_f32(src_row + col + 4);
+
+                    float32x4_t r_lo = vmulq_f32(vsubq_f32(p_lo, v_black), v_inv);
+                    float32x4_t r_hi = vmulq_f32(vsubq_f32(p_hi, v_black), v_inv);
+
+                    r_lo = vmaxq_f32(v_zero, vminq_f32(v_one, r_lo));
+                    r_hi = vmaxq_f32(v_zero, vminq_f32(v_one, r_hi));
+
+                    vst1q_f32(dst_row + col, r_lo);
+                    vst1q_f32(dst_row + col + 4, r_hi);
+                }
+            }
+#endif
+            // Scalar tail
+            for (; col < width - 1; col += 2) {
+                float p0 = load_pixel(src_row, col);
+                float p1 = load_pixel(src_row, col + 1);
+                dst_row[col]     = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv0));
+                dst_row[col + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv1));
+            }
+            if (width & 1) {
+                float p = load_pixel(src_row, width - 1);
+                dst_row[width - 1] = std::max(0.0f, std::min(1.0f, (p - b0) * inv0));
+            }
+        }
+        return;
+    }
+
+    // Fast path: spp==3, no deltas/LUT, repeat dim 1x1
+    if (!has_extras && samples_per_pixel == 3 &&
+        black_repeat_rows == 1 && black_repeat_cols == 1) {
+        // Linear RGB path: single black level per sample
+        float b0 = black_level[0];
+        float b1 = black_level[1];
+        float b2 = black_level[2];
+
+        float inv_r0 = (white_level[0] - b0 > 0.0f) ? 1.0f / (white_level[0] - b0) : 0.0f;
+        float inv_r1 = (white_level[1] - b1 > 0.0f) ? 1.0f / (white_level[1] - b1) : 0.0f;
+        float inv_r2 = (white_level[2] - b2 > 0.0f) ? 1.0f / (white_level[2] - b2) : 0.0f;
+
+        for (npy_intp row = 0; row < height; row++) {
+            npy_intp pixel_base = row * width * 3;
+            for (npy_intp col = 0; col < width; col++) {
+                npy_intp idx = pixel_base + col * 3;
+                float p0 = load_pixel(src, idx + 0);
+                float p1 = load_pixel(src, idx + 1);
+                float p2 = load_pixel(src, idx + 2);
+
+                dst[idx + 0] = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv_r0));
+                dst[idx + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv_r1));
+                dst[idx + 2] = std::max(0.0f, std::min(1.0f, (p2 - b2) * inv_r2));
+            }
+        }
+        return;
+    }
+
+    // General path: handles all cases (deltas, LUT, arbitrary repeat dims/spp)
+    // Pre-allocate full-width delta_h array to eliminate modulo in inner loop
+    std::vector<float> delta_h_full(width, 0.0f);
+    if (has_delta_h) {
+        for (npy_intp col = 0; col < width; col++) {
+            delta_h_full[col] = black_delta_h[col % delta_h_count];
+        }
+    }
+
+    for (npy_intp row = 0; row < height; row++) {
+        float delta_v = has_delta_v ? black_delta_v[row % delta_v_count] : 0.0f;
+        int black_row = (int)(row % black_repeat_rows);
+
+        for (npy_intp col = 0; col < width; col++) {
+            float dh = delta_h_full[col];
             int black_col = (int)(col % black_repeat_cols);
-            
+
             for (int sample = 0; sample < samples_per_pixel; sample++) {
                 npy_intp pixel_idx = (row * width + col) * samples_per_pixel + sample;
-                
+
                 // Apply LinearizationTable if present (before black/white normalization)
                 // SDK ref: dng_linearize_plane::Process - LUT lookup on raw ADC values
-                float pixel_val = data[pixel_idx];
-                if (linearization_table != nullptr && linearization_table_size > 0) {
+                float pixel_val = load_pixel(src, pixel_idx);
+                if (has_lut) {
                     int lut_idx = (int)pixel_val;
-                    // Clamp to table bounds (upper bound common when table < max pixel value)
                     if (lut_idx >= linearization_table_size) lut_idx = linearization_table_size - 1;
                     pixel_val = (float)linearization_table[lut_idx];
                 }
-                
+
                 // BlackLevel index: [row][col][sample] in row-major order
                 int black_idx = (black_row * black_repeat_cols + black_col) * samples_per_pixel + sample;
                 float black = black_level[black_idx];
-                
-                // WhiteLevel per sample
                 float white = white_level[sample % white_count];
-                
-                // Total black level including deltas
-                float total_black = black + delta_h + delta_v;
-                
-                // Normalize to [0, 1]
+                float total_black = black + dh + delta_v;
+
                 float range = white - total_black;
                 if (range > 0.0f) {
-                    data[pixel_idx] = (pixel_val - total_black) / range;
+                    dst[pixel_idx] = (pixel_val - total_black) / range;
                 } else {
-                    data[pixel_idx] = 0.0f;
+                    dst[pixel_idx] = 0.0f;
                 }
-                data[pixel_idx] = std::max(0.0f, std::min(1.0f, data[pixel_idx]));
+                dst[pixel_idx] = std::max(0.0f, std::min(1.0f, dst[pixel_idx]));
             }
         }
     }
@@ -1329,11 +1752,12 @@ static void init_bicubic_weights_2d() {
 // Uses radial polynomial model: ratio = kr0 + kr2*r^2 + kr4*r^4 + kr6*r^6 (EVEN powers)
 // Each color plane has its own coefficients for lateral CA correction
 // center_x, center_y: optical center in normalized [0,1] coordinates
+// NOTE: src and dst must not overlap (__restrict contract)
 static void warp_rectilinear(
-    const float* src, float* dst,
+    const float* __restrict src, float* __restrict dst,
     npy_intp height, npy_intp width, int channels,
-    const double* radial_params, int num_planes, int num_coeffs,  // [num_planes][num_coeffs]
-    const double* tangential_params,  // [num_planes][2] or NULL
+    const double* __restrict radial_params, int num_planes, int num_coeffs,  // [num_planes][num_coeffs]
+    const double* __restrict tangential_params,  // [num_planes][2] or NULL
     double center_x, double center_y,
     bool use_bicubic = true  // SDK ref: dng_lens_correction.cpp line 1251 uses dng_resample_bicubic
 ) {
@@ -1730,7 +2154,7 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
 // SDK ref: dng_linearize_plane.cpp, dng_linearization_info
 //
 // Args:
-//   data: RAW pixel data, float32, shape (H, W) or (H, W, samples_per_pixel)
+//   data: RAW pixel data, uint16 or float32, shape (H, W) or (H, W, samples_per_pixel)
 //   black_level: BlackLevel pattern, float32, shape (repeat_rows, repeat_cols, samples_per_pixel)
 //                or flattened 1D array in row-col-sample order
 //   black_repeat_rows: number of rows in repeating pattern (from BlackLevelRepeatDim[0])
@@ -1770,9 +2194,10 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    // Validate data array
-    if (PyArray_TYPE(data_array) != NPY_FLOAT32) {
-        PyErr_SetString(PyExc_TypeError, "data must be float32");
+    // Validate data array - accept uint16 or float32
+    int src_type = PyArray_TYPE(data_array);
+    if (src_type != NPY_UINT16 && src_type != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "data must be uint16 or float32");
         return NULL;
     }
     
@@ -1791,9 +2216,9 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    // Make contiguous copies
+    // Make contiguous input (preserve original dtype)
     auto data_cont = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_FLOAT32, 2, 3));
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, src_type, 2, 3));
     auto black_cont = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)black_array, NPY_FLOAT32, 1, 3));
     auto white_cont = make_pyptr<PyArrayObject>(
@@ -1848,14 +2273,15 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         lin_table_size = (int)PyArray_SIZE(lin_table_cont.get());
     }
     
-    // Copy data for output
+    // Allocate float32 output array with same shape as input
     auto result = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_NewCopy(data_cont.get(), NPY_CORDER));
+        (PyArrayObject*)PyArray_NewLikeArray(data_cont.get(), NPY_CORDER, 
+            PyArray_DescrFromType(NPY_FLOAT32), 0));
     if (!result) {
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA(result.get());
+    float* dst = (float*)PyArray_DATA(result.get());
     const float* black = (const float*)PyArray_DATA(black_cont.get());
     const float* white = (const float*)PyArray_DATA(white_cont.get());
     const float* delta_h = delta_h_cont ? (const float*)PyArray_DATA(delta_h_cont.get()) : NULL;
@@ -1864,12 +2290,24 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     
     const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont.get()) : nullptr;
     
-    normalize_black_white(result_data, height, width, samples_per_pixel,
-                         black, black_repeat_rows, black_repeat_cols,
-                         delta_h, delta_h_count,
-                         delta_v, delta_v_count,
-                         white, white_count,
-                         lin_table, lin_table_size);
+    // Dispatch to templated kernel based on input dtype
+    if (src_type == NPY_UINT16) {
+        const uint16_t* src = (const uint16_t*)PyArray_DATA(data_cont.get());
+        normalize_black_white<uint16_t>(src, dst, height, width, samples_per_pixel,
+                             black, black_repeat_rows, black_repeat_cols,
+                             delta_h, delta_h_count,
+                             delta_v, delta_v_count,
+                             white, white_count,
+                             lin_table, lin_table_size);
+    } else {
+        const float* src = (const float*)PyArray_DATA(data_cont.get());
+        normalize_black_white<float>(src, dst, height, width, samples_per_pixel,
+                             black, black_repeat_rows, black_repeat_cols,
+                             delta_h, delta_h_count,
+                             delta_v, delta_v_count,
+                             white, white_count,
+                             lin_table, lin_table_size);
+    }
     
     return (PyObject*)result.release();
 }
@@ -2469,10 +2907,11 @@ static inline int get_cfa_color(const int* cfa_colors, int row, int col) {
 //
 // SDK operates on float32 throughout (dng_pixel_buffer with ttFloat)
 //
+// NOTE: src and dst must not overlap (__restrict contract)
 static void bilinear_demosaic_kernel(
-    const float* src, float* dst,
+    const float* __restrict src, float* __restrict dst,
     npy_intp height, npy_intp width,
-    const int* cfa_colors
+    const int* __restrict cfa_colors
 ) {
     // Process each output pixel
     for (npy_intp row = 0; row < height; row++) {
@@ -3445,7 +3884,7 @@ static PyMethodDef DngColorMethods[] = {
      "Normalize RAW data using black and white levels per DNG spec Chapter 5.\n\n"
      "Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel)\n\n"
      "Args:\n"
-     "    data (ndarray): RAW pixel data, float32, (H,W) or (H,W,samples_per_pixel)\n"
+     "    data (ndarray): RAW pixel data, uint16 or float32, (H,W) or (H,W,samples_per_pixel)\n"
      "    black_level (ndarray): BlackLevel pattern, float32, flattened in row-col-sample order\n"
      "    black_repeat_rows (int): Number of rows in repeating pattern (from BlackLevelRepeatDim[0])\n"
      "    black_repeat_cols (int): Number of cols in repeating pattern (from BlackLevelRepeatDim[1])\n"
@@ -3621,6 +4060,19 @@ static PyMethodDef DngColorMethods[] = {
      "    matrix (ndarray): 3x3 color matrix, float32, (3, 3)\n\n"
      "Returns:\n"
      "    ndarray: Transformed RGB image, float32, (H, W, 3)"},
+    
+    {"convert_dtype", (PyCFunction)convert_dtype_with_clip, METH_VARARGS | METH_KEYWORDS,
+     "Convert image dtype with optional clip.\n\n"
+     "Handles uint8, uint16, float32 conversions with proper scaling.\n"
+     "Optional clip to [0, 1] range before conversion.\n\n"
+     "Args:\n"
+     "    image (ndarray): Input image (H, W, C), uint8/uint16/float32\n"
+     "    dest_dtype (int): Destination numpy dtype (e.g., NPY_FLOAT32)\n"
+     "    src_bits (int, optional): Source bit depth (-1 = use dtype default)\n"
+     "    dst_bits (int, optional): Dest bit depth (-1 = use dtype default)\n"
+     "    clip (int, optional): Clip to [0, 1] before conversion (0 or 1)\n\n"
+     "Returns:\n"
+     "    ndarray: Converted image with dest_dtype"},
     
     {NULL, NULL, 0, NULL}
 };

@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, IntEnum
 from fractions import Fraction
-from tifffile import COMPRESSION, PHOTOMETRIC, TIFF
 from typing import Any, Self, Type
+
+from .deps import defusedxml_proxy, tifffile_proxy as tifffile
 
 logger = logging.getLogger(__name__)
 
@@ -314,8 +315,8 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "ImageWidth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 256 (0x0100)
     "ImageLength": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 257 (0x0101)
     "BitsPerSample": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 258 (0x0102)
-    "Compression": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=COMPRESSION),  # 259 (0x0103)
-    "PhotometricInterpretation": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=PHOTOMETRIC),  # 262 (0x0106)
+    "Compression": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=tifffile.COMPRESSION),  # 259 (0x0103)
+    "PhotometricInterpretation": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=tifffile.PHOTOMETRIC),  # 262 (0x0106)
     "Thresholding": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 263 (0x0107)
     "CellWidth": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 264 (0x0108)
     "CellLength": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 265 (0x0109)
@@ -716,7 +717,7 @@ class LocalTiffTags:
             self._by_code[code] = name
         
         # Add from tifffile's registry, but don't overwrite our corrections
-        for code, name in TIFF.TAGS.items():
+        for code, name in tifffile.TIFF.TAGS.items():
             if code not in self._by_code:
                 self._by_code[code] = name
             if name not in self._by_name:
@@ -928,8 +929,8 @@ def convert_tag_value(
     # PhotometricInterpretation: convert enum to readable name
     if tag_name == "PhotometricInterpretation" and (return_type is None or return_type is str):
         photometric_names = {
-            PHOTOMETRIC.CFA: "CFA",
-            PHOTOMETRIC.LINEAR_RAW: "LINEAR_RAW",
+            tifffile.PHOTOMETRIC.CFA: "CFA",
+            tifffile.PHOTOMETRIC.LINEAR_RAW: "LINEAR_RAW",
         }
         return photometric_names.get(tag_value, str(tag_value))
     
@@ -1731,7 +1732,7 @@ class XmpMetadata:
             return {}
 
         import re
-        from defusedxml import ElementTree as DET
+        DET = defusedxml_proxy.ElementTree
 
         attributes: Dict[str, Any] = {}
 
@@ -1883,7 +1884,7 @@ class XmpMetadata:
         
         try:
             import re
-            from defusedxml import ElementTree as DET
+            DET = defusedxml_proxy.ElementTree
             
             # Parse XMP
             xmp_text = self._xmp_string

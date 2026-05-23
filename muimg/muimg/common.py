@@ -139,12 +139,13 @@ class PerfTimer:
         name: str,
         _parent: "PerfTimer | None" = None,
         _depth: int = -1,
+        start_time: float | None = None,
     ):
         self.name = name
         self.parent = _parent
         self.depth = _depth
         self.children: list[PerfTimer] = []
-        self.start_time = time.perf_counter()
+        self.start_time = start_time if start_time is not None else time.perf_counter()
         self.end_time: float | None = None
         self._active_child: PerfTimer | None = None
 
@@ -317,4 +318,62 @@ def get_active_timer() -> PerfTimer:
     while node._active_child is not None and node._active_child.end_time is None:
         node = node._active_child
     return node
+
+
+class ScopedPerfTimer:
+    """Context manager that provides scoped performance timing.
+    
+    Uses existing active timer if available, otherwise creates new root timer.
+    Only logs report for root timers (depth == -1) unless auto_log is disabled.
+    
+    Usage:
+        with scoped_perf_timer("my_operation", logger) as timer:
+            # ... work ...
+    """
+    
+    def __init__(self, name: str, logger_instance, auto_log: bool = True):
+        self.name = name
+        self.logger = logger_instance
+        self.timer: PerfTimer | None = None
+        self.auto_log = auto_log
+        self.created_timer = False  # Track if we created this timer
+        
+    def __enter__(self) -> PerfTimer:
+        # Repeat get_active_timer logic to avoid creating orphan timer
+        ref = getattr(_thread_local, 'active_timer_node', None)
+        root = ref() if ref is not None else None
+        if root is not None:
+            # Find the active child
+            node = root
+            while node._active_child is not None and node._active_child.end_time is None:
+                node = node._active_child
+            self.timer = node
+            self.created_timer = False
+        else:
+            # No active timer, create new root timer
+            self.timer = PerfTimer(self.name)
+            self.created_timer = True
+        return self.timer
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.timer is not None:
+            # Only close timers we created
+            if self.created_timer:
+                self.timer.close()
+                # Only log if auto_log is True
+                if self.auto_log:
+                    self.timer.log_report(self.logger)
+    
+    def enter(self) -> PerfTimer:
+        """Start the timer manually (equivalent to __enter__)."""
+        return self.__enter__()
+    
+    def close(self, exc_type=None, exc_val=None, exc_tb=None):
+        """End the timer manually (equivalent to __exit__)."""
+        return self.__exit__(exc_type, exc_val, exc_tb)
+
+
+def scoped_perf_timer(name: str, logger_instance, auto_log: bool = True) -> ScopedPerfTimer:
+    """Create a ScopedPerfTimer context manager."""
+    return ScopedPerfTimer(name, logger_instance, auto_log)
 

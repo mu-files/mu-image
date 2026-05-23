@@ -509,10 +509,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
         print("\nStep 2: Writing new DNG with 3-level JXL pyramid...")
         write_dng_from_page(
             output_path,
-            IfdPageSpec(
-                page=source_page,
-                extratags=source_ifd0.get_page_tags()
-            ),
+            source_page,
             pyramid=PyramidParams(
                 levels=3,
                 encoding=PageEncoding(
