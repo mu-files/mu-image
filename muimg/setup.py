@@ -4,22 +4,35 @@
 from setuptools import setup, Extension
 import numpy as np
 import os
+import sys
 
-# Common optimization flags
-common_compile_args = [
-    '-O3',                    # Maximum optimization
-    '-march=native',          # Use native CPU instructions (ARM on M1/M2/M3)
-    '-mtune=native',          # Optimize for specific CPU
-    '-ffast-math',            # Fast math operations
-    '-funroll-loops',         # Loop unrolling
-    '-flto',                  # Link-time optimization
-    '-fomit-frame-pointer',   # Don't keep frame pointer (faster)
-    '-fno-strict-aliasing',   # Allow pointer aliasing optimizations
-]
-
-common_link_args = [
-    '-flto',                  # Link-time optimization
-]
+if sys.platform == 'win32':
+    # MSVC flags for Windows
+    common_compile_args = [
+        '/O2',                # Maximum optimization
+        '/fp:fast',           # Fast math operations
+        '/GL',                # Whole program optimization (LTO)
+    ]
+    common_link_args = [
+        '/LTCG',              # Link-time code generation (LTO)
+    ]
+    cpp_extra_args = ['/std:c++17']
+else:
+    # GCC/Clang flags for macOS and Linux
+    common_compile_args = [
+        '-O3',                    # Maximum optimization
+        '-march=native',          # Use native CPU instructions (ARM on M1/M2/M3)
+        '-mtune=native',          # Optimize for specific CPU
+        '-ffast-math',            # Fast math operations
+        '-funroll-loops',         # Loop unrolling
+        '-flto',                  # Link-time optimization
+        '-fomit-frame-pointer',   # Don't keep frame pointer (faster)
+        '-fno-strict-aliasing',   # Allow pointer aliasing optimizations
+    ]
+    common_link_args = [
+        '-flto',                  # Link-time optimization
+    ]
+    cpp_extra_args = ['-std=c++17']
 
 # Demosaic C extensions with ARM optimizations
 vng_extension = Extension(
@@ -48,7 +61,7 @@ raw_render_extension = Extension(
     'muimg._raw_render',
     sources=['c-src/raw_render/raw_render_ops.cpp'],
     include_dirs=[np.get_include()],
-    extra_compile_args=common_compile_args + ['-std=c++17'],
+    extra_compile_args=common_compile_args + cpp_extra_args,
     extra_link_args=common_link_args,
     language='c++',
 )
