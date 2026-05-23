@@ -4,4 +4,4 @@
 
 See **[muimg/README.md](muimg/README.md)** for full documentation.
 
-See **[CHANGELOG.md](CHANGELOG.md)** for release history.
+See **[CHANGELOG.md](muimg/CHANGELOG.md)** for release history.
