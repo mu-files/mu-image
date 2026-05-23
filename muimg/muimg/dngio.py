@@ -2045,7 +2045,12 @@ def _write_dng_with_params(
         raw_data = main_spec.data
         photometric = main_spec.photometric
         if photometric == "CFA":
-            cfa_pattern = main_spec.cfa_pattern
+            cfa_pattern = (
+                main_spec.cfa_pattern
+                or (main_spec.extratags.get_tag("CFAPattern")
+                    if main_spec.extratags else None)
+                or "RGGB"
+            )
 
     camera_rgb = raw_render._raw_to_camera_rgb(
         main_spec.extratags, raw_data, photometric, cfa_pattern, demosaic_algorithm
