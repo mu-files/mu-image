@@ -7,12 +7,33 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260523.1645"
+version = "0.1.20260523.1721"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "PolyForm-Small-Business-1.0.0 (Modified)"}
+keywords = [
+    "dng", "dng-files", "dng-format",
+    "raw-image", "raw-processing",
+    "image-processing", "image-conversion",
+    "jpegxl", "demosaic", "tiff",
+    "photography", "camera", "adobe",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C",
+    "Programming Language :: C++",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+]
 dependencies = [
     "click",                            # 114 KB
     "defusedxml",                       # 25 KB

@@ -1,5 +1,5 @@
 <p align="center" style="background-color: white; padding: 20px 0; margin: 0 0 30px 0;">
-  <img src="assets/muIcon_muimg_full.png" alt="muimg logo" width="400">
+  <img src="https://raw.githubusercontent.com/mu-files/mu-image/main/muimg/assets/muIcon_muimg_full.png" alt="muimg logo" width="400">
 </p>
 
 # muimg
@@ -21,9 +21,53 @@ Python library for reading, writing, and rendering Adobe DNG (Digital Negative) 
 
 ## Installation
 
-### As a Dependency
+### From PyPI
 
-To add muimg to your project, add this to your `pyproject.toml`:
+```bash
+pip install muimg
+```
+
+Or in `pyproject.toml`:
+
+```toml
+[project]
+dependencies = [
+    "muimg",
+]
+```
+
+### Optional Dependencies
+
+**Video Encoding & Google Photos:** For video encoding and Google Photos integration:
+
+```bash
+pip install "muimg[all]"
+```
+
+**Core Image (macOS):** For macOS users, installing the Core Image dependency enables a second rendering engine that will be available at runtime alongside the built-in renderer:
+
+```bash
+pip install "muimg[coreimage]"
+```
+
+**Combined:** To install all optional features:
+
+```bash
+pip install "muimg[all,coreimage]"
+```
+
+Or in `pyproject.toml`:
+
+```toml
+[project]
+dependencies = [
+    "muimg[all,coreimage]",
+]
+```
+
+### From GitHub
+
+To install the latest development version directly from GitHub:
 
 ```toml
 [project]
@@ -32,7 +76,7 @@ dependencies = [
 ]
 ```
 
-### For Local Development or CLI Usage
+### For Local Development
 
 Clone the repository and install the package in editable mode:
 
@@ -40,36 +84,6 @@ Clone the repository and install the package in editable mode:
 git clone https://github.com/mu-files/mu-image.git
 cd mu-image/muimg
 pip install -e .
-```
-
-This gives you access to the `muimg` CLI command and allows you to modify the source code.
-
-### Optional Dependencies
-
-**Video Encoding & Google Photos:** For video encoding and Google Photos integration:
-
-```bash
-pip install -e ".[all]"
-```
-
-**Core Image (macOS):** For macOS users, installing the Core Image dependency enables a second rendering engine that will be available at runtime alongside the built-in renderer:
-
-```bash
-pip install -e ".[coreimage]"
-```
-
-**Combined:** To install all optional features:
-
-```bash
-pip install -e ".[all,coreimage]"
-```
-
-Or in `pyproject.toml`:
-
-```toml
-dependencies = [
-    "muimg[all,coreimage] @ git+https://github.com/mu-files/mu-image.git#subdirectory=muimg",
-]
 ```
 
 ### Build Requirements
