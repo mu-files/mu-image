@@ -86,9 +86,7 @@ cd mu-image/muimg
 pip install -e .
 ```
 
-### Build Requirements
-
-**Note**: muimg includes C/C++ extensions for performance-critical pixel operations. macOS and Linux have built-in C compilers and require no additional downloads. Windows users need [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (>1 GB download) to compile the extensions during pip install.
+**Note**: muimg includes C/C++ extensions that are compiled during install. macOS and Linux have built-in C compilers and require no additional setup. Windows users installing from source need [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). Pre-built Windows wheels are available when installing from PyPI.
 
 ## API Overview
 
