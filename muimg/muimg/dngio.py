@@ -2159,6 +2159,7 @@ def _write_dng_with_params(
         # since the Orientation tag is persisted across the copy
         ifd0_tags_no_orientation = ifd0_tags.copy()
         ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
+        _add_required_ifd0_tags(ifd0_tags_no_orientation)
         
         # Render with color transforms
         timer.start_step("render_preview")

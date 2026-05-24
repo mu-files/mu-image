@@ -602,7 +602,7 @@ TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
     "RowInterleaveFactor": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw"),  # 50975 (0xC71F)
     "ProfileLookTableDims": TagSpec(TiffType.LONG, None, dng_ifd="dng_profile"),  # 50981 (0xC725)
     "ProfileLookTableData": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50982 (0xC726)
-    "OpcodeList1": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51008 (0xC740)
+    "OpcodeList1": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw_cfa"),  # 51008 (0xC740)
     "OpcodeList2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51009 (0xC741)
     "OpcodeList3": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51022 (0xC74E)
     # NoiseProfile: DNG spec says Raw IFD, but Adobe SDK writes to both main and raw IFDs

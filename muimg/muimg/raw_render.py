@@ -1863,8 +1863,8 @@ def apply_opcodes_cfa(
     (post-linearization, float32).
     
     DNG Spec:
-    - OpcodeList1: Applied to raw sensor data before linearization (uint16)
-    - OpcodeList2: Applied after linearization, before demosaic (float32 [0,1])
+    - OpcodeList1: Applied to raw CFA sensor data before linearization (uint16)
+    - OpcodeList2: Applied after linearization, can be applied to CFA or LINEAR_RAW
     
     Supported opcodes:
     - FixBadPixelsConstant (OpcodeList1 only, requires uint16)
