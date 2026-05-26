@@ -44,11 +44,6 @@ jobs:
       - name: Verify Flutter
         run: flutter --version
 
-      - name: Get Flutter version
-        id: flutter-ver
-        shell: bash
-        run: echo "version=$(flutter --version | head -1 | awk '{print $2}')" >> $GITHUB_OUTPUT
-
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
@@ -60,13 +55,15 @@ jobs:
         run: brew install cocoapods
 
       - name: Build app
+        shell: bash
         run: >
           flet build ${{ matrix.platform }}
           --project mu-dng-converter
           --product "mu DNG Converter"
           --org com.mufiles
-          --flutter-version ${{ steps.flutter-ver.outputs.version }}
           ${{ matrix.extra-args }}
+        env:
+          FLET_FLUTTER_PATH: ${{ env.FLUTTER_ROOT }}
 
       - name: Fix macOS icon
         if: matrix.platform == 'macos'
