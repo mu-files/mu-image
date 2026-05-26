@@ -21,6 +21,9 @@ jobs:
             platform: linux
             extra-args: ""
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: mu-dng-converter
 
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +72,7 @@ jobs:
         if: matrix.platform == 'macos'
         run: |
           cd build/flutter/build/macos/Build/Products/Release
-          zip -r $GITHUB_WORKSPACE/mu-dng-converter-macos.zip mu-dng-converter.app
+          zip -r $GITHUB_WORKSPACE/mu-dng-converter/mu-dng-converter-macos.zip mu-dng-converter.app
 
       - name: Package Windows build
         if: matrix.platform == 'windows'
@@ -85,8 +88,8 @@ jobs:
         with:
           name: mu-dng-converter-${{ matrix.platform }}
           path: |
-            mu-dng-converter-*.zip
-            mu-dng-converter-*.tar.gz
+            mu-dng-converter/mu-dng-converter-*.zip
+            mu-dng-converter/mu-dng-converter-*.tar.gz
           retention-days: 30
 
   release:
