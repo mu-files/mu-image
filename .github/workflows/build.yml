@@ -41,6 +41,14 @@ jobs:
       - name: Install Flet
         run: pip install flet==0.85.2
 
+      - name: Verify Flutter
+        run: flutter --version
+
+      - name: Get Flutter version
+        id: flutter-ver
+        shell: bash
+        run: echo "version=$(flutter --version | head -1 | awk '{print $2}')" >> $GITHUB_OUTPUT
+
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
@@ -57,6 +65,7 @@ jobs:
           --project mu-dng-converter
           --product "mu DNG Converter"
           --org com.mufiles
+          --flutter-version ${{ steps.flutter-ver.outputs.version }}
           ${{ matrix.extra-args }}
 
       - name: Fix macOS icon
