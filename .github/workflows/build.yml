@@ -64,6 +64,8 @@ jobs:
           ${{ matrix.extra-args }}
         env:
           FLET_FLUTTER_PATH: ${{ env.FLUTTER_ROOT }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: 1
 
       - name: Fix macOS icon
         if: matrix.platform == 'macos'
