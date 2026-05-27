@@ -3,7 +3,7 @@ name: Build Desktop Apps
 on:
   push:
     tags:
-      - 'v*'
+      - 'app-v*'
   workflow_dispatch:
 
 env:
