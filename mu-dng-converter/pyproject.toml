@@ -11,10 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
     "flet>=0.25",
     "muimg",
+    "setproctitle",
+    "astropy>=5.0.0",
 ]
-
-[project.optional-dependencies]
-astro = ["astropy>=5.0.0"]
 
 [project.scripts]
 mu-dng-converter = "mu_dng_converter.main:main"

@@ -316,6 +316,9 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
     # --- Conversion logic (runs in thread) ---
     def run_conversion(input_path, output_path):
+        import setproctitle
+        setproctitle.setproctitle("mu-dng-converter: DNG → Image")
+
         try:
             mode = mode_dropdown.value
             # Use explicit file list if available (file picker mode)
