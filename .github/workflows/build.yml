@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     strategy:
@@ -68,20 +71,11 @@ jobs:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
 
-      - name: Fix macOS icon
-        if: matrix.platform == 'macos'
-        run: |
-          ICONSET_DIR="build/flutter/macos/Runner/Assets.xcassets/AppIcon.appiconset"
-          for size in 16 32 64 128 256 512 1024; do
-            sips -z $size $size assets/icon.png --out "$ICONSET_DIR/app_icon_${size}.png"
-          done
-          cd build/flutter && flutter build macos
-
       - name: Package macOS build
         if: matrix.platform == 'macos'
         run: |
           cd build/flutter/build/macos/Build/Products/Release
-          zip -r $GITHUB_WORKSPACE/mu-dng-converter/mu-dng-converter-macos.zip mu-dng-converter.app
+          ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app $GITHUB_WORKSPACE/mu-dng-converter/mu-dng-converter-macos.zip
 
       - name: Package Windows build
         if: matrix.platform == 'windows'
