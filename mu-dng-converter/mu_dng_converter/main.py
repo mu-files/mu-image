@@ -14,7 +14,7 @@ def app(page: ft.Page):
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#3a3a3a"
     page.window.bgcolor = "#3a3a3a"
-    page.window.icon = "muIcon_muimg.png"
+    page.window.icon = "icon.png"
     page.dark_theme = ft.Theme(
         color_scheme=ft.ColorScheme(
             surface="#3a3a3a",
