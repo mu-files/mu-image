@@ -126,14 +126,13 @@ class ProcessingPipeline:
         self._task_queue_empty_time = 0
         self.writer_queue = None
 
+        self._stop_event = threading.Event()
+
         # Skip queue/threading allocation for synchronous mode
         if num_workers > 0:
             if queue_size is None:
                 queue_size = num_workers * 4
             self.task_queue = queue.Queue(maxsize=queue_size)
-
-            # For monitoring
-            self._stop_event = threading.Event()
 
             # Writer-specific setup
             if self.writer:
@@ -173,15 +172,26 @@ class ProcessingPipeline:
                 if self._stop_event.is_set():
                     logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) cancelled. ---")
                     break
-                self.task_queue.put(item)
+                while not self._stop_event.is_set():
+                    try:
+                        self.task_queue.put(item, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
         finally:
-            logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) finished. All tasks have been queued. ---")
+            # Send sentinels so consumers know no more items are coming
+            if not self._stop_event.is_set():
+                for _ in range(self.num_workers):
+                    self.task_queue.put(None)
+            logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) finished. ---")
 
     def _consumer_thread(self, thread_num: int):
         """Internal method for consumer workers."""
         task_prefix = f"{self.task_name}->" if self.task_name else ""
         logger.info(f"--- Consumer thread {thread_num}/{self.num_workers} started (target: {task_prefix}{self.consumer.__name__}) ---")
-        while not (self._stop_event.is_set() and self.task_queue.empty()):
+        while True:
+            if self._stop_event.is_set():
+                break
             try:
                 task = self.task_queue.get(timeout=0.1)
                 if task is None:  # Sentinel value
@@ -208,7 +218,7 @@ class ProcessingPipeline:
         """Internal method for the writer thread. Only runs if a writer is configured."""
         task_prefix = f"{self.task_name}->" if self.task_name else ""
         logger.info(f"--- Starting writer thread (target: {task_prefix}{self.writer.__name__}) ---")
-        while not (self._stop_event.is_set() and self.writer_queue.empty()):
+        while not self._stop_event.is_set():
             try:
                 item_to_write = self.writer_queue.get(timeout=0.1)
                 if item_to_write is None:  # Sentinel
@@ -257,7 +267,12 @@ class ProcessingPipeline:
             )
         
         for item in self.producer() if self.producer else ():
+            if self._stop_event.is_set():
+                break
             result = self.consumer(item)
+            self._notify_task_done()
+            if self._stop_event.is_set():
+                break
             if self.writer and result is not None:
                 self.writer(result)
         
@@ -302,8 +317,15 @@ class ProcessingPipeline:
             
             upstream_pipeline.writer = feeding_writer
             
+            def _upstream_producer():
+                upstream_pipeline.run()
+                # Send sentinels after upstream finishes
+                if not self._stop_event.is_set():
+                    for _ in range(self.num_workers):
+                        self.task_queue.put(None)
+
             # Start upstream pipeline in separate thread
-            producer_thread = threading.Thread(target=upstream_pipeline.run)
+            producer_thread = threading.Thread(target=_upstream_producer)
             producer_thread.start()
         elif self.producer is not None:
             # Producer is a regular callable - start producer thread
@@ -328,27 +350,18 @@ class ProcessingPipeline:
             thread.start()
             worker_threads.append(thread)
 
-        # Wait for the producer to finish (if it exists)
-        if producer_thread is not None:
-            producer_thread.join()
-
-        # Wait for the consumers to process all items
-        self.task_queue.join()
-
-        # Signal consumers to stop
-        for _ in range(self.num_workers):
-            self.task_queue.put(None)  # Sentinel to unblock waiting consumers
-
-        # Wait for writer to finish (if it exists)
-        if writer_thread:
-            self.writer_queue.join()
-            self.writer_queue.put(None)  # Sentinel to unblock writer
-            writer_thread.join()
-
-        # Stop monitor and join all threads
-        self._stop_event.set()
+        # Wait for all consumer threads (they exit on sentinel from producer, or stop_event)
         for thread in worker_threads:
             thread.join()
+
+        # Writer cleanup
+        if writer_thread:
+            if not self._stop_event.is_set():
+                self.writer_queue.put(None)
+            writer_thread.join()
+
+        # Stop monitor
+        self._stop_event.set()
         monitor_thread.join()
         
         self._processing_time = time.time() - start_time
