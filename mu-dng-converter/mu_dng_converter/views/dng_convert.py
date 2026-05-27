@@ -70,7 +70,6 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         value="tif",
         options=[
             ft.dropdown.Option("tif", "DNG → TIF (with metadata)"),
-            ft.dropdown.Option("jxl", "DNG → JXL"),
             ft.dropdown.Option("jpg", "DNG → JPG"),
             ft.dropdown.Option("video", "DNG → Video (MP4)"),
         ],
@@ -89,8 +88,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         "custom": (None, None),
     }
 
-    # White balance row with XMP toggle
-    wb_use_xmp = ft.Switch(label="XMP", value=True)
+    use_xmp = ft.Checkbox(label="Use XMP metadata", value=True)
     wb_dropdown = ft.Dropdown(
         label="White Balance",
         value="as_shot",
@@ -115,9 +113,6 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         label="Tint", width=100, keyboard_type=ft.KeyboardType.NUMBER,
         disabled=True,
     )
-
-    # Exposure row with XMP toggle
-    ev_use_xmp = ft.Switch(label="XMP", value=True)
     exposure = ft.TextField(
         label="Exposure (EV)", value="0", width=130,
         keyboard_type=ft.KeyboardType.NUMBER, disabled=True,
@@ -212,36 +207,52 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
     async def pick_output(e):
         initial = state["last_output_dir"]
-        result = await ft.FilePicker().get_directory_path(
-            dialog_title="Select output folder",
-            initial_directory=initial,
-        )
+        if mode_dropdown.value == "video":
+            result = await ft.FilePicker().save_file(
+                dialog_title="Save video as",
+                file_name="output.mp4",
+                initial_directory=initial,
+                allowed_extensions=["mp4"],
+                file_type=ft.FilePickerFileType.CUSTOM,
+            )
+        else:
+            result = await ft.FilePicker().get_directory_path(
+                dialog_title="Select output folder",
+                initial_directory=initial,
+            )
         if result:
-            state["last_output_dir"] = result
+            state["last_output_dir"] = str(Path(result).parent) if mode_dropdown.value == "video" else result
             output_path_text.value = result
             output_path_text.tooltip = result
             _save_settings({"last_input_dir": state["last_input_dir"], "last_output_dir": state["last_output_dir"]})
             page.update()
 
     def on_mode_changed(e):
-        is_video = mode_dropdown.value == "video"
+        mode = mode_dropdown.value
+        is_video = mode == "video"
+        is_jpg = mode == "jpg"
         video_options.visible = is_video
+        bit_depth.visible = not is_video
+        _output_btn_text.value = "Select Output File" if is_video else "Select Output Folder"
+        output_path_text.value = "No folder selected"
+        output_path_text.tooltip = None
+        if is_jpg:
+            bit_depth.value = "8"
+            bit_depth.disabled = True
+        else:
+            bit_depth.disabled = False
         log_text.min_lines = 4 if is_video else 12
         page.update()
 
-    def on_wb_xmp_changed(e):
-        use_xmp = wb_use_xmp.value
-        wb_dropdown.disabled = use_xmp
-        if use_xmp:
+    def on_xmp_changed(e):
+        xmp_on = use_xmp.value
+        wb_dropdown.disabled = xmp_on
+        exposure.disabled = xmp_on
+        if xmp_on:
             temperature.disabled = True
             tint.disabled = True
         else:
             on_wb_changed(None)
-        page.update()
-
-    def on_ev_xmp_changed(e):
-        use_xmp = ev_use_xmp.value
-        exposure.disabled = use_xmp
         page.update()
 
     def on_wb_changed(e):
@@ -264,8 +275,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
     mode_dropdown.on_select = on_mode_changed
     wb_dropdown.on_select = on_wb_changed
-    wb_use_xmp.on_change = on_wb_xmp_changed
-    ev_use_xmp.on_change = on_ev_xmp_changed
+    use_xmp.on_change = on_xmp_changed
 
     def on_cancel(e):
         state["cancel"] = True
@@ -330,9 +340,9 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                 w, h = resolution.value.split("x")
                 result = run_batch_to_video(
                     dng_files=dng_files,
-                    output_mp4=Path(output_path) / "output.mp4",
+                    output_mp4=Path(output_path),
                     rendering_params=rendering_params,
-                    use_xmp=True,
+                    use_xmp=use_xmp.value,
                     resolution=(int(w), int(h)),
                     codec=codec.value,
                     crf=int(crf.value),
@@ -350,7 +360,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                     output_format=mode,
                     bit_depth=bit_depth.value,
                     rendering_params=rendering_params,
-                    use_xmp=True,
+                    use_xmp=use_xmp.value,
                     num_workers=int(num_workers.value),
                     on_task_done=on_task_done,
                 )
@@ -371,14 +381,14 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
     # --- Helpers ---
     def build_rendering_params():
+        if use_xmp.value:
+            return {}
         params = {}
-        if not wb_use_xmp.value:
-            if temperature.value:
-                params["Temperature"] = float(temperature.value)
-            if tint.value:
-                params["Tint"] = float(tint.value)
-        if not ev_use_xmp.value:
-            params["Exposure2012"] = float(exposure.value or 0)
+        if temperature.value:
+            params["Temperature"] = float(temperature.value)
+        if tint.value:
+            params["Tint"] = float(tint.value)
+        params["Exposure2012"] = float(exposure.value or 0)
         return params
 
     def update_progress(fraction, text):
@@ -427,8 +437,9 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Input")], alignment=ft.MainAxisAlignment.START, spacing=8),
         on_click=pick_input, style=_btn_style, width=220,
     )
+    _output_btn_text = ft.Text("Select Output Folder")
     output_btn = ft.Button(
-        content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Output Folder")], alignment=ft.MainAxisAlignment.START, spacing=8),
+        content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), _output_btn_text], alignment=ft.MainAxisAlignment.START, spacing=8),
         on_click=pick_output, style=_btn_style, width=220,
     )
 
@@ -447,8 +458,8 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             ft.Row(controls=[output_btn, output_path_text]),
             ft.Divider(height=8),
             ft.Text("Rendering Parameters", weight=ft.FontWeight.BOLD, size=13),
-            ft.Row(controls=[wb_use_xmp, wb_dropdown, temperature, tint], wrap=True),
-            ft.Row(controls=[ev_use_xmp, exposure], wrap=True),
+            ft.Row(controls=[use_xmp], wrap=True),
+            ft.Row(controls=[wb_dropdown, temperature, tint, exposure], wrap=True),
             ft.Divider(height=8),
             ft.Text("Output Options", weight=ft.FontWeight.BOLD, size=13),
             ft.Row(controls=[bit_depth, num_workers], wrap=True),

@@ -3070,7 +3070,10 @@ def _render_camera_rgb(
                         f"Unsupported rendering parameter: {key}. "
                         f"Supported: {supported_params}"
                     )
-                extracted_params[key] = value
+                if value is None:
+                    extracted_params.pop(key, None)
+                else:
+                    extracted_params[key] = value
         
         # Use extracted_params for rendering (None if empty dict)
         rendering_params = extracted_params if extracted_params else None

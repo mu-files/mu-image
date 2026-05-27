@@ -13,7 +13,7 @@ from typing import IO, Callable, Iterable, Any
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
-from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, resolve_tag, TiffType
+from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, TiffType
 from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,20 @@ def write_image(
             logger.info(f"Successfully wrote {len(jxl_data)} bytes to stream (metadata not saved)")
         return True
     
+    # Handle JPEG with imagecodecs (8-bit lossy only)
+    elif format_ext in ('.jpg', '.jpeg'):
+        img_8bit = image if image.dtype == np.uint8 else convert_dtype(image, np.uint8)
+        jpeg_data = imagecodecs.jpeg_encode(img_8bit, level=90)
+
+        if isinstance(output, (str, Path)):
+            with open(output_path, 'wb') as f:
+                f.write(jpeg_data)
+            logger.info(f"Successfully saved JPEG (q90) to {output_path}")
+        else:
+            output.write(jpeg_data)
+            logger.info(f"Successfully wrote JPEG (q90) {len(jpeg_data)} bytes to stream")
+        return True
+
     # Handle other formats with OpenCV
     else:
         # Convert RGB to BGR for OpenCV
