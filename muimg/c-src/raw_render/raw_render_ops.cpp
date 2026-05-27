@@ -863,6 +863,7 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
     if (!result) return NULL;
     
     // Call dispatcher
+    Py_BEGIN_ALLOW_THREADS
     transform_color_dispatch(
         PyArray_DATA(image_cont.get()),
         PyArray_DATA(result.get()),
@@ -876,6 +877,7 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
     );
     
     // Return result (transfer ownership)
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -1101,6 +1103,7 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
         clip_max = -1.0f;
     }
     
+    Py_BEGIN_ALLOW_THREADS
     // Conversion kernels using DtypeConverter with NEON optimization
     if (src_dtype == NPY_UINT8) {
         const uint8_t* src = (const uint8_t*)src_data;
@@ -1140,6 +1143,7 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
         }
     }
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -1226,6 +1230,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     
     float* output = (float*)PyArray_DATA(result.get());
     
+    Py_BEGIN_ALLOW_THREADS
     // Process all pixels
     ColorMatrix3x3 mat(matrix);
 #if NEON
@@ -1244,6 +1249,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     }
     
     // Return result (transfer ownership)
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2045,6 +2051,7 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
     float* dst_data = (float*)PyArray_DATA(result.get());
     const HSBModify* map_data = (const HSBModify*)PyArray_DATA(map_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     // Copy source to dest first
     memcpy(dst_data, src_data, height * width * 3 * sizeof(float));
     
@@ -2058,6 +2065,7 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
         );
     }
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2140,6 +2148,7 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     if (radius > 0.0f)
         qScale = slope / (4.0f * radius);
     
+    Py_BEGIN_ALLOW_THREADS
     // Process all pixels
     npy_intp total = height * width * 3;
     for (npy_intp i = 0; i < total; i++) {
@@ -2147,6 +2156,7 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
                                               radius, qScale, supportOverrange != 0);
     }
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2290,6 +2300,7 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     
     const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont.get()) : nullptr;
     
+    Py_BEGIN_ALLOW_THREADS
     // Dispatch to templated kernel based on input dtype
     if (src_type == NPY_UINT16) {
         const uint16_t* src = (const uint16_t*)PyArray_DATA(data_cont.get());
@@ -2309,6 +2320,7 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
                              lin_table, lin_table_size);
     }
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2360,8 +2372,10 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
     float* result_data = (float*)PyArray_DATA(result.get());
     const float* gain = (const float*)PyArray_DATA(gain_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     apply_gain_map_cfa(result_data, height, width, gain, gain_h, gain_w, 2, 2);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2682,6 +2696,7 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
     
     float exposure_weight_gain = powf(2.0f, (float)baseline_exposure);
     
+    Py_BEGIN_ALLOW_THREADS
     apply_profile_gain_table_map(
         result_data, (int)height, (int)width,
         points_v, points_h,
@@ -2694,6 +2709,7 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
         exposure_weight_gain
     );
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2764,8 +2780,10 @@ static PyObject* dng_color_op_warp_rectilinear(PyObject* self, PyObject* args, P
     const double* radial = (const double*)PyArray_DATA(radial_cont.get());
     const double* tangential = tan_cont ? (const double*)PyArray_DATA(tan_cont.get()) : NULL;
     
+    Py_BEGIN_ALLOW_THREADS
     warp_rectilinear(src, dst, height, width, 3, radial, num_planes, num_coeffs, tangential, center_x, center_y, (bool)use_bicubic);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2814,8 +2832,10 @@ static PyObject* dng_color_op_fix_vignette(PyObject* self, PyObject* args) {
     const double* params = (const double*)PyArray_DATA(params_cont.get());
     int num_params = (int)PyArray_SIZE(params_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     fix_vignette_radial(data, height, width, 3, params, num_params, center_x, center_y);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -2858,9 +2878,11 @@ static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
     const double* params = (const double*)PyArray_DATA(params_cont.get());
     int num_params = (int)PyArray_SIZE(params_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     // Apply vignette correction to single-channel CFA data
     fix_vignette_radial(data, height, width, 1, params, num_params, center_x, center_y);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -3108,9 +3130,11 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
     const float* src_data = (const float*)PyArray_DATA(cfa_cont.get());
     float* dst_data = (float*)PyArray_DATA(result.get());
     
+    Py_BEGIN_ALLOW_THREADS
     // Run bilinear demosaic
     bilinear_demosaic_kernel(src_data, dst_data, height, width, cfa_colors);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -3332,11 +3356,13 @@ static PyObject* dng_color_op_map_polynomial(PyObject* self, PyObject* args) {
     float* dst_data = (float*)PyArray_DATA(result.get());
     const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     apply_map_polynomial_impl(dst_data, height, width, 3,
                               top, left, bottom, right,
                               plane, planes, row_pitch, col_pitch,
                               coefficients, degree);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -3379,11 +3405,13 @@ static PyObject* dng_color_op_map_polynomial_cfa(PyObject* self, PyObject* args)
     float* dst_data = (float*)PyArray_DATA(result.get());
     const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     apply_map_polynomial_impl(dst_data, height, width, 1,
                               top, left, bottom, right,
                               0, 1, row_pitch, col_pitch,
                               coefficients, degree);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -3634,6 +3662,7 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
     float* data = (float*)PyArray_DATA(result.get());
     const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     apply_gain_map_impl(data, height, width, 3,
                         gain_values, points_v, points_h, map_planes,
                         top, left, bottom, right,
@@ -3641,6 +3670,7 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
                         row_pitch, col_pitch,
                         spacing_v, spacing_h, origin_v, origin_h);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -3689,6 +3719,7 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
     uint16_t* dst_data = (uint16_t*)PyArray_DATA(result.get());
     uint16_t bad_pixel = (uint16_t)constant;
     
+    Py_BEGIN_ALLOW_THREADS
     // SDK ref: dng_bad_pixels.cpp lines 146-275
     // IsGreen formula: ((row + col + bayer_phase + (bayer_phase >> 1)) & 1) == 0
     
@@ -3786,6 +3817,7 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
         }
     }
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
@@ -3843,6 +3875,7 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
     float* data = (float*)PyArray_DATA(result.get());
     const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
     
+    Py_BEGIN_ALLOW_THREADS
     apply_gain_map_impl(data, height, width, 1,
                         gain_values, points_v, points_h, map_planes,
                         top, left, bottom, right,
@@ -3850,6 +3883,7 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
                         row_pitch, col_pitch,
                         spacing_v, spacing_h, origin_v, origin_h);
     
+    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
