@@ -70,6 +70,9 @@ jobs:
           FLET_FLUTTER_PATH: ${{ env.FLUTTER_ROOT }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
+          CI: true
+          TERM: dumb
+          NO_COLOR: 1
 
       - name: Package macOS build
         if: matrix.platform == 'macos'

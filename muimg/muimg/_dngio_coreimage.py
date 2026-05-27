@@ -468,7 +468,7 @@ def decode_dng_coreimage(
         ci_output, colorspace_name = render_dng_coreimage(
             dng_input=dng_input,
             raw_filter_options=ci_options,
-            use_gpu=True,
+            use_gpu=False,
             output_dtype=np.float32,  # Use float32 for color space conversion
         )
         

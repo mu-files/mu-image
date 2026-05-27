@@ -216,6 +216,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
         num_workers: int = 4,
         queue_size: int = None,
         task_name: str = "Video Encoding",
+        on_task_done: Callable[[int, int], bool] = None,
     ):
         """Initialize the video encoding pipeline.
         
@@ -242,6 +243,8 @@ class VideoEncodePipeline(ImageSequencePipeline):
             num_workers: Number of parallel consumer threads.
             queue_size: Maximum size of processing queues.
             task_name: Descriptive name for logging.
+            on_task_done: Optional callback(completed, total) -> bool. Called after
+                each consumer task. Return True to cancel.
         
         Raises:
             ImportError: If av (PyAV) package is not installed
@@ -315,6 +318,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
             num_workers=num_workers,
             queue_size=queue_size,
             task_name=task_name,
+            on_task_done=on_task_done,
         )
     
     def _setup_encoder(self):

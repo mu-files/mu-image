@@ -1022,6 +1022,113 @@ def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict]]:
     return file_list, settings_list
 
 
+def run_batch_convert(
+    dng_files,
+    output_folder,
+    output_format="tif",
+    bit_depth="16",
+    rendering_params=None,
+    use_xmp=True,
+    use_coreimage=False,
+    scale=1.0,
+    num_workers=4,
+    settings_list=None,
+    on_task_done=None,
+):
+    """Batch convert DNG files to TIFF/JXL/JPG images.
+    
+    Reusable function called by both CLI and GUI. Uses ImageSequencePipeline
+    for multi-threaded processing.
+    
+    Args:
+        dng_files: List of Path objects pointing to DNG files.
+        output_folder: Path to output directory.
+        output_format: Output format ("tif", "jxl", "jpg").
+        bit_depth: Output bit depth ("8" or "16").
+        rendering_params: Base rendering parameters dict.
+        use_xmp: Whether to use XMP metadata.
+        use_coreimage: Whether to use Core Image pipeline on macOS.
+        scale: Resolution scale factor (e.g., 0.5 for half size).
+        num_workers: Number of parallel processing threads.
+        settings_list: Optional per-file rendering params (from CSV). Same
+            length as dng_files; merged with rendering_params per file.
+        on_task_done: Optional callback(completed, total) -> bool. Called
+            after each file is processed. Return True to cancel.
+    
+    Returns:
+        dict with keys: "completed", "total", "elapsed", "queue_stats".
+    
+    Raises:
+        Exception: Propagated from pipeline on fatal errors.
+    """
+    import io
+    import time
+    import numpy as np
+    from .dngio import decode_dng, DngFile
+    from .imgio import ImageSequencePipeline, write_image
+    
+    output_path = Path(output_folder)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
+    base_params = rendering_params or {}
+    
+    # Custom DNG consumer - decodes DNG and encodes to output format
+    def dng_consumer(task):
+        index, file_path, blob = task
+        try:
+            dng_file = DngFile(io.BytesIO(blob))
+            
+            # Build rendering params: per-file settings merged with base
+            params = base_params.copy()
+            if settings_list:
+                params.update(settings_list[index])
+            
+            img, metadata = decode_dng(
+                file=dng_file,
+                output_dtype=output_dtype,
+                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                use_coreimage_if_available=use_coreimage,
+                use_xmp=use_xmp,
+                rendering_params=params,
+                strict=False,
+                scale=scale,
+            )
+            
+            if img is None:
+                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                return (index, file_path, None)
+            
+            output_stream = io.BytesIO()
+            write_image(img, output_stream, output_format_stream=output_format, metadata=metadata)
+            return (index, file_path, output_stream.getvalue())
+        except Exception as e:
+            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
+            return (index, file_path, None)
+    
+    pipeline = ImageSequencePipeline(
+        source_files=dng_files,
+        output_folder=output_path,
+        output_format=output_format,
+        output_dtype=output_dtype,
+        consumer=dng_consumer,
+        num_workers=num_workers,
+        task_name="DNG Batch Convert",
+        on_task_done=on_task_done,
+    )
+    
+    start_time = time.perf_counter()
+    pipeline.run()
+    elapsed = time.perf_counter() - start_time
+    
+    return {
+        "completed": pipeline._completed,
+        "total": len(dng_files),
+        "elapsed": elapsed,
+        "queue_stats": pipeline.get_queue_stats(),
+    }
+
+
 @dng.command(name="batch-convert")
 @click.argument("input", type=click.Path(exists=True))
 @click.argument("output_folder", type=click.Path())
@@ -1045,122 +1152,62 @@ def batch_convert_dngs(
     - A folder containing DNG files (will scan for *.dng)
     - A CSV file with per-file settings (filename,Temperature,Tint,Exposure2012,orientation)
     """
-    import io
-    import numpy as np
-    from .dngio import decode_dng, DngFile, DemosaicAlgorithm
-    from .imgio import ImageSequencePipeline
     import setproctitle
-    
-    # Set process title for easier identification in task managers
     setproctitle.setproctitle("muimg: batch-convert")
     
     # Build base rendering_params dict from CLI options
-    base_rendering_params = {}
+    rendering_params = {}
     if temperature is not None:
-        base_rendering_params['Temperature'] = temperature
+        rendering_params['Temperature'] = temperature
     if tint is not None:
-        base_rendering_params['Tint'] = tint
+        rendering_params['Tint'] = tint
     if exposure is not None:
-        base_rendering_params['Exposure2012'] = exposure
+        rendering_params['Exposure2012'] = exposure
     if orientation is not None:
-        base_rendering_params['Orientation'] = orientation
+        rendering_params['Orientation'] = orientation
     
     # Determine file list and settings based on input type
     input_path = Path(input)
     settings_list = []
     
     if input_path.is_file() and input_path.suffix.lower() == '.csv':
-        # CSV file drives the file list
         dng_files, settings_list = _load_dng_settings(input_path)
         click.echo(f"Loaded {len(dng_files)} files from {input}")
     elif input_path.is_dir():
-        # Scan input folder for DNG files
         dng_files = sorted(input_path.glob("*.dng"))
-        
         if not dng_files:
             click.echo(f"Error: No DNG files found in {input}", err=True)
             sys.exit(1)
-        
         click.echo(f"Found {len(dng_files)} DNG files in {input}")
     else:
         click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
     
-    # Create output folder if it doesn't exist
-    output_path = Path(output_folder)
-    output_path.mkdir(parents=True, exist_ok=True)
+    click.echo(f"Converting {len(dng_files)} DNGs to {output_format.upper()}...")
     
-    # Determine output dtype
-    output_dtype = np.uint16 if bit_depth == "16" else np.uint8
+    def cli_progress(completed, total):
+        safe_echo(f"  {completed}/{total} files processed", nl=True)
+        return False
     
-    # Custom DNG consumer - decodes DNG and encodes to output format
-    def dng_consumer(task: tuple[int, str, bytes]) -> tuple[int, str, bytes | None]:
-        from .imgio import write_image
-        
-        index, file_path, blob = task
-        try:
-            # Create DngFile from blob
-            dng_file = DngFile(io.BytesIO(blob))
-            
-            # Build rendering params: use settings from CSV or base params from CLI
-            if settings_list:
-                # CSV mode: use settings from list, merge with base
-                rendering_params = base_rendering_params.copy()
-                rendering_params.update(settings_list[index])
-            else:
-                # Folder mode: use base params from CLI
-                rendering_params = base_rendering_params.copy()
-            
-            # Decode with rendering params and scale
-            img, metadata = decode_dng(
-                file=dng_file,
-                output_dtype=output_dtype,
-                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
-                use_coreimage_if_available=use_coreimage,
-                use_xmp=not no_xmp,
-                rendering_params=rendering_params,
-                strict=False,
-                scale=scale,
-            )
-            
-            if img is None:
-                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
-                return (index, file_path, None)
-            
-            # Encode to output format with metadata
-            output_stream = io.BytesIO()
-            write_image(img, output_stream, output_format_stream=output_format, metadata=metadata)
-            encoded_blob = output_stream.getvalue()
-            
-            return (index, file_path, encoded_blob)
-        except Exception as e:
-            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
-            return (index, file_path, None)
-    
-    # Create and run the pipeline
     try:
-        pipeline = ImageSequencePipeline(
-            source_files=dng_files,
-            output_folder=output_path,
+        result = run_batch_convert(
+            dng_files=dng_files,
+            output_folder=output_folder,
             output_format=output_format,
-            output_dtype=output_dtype,
-            consumer=dng_consumer,
+            bit_depth=bit_depth,
+            rendering_params=rendering_params,
+            use_xmp=not no_xmp,
+            use_coreimage=use_coreimage,
+            scale=scale,
             num_workers=num_workers,
-            task_name="DNG Batch Convert",
+            settings_list=settings_list or None,
+            on_task_done=cli_progress,
         )
         
-        click.echo(f"Converting {len(dng_files)} DNGs to {output_format.upper()}...")
+        click.echo(f"Successfully converted {result['completed']} files to {output_folder}")
+        click.echo(f"Processed {result['total']} files in {result['elapsed']:.2f}s ({result['total']/result['elapsed']:.2f} files/s)")
         
-        import time
-        start_time = time.perf_counter()
-        pipeline.run()
-        elapsed = time.perf_counter() - start_time
-        
-        click.echo(f"Successfully converted {len(dng_files)} files to {output_folder}")
-        click.echo(f"Processed {len(dng_files)} files in {elapsed:.2f}s ({len(dng_files)/elapsed:.2f} files/s)")
-        
-        # Print queue stats
-        stats = pipeline.get_queue_stats()
+        stats = result["queue_stats"]
         if "task_queue" in stats:
             q = stats["task_queue"]
             click.echo(f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
@@ -1171,6 +1218,154 @@ def batch_convert_dngs(
     except Exception as e:
         logger.exception("Failed to convert DNGs")
         sys.exit(1)
+
+
+def run_batch_to_video(
+    dng_files,
+    output_mp4,
+    rendering_params=None,
+    use_xmp=True,
+    use_coreimage=False,
+    resolution=(1920, 1080),
+    codec="h264",
+    crf=20,
+    bit_depth="8",
+    frame_rate=30,
+    num_workers=4,
+    overlay_txt=False,
+    settings_list=None,
+    on_task_done=None,
+):
+    """Batch convert DNG files to MP4 video.
+    
+    Reusable function called by both CLI and GUI. Uses VideoEncodePipeline
+    for multi-threaded processing.
+    
+    Args:
+        dng_files: List of Path objects pointing to DNG files.
+        output_mp4: Path to output MP4 file.
+        rendering_params: Base rendering parameters dict.
+        use_xmp: Whether to use XMP metadata.
+        use_coreimage: Whether to use Core Image pipeline on macOS.
+        resolution: Output video resolution as (width, height).
+        codec: Video codec ("h264", "hevc", "vp9").
+        crf: Constant Rate Factor for quality (lower=better).
+        bit_depth: Video bit depth ("8" or "10").
+        frame_rate: Output frame rate in fps.
+        num_workers: Number of parallel processing threads.
+        overlay_txt: Whether to add filename overlay to each frame.
+        settings_list: Optional per-file rendering params (from CSV).
+        on_task_done: Optional callback(completed, total) -> bool. Called
+            after each frame is processed. Return True to cancel.
+    
+    Returns:
+        dict with keys: "completed", "total", "elapsed", "queue_stats".
+    
+    Raises:
+        ImportError: If av (PyAV) package is not installed.
+        Exception: Propagated from pipeline on fatal errors.
+    """
+    import io
+    import time
+    import numpy as np
+    from .dngio import decode_dng, DngFile
+    from .videoio import VideoEncodePipeline
+    
+    base_params = rendering_params or {}
+    resolution_tuple = resolution
+    
+    config = {
+        "codec": codec,
+        "crf": crf,
+        "bit_depth": int(bit_depth),
+        "frame_rate": frame_rate,
+    }
+    
+    output_dtype = np.uint16 if int(bit_depth) == 10 else np.uint8
+    
+    # Custom DNG consumer - decodes DNG blob and prepares video frame
+    def dng_consumer(task):
+        index, file_path, blob = task
+        try:
+            dng_file = DngFile(io.BytesIO(blob))
+            
+            # Build rendering params: per-file settings merged with base
+            params = base_params.copy()
+            if settings_list:
+                params.update(settings_list[index])
+            
+            # Calculate scale before decoding for efficiency
+            render_width, render_height = dng_file.get_rendered_size(
+                rendering_params=params
+            )
+            
+            target_width, target_height = resolution_tuple
+            scale_w = target_width / render_width
+            scale_h = target_height / render_height
+            scale = min(scale_w, scale_h)
+            
+            orientation = params.get('orientation', 'None')
+            logger.info(f"Frame {index} ({Path(file_path).name}): orientation={orientation}, "
+                       f"rendered_size={render_width}x{render_height}, scale={scale:.3f}")
+
+            img, _ = decode_dng(
+                file=dng_file,
+                output_dtype=output_dtype,
+                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                use_coreimage_if_available=use_coreimage,
+                use_xmp=use_xmp,
+                rendering_params=params,
+                strict=False,
+                scale=scale,
+            )
+            
+            if img is None:
+                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                return (index, None)
+            
+            # Apply letterboxing
+            current_height, current_width = img.shape[:2]
+            
+            logger.info(f"Frame {index}: decoded image size={current_width}x{current_height}, "
+                       f"target={target_width}x{target_height}")
+            
+            canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
+            y_offset = (target_height - current_height) // 2
+            x_offset = (target_width - current_width) // 2
+            canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
+            img = canvas
+            
+            if overlay_txt:
+                from .videoio import add_text_overlay
+                filename = Path(file_path).name
+                img = add_text_overlay(img, filename, position="bottom-left")
+            
+            return (index, img)
+            
+        except Exception as e:
+            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
+            return (index, None)
+    
+    pipeline = VideoEncodePipeline(
+        source_files=dng_files,
+        output_path=output_mp4,
+        resolution=resolution_tuple,
+        config=config,
+        consumer=dng_consumer,
+        num_workers=num_workers,
+        on_task_done=on_task_done,
+    )
+    
+    start_time = time.perf_counter()
+    pipeline.run()
+    elapsed = time.perf_counter() - start_time
+    
+    return {
+        "completed": pipeline._completed,
+        "total": len(dng_files),
+        "elapsed": elapsed,
+        "queue_stats": pipeline.get_queue_stats(),
+    }
 
 
 @dng.command(name="batch-to-video")
@@ -1199,16 +1394,10 @@ def convert_dngs_to_video(
     - A folder containing DNG files (will scan for *.dng)
     - A CSV file with per-file settings (filename,Temperature,Tint,Exposure2012,orientation)
     """
-    import io
-    import numpy as np
-    from .dngio import decode_dng
-    from .videoio import VideoEncodePipeline
     import setproctitle
-    
-    # Set process title for easier identification in task managers
     setproctitle.setproctitle(f"muimg: encoding {Path(output_mp4).name}")
     
-    # Parse resolution if provided
+    # Parse resolution
     resolution_tuple = None
     if resolution:
         try:
@@ -1219,173 +1408,72 @@ def convert_dngs_to_video(
             sys.exit(1)
     
     # Build base rendering_params dict from CLI options
-    base_rendering_params = {}
+    rendering_params = {}
     if temperature is not None:
-        base_rendering_params['Temperature'] = temperature
+        rendering_params['Temperature'] = temperature
     if tint is not None:
-        base_rendering_params['Tint'] = tint
+        rendering_params['Tint'] = tint
     if exposure is not None:
-        base_rendering_params['Exposure2012'] = exposure
+        rendering_params['Exposure2012'] = exposure
     if orientation is not None:
-        base_rendering_params['orientation'] = orientation
+        rendering_params['orientation'] = orientation
     
     # Determine file list and settings based on input type
     input_path = Path(input)
     settings_list = []
     
     if input_path.is_file() and input_path.suffix.lower() == '.csv':
-        # CSV file drives the file list
         dng_files, settings_list = _load_dng_settings(input_path)
         click.echo(f"Loaded {len(dng_files)} files from {input}")
     elif input_path.is_dir():
-        # Scan input folder for DNG files
         dng_files = sorted(input_path.glob("*.dng"))
-        
         if not dng_files:
             click.echo(f"Error: No DNG files found in {input}", err=True)
             sys.exit(1)
-        
         click.echo(f"Found {len(dng_files)} DNG files in {input}")
     else:
         click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
     
-    # Build video encoding config
-    config = {
-        "codec": codec,
-        "crf": crf,
-        "bit_depth": int(bit_depth),
-        "frame_rate": frame_rate,
-    }
+    click.echo(f"Encoding {len(dng_files)} DNGs to {output_mp4}...")
     
-    # Determine output dtype based on bit depth
-    output_dtype = np.uint16 if int(bit_depth) == 10 else np.uint8
+    def cli_progress(completed, total):
+        safe_echo(f"  {completed}/{total} frames encoded", nl=True)
+        return False
     
-    # Create custom consumer function for DNG decoding
-    def dng_consumer(task):
-        """Custom consumer: decodes DNG blob using decode_dng with rendering params."""
-        index, file_path, blob = task
-        try:
-            # Create DngFile from blob
-            from .dngio import DngFile
-            dng_file = DngFile(io.BytesIO(blob))
-            
-            # Build rendering params: use settings from CSV or base params from CLI
-            if settings_list:
-                # CSV mode: use settings from list, merge with base
-                rendering_params = base_rendering_params.copy()
-                rendering_params.update(settings_list[index])
-            else:
-                # Folder mode: use base params from CLI
-                rendering_params = base_rendering_params.copy()
-            
-            # Calculate scale before decoding for efficiency
-            # Scaling during decode_dng is much more efficient as it avoids the full render path
-            # at full resolution
-            # Get render size from DNG to compute scale
-            # Pass rendering_params so it uses orientation from params if specified
-            render_width, render_height = dng_file.get_rendered_size(
-                rendering_params=rendering_params
-            )
-            
-            target_width, target_height = resolution_tuple
-            scale_w = target_width / render_width
-            scale_h = target_height / render_height
-            scale = min(scale_w, scale_h)
-            
-            # Debug output
-            orientation = rendering_params.get('orientation', 'None')
-            logger.info(f"Frame {index} ({Path(file_path).name}): orientation={orientation}, "
-                       f"rendered_size={render_width}x{render_height}, scale={scale:.3f}")
-
-            # Decode with scaling applied during rendering
-            img, _ = decode_dng(
-                file=dng_file,
-                output_dtype=output_dtype,
-                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
-                use_coreimage_if_available=use_coreimage,
-                use_xmp=not no_xmp,
-                rendering_params=rendering_params,
-                strict=False,
-                scale=scale,
-            )
-            
-            if img is None:
-                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
-                return (index, None)
-            
-            # Apply letterboxing
-            current_height, current_width = img.shape[:2]
-            target_width, target_height = resolution_tuple
-            
-            logger.info(f"Frame {index}: decoded image size={current_width}x{current_height}, "
-                       f"target={target_width}x{target_height}")
-            
-            # Create black canvas at target resolution
-            canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
-            
-            # Calculate centered position for scaled image
-            y_offset = (target_height - current_height) // 2
-            x_offset = (target_width - current_width) // 2
-            
-            # Place scaled image on canvas
-            canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
-            img = canvas
-            
-            # Add filename overlay if requested
-            if overlay_txt:
-                from .videoio import add_text_overlay
-                filename = Path(file_path).name
-                img = add_text_overlay(img, filename, position="bottom-left")
-            
-            return (index, img)
-            
-        except Exception as e:
-            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
-            return (index, None)
-    
-    # Create and run the pipeline
     try:
-        pipeline = VideoEncodePipeline(
-            source_files=dng_files,
-            output_path=output_mp4,
+        result = run_batch_to_video(
+            dng_files=dng_files,
+            output_mp4=output_mp4,
+            rendering_params=rendering_params,
+            use_xmp=not no_xmp,
+            use_coreimage=use_coreimage,
             resolution=resolution_tuple,
-            config=config,
-            consumer=dng_consumer,
+            codec=codec,
+            crf=crf,
+            bit_depth=bit_depth,
+            frame_rate=frame_rate,
             num_workers=num_workers,
+            overlay_txt=overlay_txt,
+            settings_list=settings_list or None,
+            on_task_done=cli_progress,
         )
-        
-        click.echo(f"Encoding {len(dng_files)} DNGs to {output_mp4}...")
-        
-        import time
-        start_time = time.perf_counter()
-        pipeline.run()
-        elapsed = time.perf_counter() - start_time
-        
-        # Count successful frames (exclude None results)
-        successful_frames = len(dng_files)  # Assume all succeeded unless we track failures
-        fps = successful_frames / elapsed if elapsed > 0 else 0
         
         click.echo(f"Successfully created video: {output_mp4}")
-        click.echo(f"Encoded {successful_frames} frames in {elapsed:.2f}s ({fps:.2f} fps)")
+        click.echo(f"Encoded {result['total']} frames in {result['elapsed']:.2f}s ({result['total']/result['elapsed']:.2f} fps)")
         
-        # Print queue statistics (indented)
-        stats = pipeline.get_queue_stats()
-        click.echo(
-            f"  Queue stats - Task queue: avg_depth={stats['task_queue']['avg_depth']:.1f}, "
-            f"empty_time={stats['task_queue']['empty_time']:.1f}s"
-        )
-        click.echo(
-            f"  Queue stats - Writer queue: avg_depth={stats['writer_queue']['avg_depth']:.1f}, "
-            f"empty_time={stats['writer_queue']['empty_time']:.1f}s"
-        )
+        stats = result["queue_stats"]
+        if "task_queue" in stats:
+            q = stats["task_queue"]
+            click.echo(f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
+        if "writer_queue" in stats:
+            q = stats["writer_queue"]
+            click.echo(f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
         
     except ImportError as e:
-        # ImportError from missing dependencies - show clean message only
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except Exception as e:
-        # Other errors - show full traceback
         click.echo(f"Error: {e}", err=True)
         logger.exception("Failed to encode video")
         sys.exit(1)

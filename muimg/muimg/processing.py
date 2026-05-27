@@ -67,6 +67,8 @@ class ProcessingPipeline:
         queue_size: int = None,
         writer_queue_size: int = None,
         task_name: str = None,
+        on_task_done: Callable[[int, int], bool] = None,
+        total_items: int = None,
     ):
         """
         Initializes the processing pipeline.
@@ -91,6 +93,11 @@ class ProcessingPipeline:
             writer_queue_size: Max size of the writer queue. Defaults to queue_size.
             task_name: Optional descriptive name for the task (e.g., "Keogram Creation").
                        Used in log messages for better clarity.
+            on_task_done: Optional callback(completed, total) -> bool, called by
+                        the consumer after each task completes. Return True to
+                        request cancellation. Used for both progress reporting and
+                        cancellation.
+            total_items: Total number of items to process. Passed to on_task_done.
         """
         # Check if producer is a pipeline or callable
         is_pipeline_producer = isinstance(producer, ProcessingPipeline)
@@ -110,6 +117,9 @@ class ProcessingPipeline:
         self.writer = writer
         self.num_workers = num_workers
         self.task_name = task_name
+        self._on_task_done = on_task_done
+        self._total_items = total_items or 0
+        self._completed = 0
 
         self._processing_time = 0
         self._task_queue_samples = []
@@ -133,12 +143,36 @@ class ProcessingPipeline:
                 self._writer_queue_samples = []
                 self._writer_queue_empty_time = 0
 
+    def cancel(self):
+        """Request cancellation of the pipeline.
+        
+        Stops the producer from reading more items and signals consumer/writer
+        threads to finish processing remaining queued items and exit.
+        """
+        logger.info(f"Pipeline cancel requested{f' ({self.task_name})' if self.task_name else ''}")
+        self._stop_event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        """True if cancel() has been called."""
+        return self._stop_event.is_set()
+
+    def _notify_task_done(self):
+        """Increment completed count, call on_task_done, and cancel if requested."""
+        if self._on_task_done:
+            self._completed += 1
+            if self._on_task_done(self._completed, self._total_items):
+                self.cancel()
+
     def _producer_thread(self):
         """Internal method to run the producer and populate the task queue."""
         task_prefix = f"{self.task_name}->" if self.task_name else ""
         logger.info(f"--- Starting producer thread (target: {task_prefix}{self.producer.__name__}) ---")
         try:
             for item in self.producer():
+                if self._stop_event.is_set():
+                    logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) cancelled. ---")
+                    break
                 self.task_queue.put(item)
         finally:
             logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) finished. All tasks have been queued. ---")
@@ -156,6 +190,7 @@ class ProcessingPipeline:
 
                 try:
                     result = self.consumer(task)
+                    self._notify_task_done()
 
                     # If there's a writer, pass the result to the writer queue
                     if self.writer and result is not None:

@@ -24,7 +24,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             ft.dropdown.Option("jpg", "DNG → JPG"),
             ft.dropdown.Option("video", "DNG → Video (MP4)"),
         ],
-        width=250,
+        width=320,
     )
 
     # White balance presets (temp K, tint)
@@ -113,8 +113,9 @@ def build_dng_view(page: ft.Page) -> ft.Control:
     log_text = ft.TextField(multiline=True, read_only=True, text_size=11, min_lines=12, expand=True)
     log_row = ft.Row(controls=[log_text])
 
-    run_button = ft.Button(content="Run", icon=ft.Icons.PLAY_ARROW)
-    cancel_button = ft.Button(content="Cancel", icon=ft.Icons.STOP, visible=False)
+    _btn_style = ft.ButtonStyle(bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE))
+    run_button = ft.Button(content="Run", icon=ft.Icons.PLAY_ARROW, style=_btn_style)
+    cancel_button = ft.Button(content="Cancel", icon=ft.Icons.STOP, visible=False, style=_btn_style)
 
     # --- Async event handlers ---
     async def pick_input(e):
@@ -128,6 +129,8 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         if result:
             output_path_text.value = result
             page.update()
+
+    _last_progress_update = [0.0]  # mutable for closure
 
     def on_mode_changed(e):
         is_video = mode_dropdown.value == "video"
@@ -164,13 +167,17 @@ def build_dng_view(page: ft.Page) -> ft.Control:
     def on_run(e):
         inp = input_path_text.value
         out = output_path_text.value
-        if inp == "No folder selected" or out == "No folder selected":
+        if not inp or inp == "No folder selected" or not out or out == "No folder selected":
             log_text.value = "ERROR: Select input and output folders first.\n"
             page.update()
             return
 
         state["running"] = True
         state["cancel"] = False
+        state["finished"] = False
+        state["progress_fraction"] = 0
+        state["progress_text"] = ""
+        state["log"] = ""
         run_button.visible = False
         cancel_button.visible = True
         progress_bar.visible = True
@@ -180,19 +187,14 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
         thread = threading.Thread(target=run_conversion, args=(inp, out), daemon=True)
         thread.start()
+        page.run_task(_poll_ui)
 
     run_button.on_click = on_run
     cancel_button.on_click = on_cancel
 
     # --- Conversion logic (runs in thread) ---
     def run_conversion(input_path, output_path):
-        import time
-        import numpy as np
-
         try:
-            from muimg.dngio import decode_dng, DngFile, DemosaicAlgorithm
-            from muimg.imgio import write_image
-
             mode = mode_dropdown.value
             input_dir = Path(input_path)
             dng_files = sorted(input_dir.glob("*.dng"))
@@ -205,44 +207,54 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             log(f"Found {total} DNG files.")
 
             rendering_params = build_rendering_params()
-            output_dtype = np.uint16 if bit_depth.value == "16" else np.uint8
 
-            output_dir = Path(output_path)
-            output_dir.mkdir(parents=True, exist_ok=True)
+            def on_task_done(completed, total):
+                import time
+                now = time.monotonic()
+                if completed == total or now - _last_progress_update[0] >= 0.3:
+                    _last_progress_update[0] = now
+                    update_progress(completed / total, f"{completed}/{total}")
+                return state["cancel"]
 
-            start_time = time.perf_counter()
-            completed = 0
+            if mode == "video":
+                from muimg.cli import run_batch_to_video
+                w, h = resolution.value.split("x")
+                result = run_batch_to_video(
+                    dng_files=dng_files,
+                    output_mp4=Path(output_path) / "output.mp4",
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp.value,
+                    resolution=(int(w), int(h)),
+                    codec=codec.value,
+                    crf=int(crf.value),
+                    bit_depth=video_bit_depth.value,
+                    frame_rate=float(frame_rate.value),
+                    num_workers=int(num_workers.value),
+                    overlay_txt=overlay_txt.value,
+                    on_task_done=on_task_done,
+                )
+            else:
+                from muimg.cli import run_batch_convert
+                result = run_batch_convert(
+                    dng_files=dng_files,
+                    output_folder=output_path,
+                    output_format=mode,
+                    bit_depth=bit_depth.value,
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp.value,
+                    num_workers=int(num_workers.value),
+                    on_task_done=on_task_done,
+                )
 
-            for i, dng_path in enumerate(dng_files):
-                if state["cancel"]:
-                    log("Cancelled.")
-                    break
-                try:
-                    dng_file = DngFile(dng_path)
-                    img, metadata = decode_dng(
-                        file=dng_file,
-                        output_dtype=output_dtype,
-                        demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
-                        use_coreimage_if_available=False,
-                        use_xmp=use_xmp.value,
-                        rendering_params=rendering_params,
-                        strict=False,
-                    )
-                    if img is not None:
-                        out_file = output_dir / f"{dng_path.stem}.{mode}"
-                        write_image(img, out_file, metadata=metadata)
-                        completed += 1
-                    else:
-                        log(f"  WARN: Failed to decode {dng_path.name}")
-                except Exception as ex:
-                    log(f"  ERROR: {dng_path.name}: {ex}")
-
-                elapsed = time.perf_counter() - start_time
-                fps = (i + 1) / elapsed if elapsed > 0 else 0
-                update_progress((i + 1) / total, f"{i+1}/{total} ({fps:.1f} files/s)")
-
-            elapsed = time.perf_counter() - start_time
-            log(f"Done: {completed}/{total} files in {elapsed:.1f}s")
+            fps = result['completed'] / result['elapsed'] if result['elapsed'] > 0 else 0
+            log(f"Done: {result['completed']}/{result['total']} files in {result['elapsed']:.1f}s ({fps:.1f} files/s, {int(num_workers.value)} workers)")
+            stats = result.get('queue_stats', {})
+            if 'task_queue' in stats:
+                q = stats['task_queue']
+                log(f"  Task queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
+            if 'writer_queue' in stats:
+                q = stats['writer_queue']
+                log(f"  Writer queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
         except Exception as ex:
             log(f"ERROR: {ex}")
         finally:
@@ -260,23 +272,55 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         return params
 
     def update_progress(fraction, text):
-        progress_bar.value = fraction
-        progress_text.value = text
-        page.update()
+        state["progress_fraction"] = fraction
+        state["progress_text"] = text
 
     def log(message):
-        log_text.value = (log_text.value or "") + message + "\n"
-        page.update()
+        state["log"] = (state.get("log") or "") + message + "\n"
 
     def finish():
         state["running"] = False
+        state["finished"] = True
+
+    async def _poll_ui():
+        """Async poller: runs on Flet event loop, reads shared state."""
+        import asyncio
+        prev_frac = -1
+        prev_log = ""
+        while state["running"]:
+            frac = state.get("progress_fraction", 0)
+            text = state.get("progress_text", "")
+            log_val = state.get("log", "")
+            changed = False
+            if frac != prev_frac:
+                progress_bar.value = frac
+                progress_text.value = text
+                prev_frac = frac
+                changed = True
+            if log_val != prev_log:
+                log_text.value = log_val
+                prev_log = log_val
+                changed = True
+            if changed:
+                page.update()
+            await asyncio.sleep(0.2)
+        # Final flush
+        progress_bar.value = state.get("progress_fraction", 0)
+        progress_text.value = state.get("progress_text", "")
+        log_text.value = state.get("log", "")
         run_button.visible = True
         cancel_button.visible = False
         page.update()
 
     # --- Build layout ---
-    input_btn = ft.Button(content="Select Input Folder", icon=ft.Icons.FOLDER_OPEN, on_click=pick_input)
-    output_btn = ft.Button(content="Select Output Folder", icon=ft.Icons.FOLDER, on_click=pick_output)
+    input_btn = ft.Button(
+        content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Input Folder")], alignment=ft.MainAxisAlignment.START, spacing=8),
+        on_click=pick_input, style=_btn_style, width=220,
+    )
+    output_btn = ft.Button(
+        content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Output Folder")], alignment=ft.MainAxisAlignment.START, spacing=8),
+        on_click=pick_output, style=_btn_style, width=220,
+    )
 
     return ft.Column(
         controls=[
