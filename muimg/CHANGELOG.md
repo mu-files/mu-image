@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.20260527.0727] - 2026-05-27
+
+### Changed
+- **Performance**: Release Python GIL in all 17 C++ compute kernels (`raw_render_ops.cpp`), enabling true multi-threaded parallelism. With `--num-workers 4`: 2.1x speedup (was ~14% before).
+- **Performance**: Set Core Image `use_gpu=False` (software renderer benchmarks faster on Apple Silicon).
+- **Refactor**: Extract reusable `run_batch_convert()` and `run_batch_to_video()` functions from CLI for shared use by GUI app.
+- **Refactor**: Add `on_task_done` callback to `ProcessingPipeline` for unified progress reporting and cancellation.
+
 ## [0.1.20260522.1828] - 2026-05-22
 
 ### Added
