@@ -161,8 +161,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
     # Progress
     progress_bar = ft.ProgressBar(value=0, visible=False)
     progress_text = ft.Text("", size=12)
-    log_text = ft.TextField(multiline=True, read_only=True, text_size=11, min_lines=12, expand=True)
-    log_row = ft.Row(controls=[log_text])
+    log_text = ft.TextField(multiline=True, read_only=True, text_size=11, expand=True)
 
     _btn_style = ft.ButtonStyle(bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE))
     run_button = ft.Button(content="Run", icon=ft.Icons.PLAY_ARROW, style=_btn_style)
@@ -221,7 +220,12 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                 initial_directory=initial,
             )
         if result:
-            state["last_output_dir"] = str(Path(result).parent) if mode_dropdown.value == "video" else result
+            if mode_dropdown.value == "video":
+                if not result.lower().endswith(".mp4"):
+                    result += ".mp4"
+                state["last_output_dir"] = str(Path(result).parent)
+            else:
+                state["last_output_dir"] = result
             output_path_text.value = result
             output_path_text.tooltip = result
             _save_settings({"last_input_dir": state["last_input_dir"], "last_output_dir": state["last_output_dir"]})
@@ -241,7 +245,6 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             bit_depth.disabled = True
         else:
             bit_depth.disabled = False
-        log_text.min_lines = 4 if is_video else 12
         page.update()
 
     def on_xmp_changed(e):
@@ -279,14 +282,14 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
     def on_cancel(e):
         state["cancel"] = True
-        log_text.value = (log_text.value or "") + "Cancellation requested...\n"
+        state["log"] = (state.get("log") or "") + "Cancellation requested...\n"
         page.update()
 
     def on_run(e):
         inp = input_path_text.value
         out = output_path_text.value
         if not inp or inp == "No folder selected" or not out or out == "No folder selected":
-            log_text.value = "ERROR: Select input and output folders first.\n"
+            log_text.value = "ERROR: Select input and output folders first.\n" + (log_text.value or "")
             page.update()
             return
 
@@ -300,7 +303,8 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         cancel_button.visible = True
         progress_bar.visible = True
         progress_bar.value = 0
-        log_text.value = ""
+        # Save previous log and start fresh
+        state["_old_log"] = log_text.value or ""
         page.update()
 
         thread = threading.Thread(target=run_conversion, args=(inp, out), daemon=True)
@@ -327,7 +331,11 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                 return
 
             total = len(dng_files)
-            log(f"Found {total} DNG files.")
+            if mode == "video":
+                out_desc = Path(output_path).name
+            else:
+                out_desc = f".{mode}"
+            log(f"Input: {total} DNG files, Output: {out_desc}")
 
             rendering_params = build_rendering_params()
 
@@ -395,6 +403,17 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         state["progress_fraction"] = fraction
         state["progress_text"] = text
 
+    _MAX_LOG_LINES = 100
+
+    def _build_display_log(current_log, old_log):
+        """Newest run on top, chronological within each run."""
+        parts = [p for p in [current_log.rstrip(), old_log.rstrip()] if p]
+        combined = ("\n" + "─" * 40 + "\n").join(parts)
+        lines = combined.split("\n")
+        if len(lines) > _MAX_LOG_LINES:
+            lines = lines[:_MAX_LOG_LINES]
+        return "\n".join(lines)
+
     def log(message):
         state["log"] = (state.get("log") or "") + message + "\n"
 
@@ -418,7 +437,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                 prev_frac = frac
                 changed = True
             if log_val != prev_log:
-                log_text.value = log_val
+                log_text.value = _build_display_log(log_val, state.get("_old_log", ""))
                 prev_log = log_val
                 changed = True
             if changed:
@@ -427,7 +446,9 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         # Final flush
         progress_bar.value = state.get("progress_fraction", 0)
         progress_text.value = state.get("progress_text", "")
-        log_text.value = state.get("log", "")
+        remaining = state.get("log", "")
+        if remaining:
+            log_text.value = _build_display_log(remaining, state.get("_old_log", ""))
         run_button.visible = True
         cancel_button.visible = False
         page.update()
@@ -466,7 +487,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             video_options,
             ft.Divider(height=8),
             progress_bar,
-            log_row,
+            ft.Container(content=log_text, expand=True),
         ],
         expand=True,
     )
