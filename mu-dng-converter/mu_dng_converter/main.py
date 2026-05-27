@@ -3,6 +3,7 @@
 import flet as ft
 
 from .views.dng_convert import build_dng_view
+from .views.fits_to_dng import build_fits_view
 
 
 def app(page: ft.Page):
@@ -29,10 +30,47 @@ def app(page: ft.Page):
         ),
     )
 
+    tabs = ft.Tabs(
+        selected_index=0,
+        length=2,
+        expand=True,
+        content=ft.Column(
+            expand=True,
+            controls=[
+                ft.TabBar(
+                    secondary=True,
+                    tabs=[
+                        ft.Tab(label="DNG \u2192 Image"),
+                        ft.Tab(label="FITS \u2192 DNG"),
+                    ],
+                ),
+                ft.TabBarView(
+                    expand=True,
+                    controls=[
+                        ft.Container(
+                            content=build_dng_view(page),
+                            padding=ft.Padding(
+                                left=0, top=10, right=0, bottom=0
+                            ),
+                            expand=True,
+                        ),
+                        ft.Container(
+                            content=build_fits_view(page),
+                            padding=ft.Padding(
+                                left=0, top=10, right=0, bottom=0
+                            ),
+                            expand=True,
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+
     page.add(
         ft.SafeArea(
             expand=True,
-            content=build_dng_view(page),
+            content=tabs,
         )
     )
 
