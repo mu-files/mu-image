@@ -80,13 +80,18 @@ jobs:
           cd build/flutter/build/macos/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app $GITHUB_WORKSPACE/mu-dng-converter/mu-dng-converter-macos.zip
 
+      - name: Show Windows build output structure
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: Get-ChildItem -Recurse -Depth 6 build | Select-Object FullName
+
       - name: Build Windows installer
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag -replace '^app-v', ''
-          $sourceDir = "${{ github.workspace }}\mu-dng-converter\build\windows\runner\Release"
+          $sourceDir = "${{ github.workspace }}\mu-dng-converter\build\flutter\build\windows\x64\runner\Release"
           $issScript = "${{ github.workspace }}\mu-dng-converter\installer\windows.iss"
           $outputDir = "${{ github.workspace }}\mu-dng-converter"
           iscc.exe `
