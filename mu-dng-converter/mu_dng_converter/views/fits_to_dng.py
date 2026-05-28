@@ -60,8 +60,19 @@ def _get_asi676mc_tables():
     return _ASI676MC_GAIN_TABLE, _ASI676MC_WB_BLUE_TABLE
 
 
-def compute_baseline_exposure(data, white_level: int = 65535):
-    """Estimate BaselineExposure (in EV) from raw CFA data."""
+def compute_image_stats(data, white_level: int = 65535,
+                        percentiles=(1, 50)) -> dict:
+    """Compute percentile values from raw CFA data via histogram.
+
+    Args:
+        data: 2D numpy array (CFA data)
+        white_level: maximum valid pixel value
+        percentiles: tuple of percentiles to compute (0-100)
+
+    Returns:
+        Dict mapping percentile -> pixel value, e.g. {1: 192, 50: 4200}.
+        Also includes 'clipped': True if >25% of pixels are near white_level.
+    """
     import numpy as np
     num_bins = min(white_level, 10000)
     hist, bin_edges = np.histogram(
@@ -69,22 +80,20 @@ def compute_baseline_exposure(data, white_level: int = 65535):
     )
     cdf = np.cumsum(hist).astype(np.float64) / np.sum(hist)
 
+    result = {}
+    for p in percentiles:
+        idx = np.searchsorted(cdf, p / 100.0)
+        result[p] = int(bin_edges[min(idx, len(bin_edges) - 1)])
+
+    # Clipping check
     clip_threshold = 0.975 * white_level
     clip_idx = np.searchsorted(bin_edges[:-1], clip_threshold)
     fraction_bright = 1.0 - (
         cdf[clip_idx - 1] if clip_idx > 0 else 0.0
     )
-    if fraction_bright > 0.25:
-        return None
+    result['clipped'] = fraction_bright > 0.25
 
-    median_idx = np.searchsorted(cdf, 0.5)
-    median_val = bin_edges[median_idx]
-    if median_val <= 0:
-        return None
-
-    target = white_level * 0.06
-    ev_shift = np.log2(target / median_val)
-    return float(ev_shift)
+    return result
 
 
 def _parse_fits_datetime(date_str: str):
@@ -169,12 +178,23 @@ def _build_metadata_tags(header, data, auto_exposure, ev_value,
     if wb_xy is not None:
         tags.add_tag("AsShotWhiteXY", list(wb_xy))
 
-    # Exposure
+    # Auto exposure + auto black level
     if auto_exposure:
+        import numpy as np
         wl = int(header.get("CWHITE", 65535))
-        ev_shift = compute_baseline_exposure(data, wl)
-        if ev_shift is not None:
-            tags.add_tag("BaselineExposure", ev_shift)
+        stats = compute_image_stats(data, wl, percentiles=(1, 50))
+
+        # Estimated black level (when PEDESTAL not in header)
+        if blklevel is None and stats[1] > 0:
+            tags.add_tag("BlackLevel", stats[1])
+
+        # BaselineExposure from median
+        if not stats['clipped']:
+            median_val = stats[50]
+            if median_val > 0:
+                target = wl * 0.06
+                ev_shift = float(np.log2(target / median_val))
+                tags.add_tag("BaselineExposure", ev_shift)
     else:
         if ev_value and float(ev_value) != 0:
             tags.add_tag("BaselineExposure", float(ev_value))
