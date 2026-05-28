@@ -124,3 +124,60 @@ def pick_files(
 
 
 IS_MACOS = sys.platform == "darwin"
+
+
+async def check_overwrite(page, existing_count: int, total_count: int) -> str:
+    """Show overwrite confirmation dialog.
+
+    Args:
+        page: Flet page instance.
+        existing_count: Number of output files that already exist.
+        total_count: Total number of files to process.
+
+    Returns:
+        "overwrite", "skip", or "cancel".
+    """
+    import asyncio
+    import flet as ft
+
+    result_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+
+    def _close_dlg():
+        dlg.open = False
+        page.update()
+
+    def on_overwrite(e):
+        _close_dlg()
+        if not result_future.done():
+            result_future.set_result("overwrite")
+
+    def on_skip(e):
+        _close_dlg()
+        if not result_future.done():
+            result_future.set_result("skip")
+
+    def on_cancel(e):
+        _close_dlg()
+        if not result_future.done():
+            result_future.set_result("cancel")
+
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Files already exist"),
+        content=ft.Text(
+            f"{existing_count} of {total_count} output files already exist "
+            f"in the destination folder."
+        ),
+        actions=[
+            ft.TextButton("Overwrite All", on_click=on_overwrite),
+            ft.TextButton("Skip Existing", on_click=on_skip),
+            ft.TextButton("Cancel", on_click=on_cancel),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    page.overlay.append(dlg)
+    dlg.open = True
+    page.update()
+
+    return await result_future

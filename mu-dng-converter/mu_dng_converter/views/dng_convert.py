@@ -128,7 +128,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         width=120,
     )
     num_workers = ft.TextField(
-        label="Workers", value="4", width=100,
+        label="Workers (1-8)", value="4", width=100,
         keyboard_type=ft.KeyboardType.NUMBER,
     )
 
@@ -298,13 +298,47 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         state["log"] = (state.get("log") or "") + "Cancellation requested...\n"
         page.update()
 
-    def on_run(e):
+    async def on_run(e):
+        from mu_dng_converter.dialogs import check_overwrite
+
         inp = input_path_text.value
         out = output_path_text.value
         if not inp or inp == "No folder selected" or not out or out == "No folder selected":
             log_text.value = "ERROR: Select input and output folders first.\n" + (log_text.value or "")
             page.update()
             return
+
+        # Gather file list before starting
+        mode = mode_dropdown.value
+        input_files = state.get("input_files")
+        if input_files:
+            dng_files = sorted(Path(f) for f in input_files)
+        else:
+            input_dir = Path(inp)
+            dng_files = sorted(input_dir.glob("*.dng"))
+        if not dng_files:
+            log_text.value = f"ERROR: No .dng files found in {inp}\n" + (log_text.value or "")
+            page.update()
+            return
+
+        # Check for existing output files (skip for video mode)
+        if mode != "video":
+            ext = mode  # tif, jxl, jpg
+            output_dir = Path(out)
+            existing = [
+                f for f in dng_files
+                if (output_dir / (f.stem + "." + ext)).exists()
+            ]
+            if existing:
+                action = await check_overwrite(page, len(existing), len(dng_files))
+                if action == "cancel":
+                    return
+                elif action == "skip":
+                    dng_files = [f for f in dng_files if f not in existing]
+                    if not dng_files:
+                        log_text.value = "All files already exist — nothing to do.\n" + (log_text.value or "")
+                        page.update()
+                        return
 
         state["running"] = True
         state["cancel"] = False
@@ -318,9 +352,10 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         progress_bar.value = 0
         # Save previous log and start fresh
         state["_old_log"] = log_text.value or ""
+        state["_dng_files"] = dng_files
         page.update()
 
-        thread = threading.Thread(target=run_conversion, args=(inp, out), daemon=True)
+        thread = threading.Thread(target=run_conversion, args=(out,), daemon=True)
         thread.start()
         page.run_task(_poll_ui)
 
@@ -328,24 +363,13 @@ def build_dng_view(page: ft.Page) -> ft.Control:
     cancel_button.on_click = on_cancel
 
     # --- Conversion logic (runs in thread) ---
-    def run_conversion(input_path, output_path):
+    def run_conversion(output_path):
         import setproctitle
         setproctitle.setproctitle("mu-dng-converter: DNG → Image")
 
         try:
             mode = mode_dropdown.value
-            # Use explicit file list if available (file picker mode)
-            input_files = state.get("input_files")
-            if input_files:
-                dng_files = sorted(Path(f) for f in input_files)
-            else:
-                input_dir = Path(input_path)
-                dng_files = sorted(input_dir.glob("*.dng"))
-            if not dng_files:
-                log(f"No .dng files found in {input_path}")
-                finish()
-                return
-
+            dng_files = state["_dng_files"]
             total = len(dng_files)
             if mode == "video":
                 out_desc = Path(output_path).name
@@ -372,7 +396,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                     crf=int(crf.value),
                     bit_depth=video_bit_depth.value,
                     frame_rate=float(frame_rate.value),
-                    num_workers=int(num_workers.value),
+                    num_workers=max(1, min(8, int(num_workers.value))),
                     overlay_txt=overlay_txt.value,
                     on_task_done=on_task_done,
                 )
@@ -385,7 +409,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                     bit_depth=bit_depth.value,
                     rendering_params=rendering_params,
                     use_xmp=use_xmp.value,
-                    num_workers=int(num_workers.value),
+                    num_workers=max(1, min(8, int(num_workers.value))),
                     on_task_done=on_task_done,
                 )
 

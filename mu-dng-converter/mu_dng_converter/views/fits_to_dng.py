@@ -275,6 +275,7 @@ def run_batch_fits_to_dng(
     do_fast_load=False,
     num_workers=4,
     on_task_done=None,
+    log_callback=None,
 ):
     """Batch convert FITS files to DNG using ImageSequencePipeline.
 
@@ -293,11 +294,14 @@ def run_batch_fits_to_dng(
         do_fast_load: Whether to generate pyramid levels.
         num_workers: Number of parallel consumer threads.
         on_task_done: Optional callback(completed, total) -> bool.
+        log_callback: Optional callback(msg: str) for per-file status messages.
 
     Returns:
-        dict with keys: "completed", "total", "elapsed", "queue_stats".
+        dict with keys: "completed", "written", "skipped", "errored",
+        "total", "elapsed", "queue_stats".
     """
     import io
+    import threading
     import time
 
     import setproctitle
@@ -318,6 +322,14 @@ def run_batch_fits_to_dng(
 
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    # Thread-safe counters
+    _lock = threading.Lock()
+    counts = {"written": 0, "skipped": 0, "errored": 0}
+
+    def _log(msg):
+        if log_callback:
+            log_callback(msg)
 
     # Compression setup
     comp_map = _get_compression_map()
@@ -354,9 +366,12 @@ def run_batch_fits_to_dng(
 
             if data is None or data.ndim != 2:
                 import logging
-                logging.getLogger(__name__).warning(
-                    f"Frame {index}: Skipping {Path(file_path).name} "
-                    f"(no 2D data, ndim={data.ndim if data is not None else 'None'})")
+                ndim = data.ndim if data is not None else None
+                msg = f"Skipping {Path(file_path).name} (no 2D data, ndim={ndim})"
+                logging.getLogger(__name__).warning(msg)
+                _log(msg)
+                with _lock:
+                    counts["skipped"] += 1
                 return (index, file_path, None)
 
             # Build metadata
@@ -398,18 +413,42 @@ def run_batch_fits_to_dng(
             return (index, file_path, dng_buf.getvalue())
         except Exception as e:
             import logging
-            logging.getLogger(__name__).warning(
-                f"Frame {index}: Error converting {Path(file_path).name} "
-                f"({type(e).__name__}): {e}")
+            msg = f"Error: {Path(file_path).name} ({type(e).__name__}): {e}"
+            logging.getLogger(__name__).warning(msg)
+            _log(msg)
+            with _lock:
+                counts["errored"] += 1
             return (index, file_path, None)
 
     start_time = time.perf_counter()
+
+    def counting_writer(result):
+        """Writer that counts successful writes."""
+        if result is None:
+            return
+        _, file_path, blob = result
+        if blob is None:
+            return
+        out_file = output_path / Path(file_path).with_suffix('.dng').name
+        try:
+            with open(out_file, 'wb') as f:
+                f.write(blob)
+            with _lock:
+                counts["written"] += 1
+        except Exception as e:
+            import logging
+            msg = f"Write failed: {Path(file_path).name} ({type(e).__name__}): {e}"
+            logging.getLogger(__name__).error(msg)
+            _log(msg)
+            with _lock:
+                counts["errored"] += 1
 
     pipeline = ImageSequencePipeline(
         source_files=fits_files,
         output_folder=output_path,
         output_format="dng",
         consumer=fits_consumer,
+        writer=counting_writer,
         num_workers=num_workers,
         task_name="FITS → DNG",
         on_task_done=on_task_done,
@@ -420,6 +459,9 @@ def run_batch_fits_to_dng(
 
     return {
         "completed": pipeline._completed,
+        "written": counts["written"],
+        "skipped": counts["skipped"],
+        "errored": counts["errored"],
         "total": len(fits_files),
         "elapsed": elapsed,
         "queue_stats": pipeline.get_queue_stats(),
@@ -506,7 +548,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
 
     # Output options
     num_workers = ft.TextField(
-        label="Workers", value="4", width=100,
+        label="Workers (1-8)", value="4", width=100,
         keyboard_type=ft.KeyboardType.NUMBER,
     )
 
@@ -649,7 +691,9 @@ def build_fits_view(page: ft.Page) -> ft.Control:
         )
         page.update()
 
-    def on_run(e):
+    async def on_run(e):
+        from mu_dng_converter.dialogs import check_overwrite
+
         inp = input_path_text.value
         out = output_path_text.value
         if (
@@ -665,6 +709,46 @@ def build_fits_view(page: ft.Page) -> ft.Control:
             page.update()
             return
 
+        # Gather file list before starting
+        input_files = state.get("input_files")
+        if input_files:
+            fits_files = sorted(Path(f) for f in input_files)
+        else:
+            input_dir = Path(inp)
+            fits_files = sorted(
+                list(input_dir.glob("*.fits"))
+                + list(input_dir.glob("*.fit"))
+                + list(input_dir.glob("*.FITS"))
+                + list(input_dir.glob("*.FIT"))
+            )
+        if not fits_files:
+            log_text.value = (
+                f"ERROR: No FITS files found in {inp}\n"
+                + (log_text.value or "")
+            )
+            page.update()
+            return
+
+        # Check for existing output files
+        output_dir = Path(out)
+        existing = [
+            f for f in fits_files
+            if (output_dir / (f.stem + ".dng")).exists()
+        ]
+        if existing:
+            action = await check_overwrite(page, len(existing), len(fits_files))
+            if action == "cancel":
+                return
+            elif action == "skip":
+                fits_files = [f for f in fits_files if f not in existing]
+                if not fits_files:
+                    log_text.value = (
+                        "All files already exist — nothing to do.\n"
+                        + (log_text.value or "")
+                    )
+                    page.update()
+                    return
+
         state["running"] = True
         state["cancel"] = False
         state["finished"] = False
@@ -676,10 +760,11 @@ def build_fits_view(page: ft.Page) -> ft.Control:
         progress_bar.visible = True
         progress_bar.value = 0
         state["_old_log"] = log_text.value or ""
+        state["_fits_files"] = fits_files
         page.update()
 
         thread = threading.Thread(
-            target=run_conversion, args=(inp, out), daemon=True,
+            target=run_conversion, args=(out,), daemon=True,
         )
         thread.start()
         page.run_task(_poll_ui)
@@ -688,26 +773,11 @@ def build_fits_view(page: ft.Page) -> ft.Control:
     cancel_button.on_click = on_cancel
 
     # --- Conversion logic (runs in thread) ---
-    def run_conversion(input_path, output_path):
+    def run_conversion(output_path):
         from muimg.raw_render import temp_tint_to_xy
 
         try:
-            input_files = state.get("input_files")
-            if input_files:
-                fits_files = sorted(Path(f) for f in input_files)
-            else:
-                input_dir = Path(input_path)
-                fits_files = sorted(
-                    list(input_dir.glob("*.fits"))
-                    + list(input_dir.glob("*.fit"))
-                    + list(input_dir.glob("*.FITS"))
-                    + list(input_dir.glob("*.FIT"))
-                )
-            if not fits_files:
-                log(f"No FITS files found in {input_path}")
-                finish()
-                return
-
+            fits_files = state["_fits_files"]
             total = len(fits_files)
             log(f"Input: {total} FITS files → DNG")
             log(f"Output: {output_path}")
@@ -737,16 +807,21 @@ def build_fits_view(page: ft.Page) -> ft.Control:
                 wb_xy=wb_xy,
                 do_preview=preview.value,
                 do_fast_load=fast_load.value,
-                num_workers=int(num_workers.value),
+                num_workers=max(1, min(8, int(num_workers.value))),
                 on_task_done=on_task_done,
+                log_callback=log,
             )
 
-            fps = result['completed'] / result['elapsed'] if result['elapsed'] > 0 else 0
+            elapsed = result['elapsed']
+            fps = result['written'] / elapsed if elapsed > 0 else 0
+            parts = [f"{result['written']} written"]
+            if result['skipped']:
+                parts.append(f"{result['skipped']} skipped")
+            if result['errored']:
+                parts.append(f"{result['errored']} errors")
             log(
-                f"Done: {result['completed']}/{result['total']} "
-                f"files in {result['elapsed']:.1f}s "
-                f"({fps:.1f} files/s, "
-                f"{int(num_workers.value)} workers)"
+                f"Done: {', '.join(parts)} / {result['total']} total "
+                f"in {elapsed:.1f}s ({fps:.1f} files/s)"
             )
             stats = result.get('queue_stats', {})
             if 'task_queue' in stats:
