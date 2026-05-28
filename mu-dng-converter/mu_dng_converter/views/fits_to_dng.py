@@ -614,18 +614,14 @@ def build_fits_view(page: ft.Page) -> ft.Control:
 
     # --- Event handlers ---
     async def pick_input(e):
-        from mu_dng_converter.dialogs import IS_MACOS, pick_directory, pick_files
+        from mu_dng_converter.dialogs import pick_directory_async, pick_files_async
 
         mode = input_mode.value
         initial = state["last_input_dir"]
         if mode == "folder":
-            if IS_MACOS:
-                result = pick_directory("Select FITS input folder", initial)
-            else:
-                result = await ft.FilePicker().get_directory_path(
-                    dialog_title="Select FITS input folder",
-                    initial_directory=initial,
-                )
+            result = await pick_directory_async(
+                "Select FITS input folder", initial,
+                can_create_directories=False)
             if result:
                 state["last_input_dir"] = result
                 state["input_files"] = None
@@ -637,19 +633,9 @@ def build_fits_view(page: ft.Page) -> ft.Control:
                 })
                 page.update()
         else:
-            if IS_MACOS:
-                paths = pick_files(
-                    "Select FITS file(s)", initial, ["fits", "fit"], True
-                )
-            else:
-                files = await ft.FilePicker().pick_files(
-                    dialog_title="Select FITS file(s)",
-                    initial_directory=initial,
-                    allowed_extensions=["fits", "fit", "FITS", "FIT"],
-                    file_type=ft.FilePickerFileType.CUSTOM,
-                    allow_multiple=True,
-                )
-                paths = [f.path for f in files] if files else None
+            paths = await pick_files_async(
+                "Select FITS file(s)", initial, ["fits", "fit"],
+                allow_multiple=True)
             if paths:
                 state["last_input_dir"] = str(Path(paths[0]).parent)
                 state["input_files"] = paths
@@ -671,16 +657,10 @@ def build_fits_view(page: ft.Page) -> ft.Control:
                 page.update()
 
     async def pick_output(e):
-        from mu_dng_converter.dialogs import IS_MACOS, pick_directory
+        from mu_dng_converter.dialogs import pick_directory_async
 
         initial = state["last_output_dir"]
-        if IS_MACOS:
-            result = pick_directory("Select output folder", initial)
-        else:
-            result = await ft.FilePicker().get_directory_path(
-                dialog_title="Select output folder",
-                initial_directory=initial,
-            )
+        result = await pick_directory_async("Select output folder", initial)
         if result:
             state["last_output_dir"] = result
             output_path_text.value = result
