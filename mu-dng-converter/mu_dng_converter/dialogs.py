@@ -1,6 +1,7 @@
 """Cross-platform file/folder dialog helpers using Flet's FilePicker."""
 
 import asyncio
+from pathlib import Path
 
 import flet as ft
 
@@ -9,7 +10,16 @@ async def pick_directory_async(title: str = "Select Folder",
                                initial_directory: str | None = None,
                                can_create_directories: bool = True,
                                picker: ft.FilePicker | None = None) -> str | None:
-    """Pick a directory using Flet's FilePicker."""
+    """Pick a directory using Flet's FilePicker.
+
+    Validates initial_directory exists before passing it — an invalid path
+    silently breaks get_directory_path on Windows.
+    """
+    import os
+    if initial_directory:
+        initial_directory = os.path.normpath(initial_directory)
+        if not Path(initial_directory).exists():
+            initial_directory = None
     if picker is None:
         picker = ft.FilePicker()
     return await picker.get_directory_path(
@@ -24,6 +34,9 @@ async def pick_files_async(
     picker: ft.FilePicker | None = None,
 ) -> list[str] | None:
     """Pick files using Flet's FilePicker."""
+    import os
+    if initial_directory:
+        initial_directory = os.path.normpath(initial_directory)
     if picker is None:
         picker = ft.FilePicker()
     files = await picker.pick_files(
