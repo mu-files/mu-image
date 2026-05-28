@@ -7,19 +7,10 @@ import flet as ft
 
 async def pick_directory_async(title: str = "Select Folder",
                                initial_directory: str | None = None,
-                               can_create_directories: bool = True,
-                               page: ft.Page | None = None) -> str | None:
+                               can_create_directories: bool = True) -> str | None:
     """Pick a directory using Flet's FilePicker."""
-    picker = ft.FilePicker()
-    if page is not None:
-        page.overlay.append(picker)
-        page.update()
-    result = await picker.get_directory_path(
+    return await ft.FilePicker().get_directory_path(
         dialog_title=title, initial_directory=initial_directory)
-    if page is not None:
-        page.overlay.remove(picker)
-        page.update()
-    return result
 
 
 async def pick_files_async(
@@ -27,23 +18,15 @@ async def pick_files_async(
     initial_directory: str | None = None,
     allowed_extensions: list[str] | None = None,
     allow_multiple: bool = False,
-    page: ft.Page | None = None,
 ) -> list[str] | None:
     """Pick files using Flet's FilePicker."""
-    picker = ft.FilePicker()
-    if page is not None:
-        page.overlay.append(picker)
-        page.update()
-    files = await picker.pick_files(
+    files = await ft.FilePicker().pick_files(
         dialog_title=title,
         initial_directory=initial_directory,
         allowed_extensions=allowed_extensions,
         file_type=ft.FilePickerFileType.CUSTOM if allowed_extensions else ft.FilePickerFileType.ANY,
         allow_multiple=allow_multiple,
     )
-    if page is not None:
-        page.overlay.remove(picker)
-        page.update()
     return [f.path for f in files] if files else None
 
 

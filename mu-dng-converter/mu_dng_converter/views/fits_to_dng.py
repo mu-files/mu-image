@@ -632,7 +632,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
             try:
                 result = await pick_directory_async(
                     "Select FITS input folder", initial,
-                    can_create_directories=False, page=page)
+                    can_create_directories=False)
             except Exception as ex:
                 log(f"[error] folder picker failed: {ex}")
                 page.update()
@@ -651,7 +651,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
             try:
                 paths = await pick_files_async(
                     "Select FITS file(s)", initial, ["fits", "fit"],
-                    allow_multiple=True, page=page)
+                    allow_multiple=True)
             except Exception as ex:
                 log(f"[error] file picker failed: {ex}")
                 page.update()
@@ -680,7 +680,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
         from mu_dng_converter.dialogs import pick_directory_async
 
         initial = state["last_output_dir"]
-        result = await pick_directory_async("Select output folder", initial, page=page)
+        result = await pick_directory_async("Select output folder", initial)
         if result:
             state["last_output_dir"] = result
             output_path_text.value = result
