@@ -203,7 +203,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             try:
                 result = await pick_directory_async(
                     "Select DNG input folder", initial,
-                    can_create_directories=False)
+                    can_create_directories=False, page=page)
             except Exception as ex:
                 log(f"[error] folder picker failed: {ex}")
                 page.update()
@@ -219,7 +219,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             try:
                 paths = await pick_files_async(
                     "Select DNG file(s)", initial, ["dng", "DNG"],
-                    allow_multiple=True)
+                    allow_multiple=True, page=page)
             except Exception as ex:
                 log(f"[error] file picker failed: {ex}")
                 page.update()
@@ -241,15 +241,20 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
         initial = state["last_output_dir"]
         if mode_dropdown.value == "video":
-            result = await ft.FilePicker().save_file(
+            _picker = ft.FilePicker()
+            page.overlay.append(_picker)
+            page.update()
+            result = await _picker.save_file(
                 dialog_title="Save video as",
                 file_name="output.mp4",
                 initial_directory=initial,
                 allowed_extensions=["mp4"],
                 file_type=ft.FilePickerFileType.CUSTOM,
             )
+            page.overlay.remove(_picker)
+            page.update()
         else:
-            result = await pick_directory_async("Select output folder", initial)
+            result = await pick_directory_async("Select output folder", initial, page=page)
         if result:
             if mode_dropdown.value == "video":
                 if not result.lower().endswith(".mp4"):
