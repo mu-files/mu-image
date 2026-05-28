@@ -80,10 +80,20 @@ jobs:
           cd build/flutter/build/macos/Build/Products/Release
           ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app $GITHUB_WORKSPACE/mu-dng-converter/mu-dng-converter-macos.zip
 
-      - name: Package Windows build
+      - name: Build Windows installer
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: Compress-Archive -Path build/windows/* -DestinationPath mu-dng-converter-windows.zip
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^app-v', ''
+          $sourceDir = "${{ github.workspace }}\mu-dng-converter\build\windows\runner\Release"
+          $issScript = "${{ github.workspace }}\mu-dng-converter\installer\windows.iss"
+          $outputDir = "${{ github.workspace }}\mu-dng-converter"
+          iscc.exe `
+            /DAppVersion="$version" `
+            /DSourceDir="$sourceDir" `
+            /O"$outputDir" `
+            "$issScript"
 
       - name: Package Linux build
         if: matrix.platform == 'linux'
@@ -95,6 +105,7 @@ jobs:
           name: mu-dng-converter-${{ matrix.platform }}
           path: |
             mu-dng-converter/mu-dng-converter-*.zip
+            mu-dng-converter/mu-dng-converter-*-setup.exe
             mu-dng-converter/mu-dng-converter-*.tar.gz
           retention-days: 30
 
@@ -117,6 +128,6 @@ jobs:
           draft: false
           files: |
             mu-dng-converter-macos.zip
-            mu-dng-converter-windows.zip
+            mu-dng-converter-windows-setup.exe
             mu-dng-converter-linux.tar.gz
           generate_release_notes: true
