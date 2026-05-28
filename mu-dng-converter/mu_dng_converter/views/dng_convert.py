@@ -127,9 +127,35 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         ],
         width=120,
     )
+
+    def _clamp_scale(e):
+        try:
+            v = max(0.125, min(1.0, float(scale.value)))
+        except (ValueError, TypeError):
+            v = 1.0
+        scale.value = str(v)
+        page.update()
+
+    scale = ft.TextField(
+        label="Scale (0.125–1)", value="1.0", width=130,
+        keyboard_type=ft.KeyboardType.NUMBER,
+        on_blur=_clamp_scale,
+        on_submit=_clamp_scale,
+    )
+
+    def _clamp_workers(e):
+        try:
+            v = max(1, min(8, int(num_workers.value)))
+        except (ValueError, TypeError):
+            v = 4
+        num_workers.value = str(v)
+        page.update()
+
     num_workers = ft.TextField(
         label="Workers (1-8)", value="4", width=100,
         keyboard_type=ft.KeyboardType.NUMBER,
+        on_blur=_clamp_workers,
+        on_submit=_clamp_workers,
     )
 
     # Video options
@@ -232,6 +258,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         is_jpg = mode == "jpg"
         video_options.visible = is_video
         bit_depth.visible = not is_video
+        scale.visible = not is_video
         _output_btn_text.value = "Select Output File" if is_video else "Select Output Folder"
         output_path_text.value = "No folder selected"
         output_path_text.tooltip = None
@@ -391,6 +418,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                     bit_depth=bit_depth.value,
                     rendering_params=rendering_params,
                     use_xmp=use_xmp.value,
+                    scale=max(0.125, min(1.0, float(scale.value or 1.0))),
                     num_workers=max(1, min(8, int(num_workers.value))),
                     on_task_done=on_task_done,
                 )
@@ -505,7 +533,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             ft.Row(controls=[wb_dropdown, temperature, tint, exposure], wrap=True),
             ft.Divider(height=8),
             ft.Text("Output Options", weight=ft.FontWeight.BOLD, size=13),
-            ft.Row(controls=[bit_depth, num_workers], wrap=True),
+            ft.Row(controls=[bit_depth, scale, num_workers], wrap=True),
             video_options,
             ft.Divider(height=8),
             progress_bar,

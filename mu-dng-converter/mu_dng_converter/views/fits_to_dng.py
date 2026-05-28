@@ -574,9 +574,19 @@ def build_fits_view(page: ft.Page) -> ft.Control:
     tone_curve = ft.Checkbox(label="Default Tone Curve", value=True)
 
     # Output options
+    def _clamp_workers(e):
+        try:
+            v = max(1, min(8, int(num_workers.value)))
+        except (ValueError, TypeError):
+            v = 4
+        num_workers.value = str(v)
+        page.update()
+
     num_workers = ft.TextField(
         label="Workers (1-8)", value="4", width=100,
         keyboard_type=ft.KeyboardType.NUMBER,
+        on_blur=_clamp_workers,
+        on_submit=_clamp_workers,
     )
 
     compression = ft.Dropdown(
@@ -588,7 +598,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
             ft.dropdown.Option("jxl_lossless", "JXL Lossless"),
             ft.dropdown.Option("jxl_lossy", "JXL Lossy"),
         ],
-        width=180,
+        width=200,
     )
 
     preview = ft.Checkbox(label="JPEG Preview", value=False)
