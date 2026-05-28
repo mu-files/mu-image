@@ -2064,16 +2064,28 @@ def xmp_metadata_to_packet(xmp: XmpMetadata) -> bytes:
         '    <rdf:Description rdf:about=""',
     ]
     
-    # Namespace declarations
-    namespaces = {
+    # Known namespace registry
+    _KNOWN_NAMESPACES = {
         'crs': 'http://ns.adobe.com/camera-raw-settings/1.0/',
         'dc': 'http://purl.org/dc/elements/1.1/',
         'tiff': 'http://ns.adobe.com/tiff/1.0/',
         'xmp': 'http://ns.adobe.com/xap/1.0/',
+        'avm': 'http://www.communicatingastronomy.org/avm/1.0/',
+        'photoshop': 'http://ns.adobe.com/photoshop/1.0/',
+        'xmpRights': 'http://ns.adobe.com/xap/1.0/rights/',
+        'Iptc4xmpCore': 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/',
     }
     
-    for prefix, uri in namespaces.items():
-        xmp_lines.append(f'        xmlns:{prefix}="{uri}"')
+    # Auto-detect namespaces from attribute key prefixes
+    used_prefixes = set()
+    for key in xmp._attributes:
+        if ':' in key:
+            prefix = key.split(':')[0]
+            used_prefixes.add(prefix)
+    
+    for prefix in sorted(used_prefixes):
+        if prefix in _KNOWN_NAMESPACES:
+            xmp_lines.append(f'        xmlns:{prefix}="{_KNOWN_NAMESPACES[prefix]}"')
     
     # Separate scalar attributes from structured (Bag/Seq)
     scalar_attrs = {}
@@ -2100,8 +2112,10 @@ def xmp_metadata_to_packet(xmp: XmpMetadata) -> bytes:
             continue
         
         # Determine if this is a Seq or Bag
-        # ToneCurve properties use Seq, dc:subject uses Bag
-        is_seq = 'ToneCurve' in key or isinstance(value[0], tuple)
+        # ToneCurve properties use Seq, AVM Spatial/FL properties use Seq,
+        # dc:subject uses Bag
+        is_seq = ('ToneCurve' in key or 'avm:' in key
+                  or isinstance(value[0], tuple))
         container_type = 'Seq' if is_seq else 'Bag'
         
         xmp_lines.append(f'      <{key}>')

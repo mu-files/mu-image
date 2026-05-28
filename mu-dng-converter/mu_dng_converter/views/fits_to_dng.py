@@ -179,18 +179,25 @@ def _build_metadata_tags(header, data, auto_exposure, ev_value,
         if ev_value and float(ev_value) != 0:
             tags.add_tag("BaselineExposure", float(ev_value))
 
-    # Tone curve XMP
+    # Build XMP properties (tone curve + AVM)
+    xmp_props = {}
+
     if use_tone_curve:
-        tone_curve = [
+        xmp_props['ToneCurvePV2012'] = [
             (0.0, 0.0),
             (64 / 255, 32 / 255),
             (128 / 255, 128 / 255),
             (192 / 255, 224 / 255),
             (1.0, 1.0),
         ]
-        add_supported_xmp_from_dict(tags, {
-            'ToneCurvePV2012': tone_curve,
-        })
+
+    # AVM (Astronomy Visualization Metadata) from FITS header
+    from mu_dng_converter.fits_avm import fits_header_to_avm_xmp
+    avm_props = fits_header_to_avm_xmp(header)
+    xmp_props.update(avm_props)
+
+    if xmp_props:
+        add_supported_xmp_from_dict(tags, xmp_props)
 
     return tags
 

@@ -3544,15 +3544,19 @@ def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
             key = f'crs:{key}'
         
         # Handle different value types
-        if key == 'dc:subject' and isinstance(value, list):
-            # List of strings for dc:subject bag
-            attributes[key] = value
+        if isinstance(value, list):
+            if len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
+                # Direct list of 2-tuples (tone curve points)
+                attributes[key] = [(float(x), float(y)) for x, y in value]
+            elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
+                # CubicSpline object with points attribute (normalized 0-1)
+                attributes[key] = getattr(value, 'points')
+            else:
+                # List of strings (dc:subject bag, AVM Seq, etc.)
+                attributes[key] = value
         elif hasattr(value, 'points') and isinstance(getattr(value, 'points'), list):
             # CubicSpline object with points attribute (normalized 0-1)
             attributes[key] = getattr(value, 'points')
-        elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], (tuple, list)) and len(value[0]) == 2:
-            # Direct list of 2-tuples (tone curve points)
-            attributes[key] = [(float(x), float(y)) for x, y in value]
         else:
             # Scalar value
             attributes[key] = str(value)
