@@ -743,10 +743,8 @@ def build_fits_view(page: ft.Page) -> ft.Control:
         else:
             input_dir = Path(inp)
             fits_files = sorted(
-                list(input_dir.glob("*.fits"))
-                + list(input_dir.glob("*.fit"))
-                + list(input_dir.glob("*.FITS"))
-                + list(input_dir.glob("*.FIT"))
+                p for p in input_dir.iterdir()
+                if p.suffix.lower() in (".fits", ".fit")
             )
         if not fits_files:
             log_text.value = (
