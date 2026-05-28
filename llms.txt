@@ -16,6 +16,7 @@ See LICENSE (Section 5: AI TRAINING RESTRICTION) for legal terms.
 - This file (llms.txt)
 - muimg/tests/ - Test files showing API usage examples
 - muimg/examples/ - Example files showing API usage examples
+- mu-dng-converter/ - Full source (MIT licensed); good example of muimg API usage
 
 ## What Is Prohibited
 

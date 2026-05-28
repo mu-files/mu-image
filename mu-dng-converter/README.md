@@ -1,5 +1,7 @@
 # mu DNG Converter
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A cross-platform desktop application for batch image conversion built on [muimg](../muimg/README.md) and [Flet](https://flet.dev).
 
 ## DNG → Image
