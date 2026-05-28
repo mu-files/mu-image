@@ -49,6 +49,15 @@ Convert astronomical FITS files to DNG for use in Photoshop and other RAW editor
 
 Download a pre-built binary from the [Releases](https://github.com/mu-files/mu-image/releases) page. No Python installation required.
 
+> **macOS note:** The app is not yet notarized. On first launch macOS may show a message saying the app cannot be opened. To allow it:
+> 1. Try to open the app (double-click) — macOS will block it
+> 2. Open **System Settings → Privacy & Security**
+> 3. Scroll down to the Security section — you will see a message about mu-dng-converter
+> 4. Click **Open Anyway**
+> 5. The app will open and you won't be prompted again
+
+> **Windows note:** Windows SmartScreen may warn that the app is unrecognized. Click **More info** then **Run anyway** to proceed.
+
 ### Raspberry Pi
 
 Install directly from GitHub using pip (Python 3.12+ required), then launch the desktop GUI:
