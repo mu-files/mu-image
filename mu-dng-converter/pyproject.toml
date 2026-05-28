@@ -7,7 +7,7 @@ name = "mu-dng-converter"
 version = "0.1.0"
 description = "GUI application for batch DNG/FITS image conversion"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "flet>=0.25",
     "muimg",
