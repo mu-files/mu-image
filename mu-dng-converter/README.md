@@ -56,16 +56,19 @@ Download a pre-built binary from the [Releases](https://github.com/mu-files/mu-i
 > 4. Click **Open Anyway**
 > 5. The app will open and you won't be prompted again
 
-> **Windows note:** Windows SmartScreen may warn that the app is unrecognized. Click **More info** then **Run anyway** to proceed.
+> **Windows note:** Download and run `mu-dng-converter-windows-setup.exe`. Windows SmartScreen may warn that the app is unrecognized — click **More info** then **Run anyway** to proceed. The installer adds a Start Menu shortcut and an optional desktop icon.
 
 ### Raspberry Pi
 
-Install directly from GitHub using pip (Python 3.12+ required), then launch the desktop GUI:
+Install directly from GitHub using pip (Python 3.12+ required). Raspberry Pi OS requires a virtual environment:
 
 ```bash
-pip install "mu-dng-converter @ git+https://github.com/mu-files/mu-image.git#subdirectory=mu-dng-converter"
-mu-dng-converter
+python3 -m venv ~/mu-dng-converter-venv
+~/mu-dng-converter-venv/bin/pip install "mu-dng-converter @ git+https://github.com/mu-files/mu-image.git#subdirectory=mu-dng-converter"
+~/mu-dng-converter-venv/bin/mu-dng-converter
 ```
+
+> **First launch:** Flet downloads its desktop runtime on first run — this is a one-time operation and may take a minute.
 
 ### Developers
 
