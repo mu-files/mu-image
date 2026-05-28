@@ -629,9 +629,14 @@ def build_fits_view(page: ft.Page) -> ft.Control:
         mode = input_mode.value
         initial = state["last_input_dir"]
         if mode == "folder":
-            result = await pick_directory_async(
-                "Select FITS input folder", initial,
-                can_create_directories=False)
+            try:
+                result = await pick_directory_async(
+                    "Select FITS input folder", initial,
+                    can_create_directories=False)
+            except Exception as ex:
+                log(f"[error] folder picker failed: {ex}")
+                page.update()
+                return
             if result:
                 state["last_input_dir"] = result
                 state["input_files"] = None
@@ -643,9 +648,14 @@ def build_fits_view(page: ft.Page) -> ft.Control:
                 })
                 page.update()
         else:
-            paths = await pick_files_async(
-                "Select FITS file(s)", initial, ["fits", "fit"],
-                allow_multiple=True)
+            try:
+                paths = await pick_files_async(
+                    "Select FITS file(s)", initial, ["fits", "fit"],
+                    allow_multiple=True)
+            except Exception as ex:
+                log(f"[error] file picker failed: {ex}")
+                page.update()
+                return
             if paths:
                 state["last_input_dir"] = str(Path(paths[0]).parent)
                 state["input_files"] = paths

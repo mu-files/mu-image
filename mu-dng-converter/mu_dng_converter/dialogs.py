@@ -29,8 +29,6 @@ def _pick_directory_macos(title: str, initial_directory: str | None = None,
     from AppKit import NSOpenPanel, NSModalResponseOK, NSFloatingWindowLevel
     from Foundation import NSURL
 
-    _ensure_app_active()
-
     panel = NSOpenPanel.openPanel()
     panel.setCanChooseDirectories_(True)
     panel.setCanCreateDirectories_(can_create_directories)
@@ -61,8 +59,6 @@ def _pick_files_macos(
     """Open native macOS NSOpenPanel for file selection."""
     from AppKit import NSOpenPanel, NSModalResponseOK, NSFloatingWindowLevel
     from Foundation import NSURL
-
-    _ensure_app_active()
 
     panel = NSOpenPanel.openPanel()
     panel.setCanChooseDirectories_(False)
@@ -101,8 +97,8 @@ async def pick_directory_async(title: str = "Select Folder",
     if IS_MACOS:
         try:
             return _pick_directory_macos(title, initial_directory, can_create_directories)
-        except ImportError:
-            pass
+        except Exception as e:
+            print(f"[dialogs] macOS directory picker failed: {e}")
     return await ft.FilePicker().get_directory_path(
         dialog_title=title, initial_directory=initial_directory)
 
@@ -116,11 +112,9 @@ async def pick_files_async(
     """Pick files using native dialog (macOS) or Flet fallback."""
     if IS_MACOS:
         try:
-            return _pick_files_macos(
-                title, initial_directory, allowed_extensions, allow_multiple
-            )
-        except ImportError:
-            pass
+            return _pick_files_macos(title, initial_directory, allowed_extensions, allow_multiple)
+        except Exception as e:
+            print(f"[dialogs] macOS file picker failed: {e}")
     files = await ft.FilePicker().pick_files(
         dialog_title=title,
         initial_directory=initial_directory,

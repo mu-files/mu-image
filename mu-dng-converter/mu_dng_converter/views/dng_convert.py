@@ -200,9 +200,14 @@ def build_dng_view(page: ft.Page) -> ft.Control:
         mode = input_mode.value
         initial = state["last_input_dir"]
         if mode == "folder":
-            result = await pick_directory_async(
-                "Select DNG input folder", initial,
-                can_create_directories=False)
+            try:
+                result = await pick_directory_async(
+                    "Select DNG input folder", initial,
+                    can_create_directories=False)
+            except Exception as ex:
+                log(f"[error] folder picker failed: {ex}")
+                page.update()
+                return
             if result:
                 state["last_input_dir"] = result
                 state["input_files"] = None
@@ -211,9 +216,14 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                 _save_settings({"last_input_dir": state["last_input_dir"], "last_output_dir": state["last_output_dir"]})
                 page.update()
         else:
-            paths = await pick_files_async(
-                "Select DNG file(s)", initial, ["dng", "DNG"],
-                allow_multiple=True)
+            try:
+                paths = await pick_files_async(
+                    "Select DNG file(s)", initial, ["dng", "DNG"],
+                    allow_multiple=True)
+            except Exception as ex:
+                log(f"[error] file picker failed: {ex}")
+                page.update()
+                return
             if paths:
                 state["last_input_dir"] = str(Path(paths[0]).parent)
                 state["input_files"] = paths
