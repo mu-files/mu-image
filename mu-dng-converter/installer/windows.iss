@@ -29,5 +29,14 @@ Name: "{group}\mu DNG Converter"; Filename: "{app}\mu-dng-converter.exe"
 Name: "{group}\{cm:UninstallProgram,mu DNG Converter}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\mu DNG Converter"; Filename: "{app}\mu-dng-converter.exe"; Tasks: desktopicon
 
+[UninstallDelete]
+Type: files; Name: "{userappdata}\mu-dng-converter\fits_settings.json"
+Type: files; Name: "{userappdata}\mu-dng-converter\dng_settings.json"
+Type: dirifempty; Name: "{userappdata}\mu-dng-converter"
+
+[InstallDelete]
+Type: files; Name: "{userappdata}\mu-dng-converter\fits_settings.json"
+Type: files; Name: "{userappdata}\mu-dng-converter\dng_settings.json"
+
 [Run]
 Filename: "{app}\mu-dng-converter.exe"; Description: "{cm:LaunchProgram,mu DNG Converter}"; Flags: nowait postinstall skipifsilent
