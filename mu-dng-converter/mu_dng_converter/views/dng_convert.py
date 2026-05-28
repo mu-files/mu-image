@@ -33,7 +33,9 @@ def _save_settings(settings: dict):
     _settings_path().write_text(json.dumps(settings, indent=2))
 
 
-def build_dng_view(page: ft.Page) -> ft.Control:
+def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
+                   file_picker: ft.FilePicker | None = None,
+                   save_picker: ft.FilePicker | None = None) -> ft.Control:
     """Build the DNG conversion tab content."""
 
     _settings = _load_settings()
@@ -203,7 +205,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             try:
                 result = await pick_directory_async(
                     "Select DNG input folder", initial,
-                    can_create_directories=False)
+                    can_create_directories=False, picker=dir_picker)
             except Exception as ex:
                 log(f"[error] folder picker failed: {ex}")
                 page.update()
@@ -219,7 +221,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
             try:
                 paths = await pick_files_async(
                     "Select DNG file(s)", initial, ["dng", "DNG"],
-                    allow_multiple=True)
+                    allow_multiple=True, picker=file_picker)
             except Exception as ex:
                 log(f"[error] file picker failed: {ex}")
                 page.update()
@@ -241,7 +243,8 @@ def build_dng_view(page: ft.Page) -> ft.Control:
 
         initial = state["last_output_dir"]
         if mode_dropdown.value == "video":
-            result = await ft.FilePicker().save_file(
+            _sp = save_picker if save_picker is not None else ft.FilePicker()
+            result = await _sp.save_file(
                 dialog_title="Save video as",
                 file_name="output.mp4",
                 initial_directory=initial,
@@ -249,7 +252,7 @@ def build_dng_view(page: ft.Page) -> ft.Control:
                 file_type=ft.FilePickerFileType.CUSTOM,
             )
         else:
-            result = await pick_directory_async("Select output folder", initial)
+            result = await pick_directory_async("Select output folder", initial, picker=dir_picker)
         if result:
             if mode_dropdown.value == "video":
                 if not result.lower().endswith(".mp4"):

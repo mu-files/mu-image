@@ -30,6 +30,12 @@ def app(page: ft.Page):
         ),
     )
 
+    dng_dir_picker = ft.FilePicker()
+    dng_file_picker = ft.FilePicker()
+    dng_save_picker = ft.FilePicker()
+    fits_dir_picker = ft.FilePicker()
+    fits_file_picker = ft.FilePicker()
+
     tabs = ft.Tabs(
         selected_index=0,
         length=2,
@@ -48,14 +54,19 @@ def app(page: ft.Page):
                     expand=True,
                     controls=[
                         ft.Container(
-                            content=build_dng_view(page),
+                            content=build_dng_view(page,
+                                dir_picker=dng_dir_picker,
+                                file_picker=dng_file_picker,
+                                save_picker=dng_save_picker),
                             padding=ft.Padding(
                                 left=0, top=10, right=0, bottom=0
                             ),
                             expand=True,
                         ),
                         ft.Container(
-                            content=build_fits_view(page),
+                            content=build_fits_view(page,
+                                dir_picker=fits_dir_picker,
+                                file_picker=fits_file_picker),
                             padding=ft.Padding(
                                 left=0, top=10, right=0, bottom=0
                             ),

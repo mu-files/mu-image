@@ -495,7 +495,8 @@ def run_batch_fits_to_dng(
     }
 
 
-def build_fits_view(page: ft.Page) -> ft.Control:
+def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
+                    file_picker: ft.FilePicker | None = None) -> ft.Control:
     """Build the FITS → DNG conversion tab content."""
 
     _settings = _load_settings()
@@ -632,7 +633,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
             try:
                 result = await pick_directory_async(
                     "Select FITS input folder", initial,
-                    can_create_directories=False)
+                    can_create_directories=False, picker=dir_picker)
             except Exception as ex:
                 log(f"[error] folder picker failed: {ex}")
                 page.update()
@@ -651,7 +652,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
             try:
                 paths = await pick_files_async(
                     "Select FITS file(s)", initial, ["fits", "fit"],
-                    allow_multiple=True)
+                    allow_multiple=True, picker=file_picker)
             except Exception as ex:
                 log(f"[error] file picker failed: {ex}")
                 page.update()
@@ -680,7 +681,7 @@ def build_fits_view(page: ft.Page) -> ft.Control:
         from mu_dng_converter.dialogs import pick_directory_async
 
         initial = state["last_output_dir"]
-        result = await pick_directory_async("Select output folder", initial)
+        result = await pick_directory_async("Select output folder", initial, picker=dir_picker)
         if result:
             state["last_output_dir"] = result
             output_path_text.value = result

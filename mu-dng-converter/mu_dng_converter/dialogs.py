@@ -7,9 +7,12 @@ import flet as ft
 
 async def pick_directory_async(title: str = "Select Folder",
                                initial_directory: str | None = None,
-                               can_create_directories: bool = True) -> str | None:
+                               can_create_directories: bool = True,
+                               picker: ft.FilePicker | None = None) -> str | None:
     """Pick a directory using Flet's FilePicker."""
-    return await ft.FilePicker().get_directory_path(
+    if picker is None:
+        picker = ft.FilePicker()
+    return await picker.get_directory_path(
         dialog_title=title, initial_directory=initial_directory)
 
 
@@ -18,9 +21,12 @@ async def pick_files_async(
     initial_directory: str | None = None,
     allowed_extensions: list[str] | None = None,
     allow_multiple: bool = False,
+    picker: ft.FilePicker | None = None,
 ) -> list[str] | None:
     """Pick files using Flet's FilePicker."""
-    files = await ft.FilePicker().pick_files(
+    if picker is None:
+        picker = ft.FilePicker()
+    files = await picker.pick_files(
         dialog_title=title,
         initial_directory=initial_directory,
         allowed_extensions=allowed_extensions,
