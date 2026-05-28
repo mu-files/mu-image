@@ -33,7 +33,7 @@ Convert astronomical FITS files to DNG for use in Photoshop and other RAW editor
 - Auto exposure (histogram-based EV shift and black level estimation)
 - AVM XMP metadata mapping from FITS headers
 - Color temperature selection
-- Colour space and channel order configuration
+- Colour space configuration (channel order is determined by the FITS file)
 - JPEG preview and fast-load pyramid embedding
 - Multi-threaded batch processing (1–8 workers)
 
