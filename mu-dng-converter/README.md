@@ -46,7 +46,7 @@ Convert astronomical FITS files to DNG for use in Photoshop and other RAW editor
 
 ### Desktop (macOS, Windows, Linux)
 
-Download a pre-built binary from the [Releases](../../releases) page. No Python installation required.
+Download a pre-built binary from the [Releases](https://github.com/mu-files/mu-image/releases) page. No Python installation required.
 
 ### Raspberry Pi
 
