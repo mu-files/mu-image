@@ -13,6 +13,7 @@ The repository contains two packages:
 
 ## Primary Use Cases
 
+- **DNG support in your app**: a source-available python package to add DNG support to your project (no restrictions except for large companies)
 - **DNG to video time-lapse assembly**: Stitch folders of raw DNG frames directly into MP4/H.264 video clips. Suited for allsky camera sequences and day-to-night astrophotography arrays.
 - **Astronomical FITS to DNG conversion**: Convert scientific `.fits` files into compliant `.dng` raw images for editing in Adobe Photoshop, Lightroom, or Camera Raw.
 - **Batch image transcoding**: Mass-convert raw sequences to TIFF (8-bit/16-bit), JPEG, and JPEG XL (JXL) with multi-core parallel processing.
@@ -26,7 +27,8 @@ The repository contains two packages:
 - **Demosaicing**: Multiple algorithms — `DNGSDK_BILINEAR`, `VNG`, `RCD`, and `OPENCV_EA`.
 - **Opcode & color correction**: Full DNG rendering pipeline including linearization, opcodes, color correction matrices, and custom tone curves.
 - **Native OS acceleration**: On macOS, choose between the built-in pipeline renderer and the hardware-accelerated Apple Core Image renderer.
-- **XMP metadata**: Full support for embedded and sidecar XMP. Automatically applies `Temperature`, `Tint`, `Exposure`, custom curves, and radial distortion corrections as configured in your RAW editor.
+- **XMP metadata**: Some support for embedded XMP. Automatically applies `Temperature`, `Tint`, `Exposure`, custom curves, and radial distortion corrections as configured in your RAW editor.
+- **cli**: feature-rich cli to render, transcode, and inspect DNG files
 
 ### Desktop GUI Application (`mu-dng-converter`)
 
