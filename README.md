@@ -1,4 +1,4 @@
-# mu-image: Open-Source RAW Image Infrastructure & Utilities
+# Open-Source RAW Image Infrastructure & Utilities
 
 [![License](https://img.shields.io/badge/License-PolyForm%20Small%20Business-blue.svg)](muimg/LICENSE)
 
