@@ -56,10 +56,8 @@ The repository contains two packages:
 
 ## Getting Started
 
-**Desktop app (macOS, Windows, Linux):** Download a pre-built binary from the [mu-dng-converter releases page](https://github.com/mu-files/mu-image/releases/latest). No Python installation required.
+**Desktop app (macOS, Windows, Linux):** Download a pre-built binary from the [mu-dng-converter releases page](https://github.com/mu-files/mu-image/releases/latest). No Python installation required. See [mu-dng-converter/README.md](mu-dng-converter/README.md) for GUI usage and feature details.
 
 **Python library:** See [muimg/README.md](muimg/README.md) for installation, API reference, and CLI usage.
-
-**Desktop app documentation:** See [mu-dng-converter/README.md](mu-dng-converter/README.md) for GUI usage and feature details.
 
 **Release history:** See [CHANGELOG.md](muimg/CHANGELOG.md).
