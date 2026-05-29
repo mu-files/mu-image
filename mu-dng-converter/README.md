@@ -7,7 +7,10 @@ A cross-platform desktop application for batch image conversion built on [muimg]
 
 ## DNG → Image
 
-<img src="docs/DNG-Image.png" width="480" alt="DNG to Image tab">
+<table><tr>
+<td><img src="docs/DNG-Image.png" width="480" alt="DNG to Image tab"></td>
+<td><img src="docs/DNG-Video.png" width="480" alt="DNG to Video mode"></td>
+</tr></table>
 
 Convert DNG files to TIFF or JPEG with full rendering control:
 - White balance (presets or custom temperature/tint)
@@ -33,7 +36,7 @@ Convert astronomical FITS files to DNG for use in Photoshop and other RAW editor
 - Auto exposure (histogram-based EV shift and black level estimation)
 - AVM XMP metadata mapping from FITS headers
 - Color temperature selection
-- Colour space configuration (channel order is determined by the FITS file)
+- Color space configuration
 - JPEG preview and fast-load pyramid embedding
 - Multi-threaded batch processing (1–8 workers)
 
