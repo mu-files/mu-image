@@ -5,6 +5,8 @@
 
 A cross-platform desktop application for batch image conversion built on [muimg](../muimg/README.md) and [Flet](https://flet.dev).
 
+[Download latest release](https://github.com/mu-files/mu-image/releases/latest)
+
 ## DNG → Image
 
 <table><tr>
