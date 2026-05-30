@@ -610,7 +610,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                     algorithm = DemosaicAlgorithm.lookup(demosaic)
                 else:
                     algorithm = DemosaicAlgorithm.OPENCV_EA
-                data = page.get_camera_rgb_raw(demosaic_algorithm=algorithm)
+                data = page.get_camera_raw(demosaic_algorithm=algorithm)
                 if data is None:
                     click.echo("Error: Failed to extract camera RGB", err=True)
                     sys.exit(1)

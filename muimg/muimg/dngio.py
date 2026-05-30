@@ -143,7 +143,7 @@ class DngPage(tifffile.TiffPage):
     def is_linear_raw(self) -> bool:
         """True if this page contains LINEAR_RAW (demosaiced) data."""
         return self.photometric_name == "LINEAR_RAW"
-    
+
     @property
     def is_main_image(self) -> bool:
         """True if this page is the main image (NewSubfileType == 0)."""
@@ -455,13 +455,29 @@ class DngPage(tifffile.TiffPage):
                         h, w_half, _ = tile.shape
                         tile = tile.reshape(h, w_half * 2)
                     return tile
+            elif self.is_linear_raw:
+                if self.samplesperpixel == 1:
+                    # Monochrome: decode without colorspace forcing (natural grayscale)
+                    def decode_tile(tile_data: bytes) -> np.ndarray:
+                        return imagecodecs.jpeg_decode(
+                            tile_data,
+                            bitspersample=self.bitspersample
+                        )
+                else:
+                    # RGB: force RGB colorspace to bypass YCbCr conversion
+                    def decode_tile(tile_data: bytes) -> np.ndarray:
+                        return imagecodecs.jpeg_decode(
+                            tile_data,
+                            bitspersample=self.bitspersample,
+                            colorspace=2,  # RGB
+                            outcolorspace=2
+                        )
             else:
+                # Non-raw (preview): let decoder handle colorspace
                 def decode_tile(tile_data: bytes) -> np.ndarray:
                     return imagecodecs.jpeg_decode(
                         tile_data,
-                        bitspersample=self.bitspersample,
-                        colorspace=2,  # RGB - bypass YCbCr conversion
-                        outcolorspace=2
+                        bitspersample=self.bitspersample
                     )
             return self._decode_segmented(decode_tile)
         else:
@@ -512,32 +528,36 @@ class DngPage(tifffile.TiffPage):
 
         return raw_linear
 
-    def get_camera_rgb_raw(
-        self, 
+    def get_camera_raw(
+        self,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA
         ) -> np.ndarray | None:
-        """Extract the camera-RGB intermediate from a raw page for the color pipeline.
+        """Extract the camera-space intermediate from a raw page for the rendering pipeline.
 
-        This corresponds to the `rgb_camera` input passed into
-        `raw_render._render_camera_rgb(...)` during `render_raw()`.
+        This corresponds to the `camera_data` input passed into
+        `raw_render._render_camera_rgb(...)` or `mono_camera` for monochrome
+        passed into `raw_render._render_camera_monochrome(...)` during `render_raw()`.
 
         Returns stage3 (normalized + ActiveArea-cropped), applies OpcodeList3 (if
         present), demosaics (if CFA), applies OpcodeList3 (if present), and applies
         DefaultCrop (if present).
 
-        - If photometric == LINEAR_RAW: returns the stage3 linear RGB.
+        - If photometric == LINEAR_RAW and RGB: returns the stage3 linear RGB (H, W, 3).
+        - If photometric == LINEAR_RAW and monochrome: returns stage3 linear mono (H, W, 1).
         - Else: demosaics the stage2 CFA to camera RGB, then applies stage3 operations.
 
         Args:
             demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
 
         Returns:
-            Camera RGB array (H, W, 3) float32 in [0, 1], or None if extraction fails.
+            Camera space array (H, W, 3) float32 in [0, 1] for CFA/RGB, or
+            monochrome array (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
+            Returns None if extraction fails.
         """
         # Validate this is a raw page
         if not (self.is_cfa or self.is_linear_raw):
             raise ValueError(
-                f"get_camera_rgb_raw() requires CFA or LINEAR_RAW page, "
+                f"get_camera_raw() requires CFA or LINEAR_RAW page, "
                 f"got {self.photometric_name}"
             )
 
@@ -553,7 +573,7 @@ class DngPage(tifffile.TiffPage):
                 return None
             data, cfa_pattern = cfa_result
 
-        return raw_render._raw_to_camera_rgb(
+        return raw_render._render_to_camera_space(
             self, data, self.photometric_name, cfa_pattern, demosaic_algorithm
         )
     
@@ -657,20 +677,30 @@ class DngPage(tifffile.TiffPage):
 
         with scoped_perf_timer("render_raw_page", logger):
 
-            rgb_camera = self.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
-            if rgb_camera is None:
-                logger.error("Failed to extract camera RGB from DNG")
+            camera_data = self.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
+            if camera_data is None:
+                logger.error("Failed to extract camera data from DNG")
                 return None
-            
-            # Get IFD0 for rendering (color profile tags are in IFD0)
-            result = raw_render._render_camera_rgb(
-                ifd0_tags=self.ifd0,
-                raw_ifd_tags=self,
-                rgb_camera=rgb_camera,
-                output_dtype=output_dtype,
-                rendering_params=rendering_params,
-                use_xmp=use_xmp,
-            )
+
+            # Branch based on monochrome vs color
+            if self.is_linear_raw and self.samplesperpixel == 1:
+                result = raw_render._render_camera_monochrome(
+                    ifd0_tags=self.ifd0,
+                    raw_ifd_tags=self,
+                    mono_camera=camera_data,
+                    output_dtype=output_dtype,
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp,
+                )
+            else:
+                result = raw_render._render_camera_rgb(
+                    ifd0_tags=self.ifd0,
+                    raw_ifd_tags=self,
+                    rgb_camera=camera_data,
+                    output_dtype=output_dtype,
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp,
+                )
             return result
 
 class DngFile(tifffile.TiffFile):
@@ -883,25 +913,24 @@ class DngFile(tifffile.TiffFile):
         """See `DngPage.get_linear_raw`."""
         return self._forward_main_page("get_linear_raw")
 
-    def get_camera_rgb_raw(
+    def get_camera_raw(
         self,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     ) -> np.ndarray | None:
-        """Extract camera-RGB from main raw page with optional scaling.
-        
-        When scale is provided, automatically selects the optimal SubIFD pyramid
-        level to minimize processing overhead, then applies final scaling if needed.
-        
-        See `DngPage.get_camera_rgb_raw` for full documentation.
-        
+        """Extract camera-space data from main raw page.
+
+        See `DngPage.get_camera_raw` for full documentation.
+
         Args:
             demosaic_algorithm: Algorithm for CFA demosaicing
-        
+
         Returns:
-            Camera RGB array (H, W, 3) float32 in [0, 1], or None if extraction fails.
+            Camera space array (H, W, 3) float32 in [0, 1] for CFA/RGB, or
+            monochrome array (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
+            Returns None if extraction fails.
         """
         return self._forward_main_page(
-            "get_camera_rgb_raw",
+            "get_camera_raw",
             demosaic_algorithm=demosaic_algorithm,
         )
 
@@ -967,11 +996,11 @@ class DngFile(tifffile.TiffFile):
         _timer = PerfTimer("render_raw_file")
 
         try:
-            # Get camera RGB raw from render page
-            rgb_camera = render_page.get_camera_rgb_raw(demosaic_algorithm=demosaic_algorithm)
-            if rgb_camera is None:
+            # Get camera raw data from render page
+            camera_data = render_page.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
+            if camera_data is None:
                 return None
-            
+
             # Apply resize if needed (when scaling and dimensions don't match)
             scale_needed = False
             if target_w is not None and target_h is not None:
@@ -983,22 +1012,33 @@ class DngFile(tifffile.TiffFile):
                     else:
                         # Downscaling: do it now before rendering
                         _timer.start_step("pre_scale (opencv)")
-                        rgb_camera = cv2.resize(
-                            rgb_camera, (target_w, target_h), interpolation=cv2.INTER_AREA
+                        camera_data = cv2.resize(
+                            camera_data, (target_w, target_h), interpolation=cv2.INTER_AREA
                         )
                         _timer.end_step()
-            
-            # Render camera RGB to final output
-            # use main_page for raw_ifd in case there is a PGTM, nothing else uses raw_ifd tags in RGB render path
-            rgb_image = raw_render._render_camera_rgb(
-                ifd0_tags=self.ifd0,
-                raw_ifd_tags=main_page, 
-                rgb_camera=rgb_camera,
-                output_dtype=output_dtype,
-                rendering_params=rendering_params,
-                use_xmp=use_xmp,
-            )
-            del rgb_camera
+
+            # Branch based on monochrome vs color
+            # use main_page for raw_ifd in case there is a PGTM
+            is_mono = main_page.is_linear_raw and main_page.samplesperpixel == 1
+            if is_mono:
+                rendered_image = raw_render._render_camera_monochrome(
+                    ifd0_tags=self.ifd0,
+                    raw_ifd_tags=main_page,
+                    mono_camera=camera_data,
+                    output_dtype=output_dtype,
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp,
+                )
+            else:
+                rendered_image = raw_render._render_camera_rgb(
+                    ifd0_tags=self.ifd0,
+                    raw_ifd_tags=main_page,
+                    rgb_camera=camera_data,
+                    output_dtype=output_dtype,
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp,
+                )
+            del camera_data
             
             # Post-render upscaling if needed
             if scale_needed:            
@@ -1013,12 +1053,12 @@ class DngFile(tifffile.TiffFile):
                     final_w, final_h = final_h, final_w
 
                 _timer.start_step("post_scale (opencv)")
-                rgb_image = cv2.resize(
-                    rgb_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
+                rendered_image = cv2.resize(
+                    rendered_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
                 )
                 _timer.end_step()
-            
-            return rgb_image
+
+            return rendered_image
         finally:
             _timer.close()
             _timer.log_report(logger)
@@ -1127,44 +1167,57 @@ def _prepare_ifd_args(
     # Note: extratags is set by caller after this function returns
     return ifd_args
 
-def _add_required_ifd0_tags(tags: MetadataTags, needs_v1_7_1: bool = False) -> None:
+def _add_required_ifd0_tags(
+    tags: MetadataTags, needs_v1_7_1: bool = False, is_monochrome: bool = False
+) -> None:
     """Add required DNG IFD0 tags to existing tags in-place.
-    
+
     Tag names are from tifffile.py TiffTagRegistry.
     Tag types are from tifffile.py DATA_DTYPES.
-    
+
     Args:
         tags: MetadataTags to modify in-place
         needs_v1_7_1: Whether we are using 1.7.1 features
+        is_monochrome: If True, skip color-specific tags (ColorMatrix, ForwardMatrix, etc.)
     """
-    
+
     # Add required tags if not already set
     if "Orientation" not in tags:
         tags.add_tag("Orientation", Orientation.HORIZONTAL)
-    
-    # Default to sRGB color space with proper matrices for passthrough
-    if "ColorMatrix1" not in tags and "ForwardMatrix1" not in tags:
-        # ColorMatrix1: XYZ D50 → Camera (sRGB)
-        d50_to_d65 = raw_render.compute_bradford_adaptation(raw_render.D50_xy, raw_render.D65_xy)
-        prophoto_to_srgb = raw_render.XYZ_D65_TO_SRGB @ d50_to_d65 @ raw_render.PROPHOTO_RGB_TO_XYZ_D50
-        xyz_d50_to_srgb = prophoto_to_srgb @ raw_render.XYZ_D50_TO_PROPHOTO_RGB
-        tags.add_tag("ColorMatrix1", xyz_d50_to_srgb)
 
-        # ForwardMatrix1: Camera (sRGB) → PCS (XYZ D50)
-        d65_to_d50 = raw_render.compute_bradford_adaptation(raw_render.D65_xy, raw_render.D50_xy)
-        forward_matrix1 = d65_to_d50 @ raw_render.SRGB_TO_XYZ_D65
-        tags.add_tag("ForwardMatrix1", forward_matrix1)
-    
-    if "CalibrationIlluminant1" not in tags:
-        tags.add_tag("CalibrationIlluminant1", raw_render.Illuminant.D50)
-    
-    if "AsShotWhiteXY" not in tags and "AsShotNeutral" not in tags:
-        # D50 white point in xy chromaticity coordinates
-        tags.add_tag("AsShotWhiteXY", [0.34567, 0.35850])
-    
-    if "AnalogBalance" not in tags:
-        # Neutral analog balance
-        tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
+    # Skip color tags for monochrome images
+    if is_monochrome is False:
+        # Default to sRGB color space with proper matrices for passthrough
+        if "ColorMatrix1" not in tags and "ForwardMatrix1" not in tags:
+            # ColorMatrix1: XYZ D50 → Camera (sRGB)
+            d50_to_d65 = raw_render.compute_bradford_adaptation(
+                raw_render.D50_xy, raw_render.D65_xy
+            )
+            prophoto_to_srgb = (
+                raw_render.XYZ_D65_TO_SRGB
+                @ d50_to_d65
+                @ raw_render.PROPHOTO_RGB_TO_XYZ_D50
+            )
+            xyz_d50_to_srgb = prophoto_to_srgb @ raw_render.XYZ_D50_TO_PROPHOTO_RGB
+            tags.add_tag("ColorMatrix1", xyz_d50_to_srgb)
+
+            # ForwardMatrix1: Camera (sRGB) → PCS (XYZ D50)
+            d65_to_d50 = raw_render.compute_bradford_adaptation(
+                raw_render.D65_xy, raw_render.D50_xy
+            )
+            forward_matrix1 = d65_to_d50 @ raw_render.SRGB_TO_XYZ_D65
+            tags.add_tag("ForwardMatrix1", forward_matrix1)
+
+        if "CalibrationIlluminant1" not in tags:
+            tags.add_tag("CalibrationIlluminant1", raw_render.Illuminant.D50)
+
+        if "AsShotWhiteXY" not in tags and "AsShotNeutral" not in tags:
+            # D50 white point in xy chromaticity coordinates
+            tags.add_tag("AsShotWhiteXY", [0.34567, 0.35850])
+
+        if "AnalogBalance" not in tags:
+            # Neutral analog balance for RGB
+            tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
     
     def _version_bytes(major: int, minor: int, patch: int, build: int) -> bytes:
         return bytes([major, minor, patch, build])
@@ -1557,8 +1610,23 @@ def write_dng(
             # If digest is invalid, strip it from tags
             if digest_invalid:
                 strip_tags = (strip_tags or set()) | _DIGEST_TAGS
-            
-            _add_required_ifd0_tags(ifd_tags, needs_v1_7_1=needs_v1_7_1)
+
+            # Detect monochrome for IFD0 tag handling
+            is_monochrome = False
+            if isinstance(main_spec, IfdPageSpec):
+                page = main_spec.page
+                is_monochrome = page.is_linear_raw and page.samplesperpixel == 1
+            elif isinstance(main_spec, IfdDataSpec):
+                # Check if LINEAR_RAW with 1 sample per pixel
+                is_monochrome = (
+                    main_spec.photometric == "LINEAR_RAW"
+                    and len(main_spec.data.shape) >= 3
+                    and main_spec.data.shape[2] == 1
+                )
+
+            _add_required_ifd0_tags(
+                ifd_tags, needs_v1_7_1=needs_v1_7_1, is_monochrome=is_monochrome
+            )
 
         # Step 1: Honor user's strip_tags first
         _filter_metadata_tags(ifd_tags, exclude_names=strip_tags)
@@ -1986,8 +2054,8 @@ STAGE1_STAGE2_TAGS = {
     "OpcodeList2",
 }
 
-# Tags applied during stage3 processing (get_camera_rgb_raw)
-# that must be stripped when extracting camera RGB data
+# Tags applied during stage3 processing (get_camera_raw)
+# that must be stripped when extracting camera raw data
 STAGE3_TAGS = {
     "OpcodeList3",
     "DefaultCropOrigin",
@@ -2052,7 +2120,7 @@ def _write_dng_with_params(
                 or "RGGB"
             )
 
-    camera_rgb = raw_render._raw_to_camera_rgb(
+    camera_rgb = raw_render._render_to_camera_space(
         main_spec.extratags, raw_data, photometric, cfa_pattern, demosaic_algorithm
     )
     timer.end_step()
@@ -2159,7 +2227,22 @@ def _write_dng_with_params(
         # since the Orientation tag is persisted across the copy
         ifd0_tags_no_orientation = ifd0_tags.copy()
         ifd0_tags_no_orientation.add_tag("Orientation", Orientation.HORIZONTAL)
-        _add_required_ifd0_tags(ifd0_tags_no_orientation)
+
+        # Detect monochrome for preview IFD0 tags
+        is_monochrome_preview = False
+        if isinstance(main_spec, IfdPageSpec):
+            page = main_spec.page
+            is_monochrome_preview = page.is_linear_raw and page.samplesperpixel == 1
+        elif isinstance(main_spec, IfdDataSpec):
+            is_monochrome_preview = (
+                main_spec.photometric == "LINEAR_RAW"
+                and len(main_spec.data.shape) >= 3
+                and main_spec.data.shape[2] == 1
+            )
+
+        _add_required_ifd0_tags(
+            ifd0_tags_no_orientation, is_monochrome=is_monochrome_preview
+        )
         
         # Render with color transforms
         timer.start_step("render_preview")
