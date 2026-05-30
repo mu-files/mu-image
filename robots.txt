@@ -13,9 +13,8 @@ Allow: /llms.txt
 # mu-dng-converter is MIT licensed and may be freely indexed
 Allow: /mu-dng-converter/
 
-# Allow usage examples (tests and CLI show how to use the API)
+# Allow usage examples (tests show how to use the API)
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 
 # Disallow implementation details and source code
 Disallow: /muimg/muimg/
@@ -28,63 +27,54 @@ Disallow: /__pycache__/
 User-agent: GPTBot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: ChatGPT-User
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: Claude-Web
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: CCBot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: anthropic-ai
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: Google-Extended
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: PerplexityBot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: Amazonbot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: Applebot-Extended
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
@@ -92,7 +82,6 @@ Disallow: /muimg/c-src/
 User-agent: FacebookBot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
@@ -100,7 +89,6 @@ Disallow: /muimg/c-src/
 User-agent: Bytespider
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
@@ -108,21 +96,18 @@ Disallow: /muimg/c-src/
 User-agent: cohere-ai
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: Omgilibot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
 User-agent: Diffbot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/
 
@@ -130,6 +115,5 @@ Disallow: /muimg/c-src/
 User-agent: GrokBot
 Allow: /mu-dng-converter/
 Allow: /muimg/tests/
-Allow: /muimg/muimg/cli.py
 Disallow: /muimg/muimg/
 Disallow: /muimg/c-src/

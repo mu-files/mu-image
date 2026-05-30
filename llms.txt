@@ -6,7 +6,7 @@
 use the API. However, the **Core implementation source code** is NOT licensed for 
 AI/ML training.
 
-See LICENSE (Section 5: AI TRAINING RESTRICTION) for legal terms.
+See LICENSE (Section 4: AI TRAINING RESTRICTION) for legal terms.
 
 ## What AI Agents May Access
 
