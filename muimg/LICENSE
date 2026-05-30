@@ -11,11 +11,11 @@ additional conditions:
    The definition of "Small Business" in the Standard License is modified to 
    mean an entity (including affiliates) with:
    (a) fewer than 100 total employees and contractors; AND
-   (b) less than $10,000,000 USD in total annual revenue.
+   (b) less than $10,000,000 USD in total annual revenue in its most recently completed fiscal year.
 
 2. ACADEMIC, NON-PROFIT & GOVERNMENT USE: 
    Any academic institution, non-profit organization, or government entity 
-   performing non-commercial work is considered a "Small Business" under this
+   performing strictly non-commercial, civilian work is considered a "Small Business" under this
    license, regardless of its size or revenue.
 
 3. NO ENDORSEMENT: 
@@ -25,11 +25,12 @@ additional conditions:
 
 4. AI TRAINING RESTRICTION:
    The Software's core implementation source code is NOT licensed for use 
-   in AI/ML training datasets. Documentation, tests, usage examples, and 
-   command-line interface code may be used for learning API usage patterns. 
-   See llms.txt and robots.txt for specific file paths. Any usage of 
-   prohibited source code in an AI-training dataset without express written 
-   permission is considered a material breach of this License.
+   in generative AI, large language models, or machine learning training 
+   datasets, weights, or fine-tuning pipelines. Documentation, tests, usage 
+   examples, and command-line interface code may be used for learning API 
+   usage patterns. See llms.txt and robots.txt for specific file paths. 
+   Any usage of prohibited source code in an AI-training dataset without 
+   express written permission is considered a material breach of this License.
 
 ---
 STANDARD POLYFORM SMALL BUSINESS LICENSE 1.0.0 TEXT:

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260527.2051"
+version = "0.1.20260530.0907"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -55,8 +55,8 @@ all = [
 ]
 # macOS Core Image support
 coreimage = [
-    "pyobjc-framework-Cocoa",           # 376 KB
-    "pyobjc-framework-Quartz",          # 214 KB
+    "pyobjc-framework-Cocoa",           # 379 KB
+    "pyobjc-framework-Quartz",          # 215 KB
 ]
 
 [project.scripts]
