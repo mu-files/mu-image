@@ -34,7 +34,7 @@ Convert DNG files to TIFF or JPEG with full rendering control:
 
 <img src="docs/FITS-DNG.png" width="480" alt="FITS to DNG tab">
 
-Convert astronomical FITS files to DNG for use in Photoshop and other RAW editors:
+Convert astronomical FITS (with bayer patterns) to DNG for use in Photoshop and other RAW editors:
 - Auto exposure (histogram-based EV shift and black level estimation)
 - AVM XMP metadata mapping from FITS headers
 - Color temperature selection
@@ -42,11 +42,50 @@ Convert astronomical FITS files to DNG for use in Photoshop and other RAW editor
 - JPEG preview and fast-load pyramid embedding
 - Multi-threaded batch processing (1–8 workers)
 
+> **CFA (colour) images only**  
+> Only colour camera FITS files with a `BAYERPAT` header (e.g. RGGB, BGGR) are supported. Mono/grayscale images (narrowband Ha, L, OIII, etc.) are currently not supported and skipped.
+
 > **Auto Exposure**  
 > FITS files from astronomical cameras often have no embedded exposure hint, causing RAW editors like Photoshop to render them nearly black. When enabled, Auto Exposure analyses the image histogram to estimate a black level (1st percentile) and an exposure shift (targeting ~6% brightness), so the image opens at a reasonable starting point. The `PEDESTAL` FITS header is used as the black level when present.
 
 > **AVM XMP Metadata**  
 > Astronomy Visualization Metadata (AVM) is a standard for embedding sky coordinates, instrument details, and observation data in image files. When FITS headers contain WCS coordinates (`CRVAL`, `CDELT`, etc.), object names, filter, or telescope information, these are mapped to AVM XMP tags in the output DNG — transferring these tags to downstream applications.
+
+## FITS → DNG CLI
+
+In addition to the GUI, a command-line tool `fits2dng` is available for scripting and server-side use. Only colour CFA FITS files (those with a `BAYERPAT` header) are supported; mono images are skipped.
+
+```bash
+# Single file
+fits2dng input.FIT
+
+# Batch convert a folder
+fits2dng input_folder/ -o output_folder/
+
+# With JXL lossless compression and embedded preview
+fits2dng input.FIT --compression jxl_lossless --preview
+
+# Print FITS header info (no conversion)
+fits2dng input.FIT --info
+```
+
+### CLI Options
+
+```
+input                   Input FITS file or folder (.fit / .fits)
+-o, --output            Output DNG path or output folder
+--compression           uncompressed (default), jpeg_lossless, jxl_lossless, jxl_lossy
+--workers               Number of compression workers (default: 4)
+--preview               Embed JPEG preview
+--fast-load             Embed fast-load pyramid levels
+--no-auto-exposure      Disable automatic BaselineExposure calculation
+--ev EV                 Manual exposure shift in EV (with --no-auto-exposure)
+--no-tone-curve         Disable default S-curve tone curve
+--wb-temperature K      White balance color temperature in Kelvin
+--wb-tint TINT          White balance tint (default: 0)
+--info                  Print FITS header info and exit
+-v                      INFO logging (pipeline stats, timing); -vv for DEBUG
+```
 
 ## Getting Started
 

@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 mu-dng-converter = "mu_dng_converter.main:main"
+fits2dng = "mu_dng_converter.fits2dng:main"
 
 [tool.setuptools]
 packages = ["mu_dng_converter", "mu_dng_converter.views"]
