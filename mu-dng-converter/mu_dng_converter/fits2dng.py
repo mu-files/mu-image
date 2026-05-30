@@ -664,16 +664,9 @@ def run_batch_fits_to_dng(
                 wb_xy=wb_xy,
             )
 
-            # Only colour CFA images are supported; mono FITS (no BAYERPAT) are skipped
+            # Determine if image is CFA (color) or monochrome
             bayer_pat = header.get("BAYERPAT", "").strip().upper()
-            if not bayer_pat:
-                msg = (
-                    f"Skipping {Path(file_path).name}"
-                    f" (no BAYERPAT header — mono images are not supported)"
-                )
-                _log(msg)
-                counts.inc("skipped")
-                return (index, file_path, None)
+            is_cfa = bool(bayer_pat)
 
             # Encoding
             encoding = PageEncoding(
@@ -686,8 +679,8 @@ def run_batch_fits_to_dng(
 
             data_spec = IfdDataSpec(
                 data=data,
-                photometric="CFA",
-                cfa_pattern=bayer_pat,
+                photometric="CFA" if is_cfa else "LINEAR_RAW",
+                cfa_pattern=bayer_pat if is_cfa else None,
                 encoding=encoding,
                 extratags=tags,
             )
