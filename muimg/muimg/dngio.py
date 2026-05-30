@@ -11,6 +11,7 @@ import io
 import logging
 import numpy as np
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import auto, Enum, IntEnum
@@ -44,6 +45,26 @@ from .tiff_metadata import (
 # - Copying compressed tiled pages is not always possible (e.g. tile size / alignment constraints) and can require a decode + re-encode fallback, which currently emits a warning.
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _monkeypatch_linear_raw_for_monochrome(samples: int):
+    """Temporarily patch tifffile PHOTOMETRIC_SAMPLES for monochrome LINEAR_RAW.
+    
+    tifffile hardcodes LINEAR_RAW to 3 samples, but DNG spec allows 1 sample
+    for monochrome. This context manager patches only when needed.
+    """
+    if samples == 1:
+        # Monkey-patch: LINEAR_RAW can be 1 sample (monochrome) or 3 samples (RGB)
+        # See: https://github.com/cgohlke/tifffile/issues/XXX
+        _orig = tifffile.TIFF.PHOTOMETRIC_SAMPLES[34892]  # LINEAR_RAW
+        tifffile.TIFF.PHOTOMETRIC_SAMPLES[34892] = 1
+        try:
+            yield
+        finally:
+            tifffile.TIFF.PHOTOMETRIC_SAMPLES[34892] = _orig
+    else:
+        yield
 
 
 # =============================================================================
@@ -1485,13 +1506,19 @@ def write_dng(
             else:
                 raw_ifd_args['rowsperstrip'] = (np.prod(page.shape) * page.bitspersample + 7) // 8
         
-        writer.write(
-            data=data,
-            shape=page.shape,
-            dtype=page.dtype,
-            bitspersample=page.bitspersample,
-            **raw_ifd_args,
+        # Workaround: tifffile hardcodes LINEAR_RAW to 3 samples
+        needs_patch = (
+            raw_ifd_args.get('photometric') == 'LINEAR_RAW'
+            and page.samplesperpixel == 1
         )
+        with _monkeypatch_linear_raw_for_monochrome(1 if needs_patch else 0):
+            writer.write(
+                data=data,
+                shape=page.shape,
+                dtype=page.dtype,
+                bitspersample=page.bitspersample,
+                **raw_ifd_args,
+            )
 
         segment_type = "tiled" if page.is_tiled else "stripped"
         compression_type = "uncompressed" if page.compression == tifffile.COMPRESSION.NONE else "compressed"
@@ -1618,10 +1645,11 @@ def write_dng(
                 is_monochrome = page.is_linear_raw and page.samplesperpixel == 1
             elif isinstance(main_spec, IfdDataSpec):
                 # Check if LINEAR_RAW with 1 sample per pixel
+                # Data may be 2D (H, W) or 3D (H, W, 1) for monochrome
+                shape = main_spec.data.shape
                 is_monochrome = (
                     main_spec.photometric == "LINEAR_RAW"
-                    and len(main_spec.data.shape) >= 3
-                    and main_spec.data.shape[2] == 1
+                    and (len(shape) == 2 or (len(shape) == 3 and shape[2] == 1))
                 )
 
             _add_required_ifd0_tags(
@@ -1748,6 +1776,10 @@ def write_dng(
                     ifd_tags.add_tag("CFAPlaneColor", bytes([0, 1, 2]))
 
             uncomp_data = spec.data
+            
+            # Ensure 3D shape for monochrome LINEAR_RAW (tifffile requires 3D for validation)
+            if photometric == "LINEAR_RAW" and uncomp_data.ndim == 2:
+                uncomp_data = uncomp_data[..., np.newaxis]
 
         # Get encoding object for layout parameters
         encoding = spec.transcode_encoding if isinstance(spec, IfdPageSpec) else spec.encoding
@@ -1827,13 +1859,20 @@ def write_dng(
         # Prepare tags for write (convert arrays to target byte order)
         ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
 
-        writer.write(
-            write_data,
-            shape=uncomp_data.shape,
-            dtype=uncomp_data.dtype,
-            bitspersample=bits_per_sample,
-            **ifd_args,
+        # Workaround: tifffile hardcodes LINEAR_RAW to 3 samples
+        # Mono data is now (H, W, 1), so shape[2] == 1 means monochrome
+        needs_patch = (
+            ifd_args.get('photometric') == 'LINEAR_RAW'
+            and uncomp_data.shape[2] == 1
         )
+        with _monkeypatch_linear_raw_for_monochrome(1 if needs_patch else 0):
+            writer.write(
+                write_data,
+                shape=uncomp_data.shape,
+                dtype=uncomp_data.dtype,
+                bitspersample=bits_per_sample,
+                **ifd_args,
+            )
 
     # Initialize subifds list
     if subifds is None:
