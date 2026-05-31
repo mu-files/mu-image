@@ -38,21 +38,18 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
     # Use pyavm to extract WCS metadata from FITS header
     try:
         avm = AVM.from_header(header)
-        # Convert AVM object to dict with 'avm:' prefixes
-        for key in dir(avm):
-            val = getattr(avm, key)
-            if val is None:
-                continue
-            if key.startswith('_'):
-                continue  # Skip private attributes
-            if key.startswith('avm:'):
-                attrs[key] = val
-            elif '.' in key:
+        # Convert AVM object to dict with 'avm:' prefixes using official API
+        for key, val in avm.to_keyword_dict().items():
+            if val is not None:
+                # Skip pyavm's internal non-standard keys
+                if key == "Spatial.ReferenceDimension":
+                    continue
                 attrs[f'avm:{key}'] = val
     except Exception:
         pass  # pyavm may fail on incomplete headers
 
-    # Supplement with RA/DEC from basic FITS headers if spatial data is missing
+    # --- Independent spatial fallback checks ---
+    # 1. Coordinate & Frame Check
     if "avm:Spatial.ReferenceValue" not in attrs:
         try:
             from astropy.coordinates import SkyCoord
@@ -62,35 +59,70 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
             dec_val = header.get("DEC") or header.get("OBJCTDEC")
             if ra_val is not None and dec_val is not None:
                 coord = SkyCoord(str(ra_val), str(dec_val), unit=(u.hourangle, u.deg))
-                attrs["avm:Spatial.ReferenceValue"] = [str(coord.ra.deg), str(coord.dec.deg)]
+                attrs["avm:Spatial.ReferenceValue"] = [coord.ra.deg, coord.dec.deg]
                 attrs["avm:Spatial.CoordinateFrame"] = "ICRS"
         except Exception:
-            pass  # No coordinates available
+            pass  # Failed parsing basic coordinates
 
-    # Add non-WCS metadata from FITS header
+    # 2. Add structural spatial keys if coordinates exist
+    if "avm:Spatial.ReferenceValue" in attrs:
+        attrs.setdefault("avm:Spatial.CoordinateDimension", [2, 2])
+        attrs.setdefault("avm:Spatial.CoordsystemProjection", "TAN")
+
+    # 3. Scale Check (independent)
+    if "avm:Spatial.Scale" not in attrs:
+        scale_val = header.get("SCALE") or header.get("CDELT2")
+        if scale_val:
+            try:
+                deg_scale = float(scale_val) if float(scale_val) < 0.01 else float(scale_val) / 3600.0
+                attrs["avm:Spatial.Scale"] = [-deg_scale, deg_scale]
+            except (ValueError, TypeError):
+                pass
+
+    # 4. Rotation Check (independent)
+    # Check both standard name and pyavm's internal names (RotationRef, PositionAngle)
+    if not any(k in attrs for k in ("avm:Spatial.Rotation", "avm:Spatial.RotationRef", "avm:Spatial.PositionAngle")):
+        rot_val = header.get("CROTA1") or header.get("CROTA2") or header.get("ROTATANG")
+        if rot_val is not None:
+            try:
+                attrs["avm:Spatial.Rotation"] = float(rot_val)
+            except (ValueError, TypeError):
+                pass
+
+    # 5. Reference Pixel Check (independent)
+    if "avm:Spatial.ReferencePixel" not in attrs:
+        naxis1 = header.get("NAXIS1") or header.get("IMAGEW")
+        naxis2 = header.get("NAXIS2") or header.get("IMAGEH")
+        if naxis1 and naxis2:
+            try:
+                attrs["avm:Spatial.ReferencePixel"] = [float(naxis1) / 2.0, float(naxis2) / 2.0]
+            except (ValueError, TypeError):
+                pass
+
+    # Add non-WCS metadata from FITS header (only if not already set by pyavm)
     obj = header.get("OBJECT")
     if obj and str(obj).strip():
-        attrs["avm:Subject.Name"] = str(obj).strip()
+        attrs.setdefault("avm:Subject.Name", str(obj).strip())
 
     instrume = header.get("INSTRUME")
     if instrume and str(instrume).strip():
-        attrs["avm:Instrument"] = str(instrume).strip()
+        attrs.setdefault("avm:Instrument", str(instrume).strip())
 
     telescop = header.get("TELESCOP")
     if telescop and str(telescop).strip():
-        attrs["avm:Facility"] = str(telescop).strip()
+        attrs.setdefault("avm:Facility", str(telescop).strip())
 
     filt = header.get("FILTER")
     if filt and str(filt).strip():
-        attrs["avm:Spectral.Bandpass"] = str(filt).strip()
+        attrs.setdefault("avm:Spectral.Bandpass", str(filt).strip())
 
     date_obs = header.get("DATE-OBS")
     if date_obs is not None:
-        attrs["avm:TemporalStartTime"] = str(date_obs).strip()
+        attrs.setdefault("avm:TemporalStartTime", str(date_obs).strip())
 
     exptime = header.get("EXPTIME")
     if exptime is not None:
-        attrs["avm:TemporalIntegrationTime"] = str(float(exptime))
+        attrs.setdefault("avm:TemporalIntegrationTime", str(float(exptime)))
 
     observer = (
         header.get("OBSERVER")
@@ -98,11 +130,11 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
         or header.get("CREATOR")
     )
     if observer and str(observer).strip():
-        attrs["avm:Creator"] = str(observer).strip()
+        attrs.setdefault("avm:Creator", str(observer).strip())
 
-    # Set defaults
-    attrs["avm:Type"] = "Observation"
-    attrs["avm:MetadataVersion"] = "1.1"
+    # Set defaults (only if not already set)
+    attrs.setdefault("avm:Type", "Observation")
+    attrs.setdefault("avm:MetadataVersion", "1.1")
 
     return attrs
 
