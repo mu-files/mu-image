@@ -6,9 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [app-v0.1.20260531.1519] - 2026-05-31
+
+### Fixed
+- **FITS→DNG**: Switch to `pyavm` for parsing FITS headers; add endianness conversion to support more FITS files.
+- **FITS→DNG**: Fix monochrome FITS detection and Bayer pattern handling.
+- **FITS→DNG**: Fix AVM XMP metadata extraction.
+
+## [app-v0.1.20260529.1537] - 2026-05-29
+
 ### Added
 - Initial Flet-based GUI with batch DNG-to-TIF/JPEG conversion
 - Real-time progress bar and cancellation support
 - Configurable output format, bit depth, and white balance
 - Multi-worker parallel processing via `muimg` pipeline
 - macOS, Windows, and Linux desktop builds via GitHub Actions
+- FITS→DNG conversion tab with AVM XMP metadata mapping
+- Windows installer via Inno Setup
+- Persistent scrollable log pane with progress reporting and cancellation
