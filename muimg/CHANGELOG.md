@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.20260531.1501] - 2026-05-31
+
+### Added
+- **Monochrome DNG support**: Write single-channel (grayscale) LINEAR_RAW DNGs from 2D `(H, W)` or 3D `(H, W, 1)` arrays via `write_dng_from_array`.
+- **Monochrome preview/pyramid**: Preview and pyramid generation for monochrome DNGs, rendering via a dedicated `_render_camera_monochrome` pipeline (exposure, tone curve, gamma) `MINISBLACK` preview.
+- **Optimized `mono_lut` C++ function**: Fast single-channel LUT application with 8-bit direct lookup optimization.
+
 ## [0.1.20260527.0727] - 2026-05-27
 
 ### Changed
