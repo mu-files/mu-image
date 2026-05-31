@@ -2,8 +2,8 @@
 
 import flet as ft
 
-from .views.dng_convert import build_dng_view
-from .views.fits_to_dng import build_fits_view
+from .views.dng_image_view import build_dng_view
+from .views.fits_dng_view import build_fits_view
 
 
 def app(page: ft.Page):

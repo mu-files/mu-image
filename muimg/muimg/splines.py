@@ -23,14 +23,16 @@ from enum import Enum, auto
 
 class ColorSpace(Enum):
     """Color space definitions with native gamma encoding.
-    
+
     Each color space is defined by:
     - Primary chromaticities (red, green, blue)
     - White point (D50 or D65)
     - Gamma encoding (linear, 1.8, 2.2, or sRGB piecewise)
-    
-    Values are organized so linear spaces are even (0,2,4) and gamma spaces are odd (1,3,5).
+
+    RGB values (0-5): linear spaces are even (0,2,4) and gamma spaces are odd (1,3,5).
     This allows simple arithmetic to convert between linear and gamma variants.
+
+    Grayscale values (6,7,9): linear=6, gamma 1.8=7, gamma 2.2=9 for monochrome images.
     """
     PROPHOTO_LINEAR = 0
     PROPHOTO_GAMMA = 1           # Gamma 1.8
@@ -38,6 +40,9 @@ class ColorSpace(Enum):
     ADOBERGB_GAMMA = 3           # Gamma 2.2
     SRGB_LINEAR = 4
     SRGB_GAMMA = 5               # sRGB piecewise gamma
+    GRAY_LINEAR = 6              # Monochrome linear (for pattern consistency)
+    GRAY_GAMMA_1_8 = 7           # Monochrome gamma 1.8
+    GRAY_GAMMA_2_2 = 9           # Monochrome gamma 2.2
     
     def to_linear(self) -> "ColorSpace":
         """Convert gamma space to its linear variant (or return self if already linear)."""
@@ -443,6 +448,12 @@ class LUT:
     def __repr__(self):
         return f"LUT(size={len(self.data)})"
 
+    def __array__(self, dtype=None):
+        """Allow numpy to coerce LUT to ndarray via np.asarray(lut)."""
+        if dtype is not None:
+            return self.data.astype(dtype, copy=False)
+        return self.data
+
 
 # Module-level cache for ColorSpaceLUT instances (thread-safe)
 _COLORSPACE_LUT_CACHE = {}
@@ -517,7 +528,21 @@ class ColorSpaceLUT(LUT):
                 data = np.power(x, 2.19921875)
             else:
                 data = np.power(x, 1.0 / 2.19921875)
-        
+
+        elif colorspace == ColorSpace.GRAY_GAMMA_1_8:
+            # Simple gamma 1.8 (no linear segment)
+            if inverse:
+                data = np.power(x, 1.8)
+            else:
+                data = np.power(x, 1.0 / 1.8)
+
+        elif colorspace == ColorSpace.GRAY_GAMMA_2_2:
+            # Simple gamma 2.2 (no linear segment)
+            if inverse:
+                data = np.power(x, 2.2)
+            else:
+                data = np.power(x, 1.0 / 2.2)
+
         else:
             raise ValueError(f"Unsupported colorspace for LUT: {colorspace}")
         

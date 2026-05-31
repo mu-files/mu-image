@@ -346,7 +346,7 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         try:
             fits_files = state["_fits_files"]
             total = len(fits_files)
-            log(f"Input: {total} FITS files → DNG")
+            log(f"Input: {total} FITS files from {Path(output_path).parent}")
             log(f"Output: {output_path}")
 
             # White balance → xy chromaticity

@@ -1009,6 +1009,158 @@ private:
 #endif
 };
 
+// Specialized: Monochrome LUT only (single channel, no matrix)
+// Use8bit256: true for uint8 input with 256-entry LUT (direct lookup, no interpolation)
+template<typename SrcT, typename DstT, bool Use8bit256>
+static void mono_lut_impl(
+    const SrcT* __restrict input,
+    DstT* __restrict output,
+    int total_pixels,
+    const float* __restrict lut,
+    int lut_size,
+    float src_scale,
+    float dst_scale
+) {
+    // Fused scale: src_scale * (lut_size - 1) in one multiply
+    float fused_scale = src_scale * (lut_size - 1);
+    float lut_max = (lut_size - 1);
+
+    for (int i = 0; i < total_pixels; ++i) {
+        float val;
+        if constexpr (Use8bit256) {
+            // 8-bit direct lookup (no interpolation)
+            val = lut_lookup_8bit(lut, input[i]);
+        } else {
+            val = lut_lookup_interp(lut, std::clamp(input[i] * fused_scale, 0.0f, lut_max));
+        }
+        // Clip and store
+        output[i] = (DstT)(std::clamp(val, 0.0f, 1.0f) * dst_scale);
+    }
+}
+
+// Python wrapper for mono_lut
+static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
+    PyArrayObject* image_array = NULL;
+    PyArrayObject* lut_array = NULL;
+    int src_bits = -1;
+    int dst_bits = -1;
+    int dest_dtype_int = NPY_FLOAT32;
+
+    const char* kwlist[] = {"image", "output_lut", "src_bits", "dst_bits", "output_dtype", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|iii:mono_lut", (char**)kwlist,
+                                     &image_array, &lut_array, &src_bits, &dst_bits, &dest_dtype_int)) {
+        return NULL;
+    }
+
+    // Validate image is 2D or 3D
+    int ndim = PyArray_NDIM(image_array);
+    if (ndim != 2 && ndim != 3) {
+        PyErr_SetString(PyExc_ValueError, "Image must be 2D (H, W) or 3D (H, W, 1)");
+        return NULL;
+    }
+
+    // For 3D, verify it's single channel
+    if (ndim == 3 && PyArray_DIM(image_array, 2) != 1) {
+        PyErr_SetString(PyExc_ValueError, "Monochrome image must have 1 channel (H, W, 1)");
+        return NULL;
+    }
+
+    int height = (int)PyArray_DIM(image_array, 0);
+    int width = (int)PyArray_DIM(image_array, 1);
+    int total_pixels = height * width;
+
+    int src_dtype = PyArray_TYPE(image_array);
+    int dst_dtype = dest_dtype_int;
+
+    // Validate dtypes
+    bool src_valid = (src_dtype == NPY_UINT8) || (src_dtype == NPY_UINT16) || (src_dtype == NPY_FLOAT32);
+    bool dst_valid = (dst_dtype == NPY_UINT8) || (dst_dtype == NPY_UINT16) || (dst_dtype == NPY_FLOAT32);
+    if (!src_valid) {
+        PyErr_SetString(PyExc_TypeError, "Unsupported source dtype (must be uint8, uint16, or float32)");
+        return NULL;
+    }
+    if (!dst_valid) {
+        PyErr_SetString(PyExc_TypeError, "Unsupported destination dtype (must be uint8, uint16, or float32)");
+        return NULL;
+    }
+
+    // Validate LUT
+    if (!PyArray_Check(lut_array) || PyArray_TYPE(lut_array) != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError, "LUT must be float32 ndarray");
+        return NULL;
+    }
+    int lut_size = (int)PyArray_SIZE(lut_array);
+    if (lut_size < 2) {
+        PyErr_SetString(PyExc_ValueError, "LUT must have at least 2 elements");
+        return NULL;
+    }
+    const float* lut_data = (const float*)PyArray_DATA(lut_array);
+
+    // Ensure contiguous input
+    auto image_cont = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)image_array, src_dtype, 2, 3));
+    if (!image_cont) return NULL;
+
+    // Create output array matching input dimensionality
+    npy_intp dims[3] = {height, width, 1};
+    int out_ndim = (ndim == 3) ? 3 : 2;
+    auto result = make_pyptr<PyArrayObject>(
+        (PyArrayObject*)PyArray_SimpleNew(out_ndim, dims, dst_dtype));
+    if (!result) return NULL;
+
+    const void* src_data = PyArray_DATA(image_cont.get());
+    void* dst_data = PyArray_DATA(result.get());
+
+    // Scale factors
+    float src_scale = 1.0f / get_max_value(src_dtype, src_bits);
+    float dst_scale = get_max_value(dst_dtype, dst_bits);
+
+    // Dispatch based on types
+    bool use_8bit = (src_dtype == NPY_UINT8 && lut_size == 256);
+
+    #define DISPATCH_MONO(SrcT, DstT) \
+        if (use_8bit) { \
+            mono_lut_impl<SrcT, DstT, true>( \
+                (const SrcT*)src_data, (DstT*)dst_data, total_pixels, \
+                lut_data, lut_size, src_scale, dst_scale); \
+        } else { \
+            mono_lut_impl<SrcT, DstT, false>( \
+                (const SrcT*)src_data, (DstT*)dst_data, total_pixels, \
+                lut_data, lut_size, src_scale, dst_scale); \
+        }
+
+    if (src_dtype == NPY_UINT8) {
+        if (dst_dtype == NPY_UINT8) {
+            DISPATCH_MONO(uint8_t, uint8_t)
+        } else if (dst_dtype == NPY_UINT16) {
+            DISPATCH_MONO(uint8_t, uint16_t)
+        } else {
+            DISPATCH_MONO(uint8_t, float)
+        }
+    } else if (src_dtype == NPY_UINT16) {
+        if (dst_dtype == NPY_UINT8) {
+            DISPATCH_MONO(uint16_t, uint8_t)
+        } else if (dst_dtype == NPY_UINT16) {
+            DISPATCH_MONO(uint16_t, uint16_t)
+        } else {
+            DISPATCH_MONO(uint16_t, float)
+        }
+    } else { // float32
+        if (dst_dtype == NPY_UINT8) {
+            DISPATCH_MONO(float, uint8_t)
+        } else if (dst_dtype == NPY_UINT16) {
+            DISPATCH_MONO(float, uint16_t)
+        } else {
+            DISPATCH_MONO(float, float)
+        }
+    }
+
+    #undef DISPATCH_MONO
+
+    return (PyObject*)result.release();
+}
+
 
 static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObject* kwargs) {
     PyArrayObject* image_array = NULL;
@@ -4107,7 +4259,19 @@ static PyMethodDef DngColorMethods[] = {
      "    clip (int, optional): Clip to [0, 1] before conversion (0 or 1)\n\n"
      "Returns:\n"
      "    ndarray: Converted image with dest_dtype"},
-    
+
+    {"mono_lut", (PyCFunction)mono_lut, METH_VARARGS | METH_KEYWORDS,
+     "Apply LUT to monochrome (single channel) image.\n\n"
+     "Optimized C++ implementation with 8-bit direct lookup optimization.\n\n"
+     "Args:\n"
+     "    image (ndarray): Input image (H, W, 1) or (H, W), uint8/uint16/float32\n"
+     "    output_lut (ndarray): LUT (N+1,) float32 (last value repeated)\n"
+     "    src_bits (int, optional): Source bit depth (-1 = use dtype default)\n"
+     "    dst_bits (int, optional): Dest bit depth (-1 = use dtype default)\n"
+     "    output_dtype (dtype, optional): Output dtype (default: float32)\n\n"
+     "Returns:\n"
+     "    ndarray: Transformed image (H, W, 1) with output_dtype"},
+
     {NULL, NULL, 0, NULL}
 };
 

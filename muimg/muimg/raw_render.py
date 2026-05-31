@@ -160,7 +160,68 @@ def convert_dtype(
     # Convert back to float16 if that was the requested output
     if output_is_float16:
         result = result.astype(np.float16)
-    
+
+    return result
+
+
+def mono_lut(
+    image: np.ndarray,
+    output_lut: LUT | np.ndarray | None = None,
+    src_bits: int | None = None,
+    dst_bits: int | None = None,
+    output_dtype: np.dtype = np.float32,
+) -> np.ndarray:
+    """Apply LUT to monochrome (single channel) image.
+
+    Optimized C++ implementation with 8-bit direct lookup optimization.
+    Output is always (H, W, 1) regardless of input shape (2D or 3D).
+
+    Args:
+        image: Input image (H, W) or (H, W, 1), dtype: uint8, uint16, or float32
+        output_lut: LUT to apply. If None, image is passed through.
+        src_bits: Source bit depth. If None, inferred from dtype
+                  (8 for uint8, 16 for uint16, ignored for float32).
+        dst_bits: Destination bit depth. If None, inferred from output_dtype.
+        output_dtype: Output data type (np.uint8, np.uint16, or np.float32).
+                      Default: np.float32
+
+    Returns:
+        Transformed image (H, W, 1) with output_dtype
+    """
+    # Validate input
+    if image.ndim not in (2, 3):
+        raise ValueError(f"Image must be 2D (H, W) or 3D (H, W, 1), got shape {image.shape}")
+    if image.ndim == 3 and image.shape[2] != 1:
+        raise ValueError(f"Monochrome image must have 1 channel, got shape {image.shape}")
+
+    # Handle no LUT case: just dtype conversion
+    if output_lut is None:
+        return convert_dtype(image, output_dtype, src_bits, dst_bits)
+
+    # Convert LUT to float32 array
+    lut_array = np.asarray(output_lut, dtype=np.float32)
+
+    # Compute bits from dtype
+    if src_bits is None:
+        src_bits = -1 if image.dtype in (np.float32, np.float64, np.float16) else image.dtype.itemsize * 8
+    if dst_bits is None:
+        output_dtype_inst = np.dtype(output_dtype)
+        dst_bits = -1 if output_dtype_inst in (np.float32, np.float64, np.float16) else output_dtype_inst.itemsize * 8
+
+    # Validate and convert output dtype to numpy type number
+    if output_dtype not in (np.uint8, np.uint16, np.float32):
+        raise TypeError(f"Unsupported output dtype: {output_dtype}")
+    dest_dtype_int = np.dtype(output_dtype).num
+
+    # Call C++ implementation
+    result = _raw_render.mono_lut(
+        image,
+        lut_array,
+        src_bits,
+        dst_bits,
+        dest_dtype_int,
+    )
+
     return result
 
 
@@ -382,25 +443,15 @@ def transform_color(
     # Extract LUT data arrays
     input_lut_array = None
     if input_lut is not None:
-        if isinstance(input_lut, LUT):
-            input_lut_array = input_lut.data
-        elif isinstance(input_lut, np.ndarray):
-            if input_lut.ndim != 1:
-                raise ValueError(f"input_lut array must be 1D, got shape {input_lut.shape}")
-            input_lut_array = input_lut.astype(np.float32)
-        else:
-            raise TypeError(f"input_lut must be LUT or ndarray, got {type(input_lut)}")
+        input_lut_array = np.asarray(input_lut, dtype=np.float32)
+        if input_lut_array.ndim != 1:
+            raise ValueError(f"input_lut must be 1D, got shape {input_lut_array.shape}")
     
     output_lut_array = None
     if output_lut is not None:
-        if isinstance(output_lut, LUT):
-            output_lut_array = output_lut.data
-        elif isinstance(output_lut, np.ndarray):
-            if output_lut.ndim != 1:
-                raise ValueError(f"output_lut array must be 1D, got shape {output_lut.shape}")
-            output_lut_array = output_lut.astype(np.float32)
-        else:
-            raise TypeError(f"output_lut must be LUT or ndarray, got {type(output_lut)}")
+        output_lut_array = np.asarray(output_lut, dtype=np.float32)
+        if output_lut_array.ndim != 1:
+            raise ValueError(f"output_lut must be 1D, got shape {output_lut_array.shape}")
     
     # Validate matrix if provided
     if matrix is not None:
@@ -1753,28 +1804,37 @@ def apply_opcodes(
     opcode_list_name: str = "RGB"
 ) -> np.ndarray:
     """Apply parsed opcodes to image data.
-    
+
     Supported opcodes:
     - 1: WarpRectilinear (C++ op_warp_rectilinear)
     - 3: FixVignetteRadial (C++ op_fix_vignette)
     - 8: MapPolynomial (C++ op_map_polynomial)
     - 9: GainMap (C++ op_gain_map)
-    
+
     Args:
         data: Image data (H, W, C), float32, range [0, 1]
         opcodes: List of parsed opcodes from parse_opcode_list
         use_bicubic: If True, use SDK bicubic interpolation for WarpRectilinear;
                      if False, use bilinear (default: True)
         opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList3")
-        
+
     Returns:
         Processed image data
     """
     result = data.astype(np.float32)
-    
+    num_channels = result.shape[2] if result.ndim >= 3 else 1
+
     for opcode in opcodes:
         opcode_type = opcode.get('type')
-        
+        opcode_planes = opcode.get('planes', 1)
+
+        # Validate channel count for monochrome images
+        if num_channels == 1 and opcode_planes > 1:
+            raise ValueError(
+                f"Cannot apply {opcode_type} opcode: requires {opcode_planes} channels "
+                f"but image has {num_channels} channel (monochrome)"
+            )
+
         if opcode_type == 'WarpRectilinear':
             # SDK applies different warp per color plane for lateral CA correction
             planes = opcode['planes']
@@ -2131,22 +2191,23 @@ def compute_exposure_ramp_lut(
     default_black_render: int,
     highlight_preserving_exposure: bool = True,
     num_points: int = 4096,
-    rgb_prophoto: np.ndarray | None = None
+    camera_space_data: np.ndarray | None = None
 ) -> np.ndarray:
     """Compute exposure_ramp LUT from exposure and DNG tag values.
-    
+
     Args:
         exposure: Total exposure in stops (baseline + user)
         shadow_scale: ShadowScale tag value (default 1.0 if None)
         default_black_render: DefaultBlackRender tag (0=Auto, 1=None)
-        highlight_preserving_exposure: If True, use highlight compression 
-        (white=1.0, complementary power). If False, use DNG SDK behavior 
+        highlight_preserving_exposure: If True, use highlight compression
+        (white=1.0, complementary power). If False, use DNG SDK behavior
         (standard exposure_ramp).
         Default True.
-        
+
         num_points: Number of LUT points
-        rgb_prophoto: Optional ProPhoto linear RGB image for adaptive exposure.
-        If provided, blend weight is computed from content luminance histogram.
+        camera_space_data: Optional ProPhoto linear RGB or monochrome image for
+        adaptive exposure. If provided, blend weight is computed from content
+        luminance histogram. For RGB: (H, W, 3). For monochrome: (H, W, 1).
     
     Returns:
         Exposure ramp LUT as float32 array
@@ -2184,12 +2245,17 @@ def compute_exposure_ramp_lut(
         
         blend_weight = 1.0  # Default to pure complementary power
         
-        if rgb_prophoto is not None:
-            # Compute luminance from ProPhoto RGB
-            # Y coefficients from PROPHOTO_RGB_TO_XYZ_D50 matrix
-            luminance = (0.2880402 * rgb_prophoto[..., 0] +
-                        0.7118741 * rgb_prophoto[..., 1] +
-                        0.0000857 * rgb_prophoto[..., 2])
+        if camera_space_data is not None:
+            # Compute luminance for blend weight calculation
+            if camera_space_data.ndim == 3 and camera_space_data.shape[2] == 3:
+                # RGB: compute luminance from ProPhoto using Y coefficients
+                # from PROPHOTO_RGB_TO_XYZ_D50 matrix
+                luminance = (0.2880402 * camera_space_data[..., 0] +
+                            0.7118741 * camera_space_data[..., 1] +
+                            0.0000857 * camera_space_data[..., 2])
+            else:
+                # Monochrome: use single channel directly
+                luminance = camera_space_data[..., 0]
             luminance_flat = luminance.flatten()
             
             # Find p98 luminance value using histogram for efficiency
@@ -2968,7 +3034,7 @@ def _linearize(
     return normalized
 
 
-def _raw_to_camera_rgb(
+def _render_to_camera_space(
     tags: "DngPage" | "MetadataTags",
     data: np.ndarray,
     photometric: str,
@@ -2985,7 +3051,8 @@ def _raw_to_camera_rgb(
         demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
 
     Returns:
-        Camera RGB array (H, W, 3) float32 in [0, 1].
+        Camera space array (H, W, 3) float32 in [0, 1] for CFA/RGB, or
+        monochrome array (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
     """
     timer = get_active_timer()
 
@@ -3340,11 +3407,11 @@ def _render_camera_rgb(
             )
 
         # Compute exposure_ramp LUT
-        # Pass rgb_prophoto for adaptive exposure blending
+        # Pass camera_space_data for adaptive exposure blending
         timer.start_step("compute_exposure_ramp_lut")
         exposure_ramp_lut = compute_exposure_ramp_lut(
             exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
-            rgb_prophoto=rgb_prophoto
+            camera_space_data=rgb_prophoto
         )
         timer.end_step()
         logger.debug(f"Exposure_ramp LUT: first={exposure_ramp_lut[0]:.6f}, last={exposure_ramp_lut[-1]:.6f}, "
@@ -3495,6 +3562,170 @@ def _render_camera_rgb(
 
     except Exception as e:
         logger.error(f"Error rendering DNG ({type(e).__name__}): {e}", exc_info=True)
+        raise
+
+
+def _render_camera_monochrome(
+    ifd0_tags: "DngPage" | "MetadataTags",
+    mono_camera: np.ndarray,
+    output_dtype: type,
+    raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
+    rendering_params: dict = None,
+    use_xmp: bool = True,
+) -> np.ndarray:
+    """Render monochrome linear data to output grayscale image.
+
+    This is a simplified rendering pipeline for monochrome images that skips
+    all color-specific processing (ColorMatrix, HueSatMap, etc.) but keeps
+    the tone and exposure adjustments.
+
+    Args:
+        ifd0_tags: IFD0 tags source (contains rendering parameters)
+        mono_camera: Monochrome linear data (H, W, 1) float32 in [0, 1]
+        output_dtype: Output data type (np.uint8 or np.uint16)
+        raw_ifd_tags: Optional raw IFD tags (for tags that may be on raw IFD)
+        rendering_params: Optional rendering parameter overrides
+        use_xmp: Whether to extract rendering params from XMP
+
+    Returns:
+        Grayscale image array (H, W, 1) in output_dtype range.
+    """
+    timer = get_active_timer()
+
+    try:
+        # Build rendering parameters dict from XMP and overrides
+        extracted_params = supported_xmp_to_dict(ifd0_tags) if use_xmp else {}
+
+        # Merge rendering_params overrides
+        if rendering_params is not None:
+            render_specific_params = {'highlight_preserving_exposure', 'orientation'}
+            supported_params = SUPPORTED_XMP_PARAMS | render_specific_params
+
+            for key, value in rendering_params.items():
+                if key not in supported_params:
+                    raise ValueError(
+                        f"Unsupported rendering parameter: {key}. "
+                        f"Supported: {supported_params}"
+                    )
+                if value is None:
+                    extracted_params.pop(key, None)
+                else:
+                    extracted_params[key] = value
+
+        rendering_params = extracted_params if extracted_params else None
+
+        # =====================================================================
+        # Step 1: Compute exposure parameters
+        # =====================================================================
+        baseline_exposure = (
+            _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "BaselineExposure") or 0.0
+        )
+        baseline_exposure_offset = (
+            _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "BaselineExposureOffset") or 0.0
+        )
+        total_baseline_exposure = baseline_exposure + baseline_exposure_offset
+
+        # Add user exposure from rendering_params if provided
+        user_exposure = (
+            rendering_params.get('Exposure2012', 0.0) if rendering_params else 0.0
+        )
+        exposure = total_baseline_exposure + user_exposure
+
+        # =====================================================================
+        # Step 2: DoBaseline1DFunction (ExposureRamp)
+        # =====================================================================
+        shadow_scale = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ShadowScale") or 1
+        default_black_render = (
+            _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "DefaultBlackRender") or 0
+        )
+
+        highlight_preserving_exposure = True
+        if rendering_params:
+            highlight_preserving_exposure = rendering_params.get(
+                'highlight_preserving_exposure', True
+            )
+
+        # Compute exposure_ramp LUT
+        timer.start_step("compute_exposure_ramp_lut")
+        exposure_ramp_lut = compute_exposure_ramp_lut(
+            exposure,
+            shadow_scale,
+            default_black_render,
+            highlight_preserving_exposure,
+            camera_space_data=mono_camera,
+        )
+        timer.end_step()
+
+        # Build combined tone curve
+        combined_curve = LUT(exposure_ramp_lut)
+
+        # Chain: apply exposure_tone to output
+        combined_curve = combined_curve.compose_output(
+            lambda y: exposure_tone(y, exposure, highlight_preserving_exposure)
+        )
+
+        # =====================================================================
+        # Step 3: DoBaselineRGBTone (ProfileToneCurve or ACR3)
+        # =====================================================================
+        tag_profile_curve = None
+        if _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileToneCurve") is not None:
+            profile_tone_curve = _get_ifd0_tag(
+                ifd0_tags, raw_ifd_tags, "ProfileToneCurve"
+            )
+            if len(profile_tone_curve) >= 4:
+                curve_data = np.asarray(profile_tone_curve, dtype=np.float64)
+                n_points = len(curve_data) // 2
+                points = [
+                    (curve_data[i * 2], curve_data[i * 2 + 1])
+                    for i in range(n_points)
+                ]
+
+                try:
+                    tag_profile_curve = LUT(points, size=4096).data
+                except ValueError:
+                    pass
+
+        profile_curve = (
+            get_acr3_curve(4096) if tag_profile_curve is None else tag_profile_curve
+        )
+        combined_curve = combined_curve.compose_output(LUT(profile_curve))
+
+        # =====================================================================
+        # Step 4: Apply tone curve + gamma
+        # =====================================================================
+        timer.start_step("tone_curve+gamma")
+
+        # For monochrome: combine all LUTs and apply with optimized C++ mono_lut
+        # Chain: combined_curve → gray_gamma
+        gamma_lut = ColorSpaceLUT(ColorSpace.GRAY_GAMMA_2_2, inverse=False, size=4096)
+        final_lut = combined_curve.compose_output(gamma_lut)
+
+        # Use optimized C++ mono_lut for single channel processing
+        result = mono_lut(
+            mono_camera,
+            output_lut=final_lut,
+            output_dtype=output_dtype,
+        )
+        timer.end_step()
+
+        # =====================================================================
+        # Step 5: Apply orientation
+        # =====================================================================
+        orientation = (
+            rendering_params.get('orientation') if rendering_params else None
+        )
+        if orientation is None:
+            orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
+        if orientation is not None:
+            result = apply_tiff_orientation(result, orientation)
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            f"Error rendering monochrome DNG ({type(e).__name__}): {e}",
+            exc_info=True,
+        )
         raise
 
 

@@ -17,186 +17,124 @@ from typing import Any
 
 import numpy as np
 
-
 # =============================================================================
 # AVM (Astronomy Visualization Metadata) XMP mapping
 # =============================================================================
 
 
-def _parse_ra_dec(ra_str: str, dec_str: str) -> tuple[float, float] | None:
-    """Parse RA/DEC strings to decimal degrees.
-
-    Handles both decimal and sexagesimal (HH:MM:SS / DD:MM:SS) formats.
-    RA is in hours (0-24) and converted to degrees (0-360).
-    """
-    try:
-        ra_deg = float(ra_str)
-        dec_deg = float(dec_str)
-        return ra_deg, dec_deg
-    except (ValueError, TypeError):
-        pass
-
-    # Try sexagesimal: "HH:MM:SS.s" or "HH MM SS.s"
-    try:
-        parts = ra_str.replace(":", " ").split()
-        h, m, s = float(parts[0]), float(parts[1]), float(parts[2])
-        ra_deg = (h + m / 60.0 + s / 3600.0) * 15.0  # hours to degrees
-
-        parts = dec_str.replace(":", " ").split()
-        sign = -1 if parts[0].startswith("-") else 1
-        d, m, s = abs(float(parts[0])), float(parts[1]), float(parts[2])
-        dec_deg = sign * (d + m / 60.0 + s / 3600.0)
-
-        return ra_deg, dec_deg
-    except (ValueError, TypeError, IndexError):
-        return None
-
-
 def fits_header_to_avm_xmp(header) -> dict[str, Any]:
-    """Extract AVM XMP properties from a FITS header.
+    """Extract AVM XMP properties from a FITS header using pyavm.
 
     Args:
         header: astropy FITS header object
 
     Returns:
         Dict with 'avm:'-prefixed keys suitable for XmpMetadata.from_attributes().
-        Only includes fields actually present in the header.
     """
+    from pyavm import AVM
+
     attrs: dict[str, Any] = {}
 
-    # Object / subject name
+    # Use pyavm to extract WCS metadata from FITS header
+    try:
+        avm = AVM.from_header(header)
+        # Convert AVM object to dict with 'avm:' prefixes using official API
+        for key, val in avm.to_keyword_dict().items():
+            if val is not None:
+                # Skip pyavm's internal non-standard keys
+                if key == "Spatial.ReferenceDimension":
+                    continue
+                attrs[f'avm:{key}'] = val
+    except Exception:
+        pass  # pyavm may fail on incomplete headers
+
+    # --- Independent spatial fallback checks ---
+    # 1. Coordinate & Frame Check
+    if "avm:Spatial.ReferenceValue" not in attrs:
+        try:
+            from astropy.coordinates import SkyCoord
+            from astropy import units as u
+
+            ra_val = header.get("RA") or header.get("OBJCTRA")
+            dec_val = header.get("DEC") or header.get("OBJCTDEC")
+            if ra_val is not None and dec_val is not None:
+                coord = SkyCoord(str(ra_val), str(dec_val), unit=(u.hourangle, u.deg))
+                attrs["avm:Spatial.ReferenceValue"] = [coord.ra.deg, coord.dec.deg]
+                attrs["avm:Spatial.CoordinateFrame"] = "ICRS"
+        except Exception:
+            pass  # Failed parsing basic coordinates
+
+    # 2. Add structural spatial keys if coordinates exist
+    if "avm:Spatial.ReferenceValue" in attrs:
+        attrs.setdefault("avm:Spatial.CoordinateDimension", [2, 2])
+        attrs.setdefault("avm:Spatial.CoordsystemProjection", "TAN")
+
+    # 3. Scale Check (independent)
+    if "avm:Spatial.Scale" not in attrs:
+        scale_val = header.get("SCALE") or header.get("CDELT2")
+        if scale_val:
+            try:
+                deg_scale = float(scale_val) if float(scale_val) < 0.01 else float(scale_val) / 3600.0
+                attrs["avm:Spatial.Scale"] = [-deg_scale, deg_scale]
+            except (ValueError, TypeError):
+                pass
+
+    # 4. Rotation Check (independent)
+    # Check both standard name and pyavm's internal names (RotationRef, PositionAngle)
+    if not any(k in attrs for k in ("avm:Spatial.Rotation", "avm:Spatial.RotationRef", "avm:Spatial.PositionAngle")):
+        rot_val = header.get("CROTA1") or header.get("CROTA2") or header.get("ROTATANG")
+        if rot_val is not None:
+            try:
+                attrs["avm:Spatial.Rotation"] = float(rot_val)
+            except (ValueError, TypeError):
+                pass
+
+    # 5. Reference Pixel Check (independent)
+    if "avm:Spatial.ReferencePixel" not in attrs:
+        naxis1 = header.get("NAXIS1") or header.get("IMAGEW")
+        naxis2 = header.get("NAXIS2") or header.get("IMAGEH")
+        if naxis1 and naxis2:
+            try:
+                attrs["avm:Spatial.ReferencePixel"] = [float(naxis1) / 2.0, float(naxis2) / 2.0]
+            except (ValueError, TypeError):
+                pass
+
+    # Add non-WCS metadata from FITS header (only if not already set by pyavm)
     obj = header.get("OBJECT")
     if obj and str(obj).strip():
-        attrs["avm:Subject.Name"] = str(obj).strip()
+        attrs.setdefault("avm:Subject.Name", str(obj).strip())
 
-    # Instrument (camera)
     instrume = header.get("INSTRUME")
     if instrume and str(instrume).strip():
-        attrs["avm:Instrument"] = str(instrume).strip()
+        attrs.setdefault("avm:Instrument", str(instrume).strip())
 
-    # Telescope / facility
     telescop = header.get("TELESCOP")
     if telescop and str(telescop).strip():
-        attrs["avm:Facility"] = str(telescop).strip()
+        attrs.setdefault("avm:Facility", str(telescop).strip())
 
-    # Coordinate frame from equinox
-    equinox = header.get("EQUINOX")
-    if equinox is not None:
-        eq_val = float(equinox)
-        if eq_val == 2000.0:
-            attrs["avm:Spatial.CoordinateFrame"] = "ICRS"
-        elif eq_val == 1950.0:
-            attrs["avm:Spatial.CoordinateFrame"] = "FK4"
-        else:
-            attrs["avm:Spatial.CoordinateFrame"] = "FK5"
-
-    # WCS reference value (RA, Dec in degrees)
-    # Try CRVAL first, fall back to RA/DEC keywords
-    crval1 = header.get("CRVAL1")
-    crval2 = header.get("CRVAL2")
-    if crval1 is not None and crval2 is not None:
-        attrs["avm:Spatial.ReferenceValue"] = [
-            str(float(crval1)), str(float(crval2)),
-        ]
-    else:
-        ra = header.get("RA")
-        dec = header.get("DEC")
-        if ra is not None and dec is not None:
-            coords = _parse_ra_dec(str(ra), str(dec))
-            if coords:
-                attrs["avm:Spatial.ReferenceValue"] = [
-                    str(coords[0]), str(coords[1]),
-                ]
-
-    # WCS reference pixel
-    crpix1 = header.get("CRPIX1")
-    crpix2 = header.get("CRPIX2")
-    if crpix1 is not None and crpix2 is not None:
-        attrs["avm:Spatial.ReferencePixel"] = [
-            str(float(crpix1)), str(float(crpix2)),
-        ]
-
-    # Image dimensions
-    naxis1 = header.get("NAXIS1")
-    naxis2 = header.get("NAXIS2")
-    if naxis1 is not None and naxis2 is not None:
-        attrs["avm:Spatial.ReferenceDimension"] = [
-            str(int(naxis1)), str(int(naxis2)),
-        ]
-
-    # Plate scale (deg/pixel)
-    # Try CDELT first, then compute from FOCALLEN + pixel size
-    cdelt1 = header.get("CDELT1")
-    cdelt2 = header.get("CDELT2")
-    if cdelt1 is not None and cdelt2 is not None:
-        attrs["avm:Spatial.Scale"] = [
-            str(float(cdelt1)), str(float(cdelt2)),
-        ]
-    else:
-        focallen = header.get("FOCALLEN")
-        xpixsz = header.get("XPIXSZ")
-        ypixsz = header.get("YPIXSZ")
-        if focallen and xpixsz and ypixsz:
-            fl_mm = float(focallen)
-            if fl_mm > 0:
-                scale_x = float(xpixsz) / fl_mm * 206.265 / 3600.0
-                scale_y = float(ypixsz) / fl_mm * 206.265 / 3600.0
-                attrs["avm:Spatial.Scale"] = [
-                    str(-scale_x), str(scale_y),
-                ]
-
-    # Rotation
-    crota2 = header.get("CROTA2")
-    if crota2 is not None:
-        attrs["avm:Spatial.Rotation"] = str(float(crota2))
-
-    # CD matrix (alternative to CDELT+CROTA)
-    cd1_1 = header.get("CD1_1")
-    cd1_2 = header.get("CD1_2")
-    cd2_1 = header.get("CD2_1")
-    cd2_2 = header.get("CD2_2")
-    if all(v is not None for v in (cd1_1, cd1_2, cd2_1, cd2_2)):
-        attrs["avm:Spatial.CDMatrix"] = [
-            str(float(cd1_1)), str(float(cd1_2)),
-            str(float(cd2_1)), str(float(cd2_2)),
-        ]
-
-    # Projection (extract from CTYPE, e.g. "RA---TAN" -> "TAN")
-    ctype1 = header.get("CTYPE1")
-    if ctype1 is not None:
-        ctype_str = str(ctype1).strip()
-        # Standard WCS convention: last 3 chars after "---"
-        if "---" in ctype_str:
-            proj = ctype_str.split("---")[-1]
-            if proj:
-                attrs["avm:Spatial.CoordsystemProjection"] = proj
-
-    # Spectral
     filt = header.get("FILTER")
     if filt and str(filt).strip():
-        attrs["avm:Spectral.Bandpass"] = str(filt).strip()
+        attrs.setdefault("avm:Spectral.Bandpass", str(filt).strip())
 
-    # Temporal
     date_obs = header.get("DATE-OBS")
     if date_obs is not None:
-        attrs["avm:TemporalStartTime"] = str(date_obs).strip()
+        attrs.setdefault("avm:TemporalStartTime", str(date_obs).strip())
 
     exptime = header.get("EXPTIME")
     if exptime is not None:
-        attrs["avm:TemporalIntegrationTime"] = str(float(exptime))
+        attrs.setdefault("avm:TemporalIntegrationTime", str(float(exptime)))
 
-    # Creator (try multiple keywords)
     observer = (
         header.get("OBSERVER")
         or header.get("AUTHOR")
         or header.get("CREATOR")
     )
     if observer and str(observer).strip():
-        attrs["avm:Creator"] = str(observer).strip()
+        attrs.setdefault("avm:Creator", str(observer).strip())
 
-    # Type
-    attrs["avm:Type"] = "Observation"
-    attrs["avm:MetadataVersion"] = "1.1"
+    # Set defaults (only if not already set)
+    attrs.setdefault("avm:Type", "Observation")
+    attrs.setdefault("avm:MetadataVersion", "1.1")
 
     return attrs
 
@@ -260,7 +198,7 @@ _ASI676MC_GAIN_TABLE = np.array([
 ])
 
 # ZWO ASI676MC blue white balance table: (wb_b, balance)
-# Derived from piecewise calibration, neutral at wb_b=75 (app default)
+# Derived from piecewise calibration, neutral at wb_b=100 (app default)
 _ASI676MC_WB_BLUE_TABLE = np.array([
     [1, 0.01],
     [50, 0.59],
@@ -364,7 +302,7 @@ def _build_camera_tags(tags, header) -> None:
             iso = _gain_to_iso(float(gain), _ASI676MC_GAIN_TABLE)
             tags.add_tag("ISOSpeedRatings", iso)
 
-        # Analog balance (white balance)
+        # Analog balance (white balance) - only when WB data available
         wb_r = header.get("WB_RED")
         wb_b = header.get("WB_BLUE")
         if wb_r is not None and wb_b is not None:
@@ -387,8 +325,6 @@ def _build_camera_tags(tags, header) -> None:
     else:
         if gain is not None:
             tags.add_tag("ISOSpeedRatings", int(gain))
-        tags.add_tag("AnalogBalance", [1.0, 1.0, 1.0])
-
 
 def _build_metadata_tags(
     header,
@@ -444,18 +380,18 @@ def _build_metadata_tags(
         if dt is not None:
             tags.add_time_tags(dt, "original")
 
-    # Black level
+    # Black level and white level
     blklevel = header.get("PEDESTAL")
+    whtlevel = header.get("CWHITE")
     if blklevel is not None:
         tags.add_tag("BlackLevel", int(blklevel))
-
-    # White level
-    whtlevel = header.get("CWHITE")
     if whtlevel is not None:
         tags.add_tag("WhiteLevel", int(whtlevel))
 
     # Linear tone curve (bypass Adobe Camera Raw default)
-    tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
+    # Only add when use_tone_curve=False to force linear processing
+    if not use_tone_curve:
+        tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
 
     # White balance override
     if wb_xy is not None:
@@ -468,7 +404,7 @@ def _build_metadata_tags(
 
         # Estimated black level (when PEDESTAL not in header)
         if blklevel is None and stats[1] > 0:
-            tags.add_tag("BlackLevel", stats[1])
+            tags.add_tag("BlackLevel", int(stats[1]))
 
         # BaselineExposure from median
         if not stats["clipped"]:
@@ -481,17 +417,8 @@ def _build_metadata_tags(
         if ev_value and float(ev_value) != 0:
             tags.add_tag("BaselineExposure", float(ev_value))
 
-    # Build XMP properties (tone curve + AVM)
+    # Build XMP properties (AVM only - no tone curve)
     xmp_props = {}
-
-    if use_tone_curve:
-        xmp_props["ToneCurvePV2012"] = [
-            (0.0, 0.0),
-            (64 / 255, 32 / 255),
-            (128 / 255, 128 / 255),
-            (192 / 255, 224 / 255),
-            (1.0, 1.0),
-        ]
 
     # AVM (Astronomy Visualization Metadata) from FITS header
     avm_props = fits_header_to_avm_xmp(header)
@@ -640,16 +567,37 @@ def run_batch_fits_to_dng(
     def fits_consumer(task):
         index, file_path, blob = task
         try:
+
+            from muimg.tiff_metadata import normalize_array_to_target_byteorder
+
             with astropy_fits.open(io.BytesIO(blob)) as hdul:
                 data = hdul[0].data
                 header = hdul[0].header
 
+            # Fix endianness, convert float64 to float32, reject unsupported types
+            # DNG spec: uint8, uint16, float16, float32 supported (native byte order)
+            if data is not None:
+                data = normalize_array_to_target_byteorder(data, '<')
+                supported = (np.uint8, np.uint16, np.float16, np.float32)
+                if data.dtype == np.float64:
+                    _log(f"Converting float64 → float32: {Path(file_path).name}")
+                    data = data.astype(np.float32)
+                elif data.dtype not in supported:
+                    # Check for structured arrays (interferometry, tables, etc.)
+                    if data.dtype.names is not None:
+                        raise ValueError(f"Structured array (not image data): fields={list(data.dtype.names)}")
+                    raise ValueError(f"Unsupported dtype: {data.dtype}")
+
             if data is None or data.ndim != 2:
-                ndim = data.ndim if data is not None else None
-                msg = (
-                    f"Skipping {Path(file_path).name}"
-                    f" (no 2D data, ndim={ndim})"
-                )
+                if data is None:
+                    reason = "no data in primary HDU"
+                elif data.ndim == 3:
+                    reason = f"3D data cube {data.shape} (needs flattening)"
+                elif data.ndim == 1:
+                    reason = f"1D spectrum {data.shape}"
+                else:
+                    reason = f"ndim={data.ndim}"
+                msg = f"Skipping {Path(file_path).name} ({reason})"
                 _log(msg)
                 counts.inc("skipped")
                 return (index, file_path, None)
@@ -664,16 +612,9 @@ def run_batch_fits_to_dng(
                 wb_xy=wb_xy,
             )
 
-            # Only colour CFA images are supported; mono FITS (no BAYERPAT) are skipped
+            # Determine if image is CFA (color) or monochrome
             bayer_pat = header.get("BAYERPAT", "").strip().upper()
-            if not bayer_pat:
-                msg = (
-                    f"Skipping {Path(file_path).name}"
-                    f" (no BAYERPAT header — mono images are not supported)"
-                )
-                _log(msg)
-                counts.inc("skipped")
-                return (index, file_path, None)
+            is_cfa = bool(bayer_pat)
 
             # Encoding
             encoding = PageEncoding(
@@ -686,8 +627,8 @@ def run_batch_fits_to_dng(
 
             data_spec = IfdDataSpec(
                 data=data,
-                photometric="CFA",
-                cfa_pattern=bayer_pat,
+                photometric="CFA" if is_cfa else "LINEAR_RAW",
+                cfa_pattern=bayer_pat if is_cfa else None,
                 encoding=encoding,
                 extratags=tags,
             )

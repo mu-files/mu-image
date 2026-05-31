@@ -92,7 +92,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
                 interpolation=cv2.INTER_AREA,
             )
 
-        camera_rgb = dng.get_camera_rgb_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
+        camera_rgb = dng.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
         assert camera_rgb is not None
 
         camera_rgb_u16 = np.clip((camera_rgb * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)

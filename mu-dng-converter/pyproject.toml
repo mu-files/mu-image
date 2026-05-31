@@ -13,7 +13,8 @@ dependencies = [
     "flet>=0.25",
     "muimg @ git+https://github.com/mu-files/mu-image.git#subdirectory=muimg",
     "setproctitle",
-    "astropy>=5.0.0",
+    "astropy",
+    "pyavm",
 ]
 
 [project.scripts]

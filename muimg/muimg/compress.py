@@ -218,7 +218,16 @@ def compress_ifd(
                     lossless=lossless,
                     bitspersample=bits_per_sample
                 )
+            elif seg_data.ndim == 2 or (seg_data.ndim == 3 and seg_data.shape[2] == 1):
+                # Monochrome LINEAR_RAW: squeeze to 2D and encode without colorspace
+                mono_data = seg_data.squeeze() if seg_data.ndim == 3 else seg_data
+                return imagecodecs.jpeg_encode(
+                    mono_data,
+                    lossless=lossless,
+                    bitspersample=bits_per_sample
+                )
             else:
+                # RGB LINEAR_RAW: force RGB colorspace
                 return imagecodecs.jpeg_encode(
                     seg_data,
                     lossless=lossless,
