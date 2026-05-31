@@ -490,8 +490,8 @@ class DngPage(tifffile.TiffPage):
                         return imagecodecs.jpeg_decode(
                             tile_data,
                             bitspersample=self.bitspersample,
-                            colorspace=2,  # RGB
-                            outcolorspace=2
+                            colorspace='RGB',
+                            outcolorspace='RGB'
                         )
             else:
                 # Non-raw (preview): let decoder handle colorspace
@@ -1866,9 +1866,15 @@ def write_dng(
             and uncomp_data.shape[2] == 1
         )
         with _monkeypatch_linear_raw_for_monochrome(1 if needs_patch else 0):
+            if needs_patch:
+                write_shape = uncomp_data.shape[:2]
+                write_data_out = write_data.squeeze(axis=2) if hasattr(write_data, 'squeeze') else write_data
+            else:
+                write_shape = uncomp_data.shape
+                write_data_out = write_data
             writer.write(
-                write_data,
-                shape=uncomp_data.shape,
+                write_data_out,
+                shape=write_shape,
                 dtype=uncomp_data.dtype,
                 bitspersample=bits_per_sample,
                 **ifd_args,
@@ -2159,7 +2165,7 @@ def _write_dng_with_params(
                 or "RGGB"
             )
 
-    camera_rgb = raw_render._render_to_camera_space(
+    camera_raw = raw_render._render_to_camera_space(
         main_spec.extratags, raw_data, photometric, cfa_pattern, demosaic_algorithm
     )
     timer.end_step()
@@ -2171,10 +2177,10 @@ def _write_dng_with_params(
         if scale != 1.0:
             timer.start_step("apply_scaling")
             logger.info(f"Applying scale: {scale}")
-            h, w = camera_rgb.shape[:2]
+            h, w = camera_raw.shape[:2]
             new_h, new_w = int(h * scale), int(w * scale)
             
-            camera_rgb = cv2.resize(camera_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            camera_raw = cv2.resize(camera_raw, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             timer.end_step()
 
         if isinstance(main_spec, IfdPageSpec):
@@ -2193,9 +2199,9 @@ def _write_dng_with_params(
         _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
         _filter_metadata_tags(main_spec.extratags, exclude_names=tags_to_strip)
 
-        # change main_spec 
+        # change main_spec - preserve original input dtype
         main_spec = IfdDataSpec(
-            data=raw_render.convert_dtype(camera_rgb, np.uint16),
+            data=raw_render.convert_dtype(camera_raw, raw_data.dtype),
             photometric="LINEAR_RAW",
             subfiletype=SubFileType.MAIN_IMAGE,
             encoding=main_encoding,
@@ -2227,7 +2233,7 @@ def _write_dng_with_params(
     # Generate pyramid - use CATMULL_ROM for faster preview generation
     timer.start_step("generate_pyramid")
     filter_type = pyramid.filter if pyramid else PyramidFilter.CATMULL_ROM
-    pyramid_images = _generate_pyramid(camera_rgb, num_pyramid_levels, filter=filter_type)
+    pyramid_images = _generate_pyramid(camera_raw, num_pyramid_levels, filter=filter_type)
     logger.info(f"Generated {len(pyramid_images)} pyramid levels (including original)")
     timer.end_step()
     
@@ -2239,8 +2245,9 @@ def _write_dng_with_params(
         pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
 
         for level_idx in range(1, len(pyramid_images)):
+            level_data = pyramid_images[level_idx]
             pyramid_spec = IfdDataSpec(
-                data=raw_render.convert_dtype(pyramid_images[level_idx], np.uint16),
+                data=raw_render.convert_dtype(level_data, raw_data.dtype),
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 encoding=pyramid.encoding,
@@ -2272,11 +2279,12 @@ def _write_dng_with_params(
         if isinstance(main_spec, IfdPageSpec):
             page = main_spec.page
             is_monochrome_preview = page.is_linear_raw and page.samplesperpixel == 1
-        elif isinstance(main_spec, IfdDataSpec):
+        else:  # IfdDataSpec
+            # Monochrome: 2D (H,W) or 3D (H,W,1) with LINEAR_RAW
+            shape = main_spec.data.shape
             is_monochrome_preview = (
                 main_spec.photometric == "LINEAR_RAW"
-                and len(main_spec.data.shape) >= 3
-                and main_spec.data.shape[2] == 1
+                and (len(shape) == 2 or (len(shape) == 3 and shape[2] == 1))
             )
 
         _add_required_ifd0_tags(
@@ -2285,14 +2293,26 @@ def _write_dng_with_params(
         
         # Render with color transforms
         timer.start_step("render_preview")
-        rendered_preview = raw_render._render_camera_rgb(
-            ifd0_tags=ifd0_tags_no_orientation,
-            raw_ifd_tags=main_spec.extratags,
-            rgb_camera=pyramid_images[preview_level_idx],
-            output_dtype=np.uint8,
-            rendering_params=preview.rendering_params,
-            use_xmp=preview.use_xmp,
-        )
+        if is_monochrome_preview:
+            rendered_preview = raw_render._render_camera_monochrome(
+                ifd0_tags=ifd0_tags_no_orientation,
+                raw_ifd_tags=main_spec.extratags,
+                mono_camera=pyramid_images[preview_level_idx],
+                output_dtype=np.uint8,
+                rendering_params=preview.rendering_params,
+                use_xmp=preview.use_xmp,
+            )
+            preview_photometric = "MINISBLACK"
+        else:
+            rendered_preview = raw_render._render_camera_rgb(
+                ifd0_tags=ifd0_tags_no_orientation,
+                raw_ifd_tags=main_spec.extratags,
+                rgb_camera=pyramid_images[preview_level_idx],
+                output_dtype=np.uint8,
+                rendering_params=preview.rendering_params,
+                use_xmp=preview.use_xmp,
+            )
+            preview_photometric = "RGB"
         timer.end_step()
         
         # Create preview spec for IFD0
@@ -2302,7 +2322,7 @@ def _write_dng_with_params(
         ) if preview.compression else None
         preview_spec = IfdDataSpec(
             data=rendered_preview,
-            photometric="RGB",
+            photometric=preview_photometric,
             subfiletype=SubFileType.PREVIEW_IMAGE,
             encoding=preview_encoding,
             extratags=ifd0_tags,
