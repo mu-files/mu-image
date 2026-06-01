@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **FITS→DNG**: Fixed monochrome preview JPEG encoding failure in batch/multi-threaded mode.
+
 ## [app-v0.1.20260531.1519] - 2026-05-31
 
 ### Fixed
