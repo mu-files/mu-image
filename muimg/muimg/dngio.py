@@ -11,7 +11,6 @@ import io
 import logging
 import numpy as np
 
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import auto, Enum, IntEnum
@@ -46,25 +45,6 @@ from .tiff_metadata import (
 
 logger = logging.getLogger(__name__)
 
-
-@contextmanager
-def _monkeypatch_linear_raw_for_monochrome(samples: int):
-    """Temporarily patch tifffile PHOTOMETRIC_SAMPLES for monochrome LINEAR_RAW.
-    
-    tifffile hardcodes LINEAR_RAW to 3 samples, but DNG spec allows 1 sample
-    for monochrome. This context manager patches only when needed.
-    """
-    if samples == 1:
-        # Monkey-patch: LINEAR_RAW can be 1 sample (monochrome) or 3 samples (RGB)
-        # See: https://github.com/cgohlke/tifffile/issues/XXX
-        _orig = tifffile.TIFF.PHOTOMETRIC_SAMPLES[34892]  # LINEAR_RAW
-        tifffile.TIFF.PHOTOMETRIC_SAMPLES[34892] = 1
-        try:
-            yield
-        finally:
-            tifffile.TIFF.PHOTOMETRIC_SAMPLES[34892] = _orig
-    else:
-        yield
 
 
 # =============================================================================
@@ -1292,7 +1272,7 @@ _TIFFWRITER_MANAGED_TAGS = {
     'BitsPerSample', 'Compression', 'PhotometricInterpretation',
     'ImageDescription', 'StripOffsets', 'SamplesPerPixel', 'SampleFormat',
     'RowsPerStrip', 'StripByteCounts', 'XResolution', 'YResolution',
-    'PlanarConfiguration', 'ResolutionUnit', 'Software',
+    'PlanarConfiguration', 'ResolutionUnit', 'Software', 'ExtraSamples',
     'TileWidth', 'TileLength', 'TileOffsets', 'TileByteCounts',
     'SubIFDs', 'ExifTag', 'GPSTag', 'InteroperabilityTag',
     'ExtraCameraProfiles',
@@ -1506,19 +1486,17 @@ def write_dng(
             else:
                 raw_ifd_args['rowsperstrip'] = (np.prod(page.shape) * page.bitspersample + 7) // 8
         
-        # Workaround: tifffile hardcodes LINEAR_RAW to 3 samples
-        needs_patch = (
-            raw_ifd_args.get('photometric') == 'LINEAR_RAW'
-            and page.samplesperpixel == 1
+        if raw_ifd_args.get('photometric') in ('LINEAR_RAW', 'CFA'):
+            raw_ifd_args['planarconfig'] = 'CONTIG'
+            raw_ifd_args['extrasamples'] = False
+
+        writer.write(
+            data=data,
+            shape=page.shape,
+            dtype=page.dtype,
+            bitspersample=page.bitspersample,
+            **raw_ifd_args,
         )
-        with _monkeypatch_linear_raw_for_monochrome(1 if needs_patch else 0):
-            writer.write(
-                data=data,
-                shape=page.shape,
-                dtype=page.dtype,
-                bitspersample=page.bitspersample,
-                **raw_ifd_args,
-            )
 
         segment_type = "tiled" if page.is_tiled else "stripped"
         compression_type = "uncompressed" if page.compression == tifffile.COMPRESSION.NONE else "compressed"
@@ -1813,9 +1791,8 @@ def write_dng(
             elif encoding.rows_per_strip is not None:
                 ifd_args['rowsperstrip'] = encoding.rows_per_strip
             else:
-                ifd_args['rowsperstrip'] = (np.prod(uncomp_data.shape) * bits_per_sample + 7) // 8   
+                ifd_args['rowsperstrip'] = uncomp_data.shape[0]  # single strip
 
-            
             # Segment and compress data
             dng_photometric_types = photometric in ("CFA", "LINEAR_RAW")
             
@@ -1849,36 +1826,45 @@ def write_dng(
                     encoding.rows_per_strip,
                     num_compression_workers
                 )
-                write_data = iter(encoded_segments)
+                encoded_segments_iter = iter(encoded_segments)
             else:
-                write_data = uncomp_data
+                encoded_segments_iter = None
         else:
-            write_data = uncomp_data
-            ifd_args['rowsperstrip'] = (np.prod(uncomp_data.shape) * bits_per_sample + 7) // 8
-        
-        # Prepare tags for write (convert arrays to target byte order)
-        ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
+            # No encoding: single-strip uncompressed
+            ifd_args['rowsperstrip'] = uncomp_data.shape[0]  # single strip
+            encoded_segments_iter = None
 
-        # Workaround: tifffile hardcodes LINEAR_RAW to 3 samples
-        # Mono data is now (H, W, 1), so shape[2] == 1 means monochrome
-        needs_patch = (
-            ifd_args.get('photometric') == 'LINEAR_RAW'
-            and uncomp_data.shape[2] == 1
-        )
-        with _monkeypatch_linear_raw_for_monochrome(1 if needs_patch else 0):
-            if needs_patch:
-                write_shape = uncomp_data.shape[:2]
-                write_data_out = write_data.squeeze(axis=2) if hasattr(write_data, 'squeeze') else write_data
-            else:
-                write_shape = uncomp_data.shape
-                write_data_out = write_data
+        # Write the IFD: shared LINEAR_RAW shape/planarconfig fixup for both paths
+        ifd_args["extratags"] = _prepare_tags_for_write(ifd_tags, writer.tiff.byteorder)
+        # DNG spec: transparency for CFA and LINEAR_RAW is stored as a separate mask IFD
+        # (NewSubFileType 4/5), never as an ExtraSamples channel in the raw IFD.
+        if photometric in ('LINEAR_RAW', 'CFA'):
+            ifd_args['planarconfig'] = 'CONTIG'
+            ifd_args['extrasamples'] = False
+        
+        is_linear_raw = photometric == 'LINEAR_RAW'
+        is_mono = is_linear_raw and not (uncomp_data.ndim == 3 and uncomp_data.shape[2] > 1)
+        if encoded_segments_iter is not None:
             writer.write(
-                write_data_out,
-                shape=write_shape,
+                encoded_segments_iter,
+                shape=uncomp_data.shape[:2] if is_mono else uncomp_data.shape,
                 dtype=uncomp_data.dtype,
                 bitspersample=bits_per_sample,
                 **ifd_args,
             )
+        else:
+            write_array = (
+                uncomp_data.squeeze(axis=2) if is_mono and uncomp_data.ndim == 3
+                else uncomp_data
+            )
+            writer.write(
+                write_array,
+                dtype=uncomp_data.dtype,
+                bitspersample=bits_per_sample,
+                **ifd_args,
+            )
+
+
 
     # Initialize subifds list
     if subifds is None:
@@ -2294,7 +2280,7 @@ def _write_dng_with_params(
         # Render with color transforms
         timer.start_step("render_preview")
         if is_monochrome_preview:
-            rendered_preview = raw_render._render_camera_monochrome(
+            mono = raw_render._render_camera_monochrome(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 mono_camera=pyramid_images[preview_level_idx],
@@ -2302,7 +2288,8 @@ def _write_dng_with_params(
                 rendering_params=preview.rendering_params,
                 use_xmp=preview.use_xmp,
             )
-            preview_photometric = "MINISBLACK"
+            rendered_preview = np.stack([mono, mono, mono], axis=2)
+            preview_photometric = "RGB"
         else:
             rendered_preview = raw_render._render_camera_rgb(
                 ifd0_tags=ifd0_tags_no_orientation,

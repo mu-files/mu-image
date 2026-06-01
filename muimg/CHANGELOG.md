@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.20260601.0852] - 2026-06-01
+
+### Changed
+- **Dependency**: Updated minimum `tifffile` requirement to `>=2026.6.1`. This version changed `PHOTOMETRIC_SAMPLES[LINEAR_RAW]` from 3 to 1 for single-channel images allowing for monochrome or color LINEAR_RAW
+- **Preview**: Monochrome (`MINISBLACK`) previews are converted to RGB (single channel replicated across all three) before JPEG compression, avoiding yet to be debugged issue `imagecodecs.jpeg8_encode` with MINISBLACK multi-threaded jpeg encode
+
 ## [0.1.20260531.1501] - 2026-05-31
 
 ### Added
