@@ -2,6 +2,7 @@
 
 import flet as ft
 
+from .views.dng_copy import build_dng_copy_view
 from .views.dng_image_view import build_dng_view
 from .views.fits_dng_view import build_fits_view
 
@@ -9,7 +10,7 @@ from .views.fits_dng_view import build_fits_view
 def app(page: ft.Page):
     """Main Flet application."""
     page.title = "mu DNG Converter"
-    page.window.width = 720
+    page.window.width = 760
     page.window.height = 780
     page.padding = 20
     page.theme_mode = ft.ThemeMode.DARK
@@ -35,10 +36,12 @@ def app(page: ft.Page):
     dng_save_picker = ft.FilePicker()
     fits_dir_picker = ft.FilePicker()
     fits_file_picker = ft.FilePicker()
+    copy_dir_picker = ft.FilePicker()
+    copy_file_picker = ft.FilePicker()
 
     tabs = ft.Tabs(
         selected_index=0,
-        length=2,
+        length=3,
         expand=True,
         content=ft.Column(
             expand=True,
@@ -48,6 +51,7 @@ def app(page: ft.Page):
                     tabs=[
                         ft.Tab(label="DNG \u2192 Image"),
                         ft.Tab(label="FITS \u2192 DNG"),
+                        ft.Tab(label="DNG \u2192 DNG"),
                     ],
                 ),
                 ft.TabBarView(
@@ -67,6 +71,15 @@ def app(page: ft.Page):
                             content=build_fits_view(page,
                                 dir_picker=fits_dir_picker,
                                 file_picker=fits_file_picker),
+                            padding=ft.Padding(
+                                left=0, top=10, right=0, bottom=0
+                            ),
+                            expand=True,
+                        ),
+                        ft.Container(
+                            content=build_dng_copy_view(page,
+                                dir_picker=copy_dir_picker,
+                                file_picker=copy_file_picker),
                             padding=ft.Padding(
                                 left=0, top=10, right=0, bottom=0
                             ),
