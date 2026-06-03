@@ -184,48 +184,115 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         on_submit=_clamp_workers,
     )
 
-    # --- Strip Tags ---
-    strip_tags_field = ft.TextField(
-        label="Strip Tags (comma-separated)",
-        value=_settings.get("strip_tags", ""),
-        expand=True,
+    # --- Update Tags (unified metadata panel) ---
+    # Operations: add, strip, adjust-time, adjust-time-offset
+    metadata_ops_list = ft.Column(spacing=4, tight=True)  # Applied operations list
+
+    # Operation selector
+    metadata_op_dropdown = ft.Dropdown(
+        label="Operation",
+        value="add",
+        options=[
+            ft.dropdown.Option("add", "Add/Set Tag"),
+            ft.dropdown.Option("strip", "Strip Tag"),
+            ft.dropdown.Option("adjust-time", "Set DateTime (absolute)"),
+            ft.dropdown.Option("adjust-time-offset", "Shift Time + Timezone"),
+        ],
+        width=220,
     )
 
-    # --- Set Tags (picker + list) ---
-    tag_name_dropdown = ft.Dropdown(
-        label="Tag",
-        value=_SETTABLE_TAGS[0],
-        options=[ft.dropdown.Option(t) for t in _SETTABLE_TAGS],
-        width=200,
-    )
-    tag_value_field = ft.TextField(
-        label="Value", width=280,
+    # Tag operation inputs (for add/strip)
+    tag_op_name = ft.TextField(label="Tag Name", width=180)
+    tag_op_value = ft.TextField(label="Value", width=200, visible=True)
+
+    # Time operation inputs (for adjust-time)
+    time_absolute = ft.TextField(
+        label="YYYY:MM:DD HH:MM:SS",
+        value="",
+        width=220,
+        hint_text="2024:01:15 14:30:00",
+        visible=False,
     )
 
-    tag_list_column = ft.Column(spacing=2, tight=True)
+    # Time offset inputs (for adjust-time-offset)
+    time_offset_sign = ft.Dropdown(
+        value="+",
+        options=[ft.dropdown.Option("+"), ft.dropdown.Option("−")],
+        width=60,
+        visible=False,
+    )
+    time_offset_hours = ft.TextField(label="H", value="0", width=70, keyboard_type=ft.KeyboardType.NUMBER, visible=False)
+    time_offset_minutes = ft.TextField(label="M", value="0", width=70, keyboard_type=ft.KeyboardType.NUMBER, visible=False)
+    time_offset_seconds = ft.TextField(label="S", value="0", width=70, keyboard_type=ft.KeyboardType.NUMBER, visible=False)
+    time_offset_tz = ft.TextField(
+        label="Timezone",
+        value="",
+        width=100,
+        hint_text="+02:00",
+        visible=False,
+    )
 
-    def _rebuild_tag_list():
-        tag_list_column.controls.clear()
-        for i, entry in enumerate(state["extra_tags"]):
-            idx = i  # capture
+    def on_metadata_op_changed(e):
+        op = metadata_op_dropdown.value
+        is_tag_op = op in ("add", "strip")
+        is_time_absolute = op == "adjust-time"
+        is_time_offset = op == "adjust-time-offset"
+
+        # Show/hide tag inputs
+        tag_op_name.visible = is_tag_op
+        tag_op_value.visible = (op == "add")
+
+        # Show/hide time inputs
+        time_absolute.visible = is_time_absolute
+        time_offset_sign.visible = is_time_offset
+        time_offset_hours.visible = is_time_offset
+        time_offset_minutes.visible = is_time_offset
+        time_offset_seconds.visible = is_time_offset
+        time_offset_tz.visible = is_time_offset
+
+        page.update()
+
+    metadata_op_dropdown.on_change = on_metadata_op_changed
+
+    def rebuild_metadata_ops_list():
+        """Rebuild the list of applied metadata operations."""
+        metadata_ops_list.controls.clear()
+        ops = state.get("metadata_ops", [])
+
+        for i, op in enumerate(ops):
+            idx = i
 
             def make_remove(captured_idx):
                 def on_remove(e):
-                    state["extra_tags"].pop(captured_idx)
-                    _rebuild_tag_list()
+                    state["metadata_ops"].pop(captured_idx)
+                    rebuild_metadata_ops_list()
                     _persist_settings()
                     page.update()
                 return on_remove
 
-            tag_list_column.controls.append(
+            # Format display text based on operation type
+            if op["type"] == "add":
+                display = f"Set {op['name']} = {op['value']}"
+            elif op["type"] == "strip":
+                display = f"Strip {op['name']}"
+            elif op["type"] == "adjust-time":
+                display = f"Set DateTimeOriginal = {op['value']}"
+            elif op["type"] == "adjust-time-offset":
+                sign = op.get("sign", "+")
+                h = op.get("hours", 0)
+                m = op.get("minutes", 0)
+                s = op.get("seconds", 0)
+                tz = op.get("timezone", "")
+                display = f"Shift time {sign}{h}h{m}m{s}s"
+                if tz:
+                    display += f", TZ={tz}"
+            else:
+                display = str(op)
+
+            metadata_ops_list.controls.append(
                 ft.Row(
                     controls=[
-                        ft.Text(
-                            f"{entry['name']}: {entry['value']}",
-                            size=12,
-                            expand=True,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                        ),
+                        ft.Text(display, size=12, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
                         ft.IconButton(
                             icon=ft.Icons.CLOSE,
                             icon_size=14,
@@ -238,62 +305,71 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 )
             )
 
-    _rebuild_tag_list()
+    def on_apply_metadata_op(e):
+        """Apply the current metadata operation to the list."""
+        op = metadata_op_dropdown.value
+        ops = state.setdefault("metadata_ops", [])
 
-    def on_add_tag(e):
-        name = tag_name_dropdown.value
-        value = tag_value_field.value.strip()
-        if not value:
-            return
-        # Replace existing entry for the same tag name
-        state["extra_tags"] = [t for t in state["extra_tags"] if t["name"] != name]
-        state["extra_tags"].append({"name": name, "value": value})
-        tag_value_field.value = ""
-        _rebuild_tag_list()
+        if op == "add":
+            name = tag_op_name.value.strip()
+            value = tag_op_value.value
+            if not name:
+                return
+            # TODO: Validate against tag registry
+            # Remove existing add op for same tag
+            ops = [o for o in ops if not (o["type"] == "add" and o.get("name") == name)]
+            ops.append({"type": "add", "name": name, "value": value})
+            tag_op_value.value = ""
+
+        elif op == "strip":
+            name = tag_op_name.value.strip()
+            if not name:
+                return
+            # Remove existing strip op for same tag
+            ops = [o for o in ops if not (o["type"] == "strip" and o.get("name") == name)]
+            ops.append({"type": "strip", "name": name})
+
+        elif op == "adjust-time":
+            value = time_absolute.value.strip()
+            if not value:
+                return
+            # Remove existing adjust-time op
+            ops = [o for o in ops if o["type"] != "adjust-time"]
+            ops.append({"type": "adjust-time", "value": value})
+
+        elif op == "adjust-time-offset":
+            try:
+                h = int(time_offset_hours.value or 0)
+                m = int(time_offset_minutes.value or 0)
+                s = int(time_offset_seconds.value or 0)
+            except (ValueError, TypeError):
+                h = m = s = 0
+            tz = time_offset_tz.value.strip()
+            sign = time_offset_sign.value
+            # Remove existing adjust-time-offset op
+            ops = [o for o in ops if o["type"] != "adjust-time-offset"]
+            ops.append({
+                "type": "adjust-time-offset",
+                "sign": sign,
+                "hours": h,
+                "minutes": m,
+                "seconds": s,
+                "timezone": tz,
+            })
+
+        state["metadata_ops"] = ops
+        rebuild_metadata_ops_list()
         _persist_settings()
         page.update()
 
-    add_tag_btn = ft.Button(
-        content="Add", icon=ft.Icons.ADD, style=_btn_style,
-        on_click=on_add_tag,
+    apply_metadata_btn = ft.Button(
+        content="Apply", icon=ft.Icons.ADD, style=_btn_style,
+        on_click=on_apply_metadata_op,
     )
 
-    # --- Adjust Time ---
-    time_offset_enabled = ft.Checkbox(label="Adjust DateTimeOriginal", value=False)
-    time_sign = ft.Dropdown(
-        value="+",
-        options=[ft.dropdown.Option("+"), ft.dropdown.Option("−")],
-        width=80,
-        disabled=True,
-    )
-    time_hours = ft.TextField(
-        label="H", value="0", width=80,
-        keyboard_type=ft.KeyboardType.NUMBER,
-        disabled=True,
-    )
-    time_minutes = ft.TextField(
-        label="M", value="0", width=80,
-        keyboard_type=ft.KeyboardType.NUMBER,
-        disabled=True,
-    )
-    time_seconds = ft.TextField(
-        label="S", value="0", width=80,
-        keyboard_type=ft.KeyboardType.NUMBER,
-        disabled=True,
-    )
-    time_hint = ft.Text(
-        "e.g. to fix timezone offset or clock drift",
-        size=11, italic=True, visible=False,
-    )
-
-    def on_time_offset_changed(e):
-        enabled = time_offset_enabled.value
-        for ctrl in [time_sign, time_hours, time_minutes, time_seconds]:
-            ctrl.disabled = not enabled
-        time_hint.visible = enabled
-        page.update()
-
-    time_offset_enabled.on_change = on_time_offset_changed
+    # Load any saved metadata ops
+    state["metadata_ops"] = _settings.get("metadata_ops", [])
+    rebuild_metadata_ops_list()
 
     # --- Progress ---
     progress_bar = ft.ProgressBar(value=0, visible=False)
@@ -316,8 +392,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         _save_settings({
             "last_input_dir": state.get("last_input_dir"),
             "last_output_dir": state.get("last_output_dir"),
-            "strip_tags": strip_tags_field.value,
-            "extra_tags": state["extra_tags"],
+            "metadata_ops": state.get("metadata_ops", []),
             "transcode": transcode_checkbox.value,
             "compression": compression_dropdown.value,
             "jxl_distance": jxl_distance.value,
@@ -470,32 +545,38 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             dng_files = state["_dng_files"]
             _log(f"Input: {len(dng_files)} DNG files → {output_path}")
 
-            # Build strip tags set from comma-separated field
-            strip_tags_set = None
-            raw_strip = strip_tags_field.value.strip()
-            if raw_strip:
-                strip_tags_set = {t.strip() for t in raw_strip.split(",") if t.strip()}
+            # Process metadata_ops into strip_tags, extra_tags, and time adjustments
+            metadata_ops = state.get("metadata_ops", [])
+            strip_tags_set = set()
+            extra_tags_obj = MetadataTags()
+            time_offset_seconds = 0.0
+            time_timezone = None
+            has_time_adjust_absolute = False
 
-            # Build extra tags MetadataTags from picker list
-            extra_tags_obj = None
-            if state["extra_tags"]:
-                extra_tags_obj = MetadataTags()
-                for entry in state["extra_tags"]:
-                    extra_tags_obj.add_tag(entry["name"], entry["value"])
+            for op in metadata_ops:
+                op_type = op.get("type")
+                if op_type == "strip":
+                    strip_tags_set.add(op.get("name", "").strip())
+                elif op_type == "add":
+                    extra_tags_obj.add_tag(op.get("name", ""), op.get("value", ""))
+                elif op_type == "adjust-time-offset":
+                    sign = -1 if op.get("sign") == "−" else 1
+                    h = op.get("hours", 0)
+                    m = op.get("minutes", 0)
+                    s = op.get("seconds", 0)
+                    time_offset_seconds += sign * (h * 3600 + m * 60 + s)
+                    tz = op.get("timezone", "").strip()
+                    if tz:
+                        time_timezone = tz
+                elif op_type == "adjust-time":
+                    # Absolute time set - mark for special handling
+                    has_time_adjust_absolute = True
+                    _log(f"[warn] Absolute time adjustment not yet implemented: {op.get('value')}")
 
-            # Build time offset in seconds
-            time_offset = 0.0
-            if time_offset_enabled.value:
-                try:
-                    h = int(time_hours.value or 0)
-                    m = int(time_minutes.value or 0)
-                    s = int(time_seconds.value or 0)
-                    offset = h * 3600 + m * 60 + s
-                    if time_sign.value == "−":
-                        offset = -offset
-                    time_offset = float(offset)
-                except (ValueError, TypeError):
-                    pass
+            # Remove empty tag names from strip set
+            strip_tags_set = {t for t in strip_tags_set if t} or None
+            if not extra_tags_obj._tags:
+                extra_tags_obj = None
 
             def on_task_done(completed, total):
                 update_progress(completed / total, f"{completed}/{total}")
@@ -515,7 +596,8 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 do_fast_load=fast_load.value,
                 strip_tags=strip_tags_set,
                 extra_tags=extra_tags_obj,
-                time_offset_seconds=time_offset,
+                time_offset_seconds=time_offset_seconds,
+                time_timezone=time_timezone,
                 num_workers=max(1, min(8, int(num_workers.value))),
                 on_task_done=on_task_done,
             )
@@ -636,29 +718,27 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             ft.Divider(height=8),
-            ft.Text("Strip Tags", weight=ft.FontWeight.BOLD, size=13),
-            strip_tags_field,
-            ft.Divider(height=8),
-            ft.Text("Set Tags", weight=ft.FontWeight.BOLD, size=13),
-            ft.Row(
-                controls=[tag_name_dropdown, tag_value_field, add_tag_btn],
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=8,
-            ),
-            tag_list_column,
-            ft.Divider(height=8),
-            ft.Text("Adjust Time", weight=ft.FontWeight.BOLD, size=13),
+            ft.Text("Update Tags", weight=ft.FontWeight.BOLD, size=13),
+            # Operation selector row
             ft.Row(
                 controls=[
-                    time_offset_enabled,
-                    time_sign,
-                    time_hours,
-                    time_minutes,
-                    time_seconds,
+                    metadata_op_dropdown,
+                    tag_op_name,
+                    tag_op_value,
+                    time_absolute,
+                    time_offset_sign,
+                    time_offset_hours,
+                    time_offset_minutes,
+                    time_offset_seconds,
+                    time_offset_tz,
+                    apply_metadata_btn,
                 ],
                 wrap=True,
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            time_hint,
+            # Applied operations list
+            metadata_ops_list,
             ft.Divider(height=8),
             progress_bar,
             log_text,

@@ -1037,6 +1037,7 @@ def run_batch_copy_dng(
     strip_tags=None,
     extra_tags=None,
     time_offset_seconds=0.0,
+    time_timezone=None,
     num_workers=4,
     on_task_done=None,
 ):
@@ -1060,6 +1061,7 @@ def run_batch_copy_dng(
         strip_tags: Set of tag name strings to strip, or None.
         extra_tags: MetadataTags object with tags to add/override, or None.
         time_offset_seconds: Signed seconds to add to DateTimeOriginal. 0 = no change.
+        time_timezone: Timezone offset string (e.g., "+02:00") to set in OffsetTimeOriginal, or None.
         num_workers: Number of parallel worker threads.
         on_task_done: Optional callback(completed, total) -> bool. Return True to cancel.
 
@@ -1149,6 +1151,12 @@ def run_batch_copy_dng(
                         file_extra_tags.add_time_tags(dt_adjusted, time_type="original")
                 except Exception as e:
                     logger.warning(f"Frame {index}: Could not adjust time for {Path(file_path).name}: {e}")
+
+            # Apply timezone offset if provided
+            if time_timezone:
+                if file_extra_tags is None:
+                    file_extra_tags = MetadataTags()
+                file_extra_tags.add_tag("OffsetTimeOriginal", time_timezone)
 
             out_buf = io.BytesIO()
             write_dng_from_page(
