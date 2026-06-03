@@ -40,8 +40,8 @@ def _save_settings(settings: dict):
     _settings_path().write_text(json.dumps(settings, indent=2))
 
 
-def build_dng_copy_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
-                        file_picker: ft.FilePicker | None = None) -> ft.Control:
+def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
+                       file_picker: ft.FilePicker | None = None) -> ft.Control:
     """Build the DNG → DNG copy/transcode tab content."""
 
     _settings = _load_settings()

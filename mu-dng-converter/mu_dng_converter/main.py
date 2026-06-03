@@ -2,7 +2,7 @@
 
 import flet as ft
 
-from .views.dng_copy import build_dng_copy_view
+from .views.dng_dng_view import build_dng_dng_view
 from .views.dng_image_view import build_dng_view
 from .views.fits_dng_view import build_fits_view
 
@@ -77,7 +77,7 @@ def app(page: ft.Page):
                             expand=True,
                         ),
                         ft.Container(
-                            content=build_dng_copy_view(page,
+                            content=build_dng_dng_view(page,
                                 dir_picker=copy_dir_picker,
                                 file_picker=copy_file_picker),
                             padding=ft.Padding(
