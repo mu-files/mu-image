@@ -315,12 +315,106 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     wb_dropdown.on_select = on_wb_changed
     use_xmp.on_change = on_xmp_changed
 
-    def on_cancel(e):
-        state["cancel"] = True
-        state["log"] = (state.get("log") or "") + "Cancellation requested...\n"
-        page.update()
+    # --- Helper to build rendering params from UI controls ---
+    def build_rendering_params():
+        if use_xmp.value:
+            return {}
+        params = {}
+        if temperature.value:
+            params["Temperature"] = float(temperature.value)
+        if tint.value:
+            params["Tint"] = float(tint.value)
+        params["Exposure2012"] = float(exposure.value or 0)
+        return params
 
-    async def on_run(e):
+    # --- Conversion logic (worker function for BatchRunner) ---
+    def run_conversion_worker(output_path, worker_state):
+        """Worker function that runs in background thread."""
+        import setproctitle
+        from mu_dng_converter.batch_runner import make_state_logger
+        setproctitle.setproctitle("mu-dng-converter: DNG → Image")
+
+        _log = make_state_logger(worker_state)
+
+        try:
+            mode = mode_dropdown.value
+            dng_files = worker_state["_dng_files"]
+            total = len(dng_files)
+            if mode == "video":
+                out_desc = Path(output_path).name
+            else:
+                out_desc = f".{mode}"
+            _log(f"Input: {total} DNG files, Output: {out_desc}")
+
+            rendering_params = build_rendering_params()
+
+            def on_task_done(completed, total):
+                worker_state["progress_fraction"] = completed / total if total > 0 else 0
+                worker_state["progress_text"] = f"{completed}/{total}"
+                return worker_state["cancel"]
+
+            if mode == "video":
+                from muimg.cli import run_batch_to_video
+                w, h = resolution.value.split("x")
+                result = run_batch_to_video(
+                    dng_files=dng_files,
+                    output_mp4=Path(output_path),
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp.value,
+                    resolution=(int(w), int(h)),
+                    codec=codec.value,
+                    crf=int(crf.value),
+                    bit_depth=video_bit_depth.value,
+                    frame_rate=float(frame_rate.value),
+                    num_workers=max(1, min(8, int(num_workers.value))),
+                    overlay_txt=overlay_txt.value,
+                    on_task_done=on_task_done,
+                )
+            else:
+                from muimg.cli import run_batch_convert
+                result = run_batch_convert(
+                    dng_files=dng_files,
+                    output_folder=output_path,
+                    output_format=mode,
+                    bit_depth=bit_depth.value,
+                    rendering_params=rendering_params,
+                    use_xmp=use_xmp.value,
+                    scale=max(0.125, min(1.0, float(scale.value or 1.0))),
+                    num_workers=max(1, min(8, int(num_workers.value))),
+                    on_task_done=on_task_done,
+                )
+
+            fps = result['completed'] / result['elapsed'] if result['elapsed'] > 0 else 0
+            nw = max(1, min(8, int(num_workers.value)))
+            _log(f"Done: {result['completed']}/{result['total']} files in {result['elapsed']:.1f}s ({fps:.1f} files/s, {nw} workers)")
+            stats = result.get('queue_stats', {})
+            if 'task_queue' in stats:
+                q = stats['task_queue']
+                _log(f"  Task queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
+            if 'writer_queue' in stats:
+                q = stats['writer_queue']
+                _log(f"  Writer queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
+        except Exception as ex:
+            _log(f"ERROR: {ex}")
+        finally:
+            worker_state["running"] = False
+            worker_state["finished"] = True
+
+    # --- Setup BatchRunner for run/cancel/polling logic ---
+    from mu_dng_converter.batch_runner import BatchRunner
+
+    runner = BatchRunner(
+        page=page,
+        state=state,
+        worker_fn=run_conversion_worker,
+        run_button=run_button,
+        cancel_button=cancel_button,
+        progress_bar=progress_bar,
+        log_text=log_text,
+    )
+
+    async def on_run_wrapper(e):
+        """Custom on_run with video mode handling for existing files."""
         from mu_dng_converter.dialogs import check_overwrite
 
         inp = input_path_text.value
@@ -362,159 +456,19 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                         page.update()
                         return
 
-        state["running"] = True
-        state["cancel"] = False
-        state["finished"] = False
-        state["progress_fraction"] = 0
-        state["progress_text"] = ""
-        state["log"] = ""
-        run_button.visible = False
-        cancel_button.visible = True
-        progress_bar.visible = True
-        progress_bar.value = 0
-        # Save previous log and start fresh
-        state["_old_log"] = log_text.value or ""
+        # Store the filtered file list for the worker
         state["_dng_files"] = dng_files
-        page.update()
+        state["input_files"] = [str(f) for f in dng_files]
 
-        thread = threading.Thread(target=run_conversion, args=(out,), daemon=True)
-        thread.start()
-        page.run_task(_poll_ui)
+        # Call common runner logic
+        await runner.on_run(
+            input_path_text=input_path_text,
+            output_path_text=output_path_text,
+            persist_settings_fn=lambda: None,  # Settings saved in custom logic above
+        )
 
-    run_button.on_click = on_run
-    cancel_button.on_click = on_cancel
-
-    # --- Conversion logic (runs in thread) ---
-    def run_conversion(output_path):
-        import setproctitle
-        setproctitle.setproctitle("mu-dng-converter: DNG → Image")
-
-        try:
-            mode = mode_dropdown.value
-            dng_files = state["_dng_files"]
-            total = len(dng_files)
-            if mode == "video":
-                out_desc = Path(output_path).name
-            else:
-                out_desc = f".{mode}"
-            log(f"Input: {total} DNG files, Output: {out_desc}")
-
-            rendering_params = build_rendering_params()
-
-            def on_task_done(completed, total):
-                update_progress(completed / total, f"{completed}/{total}")
-                return state["cancel"]
-
-            if mode == "video":
-                from muimg.cli import run_batch_to_video
-                w, h = resolution.value.split("x")
-                result = run_batch_to_video(
-                    dng_files=dng_files,
-                    output_mp4=Path(output_path),
-                    rendering_params=rendering_params,
-                    use_xmp=use_xmp.value,
-                    resolution=(int(w), int(h)),
-                    codec=codec.value,
-                    crf=int(crf.value),
-                    bit_depth=video_bit_depth.value,
-                    frame_rate=float(frame_rate.value),
-                    num_workers=max(1, min(8, int(num_workers.value))),
-                    overlay_txt=overlay_txt.value,
-                    on_task_done=on_task_done,
-                )
-            else:
-                from muimg.cli import run_batch_convert
-                result = run_batch_convert(
-                    dng_files=dng_files,
-                    output_folder=output_path,
-                    output_format=mode,
-                    bit_depth=bit_depth.value,
-                    rendering_params=rendering_params,
-                    use_xmp=use_xmp.value,
-                    scale=max(0.125, min(1.0, float(scale.value or 1.0))),
-                    num_workers=max(1, min(8, int(num_workers.value))),
-                    on_task_done=on_task_done,
-                )
-
-            fps = result['completed'] / result['elapsed'] if result['elapsed'] > 0 else 0
-            log(f"Done: {result['completed']}/{result['total']} files in {result['elapsed']:.1f}s ({fps:.1f} files/s, {int(num_workers.value)} workers)")
-            stats = result.get('queue_stats', {})
-            if 'task_queue' in stats:
-                q = stats['task_queue']
-                log(f"  Task queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
-            if 'writer_queue' in stats:
-                q = stats['writer_queue']
-                log(f"  Writer queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
-        except Exception as ex:
-            log(f"ERROR: {ex}")
-        finally:
-            finish()
-
-    # --- Helpers ---
-    def build_rendering_params():
-        if use_xmp.value:
-            return {}
-        params = {}
-        if temperature.value:
-            params["Temperature"] = float(temperature.value)
-        if tint.value:
-            params["Tint"] = float(tint.value)
-        params["Exposure2012"] = float(exposure.value or 0)
-        return params
-
-    def update_progress(fraction, text):
-        state["progress_fraction"] = fraction
-        state["progress_text"] = text
-
-    _MAX_LOG_LINES = 100
-
-    def _build_display_log(current_log, old_log):
-        """Newest run on top, chronological within each run."""
-        parts = [p for p in [current_log.rstrip(), old_log.rstrip()] if p]
-        combined = ("\n" + "─" * 40 + "\n").join(parts)
-        lines = combined.split("\n")
-        if len(lines) > _MAX_LOG_LINES:
-            lines = lines[:_MAX_LOG_LINES]
-        return "\n".join(lines)
-
-    def log(message):
-        state["log"] = (state.get("log") or "") + message + "\n"
-
-    def finish():
-        state["running"] = False
-        state["finished"] = True
-
-    async def _poll_ui():
-        """Async poller: runs on Flet event loop, reads shared state."""
-        import asyncio
-        prev_frac = -1
-        prev_log = ""
-        while state["running"]:
-            frac = state.get("progress_fraction", 0)
-            text = state.get("progress_text", "")
-            log_val = state.get("log", "")
-            changed = False
-            if frac != prev_frac:
-                progress_bar.value = frac
-                progress_text.value = text
-                prev_frac = frac
-                changed = True
-            if log_val != prev_log:
-                log_text.value = _build_display_log(log_val, state.get("_old_log", ""))
-                prev_log = log_val
-                changed = True
-            if changed:
-                page.update()
-            await asyncio.sleep(0.2)
-        # Final flush
-        progress_bar.value = state.get("progress_fraction", 0)
-        progress_text.value = state.get("progress_text", "")
-        remaining = state.get("log", "")
-        if remaining:
-            log_text.value = _build_display_log(remaining, state.get("_old_log", ""))
-        run_button.visible = True
-        cancel_button.visible = False
-        page.update()
+    run_button.on_click = on_run_wrapper
+    cancel_button.on_click = runner.on_cancel
 
     # --- Build layout ---
     input_btn = ft.Button(

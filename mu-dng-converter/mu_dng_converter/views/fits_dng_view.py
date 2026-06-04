@@ -253,14 +253,96 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     wb_dropdown.on_select = on_wb_changed
     auto_exposure.on_change = on_auto_exposure_changed
 
-    def on_cancel(e):
-        state["cancel"] = True
-        state["log"] = (
-            (state.get("log") or "") + "Cancellation requested...\n"
-        )
-        page.update()
+    # --- Conversion logic (worker function for BatchRunner) ---
+    def run_conversion_worker(output_path, worker_state):
+        """Worker function that runs in background thread."""
+        from muimg.raw_render import temp_tint_to_xy
+        from mu_dng_converter.batch_runner import make_state_logger
 
-    async def on_run(e):
+        _log = make_state_logger(worker_state)
+
+        try:
+            fits_files = worker_state["_fits_files"]
+            total = len(fits_files)
+            _log(f"Input: {total} FITS files from {Path(output_path).parent}")
+            _log(f"Output: {output_path}")
+
+            # White balance → xy chromaticity
+            wb_preset = wb_dropdown.value
+            if wb_preset == "d50":
+                wb_xy = None
+            else:
+                temp_val = float(temperature.value or 5000)
+                tint_val = float(tint.value or 0)
+                wb_xy = temp_tint_to_xy(temp_val, tint_val)
+
+            def on_task_done(completed, total):
+                worker_state["progress_fraction"] = completed / total if total > 0 else 0
+                worker_state["progress_text"] = f"{completed}/{total}"
+                return worker_state["cancel"]
+
+            result = run_batch_fits_to_dng(
+                fits_files=fits_files,
+                output_folder=output_path,
+                compression_name=compression.value,
+                auto_exposure=auto_exposure.value,
+                ev_value=exposure.value,
+                use_tone_curve=tone_curve.value,
+                wb_xy=wb_xy,
+                do_preview=preview.value,
+                do_fast_load=fast_load.value,
+                num_workers=max(1, min(8, int(num_workers.value))),
+                on_task_done=on_task_done,
+                log_callback=_log,
+            )
+
+            elapsed = result['elapsed']
+            fps = result['written'] / elapsed if elapsed > 0 else 0
+            parts = [f"{result['written']} written"]
+            if result['skipped']:
+                parts.append(f"{result['skipped']} skipped")
+            if result['errored']:
+                parts.append(f"{result['errored']} errors")
+            _log(
+                f"Done: {', '.join(parts)} / {result['total']} total "
+                f"in {elapsed:.1f}s ({fps:.1f} files/s)"
+            )
+            stats = result.get('queue_stats', {})
+            if 'task_queue' in stats:
+                q = stats['task_queue']
+                _log(
+                    f"  Task queue: avg_depth="
+                    f"{q['avg_depth']:.1f}, "
+                    f"empty={q['empty_time']:.1f}s"
+                )
+            if 'writer_queue' in stats:
+                q = stats['writer_queue']
+                _log(
+                    f"  Writer queue: avg_depth="
+                    f"{q['avg_depth']:.1f}, "
+                    f"empty={q['empty_time']:.1f}s"
+                )
+        except Exception as ex:
+            _log(f"ERROR: {ex}")
+        finally:
+            worker_state["running"] = False
+            worker_state["finished"] = True
+
+    # --- Setup BatchRunner for run/cancel/polling logic ---
+    from mu_dng_converter.batch_runner import BatchRunner
+
+    runner = BatchRunner(
+        page=page,
+        state=state,
+        worker_fn=run_conversion_worker,
+        run_button=run_button,
+        cancel_button=cancel_button,
+        progress_bar=progress_bar,
+        log_text=log_text,
+    )
+
+    async def on_run_wrapper(e):
+        """Custom on_run with FITS file handling."""
         from mu_dng_converter.dialogs import check_overwrite
 
         inp = input_path_text.value
@@ -278,7 +360,7 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             page.update()
             return
 
-        # Gather file list before starting
+        # Gather file list before starting (FITS files)
         input_files = state.get("input_files")
         if input_files:
             fits_files = sorted(Path(f) for f in input_files)
@@ -296,7 +378,7 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             page.update()
             return
 
-        # Check for existing output files
+        # Check for existing output files (.dng extension)
         output_dir = Path(out)
         existing = [
             f for f in fits_files
@@ -316,158 +398,19 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                     page.update()
                     return
 
-        state["running"] = True
-        state["cancel"] = False
-        state["finished"] = False
-        state["progress_fraction"] = 0
-        state["progress_text"] = ""
-        state["log"] = ""
-        run_button.visible = False
-        cancel_button.visible = True
-        progress_bar.visible = True
-        progress_bar.value = 0
-        state["_old_log"] = log_text.value or ""
+        # Store the filtered file list for the worker
         state["_fits_files"] = fits_files
-        page.update()
+        state["input_files"] = [str(f) for f in fits_files]
 
-        thread = threading.Thread(
-            target=run_conversion, args=(out,), daemon=True,
+        # Call common runner logic
+        await runner.on_run(
+            input_path_text=input_path_text,
+            output_path_text=output_path_text,
+            persist_settings_fn=lambda: None,
         )
-        thread.start()
-        page.run_task(_poll_ui)
 
-    run_button.on_click = on_run
-    cancel_button.on_click = on_cancel
-
-    # --- Conversion logic (runs in thread) ---
-    def run_conversion(output_path):
-        from muimg.raw_render import temp_tint_to_xy
-
-        try:
-            fits_files = state["_fits_files"]
-            total = len(fits_files)
-            log(f"Input: {total} FITS files from {Path(output_path).parent}")
-            log(f"Output: {output_path}")
-
-            # White balance → xy chromaticity
-            wb_preset = wb_dropdown.value
-            if wb_preset == "d50":
-                wb_xy = None
-            else:
-                temp_val = float(temperature.value or 5000)
-                tint_val = float(tint.value or 0)
-                wb_xy = temp_tint_to_xy(temp_val, tint_val)
-
-            def on_task_done(completed, total):
-                update_progress(
-                    completed / total, f"{completed}/{total}",
-                )
-                return state["cancel"]
-
-            result = run_batch_fits_to_dng(
-                fits_files=fits_files,
-                output_folder=output_path,
-                compression_name=compression.value,
-                auto_exposure=auto_exposure.value,
-                ev_value=exposure.value,
-                use_tone_curve=tone_curve.value,
-                wb_xy=wb_xy,
-                do_preview=preview.value,
-                do_fast_load=fast_load.value,
-                num_workers=max(1, min(8, int(num_workers.value))),
-                on_task_done=on_task_done,
-                log_callback=log,
-            )
-
-            elapsed = result['elapsed']
-            fps = result['written'] / elapsed if elapsed > 0 else 0
-            parts = [f"{result['written']} written"]
-            if result['skipped']:
-                parts.append(f"{result['skipped']} skipped")
-            if result['errored']:
-                parts.append(f"{result['errored']} errors")
-            log(
-                f"Done: {', '.join(parts)} / {result['total']} total "
-                f"in {elapsed:.1f}s ({fps:.1f} files/s)"
-            )
-            stats = result.get('queue_stats', {})
-            if 'task_queue' in stats:
-                q = stats['task_queue']
-                log(
-                    f"  Task queue: avg_depth="
-                    f"{q['avg_depth']:.1f}, "
-                    f"empty={q['empty_time']:.1f}s"
-                )
-            if 'writer_queue' in stats:
-                q = stats['writer_queue']
-                log(
-                    f"  Writer queue: avg_depth="
-                    f"{q['avg_depth']:.1f}, "
-                    f"empty={q['empty_time']:.1f}s"
-                )
-        except Exception as ex:
-            log(f"ERROR: {ex}")
-        finally:
-            finish()
-
-    # --- Helpers ---
-    def update_progress(fraction, text):
-        state["progress_fraction"] = fraction
-        state["progress_text"] = text
-
-    _MAX_LOG_LINES = 100
-
-    def _build_display_log(current_log, old_log):
-        parts = [
-            p for p in [current_log.rstrip(), old_log.rstrip()] if p
-        ]
-        combined = ("\n" + "\u2500" * 40 + "\n").join(parts)
-        lines = combined.split("\n")
-        if len(lines) > _MAX_LOG_LINES:
-            lines = lines[:_MAX_LOG_LINES]
-        return "\n".join(lines)
-
-    def log(message):
-        state["log"] = (state.get("log") or "") + message + "\n"
-
-    def finish():
-        state["running"] = False
-        state["finished"] = True
-
-    async def _poll_ui():
-        import asyncio
-        prev_frac = -1
-        prev_log = ""
-        while state["running"]:
-            frac = state.get("progress_fraction", 0)
-            text = state.get("progress_text", "")
-            log_val = state.get("log", "")
-            changed = False
-            if frac != prev_frac:
-                progress_bar.value = frac
-                progress_text.value = text
-                prev_frac = frac
-                changed = True
-            if log_val != prev_log:
-                log_text.value = _build_display_log(
-                    log_val, state.get("_old_log", ""),
-                )
-                prev_log = log_val
-                changed = True
-            if changed:
-                page.update()
-            await asyncio.sleep(0.2)
-        # Final flush
-        progress_bar.value = state.get("progress_fraction", 0)
-        progress_text.value = state.get("progress_text", "")
-        remaining = state.get("log", "")
-        if remaining:
-            log_text.value = _build_display_log(
-                remaining, state.get("_old_log", ""),
-            )
-        run_button.visible = True
-        cancel_button.visible = False
-        page.update()
+    run_button.on_click = on_run_wrapper
+    cancel_button.on_click = runner.on_cancel
 
     # --- Build layout ---
     input_btn = ft.Button(

@@ -7,6 +7,20 @@ import threading
 from pathlib import Path
 
 
+def make_state_logger(state):
+    """Create a logger function that appends to state['log'].
+    
+    Args:
+        state: The worker state dict
+        
+    Returns:
+        Function that takes a message string and appends to log
+    """
+    def _log(message):
+        state["log"] = (state.get("log") or "") + message + "\n"
+    return _log
+
+
 class BatchRunner:
     """Handles common batch processing workflow: run, cancel, progress polling.
     

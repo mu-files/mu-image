@@ -540,11 +540,10 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     def run_copy_worker(output_path, worker_state):
         """Worker function that runs in background thread."""
         import setproctitle
+        from mu_dng_converter.batch_runner import make_state_logger
         setproctitle.setproctitle("mu-dng-converter: DNG → DNG")
 
-        # Helper to log to state (must be defined inside to capture worker_state)
-        def _log(message):
-            worker_state["log"] = (worker_state.get("log") or "") + message + "\n"
+        _log = make_state_logger(worker_state)
 
         try:
             from muimg.cli import run_batch_copy_dng
