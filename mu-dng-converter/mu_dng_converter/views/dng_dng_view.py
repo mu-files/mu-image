@@ -40,6 +40,100 @@ def _save_settings(settings: dict):
     _settings_path().write_text(json.dumps(settings, indent=2))
 
 
+def get_tag_example(spec) -> str:
+    """Generate an example value for a tag based on its spec."""
+    from muimg.tiff_metadata import TiffType
+    dtype = spec.dtype
+    count = spec.count
+    
+    if isinstance(dtype, list):
+        dtype = dtype[0]
+    
+    examples = {
+        TiffType.ASCII: '"My Camera"',
+        TiffType.BYTE: '255',
+        TiffType.SHORT: '100',
+        TiffType.LONG: '1000',
+        TiffType.RATIONAL: '72/1 (or 72.0)',
+        TiffType.SRATIONAL: '-0.5',
+        TiffType.FLOAT: '1.5',
+        TiffType.DOUBLE: '3.14159',
+    }
+    
+    example = examples.get(dtype, 'value')
+    if count is not None and count > 1:
+        return f"{example}, {example}, ... ({count} values)"
+    return example
+
+
+def validate_value_for_type(value: str, dtype) -> tuple[bool, str]:
+    """Validate a value string against a TIFF data type.
+    
+    Returns (is_valid, error_message).
+    """
+    from muimg.tiff_metadata import TiffType
+    
+    if isinstance(dtype, list):
+        # For multi-type specs, try each type
+        for dt in dtype:
+            valid, _ = validate_value_for_type(value, dt)
+            if valid:
+                return True, ""
+        return False, f"Value does not match any of the expected types"
+    
+    try:
+        if dtype == TiffType.ASCII:
+            # Any string is valid for ASCII
+            return True, ""
+        elif dtype == TiffType.BYTE:
+            v = int(value)
+            if not (0 <= v <= 255):
+                return False, f"BYTE value must be 0-255, got {v}"
+            return True, ""
+        elif dtype == TiffType.SHORT:
+            v = int(value)
+            if not (0 <= v <= 65535):
+                return False, f"SHORT value must be 0-65535, got {v}"
+            return True, ""
+        elif dtype == TiffType.LONG:
+            v = int(value)
+            if not (0 <= v <= 4294967295):
+                return False, f"LONG value must be 0-4294967295, got {v}"
+            return True, ""
+        elif dtype == TiffType.RATIONAL:
+            # Accept "72/1" or "72.0" or just "72"
+            if '/' in value:
+                num, den = value.split('/', 1)
+                int(num.strip())
+                int(den.strip())
+            else:
+                float(value)
+            return True, ""
+        elif dtype == TiffType.SRATIONAL:
+            # Signed rational
+            if '/' in value:
+                num, den = value.split('/', 1)
+                int(num.strip())
+                int(den.strip())
+            else:
+                float(value)
+            return True, ""
+        elif dtype == TiffType.FLOAT:
+            float(value)
+            return True, ""
+        elif dtype == TiffType.DOUBLE:
+            float(value)
+            return True, ""
+        elif dtype == TiffType.UNDEFINED:
+            # UNDEFINED accepts any bytes
+            return True, ""
+        else:
+            # Unknown type, be permissive
+            return True, ""
+    except ValueError as e:
+        return False, f"Cannot parse '{value}' as {dtype.name}: {str(e)}"
+
+
 def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                        file_picker: ft.FilePicker | None = None) -> ft.Control:
     """Build the DNG → DNG copy/transcode tab content."""
@@ -271,6 +365,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             tag_op_name.label = "Tag Name"
             tag_op_value.label = "Value"
             tag_op_value.hint_text = ""
+            tag_op_value.tooltip = "Enter value(s) for the tag. Multi-value tags: separate with commas or spaces.\nExamples: \"My Camera\" (ASCII), 100 (number), 72/1 (rational), 10 20 30 (multi-value)"
             tag_op_name.visible = is_set or is_strip
             tag_op_value.visible = is_set
             time_offset_sign.visible = False
@@ -304,6 +399,9 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 cmd = "Set"
                 tag = op['name']
                 val = op['value']
+                # Add quotes around values with spaces/commas for display clarity
+                if val and (' ' in val or ',' in val):
+                    val = f'"{val}"'
             elif op["type"] == "strip":
                 cmd = "Strip"
                 tag = op['name']
@@ -379,6 +477,67 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             value = tag_op_value.value
             if not name:
                 return
+            
+            # Validate tag exists in TIFF registry
+            from muimg.tiff_metadata import resolve_tag, TiffType
+            tag_id, tag_name, spec = resolve_tag(name)
+            if tag_id is None:
+                from mu_dng_converter.dialogs import show_error
+                async def _show_error():
+                    await show_error(
+                        page,
+                        "Unknown Tag",
+                        f"Tag '{name}' not found in TIFF tag registry.\nPlease use a valid tag name or numeric code."
+                    )
+                page.run_task(_show_error)
+                return
+            
+            # Validate value format against tag spec
+            if spec is not None:
+                # Parse multi-value input (comma or space separated)
+                value_parts = [v.strip() for v in value.replace(',', ' ').split() if v.strip()]
+                if not value_parts:
+                    value_parts = [value] if value else []
+                
+                # Check count compatibility
+                expected_count = spec.count
+                if expected_count is not None and len(value_parts) != expected_count:
+                    from mu_dng_converter.dialogs import show_error
+                    async def _show_error():
+                        count_desc = f"exactly {expected_count}" if expected_count > 1 else "1"
+                        await show_error(
+                            page,
+                            "Invalid Value Count",
+                            f"Tag '{tag_name}' expects {count_desc} value(s), got {len(value_parts)}.\n"
+                            f"Expected type: {spec.dtype.name if hasattr(spec.dtype, 'name') else spec.dtype}\n"
+                            f"Example: {get_tag_example(spec)}"
+                        )
+                    page.run_task(_show_error)
+                    return
+                
+                # Validate type compatibility for each value
+                for i, part in enumerate(value_parts):
+                    valid, error_msg = validate_value_for_type(part, spec.dtype)
+                    if not valid:
+                        from mu_dng_converter.dialogs import show_error
+                        async def _show_error():
+                            await show_error(
+                                page,
+                                "Invalid Value Format",
+                                f"Value part {i+1} ('{part}'): {error_msg}\n"
+                                f"Expected type: {spec.dtype.name if hasattr(spec.dtype, 'name') else spec.dtype}"
+                            )
+                        page.run_task(_show_error)
+                        return
+            
+            # Strip surrounding quotes from ASCII values for storage
+            if spec is not None:
+                from muimg.tiff_metadata import TiffType
+                dtype = spec.dtype[0] if isinstance(spec.dtype, list) else spec.dtype
+                if dtype == TiffType.ASCII:
+                    # Strip surrounding quotes (both " and ')
+                    value = value.strip().strip('"').strip("'")
+            
             # Remove existing set op for same tag
             ops = [o for o in ops if not (o["type"] == "set" and o.get("name") == name)]
             ops.append({"type": "set", "name": name, "value": value})
