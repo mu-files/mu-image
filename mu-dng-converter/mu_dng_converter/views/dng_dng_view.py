@@ -185,36 +185,33 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     )
 
     # --- Update Tags (unified metadata panel) ---
-    # Operations: add, strip, adjust-time, adjust-time-offset
-    metadata_ops_list = ft.Column(spacing=4, tight=True)  # Applied operations list
+    metadata_ops_list = ft.Column(
+        spacing=4,
+        tight=True,
+        expand=True,
+    )
 
     # Operation selector
     metadata_op_dropdown = ft.Dropdown(
         label="Operation",
-        value="add",
+        value="set",
         options=[
-            ft.dropdown.Option("add", "Add/Set Tag"),
+            ft.dropdown.Option("set", "Set Tag"),
             ft.dropdown.Option("strip", "Strip Tag"),
-            ft.dropdown.Option("adjust-time", "Set DateTime (absolute)"),
-            ft.dropdown.Option("adjust-time-offset", "Shift Time + Timezone"),
+            ft.dropdown.Option("shift-time", "Shift Time"),
+            ft.dropdown.Option("shift-timezone", "Shift Timezone"),
         ],
-        width=220,
+        width=160,
     )
 
-    # Tag operation inputs (for add/strip)
-    tag_op_name = ft.TextField(label="Tag Name", width=180)
-    tag_op_value = ft.TextField(label="Value", width=200, visible=True)
+    # Tag/Time operation inputs
+    # For set/strip: user enters name/value
+    # For shift-time: name="AllDates", value=offset like "+1:00:00 00:00:00"
+    # For shift-timezone: name="OffsetTimeOriginal", value=timezone like "+02:00"
+    tag_op_name = ft.TextField(label="Tag Name", width=180, read_only=False)
+    tag_op_value = ft.TextField(label="Value", width=220, visible=True)
 
-    # Time operation inputs (for adjust-time)
-    time_absolute = ft.TextField(
-        label="YYYY:MM:DD HH:MM:SS",
-        value="",
-        width=220,
-        hint_text="2024:01:15 14:30:00",
-        visible=False,
-    )
-
-    # Time offset inputs (for adjust-time-offset)
+    # Time shift inputs (for shift-time)
     time_offset_sign = ft.Dropdown(
         value="+",
         options=[ft.dropdown.Option("+"), ft.dropdown.Option("−")],
@@ -234,25 +231,55 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
 
     def on_metadata_op_changed(e):
         op = metadata_op_dropdown.value
-        is_tag_op = op in ("add", "strip")
-        is_time_absolute = op == "adjust-time"
-        is_time_offset = op == "adjust-time-offset"
+        is_set = op == "set"
+        is_strip = op == "strip"
+        is_shift_time = op == "shift-time"
+        is_shift_tz = op == "shift-timezone"
 
-        # Show/hide tag inputs
-        tag_op_name.visible = is_tag_op
-        tag_op_value.visible = (op == "add")
-
-        # Show/hide time inputs
-        time_absolute.visible = is_time_absolute
-        time_offset_sign.visible = is_time_offset
-        time_offset_hours.visible = is_time_offset
-        time_offset_minutes.visible = is_time_offset
-        time_offset_seconds.visible = is_time_offset
-        time_offset_tz.visible = is_time_offset
+        if is_shift_time:
+            tag_op_name.value = "AllDates"
+            tag_op_name.read_only = True
+            tag_op_name.label = "Tag (AllDates)"
+            tag_op_value.label = "Offset (+/-[Y:M:D] [H:M:S])"
+            tag_op_value.hint_text = "5, 2:30, 0:15:30, or 0:0:1 12:00:00"
+            tag_op_name.visible = True
+            tag_op_value.visible = True
+            # Hide old H/M/S fields - using unified value field instead
+            time_offset_sign.visible = False
+            time_offset_hours.visible = False
+            time_offset_minutes.visible = False
+            time_offset_seconds.visible = False
+            time_offset_tz.visible = False
+        elif is_shift_tz:
+            tag_op_name.value = "OffsetTimeOriginal"
+            tag_op_name.read_only = True
+            tag_op_name.label = "Tag (OffsetTimeOriginal)"
+            tag_op_value.label = "Timezone (+/-HH:MM)"
+            tag_op_value.hint_text = "+02:00"
+            tag_op_name.visible = True
+            tag_op_value.visible = True
+            time_offset_sign.visible = False
+            time_offset_hours.visible = False
+            time_offset_minutes.visible = False
+            time_offset_seconds.visible = False
+            time_offset_tz.visible = False
+        else:
+            # set or strip
+            tag_op_name.read_only = False
+            tag_op_name.label = "Tag Name"
+            tag_op_value.label = "Value"
+            tag_op_value.hint_text = ""
+            tag_op_name.visible = is_set or is_strip
+            tag_op_value.visible = is_set
+            time_offset_sign.visible = False
+            time_offset_hours.visible = False
+            time_offset_minutes.visible = False
+            time_offset_seconds.visible = False
+            time_offset_tz.visible = False
 
         page.update()
 
-    metadata_op_dropdown.on_change = on_metadata_op_changed
+    metadata_op_dropdown.on_select = on_metadata_op_changed
 
     def rebuild_metadata_ops_list():
         """Rebuild the list of applied metadata operations."""
@@ -266,42 +293,74 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 def on_remove(e):
                     state["metadata_ops"].pop(captured_idx)
                     rebuild_metadata_ops_list()
-                    _persist_settings()
+                    # Don't persist - metadata_ops are session-only
                     page.update()
                 return on_remove
 
-            # Format display text based on operation type
-            if op["type"] == "add":
-                display = f"Set {op['name']} = {op['value']}"
+            # Format display text based on operation type - table columns
+            if op["type"] == "set":
+                cmd = "Set"
+                tag = op['name']
+                val = op['value']
             elif op["type"] == "strip":
-                display = f"Strip {op['name']}"
-            elif op["type"] == "adjust-time":
-                display = f"Set DateTimeOriginal = {op['value']}"
-            elif op["type"] == "adjust-time-offset":
-                sign = op.get("sign", "+")
-                h = op.get("hours", 0)
-                m = op.get("minutes", 0)
-                s = op.get("seconds", 0)
-                tz = op.get("timezone", "")
-                display = f"Shift time {sign}{h}h{m}m{s}s"
-                if tz:
-                    display += f", TZ={tz}"
+                cmd = "Strip"
+                tag = op['name']
+                val = ""
+            elif op["type"] == "shift-time":
+                cmd = "Shift"
+                tag = "AllDates"
+                val = op.get("offset", "")
+            elif op["type"] == "shift-timezone":
+                cmd = "Set"
+                tag = "OffsetTimeOriginal"
+                val = op.get("timezone", "")
             else:
-                display = str(op)
+                cmd = str(op)
+                tag = ""
+                val = ""
 
+            # Build row with fixed-width columns and dividers
+            def col_divider():
+                return ft.Container(width=1, height=20, bgcolor=ft.Colors.with_opacity(0.2, ft.Colors.ON_SURFACE))
+
+            row_content = ft.Row(
+                controls=[
+                    ft.IconButton(
+                        icon=ft.Icons.CLOSE,
+                        icon_size=14,
+                        on_click=make_remove(idx),
+                        tooltip="Remove",
+                        icon_color=ft.Colors.ON_SURFACE_VARIANT,
+                        width=32,
+                    ),
+                    col_divider(),
+                    ft.Container(
+                        content=ft.Text(cmd, size=13, weight="w500"),
+                        width=60,
+                    ),
+                    col_divider(),
+                    ft.Container(
+                        content=ft.Text(tag, size=13, overflow=ft.TextOverflow.ELLIPSIS),
+                        width=160,
+                    ),
+                    col_divider(),
+                    ft.Container(
+                        content=ft.Text(val, size=13, overflow=ft.TextOverflow.ELLIPSIS),
+                        expand=True,
+                    ),
+                ],
+                spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+            # Wrap in container with subtle background
             metadata_ops_list.controls.append(
-                ft.Row(
-                    controls=[
-                        ft.Text(display, size=12, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.IconButton(
-                            icon=ft.Icons.CLOSE,
-                            icon_size=14,
-                            on_click=make_remove(idx),
-                            tooltip="Remove",
-                        ),
-                    ],
-                    spacing=4,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ft.Container(
+                    content=row_content,
+                    bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.ON_SURFACE),
+                    border_radius=4,
+                    padding=8,
+                    expand=True,
                 )
             )
 
@@ -310,15 +369,14 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         op = metadata_op_dropdown.value
         ops = state.setdefault("metadata_ops", [])
 
-        if op == "add":
+        if op == "set":
             name = tag_op_name.value.strip()
             value = tag_op_value.value
             if not name:
                 return
-            # TODO: Validate against tag registry
-            # Remove existing add op for same tag
-            ops = [o for o in ops if not (o["type"] == "add" and o.get("name") == name)]
-            ops.append({"type": "add", "name": name, "value": value})
+            # Remove existing set op for same tag
+            ops = [o for o in ops if not (o["type"] == "set" and o.get("name") == name)]
+            ops.append({"type": "set", "name": name, "value": value})
             tag_op_value.value = ""
 
         elif op == "strip":
@@ -329,37 +387,55 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             ops = [o for o in ops if not (o["type"] == "strip" and o.get("name") == name)]
             ops.append({"type": "strip", "name": name})
 
-        elif op == "adjust-time":
-            value = time_absolute.value.strip()
-            if not value:
+        elif op == "shift-time":
+            offset_str = tag_op_value.value.strip()
+            if not offset_str:
                 return
-            # Remove existing adjust-time op
-            ops = [o for o in ops if o["type"] != "adjust-time"]
-            ops.append({"type": "adjust-time", "value": value})
+            # Validate format: +/- followed by H, H:M, H:M:S, or Y:M:D H:M:S
+            import re
+            # Pattern: sign, then numbers separated by colons, optional space for date/time separator
+            pattern = r'^[+-](\d+(:\d+)*)$|^[+-](\d+(:\d+)* \d+(:\d+)*)$'
+            if not re.match(pattern, offset_str):
+                # Show error dialog
+                from mu_dng_converter.dialogs import show_error
+                async def _show_error():
+                    await show_error(
+                        page,
+                        "Invalid Time Offset Format",
+                        f"Expected format: +/-[Y:M:D] [H:M:S]\nExamples: +5 (5 hours), +2:30 (2h30m), +0:15:30 (15m30s), +0:0:1 12:00:00 (1d12h)"
+                    )
+                page.run_task(_show_error)
+                return
+            # Remove existing shift-time op
+            ops = [o for o in ops if o["type"] != "shift-time"]
+            ops.append({"type": "shift-time", "tag": "AllDates", "offset": offset_str})
+            tag_op_value.value = ""
 
-        elif op == "adjust-time-offset":
-            try:
-                h = int(time_offset_hours.value or 0)
-                m = int(time_offset_minutes.value or 0)
-                s = int(time_offset_seconds.value or 0)
-            except (ValueError, TypeError):
-                h = m = s = 0
-            tz = time_offset_tz.value.strip()
-            sign = time_offset_sign.value
-            # Remove existing adjust-time-offset op
-            ops = [o for o in ops if o["type"] != "adjust-time-offset"]
-            ops.append({
-                "type": "adjust-time-offset",
-                "sign": sign,
-                "hours": h,
-                "minutes": m,
-                "seconds": s,
-                "timezone": tz,
-            })
+        elif op == "shift-timezone":
+            tz = tag_op_value.value.strip()
+            if not tz:
+                return
+            # Validate format: +/-HH:MM
+            import re
+            pattern = r'^[+-]\d{2}:\d{2}$'
+            if not re.match(pattern, tz):
+                from mu_dng_converter.dialogs import show_error
+                async def _show_error():
+                    await show_error(
+                        page,
+                        "Invalid Timezone Format",
+                        f"Expected format: +/-HH:MM\nExample: +02:00 or -05:00"
+                    )
+                page.run_task(_show_error)
+                return
+            # Remove existing shift-timezone op
+            ops = [o for o in ops if o["type"] != "shift-timezone"]
+            ops.append({"type": "shift-timezone", "tag": "OffsetTimeOriginal", "timezone": tz})
+            tag_op_value.value = ""
 
         state["metadata_ops"] = ops
         rebuild_metadata_ops_list()
-        _persist_settings()
+        # Note: metadata_ops are session-only, don't persist
         page.update()
 
     apply_metadata_btn = ft.Button(
@@ -367,8 +443,8 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         on_click=on_apply_metadata_op,
     )
 
-    # Load any saved metadata ops
-    state["metadata_ops"] = _settings.get("metadata_ops", [])
+    # Metadata ops are not persisted - start fresh each run
+    state["metadata_ops"] = []
     rebuild_metadata_ops_list()
 
     # --- Progress ---
@@ -392,7 +468,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         _save_settings({
             "last_input_dir": state.get("last_input_dir"),
             "last_output_dir": state.get("last_output_dir"),
-            "metadata_ops": state.get("metadata_ops", []),
+            # Note: metadata_ops are session-only, not persisted
             "transcode": transcode_checkbox.value,
             "compression": compression_dropdown.value,
             "jxl_distance": jxl_distance.value,
@@ -460,118 +536,73 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             _persist_settings()
             page.update()
 
-    def on_cancel(e):
-        state["cancel"] = True
-        state["log"] = (state.get("log") or "") + "Cancellation requested...\n"
-        page.update()
-
-    async def on_run(e):
-        from mu_dng_converter.dialogs import check_overwrite
-
-        inp = input_path_text.value
-        out = output_path_text.value
-        if (
-            not inp or inp == "No folder selected"
-            or not out or out == "No folder selected"
-        ):
-            log_text.value = (
-                "ERROR: Select input and output folders first.\n"
-                + (log_text.value or "")
-            )
-            page.update()
-            return
-
-        input_files = state.get("input_files")
-        if input_files:
-            dng_files = sorted(Path(f) for f in input_files)
-        else:
-            input_dir = Path(inp)
-            dng_files = sorted(input_dir.glob("*.dng"))
-        if not dng_files:
-            log_text.value = (
-                f"ERROR: No .dng files found in {inp}\n"
-                + (log_text.value or "")
-            )
-            page.update()
-            return
-
-        output_dir = Path(out)
-        existing = [f for f in dng_files if (output_dir / f.name).exists()]
-        if existing:
-            action = await check_overwrite(page, len(existing), len(dng_files))
-            if action == "cancel":
-                return
-            elif action == "skip":
-                dng_files = [f for f in dng_files if f not in existing]
-                if not dng_files:
-                    log_text.value = (
-                        "All files already exist — nothing to do.\n"
-                        + (log_text.value or "")
-                    )
-                    page.update()
-                    return
-
-        state["running"] = True
-        state["cancel"] = False
-        state["finished"] = False
-        state["progress_fraction"] = 0
-        state["progress_text"] = ""
-        state["log"] = ""
-        run_button.visible = False
-        cancel_button.visible = True
-        progress_bar.visible = True
-        progress_bar.value = 0
-        state["_old_log"] = log_text.value or ""
-        state["_dng_files"] = dng_files
-        _persist_settings()
-        page.update()
-
-        thread = threading.Thread(target=run_copy, args=(out,), daemon=True)
-        thread.start()
-        page.run_task(_poll_ui)
-
-    run_button.on_click = on_run
-    cancel_button.on_click = on_cancel
-
-    # --- Copy/transcode logic (runs in thread) ---
-    def run_copy(output_path):
+    # --- Copy/transcode logic (worker function for BatchRunner) ---
+    def run_copy_worker(output_path, worker_state):
+        """Worker function that runs in background thread."""
         import setproctitle
         setproctitle.setproctitle("mu-dng-converter: DNG → DNG")
+
+        # Helper to log to state (must be defined inside to capture worker_state)
+        def _log(message):
+            worker_state["log"] = (worker_state.get("log") or "") + message + "\n"
 
         try:
             from muimg.cli import run_batch_copy_dng
             from muimg.tiff_metadata import MetadataTags
 
-            dng_files = state["_dng_files"]
+            dng_files = worker_state["_dng_files"]
             _log(f"Input: {len(dng_files)} DNG files → {output_path}")
 
             # Process metadata_ops into strip_tags, extra_tags, and time adjustments
-            metadata_ops = state.get("metadata_ops", [])
+            metadata_ops = worker_state.get("metadata_ops", [])
             strip_tags_set = set()
             extra_tags_obj = MetadataTags()
             time_offset_seconds = 0.0
             time_timezone = None
-            has_time_adjust_absolute = False
 
             for op in metadata_ops:
                 op_type = op.get("type")
                 if op_type == "strip":
                     strip_tags_set.add(op.get("name", "").strip())
-                elif op_type == "add":
+                elif op_type == "set":
                     extra_tags_obj.add_tag(op.get("name", ""), op.get("value", ""))
-                elif op_type == "adjust-time-offset":
-                    sign = -1 if op.get("sign") == "−" else 1
-                    h = op.get("hours", 0)
-                    m = op.get("minutes", 0)
-                    s = op.get("seconds", 0)
-                    time_offset_seconds += sign * (h * 3600 + m * 60 + s)
+                elif op_type == "shift-time":
+                    # Parse offset string following exiftool convention using timedelta
+                    # "5" = 5 hours, "2:30" = 2h 30m, "0:15:30" = 15m 30s, "0:0:1 12:00:00" = 1d 12h
+                    from datetime import timedelta
+                    offset_str = op.get("offset", "").strip()
+                    if offset_str:
+                        try:
+                            sign = -1 if offset_str[0] == "-" else 1
+                            body = offset_str[1:]  # Remove sign
+
+                            # Parse date part (if present) and time part
+                            if " " in body:
+                                date_part, time_part = body.split(" ", 1)
+                                # Date: Y:M:D → days only (years/months converted to days)
+                                y_m_d = [int(x) for x in date_part.split(":")]
+                                years = y_m_d[0] if len(y_m_d) > 0 else 0
+                                months = y_m_d[1] if len(y_m_d) > 1 else 0
+                                days = y_m_d[2] if len(y_m_d) > 2 else 0
+                                total_days = years * 365 + months * 30 + days
+                            else:
+                                time_part = body
+                                total_days = 0
+
+                            # Time: H:M:S (partial allowed)
+                            h_m_s = [int(x) for x in time_part.split(":")]
+                            hours = h_m_s[0] if len(h_m_s) > 0 else 0
+                            minutes = h_m_s[1] if len(h_m_s) > 1 else 0
+                            seconds = h_m_s[2] if len(h_m_s) > 2 else 0
+
+                            delta = timedelta(days=total_days, hours=hours, minutes=minutes, seconds=seconds)
+                            time_offset_seconds += sign * delta.total_seconds()
+                        except (ValueError, IndexError):
+                            _log(f"[warn] Could not parse time offset: {offset_str}")
+                elif op_type == "shift-timezone":
                     tz = op.get("timezone", "").strip()
                     if tz:
                         time_timezone = tz
-                elif op_type == "adjust-time":
-                    # Absolute time set - mark for special handling
-                    has_time_adjust_absolute = True
-                    _log(f"[warn] Absolute time adjustment not yet implemented: {op.get('value')}")
 
             # Remove empty tag names from strip set
             strip_tags_set = {t for t in strip_tags_set if t} or None
@@ -579,8 +610,9 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 extra_tags_obj = None
 
             def on_task_done(completed, total):
-                update_progress(completed / total, f"{completed}/{total}")
-                return state["cancel"]
+                worker_state["progress_fraction"] = completed / total if total > 0 else 0
+                worker_state["progress_text"] = f"{completed}/{total}"
+                return worker_state["cancel"]
 
             result = run_batch_copy_dng(
                 dng_files=dng_files,
@@ -603,9 +635,10 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             )
 
             fps = result["completed"] / result["elapsed"] if result["elapsed"] > 0 else 0
+            nw = max(1, min(8, int(num_workers.value)))
             _log(
                 f"Done: {result['completed']}/{result['total']} files in "
-                f"{result['elapsed']:.1f}s ({fps:.1f} files/s, {num_workers.value} workers)"
+                f"{result['elapsed']:.1f}s ({fps:.1f} files/s, {nw} workers)"
             )
             stats = result.get("queue_stats", {})
             if "task_queue" in stats:
@@ -617,64 +650,31 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         except Exception as ex:
             _log(f"ERROR: {ex}")
         finally:
-            _finish()
+            worker_state["running"] = False
+            worker_state["finished"] = True
 
-    # --- Helpers ---
-    def update_progress(fraction, text):
-        state["progress_fraction"] = fraction
-        state["progress_text"] = text
+    # --- Setup BatchRunner for run/cancel/polling logic ---
+    from mu_dng_converter.batch_runner import BatchRunner
 
-    _MAX_LOG_LINES = 100
+    runner = BatchRunner(
+        page=page,
+        state=state,
+        worker_fn=run_copy_worker,
+        run_button=run_button,
+        cancel_button=cancel_button,
+        progress_bar=progress_bar,
+        log_text=log_text,
+    )
 
-    def _build_display_log(current_log, old_log):
-        parts = [p for p in [current_log.rstrip(), old_log.rstrip()] if p]
-        combined = ("\n" + "─" * 40 + "\n").join(parts)
-        lines = combined.split("\n")
-        if len(lines) > _MAX_LOG_LINES:
-            lines = lines[:_MAX_LOG_LINES]
-        return "\n".join(lines)
+    async def on_run_wrapper(e):
+        await runner.on_run(
+            input_path_text=input_path_text,
+            output_path_text=output_path_text,
+            persist_settings_fn=_persist_settings,
+        )
 
-    def _log(message):
-        state["log"] = (state.get("log") or "") + message + "\n"
-
-    def _finish():
-        state["running"] = False
-        state["finished"] = True
-
-    async def _poll_ui():
-        import asyncio
-        prev_frac = -1
-        prev_log = ""
-        while state["running"]:
-            frac = state.get("progress_fraction", 0)
-            text = state.get("progress_text", "")
-            log_val = state.get("log", "")
-            changed = False
-            if frac != prev_frac:
-                progress_bar.value = frac
-                progress_text.value = text
-                prev_frac = frac
-                changed = True
-            if log_val != prev_log:
-                log_text.value = _build_display_log(
-                    log_val, state.get("_old_log", ""),
-                )
-                prev_log = log_val
-                changed = True
-            if changed:
-                page.update()
-            await asyncio.sleep(0.2)
-        # Final flush
-        progress_bar.value = state.get("progress_fraction", 0)
-        progress_text.value = state.get("progress_text", "")
-        remaining = state.get("log", "")
-        if remaining:
-            log_text.value = _build_display_log(
-                remaining, state.get("_old_log", ""),
-            )
-        run_button.visible = True
-        cancel_button.visible = False
-        page.update()
+    run_button.on_click = on_run_wrapper
+    cancel_button.on_click = runner.on_cancel
 
     # --- Build layout ---
     input_btn = ft.Button(
@@ -725,12 +725,6 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                     metadata_op_dropdown,
                     tag_op_name,
                     tag_op_value,
-                    time_absolute,
-                    time_offset_sign,
-                    time_offset_hours,
-                    time_offset_minutes,
-                    time_offset_seconds,
-                    time_offset_tz,
                     apply_metadata_btn,
                 ],
                 wrap=True,
