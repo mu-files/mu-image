@@ -1060,8 +1060,10 @@ def run_batch_copy_dng(
         do_fast_load: If True, embed 1 pyramid level for fast load.
         strip_tags: Set of tag name strings to strip, or None.
         extra_tags: MetadataTags object with tags to add/override, or None.
-        time_offset_seconds: Signed seconds to add to DateTimeOriginal. 0 = no change.
-        time_timezone: Timezone offset string (e.g., "+02:00") to set in OffsetTimeOriginal, or None.
+        time_offset_seconds: Signed seconds to add to all date tags (DateTimeOriginal, 
+            DateTimeDigitized, DateTime). 0 = no change.
+        time_timezone: Timezone offset string (e.g., "+02:00") to set in all offset tags
+            (OffsetTimeOriginal, OffsetTimeDigitized, OffsetTime), or None.
         num_workers: Number of parallel worker threads.
         on_task_done: Optional callback(completed, total) -> bool. Return True to cancel.
 
@@ -1131,32 +1133,28 @@ def run_batch_copy_dng(
                 strip_tags=strip_tags,
             )
 
-            # Build per-file extra_tags: start from provided static tags
-            file_extra_tags = None
-            if extra_tags is not None or time_offset_seconds != 0.0:
-                file_extra_tags = MetadataTags()
-                # Copy static tags
-                if extra_tags is not None:
-                    for tag_entry in extra_tags._tags:
-                        file_extra_tags._tags.append(tag_entry)
+            # Build per-file extra_tags
+            file_extra_tags = MetadataTags()
+            # Copy static tags if provided
+            if extra_tags is not None:
+                file_extra_tags.extend(extra_tags)
 
-            # Apply time offset to DateTimeOriginal if requested
+            # Apply time offset to all date tags (DateTimeOriginal, DateTimeDigitized, DateTime)
             if time_offset_seconds != 0.0:
-                if file_extra_tags is None:
-                    file_extra_tags = MetadataTags()
-                try:
-                    dt = page.get_time_from_tags(time_type="original")
-                    if dt is not None:
-                        dt_adjusted = dt + timedelta(seconds=time_offset_seconds)
-                        file_extra_tags.add_time_tags(dt_adjusted, time_type="original")
-                except Exception as e:
-                    logger.warning(f"Frame {index}: Could not adjust time for {Path(file_path).name}: {e}")
+                for time_type in ("original", "digitized", "modified"):
+                    try:
+                        dt = page.get_time_from_tags(time_type=time_type)
+                        if dt is not None:
+                            dt_adjusted = dt + timedelta(seconds=time_offset_seconds)
+                            file_extra_tags.add_time_tags(dt_adjusted, time_type=time_type)
+                    except Exception as e:
+                        logger.warning(f"Frame {index}: Could not adjust {time_type} time for {Path(file_path).name}: {e}")
 
-            # Apply timezone offset if provided
+            # Apply timezone offset to all relevant tags if provided
             if time_timezone:
-                if file_extra_tags is None:
-                    file_extra_tags = MetadataTags()
                 file_extra_tags.add_tag("OffsetTimeOriginal", time_timezone)
+                file_extra_tags.add_tag("OffsetTimeDigitized", time_timezone)
+                file_extra_tags.add_tag("OffsetTime", time_timezone)
 
             out_buf = io.BytesIO()
             write_dng_from_page(

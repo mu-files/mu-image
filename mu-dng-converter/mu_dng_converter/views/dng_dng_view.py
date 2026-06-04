@@ -198,8 +198,8 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         options=[
             ft.dropdown.Option("set", "Set Tag"),
             ft.dropdown.Option("strip", "Strip Tag"),
-            ft.dropdown.Option("shift-time", "Shift Time"),
-            ft.dropdown.Option("shift-timezone", "Shift Timezone"),
+            ft.dropdown.Option("shift-time", "Time Shift"),
+            ft.dropdown.Option("shift-timezone", "Set TZ"),
         ],
         width=160,
     )
@@ -239,9 +239,10 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         if is_shift_time:
             tag_op_name.value = "AllDates"
             tag_op_name.read_only = True
-            tag_op_name.label = "Tag (AllDates)"
-            tag_op_value.label = "Offset (+/-[Y:M:D] [H:M:S])"
-            tag_op_value.hint_text = "5, 2:30, 0:15:30, or 0:0:1 12:00:00"
+            tag_op_name.label = "Tag"
+            tag_op_value.label = "Offset"
+            tag_op_value.hint_text = "[D] [H:MM:SS]"
+            tag_op_value.tooltip = "Examples: 5 (5h), 2:30 (2h30m), 178:00 (178h), \"2 12:00\" (2d 12h)\nSign is optional, defaults to +"
             tag_op_name.visible = True
             tag_op_value.visible = True
             # Hide old H/M/S fields - using unified value field instead
@@ -251,11 +252,12 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             time_offset_seconds.visible = False
             time_offset_tz.visible = False
         elif is_shift_tz:
-            tag_op_name.value = "OffsetTimeOriginal"
+            tag_op_name.value = "All Offsets"
             tag_op_name.read_only = True
-            tag_op_name.label = "Tag (OffsetTimeOriginal)"
-            tag_op_value.label = "Timezone (+/-HH:MM)"
-            tag_op_value.hint_text = "+02:00"
+            tag_op_name.label = "Tag"
+            tag_op_value.label = "Offset"
+            tag_op_value.hint_text = "[+/-]H[:MM]"
+            tag_op_value.tooltip = "Format: [+/-]H or [+/-]H:MM\nExamples: +8, -5, 2, +02:00, -5:30\nMinutes optional (defaults to :00)"
             tag_op_name.visible = True
             tag_op_value.visible = True
             time_offset_sign.visible = False
@@ -312,7 +314,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 val = op.get("offset", "")
             elif op["type"] == "shift-timezone":
                 cmd = "Set"
-                tag = "OffsetTimeOriginal"
+                tag = "All Offsets"
                 val = op.get("timezone", "")
             else:
                 cmd = str(op)
@@ -321,7 +323,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
 
             # Build row with fixed-width columns and dividers
             def col_divider():
-                return ft.Container(width=1, height=20, bgcolor=ft.Colors.with_opacity(0.2, ft.Colors.ON_SURFACE))
+                return ft.Container(width=1, height=32, bgcolor=ft.Colors.with_opacity(0.4, ft.Colors.ON_SURFACE))
 
             row_content = ft.Row(
                 controls=[
@@ -337,19 +339,22 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                     ft.Container(
                         content=ft.Text(cmd, size=13, weight="w500"),
                         width=60,
+                        padding=ft.Padding(left=8, top=0, right=0, bottom=0),
                     ),
                     col_divider(),
                     ft.Container(
                         content=ft.Text(tag, size=13, overflow=ft.TextOverflow.ELLIPSIS),
                         width=160,
+                        padding=ft.Padding(left=8, top=0, right=0, bottom=0),
                     ),
                     col_divider(),
                     ft.Container(
                         content=ft.Text(val, size=13, overflow=ft.TextOverflow.ELLIPSIS),
                         expand=True,
+                        padding=ft.Padding(left=8, top=0, right=0, bottom=0),
                     ),
                 ],
-                spacing=4,
+                spacing=0,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
 
@@ -391,10 +396,14 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             offset_str = tag_op_value.value.strip()
             if not offset_str:
                 return
-            # Validate format: +/- followed by H, H:M, H:M:S, or Y:M:D H:M:S
+            # Add + if no sign provided
+            if not offset_str.startswith('+') and not offset_str.startswith('-'):
+                offset_str = '+' + offset_str
+            # Validate format: [D] [H:MM:SS] or [H:MM:SS] with large hours allowed
             import re
-            # Pattern: sign, then numbers separated by colons, optional space for date/time separator
-            pattern = r'^[+-](\d+(:\d+)*)$|^[+-](\d+(:\d+)* \d+(:\d+)*)$'
+            # Pattern: optional sign, optional days with space, then H:MM:SS (hours can be large)
+            # Examples: "5" (5h), "2:30" (2h30m), "178:00" (178h), "2 12:00:00" (2d 12h), "7 10:30" (7d 10h30m)
+            pattern = r'^[+-]?(\d+\s+)?\d+(:\d+){1,2}$|^[+-]?\d+$'
             if not re.match(pattern, offset_str):
                 # Show error dialog
                 from mu_dng_converter.dialogs import show_error
@@ -402,7 +411,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                     await show_error(
                         page,
                         "Invalid Time Offset Format",
-                        f"Expected format: +/-[Y:M:D] [H:M:S]\nExamples: +5 (5 hours), +2:30 (2h30m), +0:15:30 (15m30s), +0:0:1 12:00:00 (1d12h)"
+                        f"Expected format: [D] [H:MM:SS] or [H:MM:SS]\nExamples: 5 (5h), 2:30 (2h30m), 178:00 (178h), \"2 12:00\" (2d 12h), \"7 10:30\" (7d 10h30m)"
                     )
                 page.run_task(_show_error)
                 return
@@ -415,19 +424,42 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             tz = tag_op_value.value.strip()
             if not tz:
                 return
-            # Validate format: +/-HH:MM
+            # Add + if no sign provided
+            if not tz.startswith('+') and not tz.startswith('-'):
+                tz = '+' + tz
+            # Validate format: [+/-]H or [+/-]H:MM
             import re
-            pattern = r'^[+-]\d{2}:\d{2}$'
-            if not re.match(pattern, tz):
+            # Try H:MM format first
+            match = re.match(r'^[+-]?(\d{1,2}):(\d{2})$', tz)
+            if match:
+                hours, minutes = int(match.group(1)), int(match.group(2))
+            else:
+                # Try just H format
+                match = re.match(r'^[+-]?(\d{1,2})$', tz)
+                if match:
+                    hours, minutes = int(match.group(1)), 0
+                else:
+                    from mu_dng_converter.dialogs import show_error
+                    async def _show_error():
+                        await show_error(
+                            page,
+                            "Invalid Timezone Format",
+                            f"Expected format: [+/-]H or [+/-]H:MM\nExamples: +8, -5, 2, +02:00, -5:30"
+                        )
+                    page.run_task(_show_error)
+                    return
+            if hours > 14 or minutes not in (0, 15, 30, 45):
                 from mu_dng_converter.dialogs import show_error
                 async def _show_error():
                     await show_error(
                         page,
-                        "Invalid Timezone Format",
-                        f"Expected format: +/-HH:MM\nExample: +02:00 or -05:00"
+                        "Invalid Timezone",
+                        f"Timezone must be [+/-]H[:MM] where H ≤ 14 and MM (if present) is 00, 15, 30, or 45\nValid examples: +8, -5, 2, +02:00, -5:30"
                     )
                 page.run_task(_show_error)
                 return
+            # Normalize to HH:MM format for storage
+            tz = f"{('+' if not tz.startswith('-') else '-'):s}{hours:02d}:{minutes:02d}"
             # Remove existing shift-timezone op
             ops = [o for o in ops if o["type"] != "shift-timezone"]
             ops.append({"type": "shift-timezone", "tag": "OffsetTimeOriginal", "timezone": tz})
@@ -566,8 +598,8 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 elif op_type == "set":
                     extra_tags_obj.add_tag(op.get("name", ""), op.get("value", ""))
                 elif op_type == "shift-time":
-                    # Parse offset string following exiftool convention using timedelta
-                    # "5" = 5 hours, "2:30" = 2h 30m, "0:15:30" = 15m 30s, "0:0:1 12:00:00" = 1d 12h
+                    # Parse offset string: [D] [H:MM:SS] or [H:MM:SS] with large hours allowed
+                    # "5" = 5 hours, "2:30" = 2h 30m, "178:00" = 178 hours, "2 12:00" = 2 days + 12 hours
                     from datetime import timedelta
                     offset_str = op.get("offset", "").strip()
                     if offset_str:
@@ -575,26 +607,23 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                             sign = -1 if offset_str[0] == "-" else 1
                             body = offset_str[1:]  # Remove sign
 
-                            # Parse date part (if present) and time part
+                            # Parse optional days and time parts
                             if " " in body:
-                                date_part, time_part = body.split(" ", 1)
-                                # Date: Y:M:D → days only (years/months converted to days)
-                                y_m_d = [int(x) for x in date_part.split(":")]
-                                years = y_m_d[0] if len(y_m_d) > 0 else 0
-                                months = y_m_d[1] if len(y_m_d) > 1 else 0
-                                days = y_m_d[2] if len(y_m_d) > 2 else 0
-                                total_days = years * 365 + months * 30 + days
+                                # Format: "D H:MM:SS" or "D H:MM"
+                                days_part, time_part = body.split(" ", 1)
+                                days = int(days_part)
                             else:
+                                # Format: "H:MM:SS" or "H:MM" or just "H"
                                 time_part = body
-                                total_days = 0
+                                days = 0
 
-                            # Time: H:M:S (partial allowed)
+                            # Parse time: H:M:S (hours can be large, e.g., 178)
                             h_m_s = [int(x) for x in time_part.split(":")]
                             hours = h_m_s[0] if len(h_m_s) > 0 else 0
                             minutes = h_m_s[1] if len(h_m_s) > 1 else 0
                             seconds = h_m_s[2] if len(h_m_s) > 2 else 0
 
-                            delta = timedelta(days=total_days, hours=hours, minutes=minutes, seconds=seconds)
+                            delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
                             time_offset_seconds += sign * delta.total_seconds()
                         except (ValueError, IndexError):
                             _log(f"[warn] Could not parse time offset: {offset_str}")
