@@ -1022,6 +1022,180 @@ def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict]]:
     return file_list, settings_list
 
 
+def run_batch_copy_dng(
+    dng_files,
+    output_folder,
+    mode="copy",
+    compression_name="uncompressed",
+    jxl_distance=None,
+    jxl_effort=None,
+    scale=1.0,
+    demosaic=False,
+    demosaic_algorithm=None,
+    do_preview=False,
+    do_fast_load=False,
+    strip_tags=None,
+    extra_tags=None,
+    time_offset_seconds=0.0,
+    time_timezone=None,
+    num_workers=4,
+    on_task_done=None,
+):
+    """Batch copy/transcode DNG files to a new folder.
+
+    Reusable function called by both CLI and GUI. Uses ImageSequencePipeline
+    for multi-threaded processing.
+
+    Args:
+        dng_files: List of Path objects pointing to DNG files.
+        output_folder: Path to output directory.
+        mode: "copy" (preserve compression) or "transcode" (re-encode).
+        compression_name: "uncompressed", "jxl_lossless", or "jxl_lossy".
+        jxl_distance: JXL distance (0=lossless, >0=lossy). None = default.
+        jxl_effort: JXL effort (1-9). None = default.
+        scale: Scale factor (0.125–1.0).
+        demosaic: If True, demosaic CFA to LINEAR_RAW.
+        demosaic_algorithm: DemosaicAlgorithm enum value, or None for default.
+        do_preview: If True, embed JPEG preview at 1/4 reduction.
+        do_fast_load: If True, embed 1 pyramid level for fast load.
+        strip_tags: Set of tag name strings to strip, or None.
+        extra_tags: MetadataTags object with tags to add/override, or None.
+        time_offset_seconds: Signed seconds to add to all date tags (DateTimeOriginal, 
+            DateTimeDigitized, DateTime). 0 = no change.
+        time_timezone: Timezone offset string (e.g., "+02:00") to set in all offset tags
+            (OffsetTimeOriginal, OffsetTimeDigitized, OffsetTime), or None.
+        num_workers: Number of parallel worker threads.
+        on_task_done: Optional callback(completed, total) -> bool. Return True to cancel.
+
+    Returns:
+        dict with keys: "completed", "total", "elapsed", "queue_stats".
+    """
+    import io
+    import time
+    from datetime import timedelta
+    from .dngio import DngFile, IfdPageSpec, PageEncoding, PreviewParams, PreviewScale, PyramidParams, write_dng_from_page
+    from .imgio import ImageSequencePipeline
+    from .tiff_metadata import MetadataTags
+
+    output_path = Path(output_folder)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    COMPRESSION = tifffile.COMPRESSION
+
+    # Build transcode encoding once (shared across all files)
+    transcode_encoding = None
+    if mode == "transcode":
+        if compression_name in ("jxl_lossless", "jxl_lossy"):
+            compression_args = {}
+            if jxl_distance is not None:
+                compression_args["distance"] = jxl_distance
+            if jxl_effort is not None:
+                compression_args["effort"] = jxl_effort
+            transcode_encoding = PageEncoding(
+                compression=COMPRESSION.JPEGXL_DNG,
+                compression_args=compression_args or None,
+            )
+        # uncompressed → transcode_encoding stays None (tifffile default)
+
+    # Build preview / pyramid params once
+    preview_params = None
+    if do_preview:
+        preview_params = PreviewParams(
+            scale=PreviewScale(2),  # level 2 = 1/4 reduction
+            compression=COMPRESSION.JPEG,
+            compression_args={"level": 90},
+        )
+
+    pyramid_params = None
+    if do_fast_load:
+        pyramid_params = PyramidParams(
+            levels=1,
+            encoding=PageEncoding(
+                compression=COMPRESSION.JPEGXL_DNG,
+                compression_args={"distance": 1.0},
+            ),
+        )
+
+    demosaic_algo = demosaic_algorithm if demosaic_algorithm is not None else DemosaicAlgorithm.DNGSDK_BILINEAR
+
+    def dng_consumer(task):
+        index, file_path, blob = task
+        try:
+            dng_file = DngFile(io.BytesIO(blob))
+            page = dng_file.get_main_page()
+            if page is None:
+                logger.warning(f"Frame {index}: No main page in {Path(file_path).name}")
+                return (index, file_path, None)
+
+            page_spec = IfdPageSpec(
+                page=page,
+                transcode_encoding=transcode_encoding,
+                strip_tags=strip_tags,
+            )
+
+            # Build per-file extra_tags
+            file_extra_tags = MetadataTags()
+            # Copy static tags if provided
+            if extra_tags is not None:
+                file_extra_tags.extend(extra_tags)
+
+            # Apply time offset to all date tags (DateTimeOriginal, DateTimeDigitized, DateTime)
+            if time_offset_seconds != 0.0:
+                for time_type in ("original", "digitized", "modified"):
+                    try:
+                        dt = page.get_time_from_tags(time_type=time_type)
+                        if dt is not None:
+                            dt_adjusted = dt + timedelta(seconds=time_offset_seconds)
+                            file_extra_tags.add_time_tags(dt_adjusted, time_type=time_type)
+                    except Exception as e:
+                        logger.warning(f"Frame {index}: Could not adjust {time_type} time for {Path(file_path).name}: {e}")
+
+            # Apply timezone offset to all relevant tags if provided
+            if time_timezone:
+                file_extra_tags.add_tag("OffsetTimeOriginal", time_timezone)
+                file_extra_tags.add_tag("OffsetTimeDigitized", time_timezone)
+                file_extra_tags.add_tag("OffsetTime", time_timezone)
+
+            out_buf = io.BytesIO()
+            write_dng_from_page(
+                destination_file=out_buf,
+                page=page_spec,
+                scale=scale,
+                demosaic=demosaic,
+                demosaic_algorithm=demosaic_algo,
+                preview=preview_params,
+                pyramid=pyramid_params,
+                ifd0_extratags=file_extra_tags,
+                ifd0_strip_tags=strip_tags,
+            )
+            return (index, file_path, out_buf.getvalue())
+        except Exception as e:
+            logger.error(f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}")
+            return (index, file_path, None)
+
+    pipeline = ImageSequencePipeline(
+        source_files=dng_files,
+        output_folder=output_path,
+        output_format="dng",
+        output_dtype=None,
+        consumer=dng_consumer,
+        num_workers=num_workers,
+        task_name="DNG Batch Copy",
+        on_task_done=on_task_done,
+    )
+
+    start_time = time.perf_counter()
+    pipeline.run()
+    elapsed = time.perf_counter() - start_time
+
+    return {
+        "completed": pipeline._completed,
+        "total": len(dng_files),
+        "elapsed": elapsed,
+        "queue_stats": pipeline.get_queue_stats(),
+    }
+
+
 def run_batch_convert(
     dng_files,
     output_folder,

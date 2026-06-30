@@ -101,3 +101,39 @@ async def check_overwrite(page, existing_count: int, total_count: int) -> str:
     page.update()
 
     return await result_future
+
+
+async def show_error(page, title: str, message: str):
+    """Show a simple error dialog with OK button.
+
+    Args:
+        page: Flet page instance.
+        title: Dialog title.
+        message: Error message to display.
+    """
+    result_future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+    def _close_dlg():
+        dlg.open = False
+        page.update()
+
+    def on_ok(e):
+        _close_dlg()
+        if not result_future.done():
+            result_future.set_result(None)
+
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(title),
+        content=ft.Text(message),
+        actions=[
+            ft.TextButton("OK", on_click=on_ok),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+
+    page.overlay.append(dlg)
+    dlg.open = True
+    page.update()
+
+    return await result_future
