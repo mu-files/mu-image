@@ -147,7 +147,10 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         "extra_tags": _settings.get("extra_tags", []),  # list of {"name": ..., "value": ...}
     }
 
-    _btn_style = ft.ButtonStyle(bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE))
+    _btn_style = ft.ButtonStyle(
+        bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
+        padding=ft.Padding(left=10, top=6, right=10, bottom=6),
+    )
 
     # --- Input / Output ---
     input_path_text = ft.Text(
@@ -170,7 +173,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     )
 
     # --- Transcode Options ---
-    transcode_checkbox = ft.Checkbox(label="Transcode (re-encode)", value=False)
+    transcode_checkbox = ft.Checkbox(label="Re-encode", value=False)
 
     def _clamp_float(field, lo, hi, default):
         def handler(e):
@@ -190,12 +193,12 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             ft.dropdown.Option("jxl_lossless", "JXL Lossless"),
             ft.dropdown.Option("jxl_lossy", "JXL Lossy"),
         ],
-        width=190,
+        width=220,
         disabled=True,
     )
 
     jxl_distance = ft.TextField(
-        label="JXL Distance", value="1.0", width=130,
+        label="JXL Distance", value="1.0", width=120,
         keyboard_type=ft.KeyboardType.NUMBER,
         disabled=True,
     )
@@ -203,13 +206,13 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     jxl_distance.on_submit = jxl_distance.on_blur
 
     jxl_effort = ft.TextField(
-        label="JXL Effort (1-9)", value="5", width=140,
+        label="JXL Effort (1-9)", value="5", width=120,
         keyboard_type=ft.KeyboardType.NUMBER,
         disabled=True,
     )
 
     scale = ft.TextField(
-        label="Scale (0.125–1)", value="1.0", width=130,
+        label="Scale (0.125–1)", value="1.0", width=120,
         keyboard_type=ft.KeyboardType.NUMBER,
         disabled=True,
     )
@@ -217,7 +220,8 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     scale.on_submit = scale.on_blur
 
     demosaic = ft.Checkbox(
-        label="Demosaic (CFA → Linear RAW)", value=False, disabled=True,
+        label="Demosaic", value=False, disabled=True,
+        tooltip="Convert CFA mosaic sensor data to Linear RAW",
     )
 
     demosaic_algorithm = ft.Dropdown(
@@ -228,7 +232,7 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             ft.dropdown.Option("OPENCV_EA", "OpenCV Edge-Aware"),
             ft.dropdown.Option("VNG", "VNG"),
         ],
-        width=210,
+        width=220,
         disabled=True,
     )
 
@@ -243,21 +247,6 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         page.update()
 
     transcode_checkbox.on_change = on_transcode_changed
-
-    transcode_row = ft.Column(
-        controls=[
-            ft.Row(
-                controls=[compression_dropdown, jxl_distance, jxl_effort, scale],
-                spacing=8,
-            ),
-            ft.Row(
-                controls=[demosaic, demosaic_algorithm],
-                spacing=8,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        ],
-        spacing=12,
-    )
 
     # --- Output Options ---
     preview = ft.Checkbox(label="JPEG Preview", value=False)
@@ -869,43 +858,78 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             [ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Input")],
             alignment=ft.MainAxisAlignment.START, spacing=8,
         ),
-        on_click=pick_input, style=_btn_style, width=220,
+        on_click=pick_input, style=_btn_style, width=180,
     )
     output_btn = ft.Button(
         content=ft.Row(
             [ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Output Folder")],
             alignment=ft.MainAxisAlignment.START, spacing=8,
         ),
-        on_click=pick_output, style=_btn_style, width=220,
+        on_click=pick_output, style=_btn_style, width=180,
     )
 
-    return ft.Column(
-        controls=[
-            ft.Container(
-                content=ft.Row(
-                    controls=[run_button, cancel_button, progress_text],
-                    alignment=ft.MainAxisAlignment.START,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=12,
-                ),
-                padding=ft.Padding(left=0, top=8, right=0, bottom=0),
+    # --- Collapsible section helper ---
+    def make_section(title: str, content: list, expanded: bool = True):
+        no_border = ft.RoundedRectangleBorder(radius=0)
+        return ft.ExpansionTile(
+            title=ft.Text(title, weight=ft.FontWeight.BOLD, size=13),
+            controls=content,
+            expanded=expanded,
+            tile_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            min_tile_height=32,
+            controls_padding=ft.Padding(left=8, top=8, right=8, bottom=4),
+            affinity=ft.TileAffinity.LEADING,
+            shape=no_border,
+            collapsed_shape=no_border,
+        )
+
+    # --- Build sections ---
+    transcode_section = make_section(
+        "Transcode Options",
+        [
+            ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(content=transcode_checkbox, width=100, height=56, alignment=ft.Alignment(-1, 0)),
+                            compression_dropdown,
+                            jxl_distance,
+                            jxl_effort,
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Container(content=demosaic, width=100, height=56, alignment=ft.Alignment(-1, 0)),
+                            demosaic_algorithm,
+                            scale,
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=4,
             ),
-            ft.Divider(height=8),
-            ft.Row(controls=[input_btn, input_mode, input_path_text]),
-            ft.Row(controls=[output_btn, output_path_text]),
-            ft.Divider(height=8),
-            ft.Text("Transcode Options", weight=ft.FontWeight.BOLD, size=13),
-            transcode_checkbox,
-            transcode_row,
-            ft.Divider(height=8),
-            ft.Text("Output Options", weight=ft.FontWeight.BOLD, size=13),
+        ],
+        expanded=False,
+    )
+
+    output_section = make_section(
+        "Output Options",
+        [
             ft.Row(
                 controls=[preview, fast_load, num_workers],
                 spacing=16,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            ft.Divider(height=8),
-            ft.Text("Update Tags", weight=ft.FontWeight.BOLD, size=13),
+        ],
+        expanded=True,
+    )
+
+    metadata_section = make_section(
+        "Update Tags",
+        [
             # Operation selector row
             ft.Row(
                 controls=[
@@ -914,16 +938,49 @@ def build_dng_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                     tag_op_value,
                     apply_metadata_btn,
                 ],
-                wrap=True,
+                wrap=False,
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             # Applied operations list
             metadata_ops_list,
-            ft.Divider(height=8),
+        ],
+        expanded=True,
+    )
+
+    # Build layout with fixed row heights for alignment across tabs
+    content = ft.Column(
+        controls=[
+            ft.Container(
+                height=48,  # Fixed height for Run row
+                content=ft.Row(
+                    controls=[run_button, cancel_button, progress_text],
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
+                ),
+                padding=ft.Padding(left=0, top=6, right=0, bottom=6),
+            ),
+            ft.Divider(height=1),
+            ft.Container(
+                height=40,  # Fixed height for Input row
+                content=ft.Row(controls=[input_btn, input_mode, input_path_text]),
+            ),
+            ft.Container(
+                height=40,  # Fixed height for Output row
+                content=ft.Row(controls=[output_btn, output_path_text]),
+            ),
+            ft.Divider(height=1),
+            transcode_section,
+            ft.Divider(height=1),
+            output_section,
+            ft.Divider(height=1),
+            metadata_section,
             progress_bar,
-            log_text,
+            ft.Container(content=log_text, padding=ft.Padding(top=0, bottom=0, left=0, right=0)),
         ],
         expand=True,
-        scroll=ft.ScrollMode.ALWAYS,
+        spacing=4,
     )
+
+    return content

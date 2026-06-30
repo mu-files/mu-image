@@ -155,6 +155,7 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
 
     _btn_style = ft.ButtonStyle(
         bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
+        padding=ft.Padding(left=10, top=6, right=10, bottom=6),
     )
     run_button = ft.Button(
         content="Run", icon=ft.Icons.PLAY_ARROW, style=_btn_style,
@@ -418,7 +419,7 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             [ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Input")],
             alignment=ft.MainAxisAlignment.START, spacing=8,
         ),
-        on_click=pick_input, style=_btn_style, width=220,
+        on_click=pick_input, style=_btn_style, width=180,
     )
     output_btn = ft.Button(
         content=ft.Row(
@@ -426,26 +427,31 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
              ft.Text("Select Output Folder")],
             alignment=ft.MainAxisAlignment.START, spacing=8,
         ),
-        on_click=pick_output, style=_btn_style, width=220,
+        on_click=pick_output, style=_btn_style, width=180,
     )
 
     return ft.Column(
         controls=[
             ft.Container(
+                height=48,  # Fixed height for Run row
                 content=ft.Row(
-                    controls=[
-                        run_button, cancel_button, progress_text,
-                    ],
+                    controls=[run_button, cancel_button, progress_text],
                     alignment=ft.MainAxisAlignment.START,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=12,
                 ),
-                padding=ft.Padding(left=0, top=8, right=0, bottom=0),
+                padding=ft.Padding(left=0, top=6, right=0, bottom=6),
             ),
-            ft.Divider(height=8),
-            ft.Row(controls=[input_btn, input_mode, input_path_text]),
-            ft.Row(controls=[output_btn, output_path_text]),
-            ft.Divider(height=8),
+            ft.Divider(height=1),
+            ft.Container(
+                height=40,  # Fixed height for Input row
+                content=ft.Row(controls=[input_btn, input_mode, input_path_text]),
+            ),
+            ft.Container(
+                height=40,  # Fixed height for Output row
+                content=ft.Row(controls=[output_btn, output_path_text]),
+            ),
+            ft.Divider(height=1),
             ft.Text(
                 "Rendering Parameters",
                 weight=ft.FontWeight.BOLD, size=13,
@@ -457,7 +463,7 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
                 ],
                 wrap=True,
             ),
-            ft.Divider(height=8),
+            ft.Divider(height=1),
             ft.Text(
                 "Output Options",
                 weight=ft.FontWeight.BOLD, size=13,
@@ -468,9 +474,10 @@ def build_fits_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             ft.Row(
                 controls=[preview, fast_load],
             ),
-            ft.Divider(height=8),
+            ft.Divider(height=1),
             progress_bar,
             ft.Container(content=log_text, expand=True),
         ],
         expand=True,
+        spacing=4,
     )

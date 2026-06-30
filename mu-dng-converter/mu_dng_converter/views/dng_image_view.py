@@ -68,7 +68,6 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     )
 
     mode_dropdown = ft.Dropdown(
-        label="Mode",
         value="tif",
         options=[
             ft.dropdown.Option("tif", "DNG → TIF (with metadata)"),
@@ -76,6 +75,7 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
             ft.dropdown.Option("video", "DNG → Video (MP4)"),
         ],
         width=320,
+        content_padding=ft.Padding(left=8, top=4, right=8, bottom=4),
     )
 
     # White balance presets (temp K, tint)
@@ -191,7 +191,10 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     progress_text = ft.Text("", size=12)
     log_text = ft.TextField(multiline=True, read_only=True, text_size=11, expand=True)
 
-    _btn_style = ft.ButtonStyle(bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE))
+    _btn_style = ft.ButtonStyle(
+        bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
+        padding=ft.Padding(left=10, top=6, right=10, bottom=6),
+    )
     run_button = ft.Button(content="Run", icon=ft.Icons.PLAY_ARROW, style=_btn_style)
     cancel_button = ft.Button(content="Cancel", icon=ft.Icons.STOP, visible=False, style=_btn_style)
 
@@ -473,38 +476,47 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
     # --- Build layout ---
     input_btn = ft.Button(
         content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), ft.Text("Select Input")], alignment=ft.MainAxisAlignment.START, spacing=8),
-        on_click=pick_input, style=_btn_style, width=220,
+        on_click=pick_input, style=_btn_style, width=180,
     )
     _output_btn_text = ft.Text("Select Output Folder")
     output_btn = ft.Button(
         content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN), _output_btn_text], alignment=ft.MainAxisAlignment.START, spacing=8),
-        on_click=pick_output, style=_btn_style, width=220,
+        on_click=pick_output, style=_btn_style, width=180,
     )
 
     return ft.Column(
         controls=[
             ft.Container(
+                height=48,  # Fixed height for Run row
                 content=ft.Row(
                     controls=[mode_dropdown, run_button, cancel_button, progress_text],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    alignment=ft.MainAxisAlignment.START,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
                 ),
-                padding=ft.Padding(left=0, top=8, right=0, bottom=0),
+                padding=ft.Padding(left=0, top=6, right=0, bottom=6),
             ),
-            ft.Divider(height=8),
-            ft.Row(controls=[input_btn, input_mode, input_path_text]),
-            ft.Row(controls=[output_btn, output_path_text]),
-            ft.Divider(height=8),
+            ft.Divider(height=1),
+            ft.Container(
+                height=40,  # Fixed height for Input row
+                content=ft.Row(controls=[input_btn, input_mode, input_path_text]),
+            ),
+            ft.Container(
+                height=40,  # Fixed height for Output row
+                content=ft.Row(controls=[output_btn, output_path_text]),
+            ),
+            ft.Divider(height=1),
             ft.Text("Rendering Parameters", weight=ft.FontWeight.BOLD, size=13),
             ft.Row(controls=[use_xmp], wrap=True),
             ft.Row(controls=[wb_dropdown, temperature, tint, exposure], wrap=True),
-            ft.Divider(height=8),
+            ft.Divider(height=1),
             ft.Text("Output Options", weight=ft.FontWeight.BOLD, size=13),
             ft.Row(controls=[bit_depth, scale, num_workers], wrap=True),
             video_options,
-            ft.Divider(height=8),
+            ft.Divider(height=1),
             progress_bar,
             ft.Container(content=log_text, expand=True),
         ],
         expand=True,
+        spacing=4,
     )
