@@ -472,6 +472,9 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
 
     run_button.on_click = on_run_wrapper
     cancel_button.on_click = runner.on_cancel
+    
+    # Set runner for webview access
+    set_runner(runner)
 
     # --- Build layout ---
     input_btn = ft.Button(
@@ -520,3 +523,15 @@ def build_dng_view(page: ft.Page, dir_picker: ft.FilePicker | None = None,
         expand=True,
         spacing=4,
     )
+
+# Store runner reference for webview access
+_runner = None
+
+def get_runner():
+    """Get the runner instance for webview bridge."""
+    return _runner
+
+def set_runner(runner_instance):
+    """Set the runner instance for webview bridge."""
+    global _runner
+    _runner = runner_instance

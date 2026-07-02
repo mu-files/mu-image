@@ -1,0 +1,387 @@
+/* mu DNG Converter - Dark Theme CSS */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #3a3a3a;
+    color: #e0e0e0;
+    font-size: 13px;
+}
+
+.app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+}
+
+main.tab-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.tab-buttons {
+    display: flex;
+    margin-top: 10px;
+    background-color: #4a4a4a;
+    border-radius: 6px;
+    padding: 2px;
+    border: 1px solid #535353;
+}
+
+.tab-button {
+    flex: 1;
+    padding: 8px 16px;
+    background-color: transparent;
+    border: none;
+    border-right: 1px solid #535353;
+    color: #b0b0b0;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s ease;
+    position: relative;
+}
+
+.tab-button:last-child {
+    border-right: none;
+}
+
+.tab-button:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #e0e0e0;
+}
+
+.tab-button.active {
+    background-color: #6bb5ff;
+    color: #3a3a3a;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.tab-button.active::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background-color: #6bb5ff;
+}
+
+.tab-content {
+    flex: 1;
+    overflow-y: auto;
+    padding-top: 10px;
+    padding-left: 0;
+}
+
+.tab-pane {
+    display: none;
+}
+
+.tab-pane.active {
+    display: block;
+}
+
+.tab-pane h2 {
+    font-size: 13px;
+    font-weight: bold;
+    margin-bottom: 10px;
+    color: #e0e0e0;
+}
+
+.controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    align-items: flex-start;
+}
+
+.file-selection-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.run-column {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 68px;
+    flex-shrink: 0;
+}
+
+.input-row,
+.output-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    height: 28px;
+}
+
+.run-button,
+.cancel-button {
+    padding: 4px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 80px;
+    justify-content: center;
+}
+
+.run-button-square,
+.cancel-button-square {
+    width: 60px;
+    height: 62px;
+    padding: 8px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.run-button,
+.run-button-square {
+    background-color: rgba(107, 181, 255, 0.15);
+    color: #6bb5ff;
+}
+
+.run-button:hover,
+.run-button-square:hover {
+    background-color: rgba(107, 181, 255, 0.25);
+}
+
+.cancel-button,
+.cancel-button-square {
+    background-color: rgba(255, 107, 107, 0.15);
+    color: #ff6b6b;
+}
+
+.cancel-button:hover,
+.cancel-button-square:hover {
+    background-color: rgba(255, 107, 107, 0.25);
+}
+
+.progress-text {
+    color: #b0b0b0;
+    font-size: 12px;
+}
+
+.progress-text-vertical {
+    color: #b0b0b0;
+    font-size: 11px;
+    text-align: center;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    max-width: 60px;
+    line-height: 1.2;
+}
+
+.folder-button {
+    background-color: #434343;
+    color: #e0e0e0;
+    border: 1px solid #535353;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 180px;
+    justify-content: flex-start;
+}
+
+.folder-button:hover {
+    background-color: #4a4a4a;
+}
+
+.mode-select {
+    background-color: #434343;
+    color: #e0e0e0;
+    border: 1px solid #535353;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    width: 110px;
+}
+
+.path-text {
+    color: #b0b0b0;
+    font-size: 13px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Section styling */
+.section {
+    margin-top: 16px;
+    border-top: 1px solid #4a4a4a;
+    padding-top: 16px;
+}
+
+.section-title {
+    font-size: 13px;
+    font-weight: bold;
+    color: #e0e0e0;
+    margin-bottom: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.section-title:hover {
+    color: #6bb5ff;
+}
+
+.section-arrow {
+    font-size: 12px;
+    transition: transform 0.2s ease;
+}
+
+.section-title.expanded .section-arrow {
+    transform: rotate(90deg);
+}
+
+.section-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 20px;
+}
+
+/* Additional control styles */
+.compression-select,
+.demosaic-select {
+    background-color: #434343;
+    color: #e0e0e0;
+    border: 1px solid #535353;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    min-width: 120px;
+}
+
+.apply-button {
+    background-color: #434343;
+    color: #e0e0e0;
+    border: 1px solid #535353;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.apply-button:hover {
+    background-color: #4a4a4a;
+}
+
+.metadata-ops-list {
+    margin-top: 8px;
+    padding: 8px;
+    background-color: #323232;
+    border-radius: 4px;
+    min-height: 60px;
+    font-size: 12px;
+    color: #b0b0b0;
+}
+
+/* Form controls */
+.input-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.input-group label {
+    min-width: 100px;
+    color: #b0b0b0;
+}
+
+.input-group input,
+.input-group select {
+    background-color: #434343;
+    color: #e0e0e0;
+    border: 1px solid #535353;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.input-group input[type="number"] {
+    width: 120px;
+}
+
+.input-group select {
+    min-width: 220px;
+}
+
+/* Checkbox styling */
+.checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.checkbox-group input[type="checkbox"] {
+    margin: 0;
+}
+
+.checkbox-group label {
+    color: #e0e0e0;
+}
+
+/* Progress bar */
+.progress-bar {
+    width: 100%;
+    height: 4px;
+    background-color: #434343;
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background-color: #6bb5ff;
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+/* Log area */
+.log-area {
+    margin-top: 16px;
+    border: 1px solid #4a4a4a;
+    border-radius: 4px;
+    background-color: #323232;
+    padding: 8px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 11px;
+    color: #b0b0b0;
+    height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}

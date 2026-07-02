@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mu DNG Converter</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <main class="tab-container">
+            <div class="tab-buttons">
+                <button class="tab-button active" data-tab="dng-image">DNG → Image</button>
+                <button class="tab-button" data-tab="fits-dng">FITS → DNG</button>
+                <button class="tab-button" data-tab="dng-dng">DNG → DNG</button>
+            </div>
+            
+            <div class="tab-content">
+                <div class="tab-pane active" id="dng-image">
+                    <div class="controls">
+                        <div class="run-column">
+                            <button id="dng-image-run" class="run-button-square">Run</button>
+                            <button id="dng-image-cancel" class="cancel-button-square" style="display: none;">Cancel</button>
+                            <span id="dng-image-progress" class="progress-text-vertical"></span>
+                        </div>
+                        <div class="file-selection-area">
+                            <div class="input-row">
+                                <button id="dng-image-input-btn" class="folder-button">Select Input</button>
+                                <select id="dng-image-mode" class="mode-select">
+                                    <option value="folder">Folder</option>
+                                    <option value="files">Files</option>
+                                </select>
+                                <span id="dng-image-input-path" class="path-text">No folder selected</span>
+                            </div>
+                            <div class="output-row">
+                                <button id="dng-image-output-btn" class="folder-button">Select Output Folder</button>
+                                <span id="dng-image-output-path" class="path-text">No folder selected</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tab-pane" id="fits-dng">
+                    <div class="controls">
+                        <div class="run-column">
+                            <button id="fits-dng-run" class="run-button-square">Run</button>
+                            <button id="fits-dng-cancel" class="cancel-button-square" style="display: none;">Cancel</button>
+                            <span id="fits-dng-progress" class="progress-text-vertical"></span>
+                        </div>
+                        <div class="file-selection-area">
+                            <div class="input-row">
+                                <button id="fits-dng-input-btn" class="folder-button">Select Input</button>
+                                <select id="fits-dng-mode" class="mode-select">
+                                    <option value="folder">Folder</option>
+                                    <option value="files">Files</option>
+                                </select>
+                                <span id="fits-dng-input-path" class="path-text">No folder selected</span>
+                            </div>
+                            <div class="output-row">
+                                <button id="fits-dng-output-btn" class="folder-button">Select Output Folder</button>
+                                <span id="fits-dng-output-path" class="path-text">No folder selected</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tab-pane" id="dng-dng">
+                    <div class="controls">
+                        <div class="run-column">
+                            <button id="dng-dng-run" class="run-button-square">Run</button>
+                            <button id="dng-dng-cancel" class="cancel-button-square" style="display: none;">Cancel</button>
+                            <span id="dng-dng-progress" class="progress-text-vertical"></span>
+                        </div>
+                        <div class="file-selection-area">
+                            <div class="input-row">
+                                <button id="dng-dng-input-btn" class="folder-button">Select Input</button>
+                                <select id="dng-dng-mode" class="mode-select">
+                                    <option value="folder">Folder</option>
+                                    <option value="files">Files</option>
+                                </select>
+                                <span id="dng-dng-input-path" class="path-text">No folder selected</span>
+                            </div>
+                            <div class="output-row">
+                                <button id="dng-dng-output-btn" class="folder-button">Select Output Folder</button>
+                                <span id="dng-dng-output-path" class="path-text">No folder selected</span>
+                            </div>
+                        </div>
+                    </div>
+                        
+                        <!-- Transcode Options Section -->
+                        <div class="section">
+                            <div class="section-title">
+                                <span class="section-arrow">▶</span>
+                                <span>Transcode Options</span>
+                            </div>
+                            <div class="section-content" style="display: none;">
+                                <div class="input-group">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="dng-dng-transcode">
+                                        <label for="dng-dng-transcode">Re-encode</label>
+                                    </div>
+                                    <select id="dng-dng-compression" class="compression-select">
+                                        <option value="lossless">Lossless</option>
+                                        <option value="lossy">Lossy</option>
+                                    </select>
+                                    <input type="number" id="dng-dng-jxl-distance" placeholder="Distance" min="0" max="15" step="0.1">
+                                    <input type="number" id="dng-dng-jxl-effort" placeholder="Effort" min="1" max="9">
+                                </div>
+                                <div class="input-group">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="dng-dng-demosaic">
+                                        <label for="dng-dng-demosaic">Demosaic</label>
+                                    </div>
+                                    <select id="dng-dng-demosaic-algo" class="demosaic-select">
+                                        <option value="linear">Linear</option>
+                                        <option value="vng">VNG</option>
+                                        <option value="ppg">PPG</option>
+                                        <option value="ahd">AHD</option>
+                                    </select>
+                                    <input type="number" id="dng-dng-scale" placeholder="Scale" min="0.1" max="10" step="0.1">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Output Options Section -->
+                        <div class="section">
+                            <div class="section-title">
+                                <span class="section-arrow">▶</span>
+                                <span>Output Options</span>
+                            </div>
+                            <div class="section-content" style="display: none;">
+                                <div class="input-group">
+                                    <select id="dng-dng-bit-depth">
+                                        <option value="16">16-bit</option>
+                                        <option value="8">8-bit</option>
+                                    </select>
+                                    <select id="dng-dng-compression-out">
+                                        <option value="uncompressed">Uncompressed</option>
+                                        <option value="lzw">LZW</option>
+                                        <option value="zip">ZIP</option>
+                                        <option value="lossy">Lossy</option>
+                                    </select>
+                                    <select id="dng-dng-predictor">
+                                        <option value="none">None</option>
+                                        <option value="horizontal">Horizontal</option>
+                                        <option value="vertical">Vertical</option>
+                                    </select>
+                                </div>
+                                <div class="input-group">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="dng-dng-preview">
+                                        <label for="dng-dng-preview">Preview</label>
+                                    </div>
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="dng-dng-fast-load">
+                                        <label for="dng-dng-fast-load">Fast Load</label>
+                                    </div>
+                                    <input type="number" id="dng-dng-num-workers" placeholder="Workers" min="1" max="16" value="4">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Update Tags Section -->
+                        <div class="section">
+                            <div class="section-title">
+                                <span class="section-arrow">▶</span>
+                                <span>Update Tags</span>
+                            </div>
+                            <div class="section-content" style="display: none;">
+                                <div class="input-group">
+                                    <select id="dng-dng-metadata-op">
+                                        <option value="set">Set</option>
+                                        <option value="add">Add</option>
+                                        <option value="delete">Delete</option>
+                                    </select>
+                                    <input type="text" id="dng-dng-tag-name" placeholder="Tag name">
+                                    <input type="text" id="dng-dng-tag-value" placeholder="Tag value">
+                                    <button id="dng-dng-apply-metadata" class="apply-button">Apply</button>
+                                </div>
+                                <div id="dng-dng-metadata-ops" class="metadata-ops-list">
+                                    <!-- Applied operations will be listed here -->
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Progress and Log -->
+                        <div class="progress-bar">
+                            <div class="progress-bar-fill" id="dng-dng-progress-bar"></div>
+                        </div>
+                        <div class="log-area" id="dng-dng-log"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
