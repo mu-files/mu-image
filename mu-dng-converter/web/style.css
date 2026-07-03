@@ -6,6 +6,12 @@
     box-sizing: border-box;
 }
 
+html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background-color: #3a3a3a;
@@ -78,6 +84,8 @@ main.tab-container {
 .tab-content {
     flex: 1;
     overflow-y: auto;
+    border-top: 1px solid #4a4a4a;
+    margin-top: 8px;
     padding-top: 10px;
     padding-left: 0;
 }
@@ -88,6 +96,7 @@ main.tab-container {
 
 .tab-pane.active {
     display: block;
+    overflow-x: hidden;
 }
 
 .tab-pane h2 {
@@ -106,6 +115,7 @@ main.tab-container {
 
 .file-selection-area {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -126,6 +136,7 @@ main.tab-container {
     gap: 8px;
     padding: 0;
     height: 28px;
+    min-width: 0;
 }
 
 .run-button,
@@ -229,9 +240,60 @@ main.tab-container {
     color: #b0b0b0;
     font-size: 13px;
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* In-page modal dialog */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal {
+    background: #2d2d2d;
+    border: 1px solid #4a4a4a;
+    border-radius: 8px;
+    padding: 20px 24px;
+    max-width: 380px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.modal-message {
+    color: #e0e0e0;
+    font-size: 14px;
+    margin-bottom: 16px;
+}
+
+.modal-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.modal-buttons button {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.modal-cancel {
+    background: rgba(255, 255, 255, 0.15);
+    color: #e0e0e0;
+}
+
+.modal-ok {
+    background: #4a90d9;
+    color: #fff;
 }
 
 /* Section styling */
@@ -312,8 +374,8 @@ main.tab-container {
 /* Form controls */
 .input-group {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: flex-end;
+    gap: 12px;
 }
 
 .input-group label {
@@ -352,6 +414,68 @@ main.tab-container {
 
 .checkbox-group label {
     color: #e0e0e0;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #e0e0e0;
+    cursor: pointer;
+    white-space: nowrap;
+    padding-bottom: 4px; /* align checkbox center with input center (input height 28px, checkbox ~16px, (28-16)/2 = 6px, minus border ≈ 4px) */
+}
+
+.checkbox-label input[type="checkbox"] {
+    margin: 0;
+}
+
+/* Label above input field */
+.labeled-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.labeled-field label {
+    font-size: 11px;
+    color: #888;
+    line-height: 1;
+}
+
+.labeled-field input,
+.labeled-field select {
+    height: 28px;
+    box-sizing: border-box;
+}
+
+.labeled-field input:disabled,
+.labeled-field select:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.labeled-field:has(input:disabled) label,
+.labeled-field:has(select:disabled) label {
+    opacity: 0.35;
+}
+
+.checkbox-label:has(input:disabled) {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* Text field size helpers */
+.text-field-sm {
+    width: 120px;
+}
+
+.text-field-md {
+    width: 180px;
+}
+
+.text-field-lg {
+    width: 220px;
 }
 
 /* Progress bar */

@@ -21,7 +21,6 @@
                         <div class="run-column">
                             <button id="dng-image-run" class="run-button-square">Run</button>
                             <button id="dng-image-cancel" class="cancel-button-square" style="display: none;">Cancel</button>
-                            <span id="dng-image-progress" class="progress-text-vertical"></span>
                         </div>
                         <div class="file-selection-area">
                             <div class="input-row">
@@ -45,7 +44,6 @@
                         <div class="run-column">
                             <button id="fits-dng-run" class="run-button-square">Run</button>
                             <button id="fits-dng-cancel" class="cancel-button-square" style="display: none;">Cancel</button>
-                            <span id="fits-dng-progress" class="progress-text-vertical"></span>
                         </div>
                         <div class="file-selection-area">
                             <div class="input-row">
@@ -69,7 +67,6 @@
                         <div class="run-column">
                             <button id="dng-dng-run" class="run-button-square">Run</button>
                             <button id="dng-dng-cancel" class="cancel-button-square" style="display: none;">Cancel</button>
-                            <span id="dng-dng-progress" class="progress-text-vertical"></span>
                         </div>
                         <div class="file-selection-area">
                             <div class="input-row">
@@ -95,29 +92,38 @@
                             </div>
                             <div class="section-content" style="display: none;">
                                 <div class="input-group">
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" id="dng-dng-transcode">
-                                        <label for="dng-dng-transcode">Re-encode</label>
+                                    <label class="checkbox-label"><input type="checkbox" id="dng-dng-transcode"> Re-encode</label>
+                                    <div class="labeled-field">
+                                        <label>Compression</label>
+                                        <select id="dng-dng-compression" disabled>
+                                            <option value="uncompressed">Uncompressed</option>
+                                            <option value="jxl_lossless">JXL Lossless</option>
+                                            <option value="jxl_lossy">JXL Lossy</option>
+                                        </select>
                                     </div>
-                                    <select id="dng-dng-compression" class="compression-select">
-                                        <option value="lossless">Lossless</option>
-                                        <option value="lossy">Lossy</option>
-                                    </select>
-                                    <input type="number" id="dng-dng-jxl-distance" placeholder="Distance" min="0" max="15" step="0.1">
-                                    <input type="number" id="dng-dng-jxl-effort" placeholder="Effort" min="1" max="9">
+                                    <div class="labeled-field">
+                                        <label>JXL Distance</label>
+                                        <input type="text" id="dng-dng-jxl-distance" value="1.0" disabled class="text-field-sm">
+                                    </div>
+                                    <div class="labeled-field">
+                                        <label>JXL Effort (1-9)</label>
+                                        <input type="text" id="dng-dng-jxl-effort" value="5" disabled class="text-field-sm">
+                                    </div>
                                 </div>
                                 <div class="input-group">
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" id="dng-dng-demosaic">
-                                        <label for="dng-dng-demosaic">Demosaic</label>
+                                    <label class="checkbox-label"><input type="checkbox" id="dng-dng-demosaic" disabled> Demosaic</label>
+                                    <div class="labeled-field">
+                                        <label>Algorithm</label>
+                                        <select id="dng-dng-demosaic-algo" disabled>
+                                            <option value="DNGSDK_BILINEAR">DNG SDK Bilinear</option>
+                                            <option value="OPENCV_EA">OpenCV Edge-Aware</option>
+                                            <option value="VNG">VNG</option>
+                                        </select>
                                     </div>
-                                    <select id="dng-dng-demosaic-algo" class="demosaic-select">
-                                        <option value="linear">Linear</option>
-                                        <option value="vng">VNG</option>
-                                        <option value="ppg">PPG</option>
-                                        <option value="ahd">AHD</option>
-                                    </select>
-                                    <input type="number" id="dng-dng-scale" placeholder="Scale" min="0.1" max="10" step="0.1">
+                                    <div class="labeled-field">
+                                        <label>Scale (0.125–1)</label>
+                                        <input type="text" id="dng-dng-scale" value="1.0" disabled class="text-field-sm">
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -130,32 +136,12 @@
                             </div>
                             <div class="section-content" style="display: none;">
                                 <div class="input-group">
-                                    <select id="dng-dng-bit-depth">
-                                        <option value="16">16-bit</option>
-                                        <option value="8">8-bit</option>
-                                    </select>
-                                    <select id="dng-dng-compression-out">
-                                        <option value="uncompressed">Uncompressed</option>
-                                        <option value="lzw">LZW</option>
-                                        <option value="zip">ZIP</option>
-                                        <option value="lossy">Lossy</option>
-                                    </select>
-                                    <select id="dng-dng-predictor">
-                                        <option value="none">None</option>
-                                        <option value="horizontal">Horizontal</option>
-                                        <option value="vertical">Vertical</option>
-                                    </select>
-                                </div>
-                                <div class="input-group">
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" id="dng-dng-preview">
-                                        <label for="dng-dng-preview">Preview</label>
+                                    <label class="checkbox-label"><input type="checkbox" id="dng-dng-preview"> JPEG Preview</label>
+                                    <label class="checkbox-label"><input type="checkbox" id="dng-dng-fast-load"> Embed Fast Load Data</label>
+                                    <div class="labeled-field">
+                                        <label>Workers (1-8)</label>
+                                        <input type="text" id="dng-dng-num-workers" value="4" class="text-field-sm">
                                     </div>
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" id="dng-dng-fast-load">
-                                        <label for="dng-dng-fast-load">Fast Load</label>
-                                    </div>
-                                    <input type="number" id="dng-dng-num-workers" placeholder="Workers" min="1" max="16" value="4">
                                 </div>
                             </div>
                         </div>
@@ -168,18 +154,26 @@
                             </div>
                             <div class="section-content" style="display: none;">
                                 <div class="input-group">
-                                    <select id="dng-dng-metadata-op">
-                                        <option value="set">Set</option>
-                                        <option value="add">Add</option>
-                                        <option value="delete">Delete</option>
-                                    </select>
-                                    <input type="text" id="dng-dng-tag-name" placeholder="Tag name">
-                                    <input type="text" id="dng-dng-tag-value" placeholder="Tag value">
+                                    <div class="labeled-field">
+                                        <label>Operation</label>
+                                        <select id="dng-dng-metadata-op">
+                                            <option value="set">Set Tag</option>
+                                            <option value="strip">Strip Tag</option>
+                                            <option value="shift-time">Time Shift</option>
+                                            <option value="shift-timezone">Set TZ</option>
+                                        </select>
+                                    </div>
+                                    <div class="labeled-field">
+                                        <label>Tag Name</label>
+                                        <input type="text" id="dng-dng-tag-name" class="text-field-md">
+                                    </div>
+                                    <div class="labeled-field">
+                                        <label>Value</label>
+                                        <input type="text" id="dng-dng-tag-value" class="text-field-lg">
+                                    </div>
                                     <button id="dng-dng-apply-metadata" class="apply-button">Apply</button>
                                 </div>
-                                <div id="dng-dng-metadata-ops" class="metadata-ops-list">
-                                    <!-- Applied operations will be listed here -->
-                                </div>
+                                <div id="dng-dng-metadata-ops" class="metadata-ops-list"></div>
                             </div>
                         </div>
                         

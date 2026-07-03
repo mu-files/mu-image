@@ -20,6 +20,20 @@ def _set_macos_icon():
         pass
 
 
+def _set_macos_window_constraints(title: str, width: int, min_height: int, max_height: int):
+    """Constrain the native NSWindow to a fixed width while allowing vertical resize."""
+    try:
+        from AppKit import NSApplication
+        app = NSApplication.sharedApplication()
+        for window in app.windows():
+            if window.title() == title:
+                window.setMinSize_((width, min_height))
+                window.setMaxSize_((width, max_height))
+                break
+    except Exception:
+        pass
+
+
 def main():
     """Main PyWebView application."""
     if sys.platform == "darwin":
@@ -36,13 +50,20 @@ def main():
         width=760,
         height=780,
         resizable=True,
-        min_size=(600, 500),
+        min_size=(760, 500),
         js_api=expose_to_window  # This will expose the bridge methods
     )
-    
+
+    # Apply native macOS window constraints so horizontal resize cursor does not appear
+    def _apply_constraints():
+        if sys.platform == "darwin":
+            _set_macos_window_constraints("mu DNG Converter", 760, 500, 2000)
+
+    window.events.loaded += _apply_constraints
+
     # Expose the bridge methods to JavaScript
     expose_to_window(window)
-    
+
     # Start the webview
     webview.start()
 
