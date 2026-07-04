@@ -12,6 +12,32 @@ html, body {
     overscroll-behavior: none;
 }
 
+/* Persistent gutter-style scrollbars (Lightroom-like), instead of
+   the macOS overlay scrollbar that floats over content */
+::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+::-webkit-scrollbar-track {
+    background: #333333;
+    border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #5a5a5a;
+    border-radius: 6px;
+    border: 2px solid #333333;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #6e6e6e;
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background-color: #3a3a3a;
@@ -83,7 +109,9 @@ main.tab-container {
 
 .tab-content {
     flex: 1;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     border-top: 1px solid #4a4a4a;
     margin-top: 8px;
     padding-top: 10px;
@@ -95,8 +123,25 @@ main.tab-container {
 }
 
 .tab-pane.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
     overflow-x: hidden;
+}
+
+.pane-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    padding-right: 10px;
+    border-top: 1px solid #4a4a4a;
+}
+
+.pane-scroll > .section:first-child {
+    border-top: none;
+    margin-top: 0;
 }
 
 .tab-pane h2 {
@@ -111,6 +156,7 @@ main.tab-container {
     gap: 12px;
     margin-bottom: 16px;
     align-items: flex-start;
+    padding-right: 22px;
 }
 
 .file-selection-area {
@@ -476,6 +522,22 @@ main.tab-container {
 
 .text-field-lg {
     width: 220px;
+}
+
+/* Update Tags row: fixed-width operation select, flexible text fields */
+#dng-dng-metadata-op {
+    min-width: 140px;
+}
+
+.input-group .labeled-field:has(.text-field-md),
+.input-group .labeled-field:has(.text-field-lg) {
+    flex: 1;
+    min-width: 0;
+}
+
+.input-group .labeled-field .text-field-md,
+.input-group .labeled-field .text-field-lg {
+    width: 100%;
 }
 
 /* Progress bar */
