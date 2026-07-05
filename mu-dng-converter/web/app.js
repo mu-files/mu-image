@@ -1,8 +1,20 @@
 // mu DNG Converter - JavaScript UI Controller
 
+const WB_PRESETS = {
+    as_shot: [null, null],
+    d50: [5000, 0],
+    daylight: [5500, 10],
+    cloudy: [6500, 10],
+    shade: [7500, 10],
+    tungsten: [2850, 0],
+    fluorescent: [3800, 21],
+    flash: [5500, 0],
+    custom: [null, null],
+};
+
 class DNGConverter {
     constructor() {
-        this.currentTab = 'dng-image';
+        this.currentTab = 'create-dng';
         this.inputPaths = {};   // tab -> array of selected paths
         this.inputModes = {};   // tab -> 'folder' | 'files'
         this.outputPaths = {};  // tab -> output folder
@@ -14,7 +26,8 @@ class DNGConverter {
         this.setupTabSwitching();
         this.setupButtonHandlers();
         this.setupCollapsibleSections();
-        this.setupDNGDNGHandlers();
+        this.setupCreateDNGHandlers();
+        this.setupRenderDNGHandlers();
         console.log('DNG Converter initialized');
     }
 
@@ -41,75 +54,57 @@ class DNGConverter {
     }
 
     setupButtonHandlers() {
-        // DNG → Image buttons
-        document.getElementById('dng-image-run').addEventListener('click', () => {
-            this.handleRun('dng-image');
-        });
-        
-        document.getElementById('dng-image-cancel').addEventListener('click', () => {
-            this.handleCancel('dng-image');
-        });
-        
-        document.getElementById('dng-image-input-btn').addEventListener('click', () => {
-            this.handleInputSelect('dng-image');
-        });
-        
-        document.getElementById('dng-image-output-btn').addEventListener('click', () => {
-            this.handleOutputSelect('dng-image');
-        });
-
-        // FITS → DNG buttons
-        document.getElementById('fits-dng-run').addEventListener('click', () => {
-            this.handleRun('fits-dng');
-        });
-        
-        document.getElementById('fits-dng-cancel').addEventListener('click', () => {
-            this.handleCancel('fits-dng');
-        });
-        
-        document.getElementById('fits-dng-input-btn').addEventListener('click', () => {
-            this.handleInputSelect('fits-dng');
-        });
-        
-        document.getElementById('fits-dng-output-btn').addEventListener('click', () => {
-            this.handleOutputSelect('fits-dng');
-        });
-
-        // DNG → DNG buttons
-        document.getElementById('dng-dng-run').addEventListener('click', () => {
-            this.handleRun('dng-dng');
-        });
-        
-        document.getElementById('dng-dng-cancel').addEventListener('click', () => {
-            this.handleCancel('dng-dng');
-        });
-        
-        document.getElementById('dng-dng-input-btn').addEventListener('click', () => {
-            this.handleInputSelect('dng-dng');
-        });
-        
-        document.getElementById('dng-dng-output-btn').addEventListener('click', () => {
-            this.handleOutputSelect('dng-dng');
+        ['create-dng', 'render-dng'].forEach(tab => {
+            document.getElementById(`${tab}-run`).addEventListener('click', () => this.handleRun(tab));
+            document.getElementById(`${tab}-cancel`).addEventListener('click', () => this.handleCancel(tab));
+            document.getElementById(`${tab}-input-btn`).addEventListener('click', () => this.handleInputSelect(tab));
+            document.getElementById(`${tab}-output-btn`).addEventListener('click', () => this.handleOutputSelect(tab));
         });
     }
 
     gatherSettings(tab) {
+        const val = id => document.getElementById(id).value;
+        const chk = id => document.getElementById(id).checked;
         const settings = {
             input: this.inputPaths[tab] || [],
             inputMode: this.inputModes[tab] || 'folder',
             output: this.outputPaths[tab] || '',
         };
-        if (tab === 'dng-dng') {
-            settings.transcode = document.getElementById('dng-dng-transcode').checked;
-            settings.compression = document.getElementById('dng-dng-compression').value;
-            settings.jxlDistance = document.getElementById('dng-dng-jxl-distance').value;
-            settings.jxlEffort = document.getElementById('dng-dng-jxl-effort').value;
-            settings.demosaic = document.getElementById('dng-dng-demosaic').checked;
-            settings.scale = document.getElementById('dng-dng-scale').value;
-            settings.preview = document.getElementById('dng-dng-preview').checked;
-            settings.fastLoad = document.getElementById('dng-dng-fast-load').checked;
-            settings.numWorkers = document.getElementById('dng-dng-num-workers').value;
+        if (tab === 'create-dng') {
+            settings.inputType = val('create-dng-input-type');
+            settings.transcode = chk('create-dng-transcode');
+            settings.compression = val('create-dng-compression');
+            settings.jxlDistance = val('create-dng-jxl-distance');
+            settings.jxlEffort = val('create-dng-jxl-effort');
+            settings.demosaic = chk('create-dng-demosaic');
+            settings.scale = val('create-dng-scale');
+            settings.preview = chk('create-dng-preview');
+            settings.fastLoad = chk('create-dng-fast-load');
+            settings.numWorkers = val('create-dng-num-workers');
             settings.metadataOps = this.metadataOps[tab] || [];
+            // FITS rendering parameters
+            settings.autoExposure = chk('create-dng-auto-exposure');
+            settings.toneCurve = chk('create-dng-tone-curve');
+            settings.wbPreset = val('create-dng-wb');
+            settings.temperature = val('create-dng-temperature');
+            settings.tint = val('create-dng-tint');
+            settings.exposure = val('create-dng-exposure');
+        } else if (tab === 'render-dng') {
+            settings.mode = val('render-dng-conversion-mode');
+            settings.useXmp = chk('render-dng-use-xmp');
+            settings.wbPreset = val('render-dng-wb');
+            settings.temperature = val('render-dng-temperature');
+            settings.tint = val('render-dng-tint');
+            settings.exposure = val('render-dng-exposure');
+            settings.bitDepth = val('render-dng-bit-depth');
+            settings.scale = val('render-dng-scale');
+            settings.numWorkers = val('render-dng-num-workers');
+            settings.resolution = val('render-dng-resolution');
+            settings.codec = val('render-dng-codec');
+            settings.crf = val('render-dng-crf');
+            settings.frameRate = val('render-dng-frame-rate');
+            settings.videoBitDepth = val('render-dng-video-bit-depth');
+            settings.overlay = chk('render-dng-overlay');
         }
         return settings;
     }
@@ -129,11 +124,9 @@ class DNGConverter {
                 const settings = this.gatherSettings(tab);
                 let result = await window.pywebview.api.run_conversion(tab, settings);
                 if (result && result.status === 'confirm-overwrite') {
-                    const ok = await this.showConfirm(
-                        `${result.existing} of ${result.total} output files already exist. Overwrite?`
-                    );
-                    if (ok) {
-                        settings.overwriteConfirmed = true;
+                    const action = await this.showOverwriteDialog(result.existing, result.total);
+                    if (action !== 'cancel') {
+                        settings.overwriteAction = action;
                         result = await window.pywebview.api.run_conversion(tab, settings);
                     }
                 }
@@ -151,26 +144,24 @@ class DNGConverter {
         this.updateProgressBar(tab, 0);
     }
 
-    showConfirm(message) {
+    showOverwriteDialog(existing, total) {
         return new Promise(resolve => {
             const overlay = document.createElement('div');
             overlay.className = 'modal-overlay';
             overlay.innerHTML =
                 '<div class="modal">' +
-                `<p class="modal-message">${message}</p>` +
+                '<p class="modal-title">Files already exist</p>' +
+                `<p class="modal-message">${existing} of ${total} output files already exist in the destination folder.</p>` +
                 '<div class="modal-buttons">' +
+                '<button class="modal-overwrite">Overwrite All</button>' +
+                '<button class="modal-skip">Skip Existing</button>' +
                 '<button class="modal-cancel">Cancel</button>' +
-                '<button class="modal-ok">OK</button>' +
                 '</div></div>';
             document.body.appendChild(overlay);
-            overlay.querySelector('.modal-ok').addEventListener('click', () => {
-                overlay.remove();
-                resolve(true);
-            });
-            overlay.querySelector('.modal-cancel').addEventListener('click', () => {
-                overlay.remove();
-                resolve(false);
-            });
+            const done = action => { overlay.remove(); resolve(action); };
+            overlay.querySelector('.modal-overwrite').addEventListener('click', () => done('overwrite'));
+            overlay.querySelector('.modal-skip').addEventListener('click', () => done('skip'));
+            overlay.querySelector('.modal-cancel').addEventListener('click', () => done('cancel'));
         });
     }
 
@@ -182,24 +173,17 @@ class DNGConverter {
         }
     }
 
-    handleComplete(tab) {
-        const runBtn = document.getElementById(`${tab}-run`);
-        const cancelBtn = document.getElementById(`${tab}-cancel`);
-        const progressText = document.getElementById(`${tab}-progress`);
-        
-        runBtn.style.display = 'flex';
-        cancelBtn.style.display = 'none';
-        progressText.textContent = 'Complete';
-    }
-
     async handleInputSelect(tab) {
         console.log(`Input select clicked for ${tab}`);
         const modeEl = document.getElementById(`${tab}-mode`);
         const mode = modeEl ? modeEl.value : 'folder';
+        const fileType = tab === 'create-dng'
+            ? document.getElementById('create-dng-input-type').value
+            : 'dng';
         
         try {
             if (window.pywebview && window.pywebview.api) {
-                const result = await window.pywebview.api.select_input(tab, mode);
+                const result = await window.pywebview.api.select_input(tab, mode, fileType);
                 this.updateInputPath(tab, result);
             } else {
                 // Fallback for testing
@@ -212,10 +196,15 @@ class DNGConverter {
 
     async handleOutputSelect(tab) {
         console.log(`Output select clicked for ${tab}`);
+        let outMode = 'folder';
+        if (tab === 'render-dng' &&
+            document.getElementById('render-dng-conversion-mode').value === 'video') {
+            outMode = 'file';
+        }
         
         try {
             if (window.pywebview && window.pywebview.api) {
-                const result = await window.pywebview.api.select_output(tab);
+                const result = await window.pywebview.api.select_output(tab, outMode);
                 this.updateOutputPath(tab, result);
             } else {
                 // Fallback for testing
@@ -322,15 +311,15 @@ class DNGConverter {
         });
     }
 
-    setupDNGDNGHandlers() {
-        document.getElementById('dng-dng-apply-metadata').addEventListener('click', () => {
+    setupCreateDNGHandlers() {
+        document.getElementById('create-dng-apply-metadata').addEventListener('click', () => {
             this.handleApplyMetadata();
         });
 
-        const transcodeCheckbox = document.getElementById('dng-dng-transcode');
+        const transcodeCheckbox = document.getElementById('create-dng-transcode');
         const transcodeControls = [
-            'dng-dng-compression', 'dng-dng-jxl-distance', 'dng-dng-jxl-effort',
-            'dng-dng-demosaic', 'dng-dng-demosaic-algo', 'dng-dng-scale',
+            'create-dng-compression', 'create-dng-jxl-distance', 'create-dng-jxl-effort',
+            'create-dng-demosaic', 'create-dng-demosaic-algo', 'create-dng-scale',
         ];
         const updateTranscodeState = () => {
             const enabled = transcodeCheckbox.checked;
@@ -344,31 +333,118 @@ class DNGConverter {
         };
 
         const updateCompressionState = () => {
-            const compression = document.getElementById('dng-dng-compression').value;
+            const compression = document.getElementById('create-dng-compression').value;
             const isLossy = compression === 'jxl_lossy';
             const isJxl = compression !== 'uncompressed';
-            const distField = document.getElementById('dng-dng-jxl-distance');
-            const effortField = document.getElementById('dng-dng-jxl-effort');
+            const distField = document.getElementById('create-dng-jxl-distance');
+            const effortField = document.getElementById('create-dng-jxl-effort');
             distField.disabled = !isLossy;
             if (!isLossy) distField.value = '0';
             effortField.disabled = !isJxl;
         };
 
         const updateDemosaicState = () => {
-            const demosaicEnabled = document.getElementById('dng-dng-demosaic').checked;
-            document.getElementById('dng-dng-demosaic-algo').disabled = !demosaicEnabled;
-            document.getElementById('dng-dng-scale').disabled = !demosaicEnabled;
+            const demosaicEnabled = document.getElementById('create-dng-demosaic').checked;
+            document.getElementById('create-dng-demosaic-algo').disabled = !demosaicEnabled;
+            document.getElementById('create-dng-scale').disabled = !demosaicEnabled;
         };
 
         transcodeCheckbox.addEventListener('change', updateTranscodeState);
-        document.getElementById('dng-dng-compression').addEventListener('change', updateCompressionState);
-        document.getElementById('dng-dng-demosaic').addEventListener('change', updateDemosaicState);
+        document.getElementById('create-dng-compression').addEventListener('change', updateCompressionState);
+        document.getElementById('create-dng-demosaic').addEventListener('change', updateDemosaicState);
+
+        // Input type (DNG / FITS) switching
+        const typeSel = document.getElementById('create-dng-input-type');
+        typeSel.addEventListener('change', () => {
+            const isFits = typeSel.value === 'fits';
+            document.getElementById('create-dng-rendering-section')
+                .classList.toggle('section-hidden', !isFits);
+            document.getElementById('create-dng-transcode-label').textContent =
+                isFits ? 'Encode' : 'Re-encode';
+            document.getElementById('create-dng-transcode-section-title').textContent =
+                isFits ? 'Encode Options' : 'Transcode Options';
+            // Clear input selection since the file type changed
+            this.inputPaths['create-dng'] = [];
+            this.updateInputPath('create-dng', '');
+        });
+
+        // FITS rendering parameter handlers
+        const autoExp = document.getElementById('create-dng-auto-exposure');
+        autoExp.addEventListener('change', () => {
+            document.getElementById('create-dng-exposure').disabled = autoExp.checked;
+        });
+        document.getElementById('create-dng-wb').addEventListener('change', () => {
+            this.applyWBPreset('create-dng');
+        });
 
         // Value clamping — mirrors Flet's _clamp_float / _clamp_workers
-        this.addClamp('dng-dng-jxl-distance', 0.0, 25.0, 1.0);
-        this.addClamp('dng-dng-jxl-effort',   1,   9,   5);
-        this.addClamp('dng-dng-scale',         0.125, 1.0, 1.0);
-        this.addClamp('dng-dng-num-workers',   1,   8,   4);
+        this.addClamp('create-dng-jxl-distance', 0.0, 25.0, 1.0);
+        this.addClamp('create-dng-jxl-effort',   1,   9,   5);
+        this.addClamp('create-dng-scale',         0.125, 1.0, 1.0);
+        this.addClamp('create-dng-num-workers',   1,   8,   4);
+    }
+
+    setupRenderDNGHandlers() {
+        // Conversion mode (tif / jpg / video) switching
+        const modeSel = document.getElementById('render-dng-conversion-mode');
+        modeSel.addEventListener('change', () => {
+            const mode = modeSel.value;
+            const isVideo = mode === 'video';
+            document.getElementById('render-dng-video-section')
+                .classList.toggle('section-hidden', !isVideo);
+            document.getElementById('render-dng-bit-depth-field').style.display = isVideo ? 'none' : '';
+            document.getElementById('render-dng-scale-field').style.display = isVideo ? 'none' : '';
+            document.getElementById('render-dng-output-btn').textContent =
+                isVideo ? 'Select Output File' : 'Select Output Folder';
+            // Reset output selection since the target type changed
+            this.outputPaths['render-dng'] = '';
+            this.updateOutputPath('render-dng', '');
+            const bitDepth = document.getElementById('render-dng-bit-depth');
+            if (mode === 'jpg') {
+                bitDepth.value = '8';
+                bitDepth.disabled = true;
+            } else {
+                bitDepth.disabled = false;
+            }
+        });
+
+        // Use XMP gating of manual rendering parameters
+        const useXmp = document.getElementById('render-dng-use-xmp');
+        useXmp.addEventListener('change', () => {
+            const on = useXmp.checked;
+            document.getElementById('render-dng-wb').disabled = on;
+            document.getElementById('render-dng-exposure').disabled = on;
+            if (on) {
+                document.getElementById('render-dng-temperature').disabled = true;
+                document.getElementById('render-dng-tint').disabled = true;
+            } else {
+                this.applyWBPreset('render-dng');
+            }
+        });
+
+        document.getElementById('render-dng-wb').addEventListener('change', () => {
+            this.applyWBPreset('render-dng');
+        });
+
+        this.addClamp('render-dng-scale',       0.125, 1.0, 1.0);
+        this.addClamp('render-dng-num-workers', 1,     8,   4);
+    }
+
+    applyWBPreset(tab) {
+        const wb = document.getElementById(`${tab}-wb`);
+        const temp = document.getElementById(`${tab}-temperature`);
+        const tint = document.getElementById(`${tab}-tint`);
+        const preset = wb.value;
+        if (preset === 'custom') {
+            temp.disabled = false;
+            tint.disabled = false;
+        } else {
+            const [t, ti] = WB_PRESETS[preset] || [null, null];
+            temp.value = t !== null ? String(t) : '';
+            tint.value = ti !== null ? String(ti) : '';
+            temp.disabled = true;
+            tint.disabled = true;
+        }
     }
 
     addClamp(id, lo, hi, defaultVal) {
@@ -387,21 +463,21 @@ class DNGConverter {
     }
 
     handleApplyMetadata() {
-        const op = document.getElementById('dng-dng-metadata-op').value;
-        const name = document.getElementById('dng-dng-tag-name').value;
-        const value = document.getElementById('dng-dng-tag-value').value;
+        const op = document.getElementById('create-dng-metadata-op').value;
+        const name = document.getElementById('create-dng-tag-name').value;
+        const value = document.getElementById('create-dng-tag-value').value;
         
         if (!name) {
             alert('Please enter a tag name');
             return;
         }
         
-        const opsList = document.getElementById('dng-dng-metadata-ops');
+        const opsList = document.getElementById('create-dng-metadata-ops');
         const opText = `${op.toUpperCase()}: ${name}${value ? ' = ' + value : ''}`;
         
         // Record op data for run_conversion
-        if (!this.metadataOps['dng-dng']) this.metadataOps['dng-dng'] = [];
-        this.metadataOps['dng-dng'].push({ type: op, name: name, value: value });
+        if (!this.metadataOps['create-dng']) this.metadataOps['create-dng'] = [];
+        this.metadataOps['create-dng'].push({ type: op, name: name, value: value });
         
         // Add to operations list
         const opItem = document.createElement('div');
@@ -410,8 +486,8 @@ class DNGConverter {
         opsList.appendChild(opItem);
         
         // Clear inputs
-        document.getElementById('dng-dng-tag-name').value = '';
-        document.getElementById('dng-dng-tag-value').value = '';
+        document.getElementById('create-dng-tag-name').value = '';
+        document.getElementById('create-dng-tag-value').value = '';
         
         console.log('Applied metadata operation:', opText);
     }

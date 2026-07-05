@@ -18,13 +18,13 @@ class WebViewBridge:
         """Set the webview window instance."""
         self.window = window
         
-    def select_input(self, tab: str, mode: str = "folder") -> str:
+    def select_input(self, tab: str, mode: str = "folder", file_type: str = "dng") -> str:
         """Handle input folder/file selection."""
         try:
             if mode == "folder":
                 result = self.window.create_file_dialog(FileDialog.FOLDER)
             else:
-                if tab == 'fits-dng':
+                if file_type == "fits":
                     file_types = ('FITS files (*.fits;*.fit)', 'All files (*.*)')
                 else:
                     file_types = ('DNG files (*.dng)', 'All files (*.*)')
@@ -43,9 +43,20 @@ class WebViewBridge:
             print(f"Error selecting input for {tab}: {e}")
             return ""
 
-    def select_output(self, tab: str) -> str:
-        """Handle output folder selection."""
+    def select_output(self, tab: str, mode: str = "folder") -> str:
+        """Handle output folder (or save-file) selection."""
         try:
+            if mode == "file":
+                result = self.window.create_file_dialog(
+                    FileDialog.SAVE,
+                    save_filename="output.mp4",
+                )
+                if result:
+                    path = result[0] if isinstance(result, (list, tuple)) else result
+                    if not path.lower().endswith(".mp4"):
+                        path += ".mp4"
+                    return path
+                return ""
             result = self.window.create_file_dialog(FileDialog.FOLDER)
             if result:
                 return result[0] if isinstance(result, (list, tuple)) else result
@@ -64,141 +75,314 @@ class WebViewBridge:
         self.cancel_flags[tab] = True
         self._js("updateProgress", tab, "Cancelling...")
 
-    def run_conversion(self, tab: str, settings: Dict[str, Any]) -> str:
+    def run_conversion(self, tab: str, settings: Dict[str, Any]):
         """Run a conversion for a tab. Blocks until done (pywebview runs
         each JS API call in its own thread)."""
 
         def log(msg):
             self._js("appendLog", tab, msg)
 
-        def progress(msg):
-            self._js("updateProgress", tab, msg)
-
         def progress_bar(value):
             self._js("updateProgressBar", tab, value)
 
-        if tab != "dng-dng":
-            progress("Not implemented yet")
-            return "not-implemented"
-
         self.cancel_flags[tab] = False
         try:
-            from muimg.cli import run_batch_copy_dng
-            from muimg.tiff_metadata import MetadataTags
+            if tab == "create-dng":
+                if settings.get("inputType") == "fits":
+                    return self._run_create_fits(tab, settings, log, progress_bar)
+                return self._run_create_dng(tab, settings, log, progress_bar)
+            if tab == "render-dng":
+                return self._run_render(tab, settings, log, progress_bar)
+            log(f"ERROR: Unknown tab {tab}")
+            return "error"
+        except Exception as e:
+            import traceback
+            log(f"ERROR: {e}\n{traceback.format_exc()}")
+            return "error"
 
-            inputs = settings.get("input") or []
-            mode = settings.get("inputMode", "folder")
-            output = settings.get("output") or ""
-            if not inputs or not output:
-                progress("Error")
-                log("ERROR: Select input and output folders first.")
-                return "error"
+    def _gather_input_files(self, settings, suffixes, log):
+        """Resolve the input file list from settings. Returns (files, output)
+        or (None, None) on error (already logged)."""
+        inputs = settings.get("input") or []
+        mode = settings.get("inputMode", "folder")
+        output = settings.get("output") or ""
+        if not inputs or not output:
+            log("ERROR: Select input and output folders first.")
+            return None, None
 
-            if mode == "folder":
-                dng_files = sorted(Path(inputs[0]).glob("*.dng"))
-            else:
-                dng_files = sorted(Path(f) for f in inputs)
+        if mode == "folder":
+            folder = Path(inputs[0])
+            files = sorted(
+                p for p in folder.iterdir()
+                if p.suffix.lower() in suffixes
+            ) if folder.is_dir() else []
+        else:
+            files = sorted(Path(f) for f in inputs)
 
-            if not dng_files:
-                progress("Error")
-                log(f"ERROR: No *.dng files found in {inputs[0]}")
-                return "error"
+        if not files:
+            log(f"ERROR: No {'/'.join('*' + s for s in suffixes)} files found in {inputs[0]}")
+            return None, None
+        return files, output
 
-            # Overwrite check — handled by an in-page modal on the JS side
+    def _apply_overwrite_policy(self, files, existing, settings, log):
+        """Apply the overwrite action from the JS modal. Returns
+        (files, response); a non-None response should be returned as-is."""
+        action = settings.get("overwriteAction")
+        if existing and not action:
+            return files, {
+                "status": "confirm-overwrite",
+                "existing": len(existing),
+                "total": len(files),
+            }
+        if action == "skip" and existing:
+            files = [f for f in files if f not in existing]
+            if not files:
+                log("All files already exist — nothing to do.")
+                return files, "ok"
+        return files, None
+
+    def _make_on_task_done(self, tab, progress_bar):
+        def on_task_done(completed, total):
+            frac = completed / total if total > 0 else 0
+            progress_bar(round(frac * 100, 1))
+            return self.cancel_flags.get(tab, False)
+        return on_task_done
+
+    def _run_create_dng(self, tab, settings, log, progress_bar):
+        """DNG → DNG copy/transcode (Create DNG tab, DNG input)."""
+        from muimg.cli import run_batch_copy_dng
+        from muimg.tiff_metadata import MetadataTags
+
+        dng_files, output = self._gather_input_files(settings, (".dng",), log)
+        if dng_files is None:
+            return "error"
+
+        output_dir = Path(output)
+        existing = [f for f in dng_files if (output_dir / f.name).exists()]
+        dng_files, response = self._apply_overwrite_policy(dng_files, existing, settings, log)
+        if response is not None:
+            return response
+
+        # Process metadata ops
+        metadata_ops = settings.get("metadataOps", [])
+        strip_tags_set = set()
+        extra_tags_obj = MetadataTags()
+        time_offset_seconds = 0.0
+        time_timezone = None
+
+        for op in metadata_ops:
+            op_type = op.get("type")
+            if op_type == "strip":
+                strip_tags_set.add(op.get("name", "").strip())
+            elif op_type == "set":
+                extra_tags_obj.add_tag(op.get("name", ""), op.get("value", ""))
+            elif op_type == "shift-time":
+                from datetime import timedelta
+                offset_str = (op.get("offset") or op.get("value") or "").strip()
+                if offset_str:
+                    try:
+                        sign = -1 if offset_str[0] == "-" else 1
+                        body = offset_str[1:] if offset_str[0] in "+-" else offset_str
+                        if " " in body:
+                            days_part, time_part = body.split(" ", 1)
+                            days = int(days_part)
+                        else:
+                            time_part = body
+                            days = 0
+                        h_m_s = [int(x) for x in time_part.split(":")]
+                        hours = h_m_s[0] if len(h_m_s) > 0 else 0
+                        minutes = h_m_s[1] if len(h_m_s) > 1 else 0
+                        seconds = h_m_s[2] if len(h_m_s) > 2 else 0
+                        delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+                        time_offset_seconds += sign * delta.total_seconds()
+                    except (ValueError, IndexError):
+                        log(f"[warn] Could not parse time offset: {offset_str}")
+            elif op_type == "shift-timezone":
+                tz = (op.get("timezone") or op.get("value") or "").strip()
+                if tz:
+                    time_timezone = tz
+
+        strip_tags_set = {t for t in strip_tags_set if t} or None
+        if not extra_tags_obj._tags:
+            extra_tags_obj = None
+
+        log(f"Input: {len(dng_files)} DNG files → {output}")
+
+        jxl_distance_val = settings.get("jxlDistance")
+        num_workers = max(1, min(8, int(settings.get("numWorkers") or 4)))
+        result = run_batch_copy_dng(
+            dng_files=dng_files,
+            output_folder=output,
+            mode="transcode" if settings.get("transcode") else "copy",
+            compression_name=settings.get("compression", "uncompressed"),
+            jxl_distance=float(jxl_distance_val) if jxl_distance_val not in (None, "") else None,
+            jxl_effort=int(settings.get("jxlEffort") or 5),
+            scale=max(0.125, min(1.0, float(settings.get("scale") or 1.0))),
+            demosaic=bool(settings.get("demosaic")),
+            demosaic_algorithm=None,
+            do_preview=bool(settings.get("preview")),
+            do_fast_load=bool(settings.get("fastLoad")),
+            strip_tags=strip_tags_set,
+            extra_tags=extra_tags_obj,
+            time_offset_seconds=time_offset_seconds,
+            time_timezone=time_timezone,
+            num_workers=num_workers,
+            on_task_done=self._make_on_task_done(tab, progress_bar),
+        )
+
+        fps = result["completed"] / result["elapsed"] if result["elapsed"] > 0 else 0
+        log(
+            f"Done: {result['completed']}/{result['total']} files in "
+            f"{result['elapsed']:.1f}s ({fps:.1f} files/s, {num_workers} workers)"
+        )
+        return "ok"
+
+    def _run_create_fits(self, tab, settings, log, progress_bar):
+        """FITS → DNG conversion (Create DNG tab, FITS input)."""
+        from mu_dng_converter.fits2dng import run_batch_fits_to_dng
+        from muimg.raw_render import temp_tint_to_xy
+
+        fits_files, output = self._gather_input_files(settings, (".fits", ".fit"), log)
+        if fits_files is None:
+            return "error"
+
+        output_dir = Path(output)
+        existing = [f for f in fits_files if (output_dir / (f.stem + ".dng")).exists()]
+        fits_files, response = self._apply_overwrite_policy(fits_files, existing, settings, log)
+        if response is not None:
+            return response
+
+        # Options not yet supported by the FITS pipeline — warn and proceed
+        if settings.get("demosaic"):
+            log("[warn] Demosaic is not yet supported for FITS input — ignored.")
+        try:
+            scale = float(settings.get("scale") or 1.0)
+        except (TypeError, ValueError):
+            scale = 1.0
+        if settings.get("transcode") and scale != 1.0:
+            log("[warn] Scale is not yet supported for FITS input — ignored.")
+        if settings.get("metadataOps"):
+            log("[warn] Update Tags is not yet supported for FITS input — ignored.")
+
+        compression = (
+            settings.get("compression", "uncompressed")
+            if settings.get("transcode") else "uncompressed"
+        )
+        if compression.startswith("jxl"):
+            log("[warn] JXL distance/effort settings are not yet supported for FITS input — defaults used.")
+
+        wb_preset = settings.get("wbPreset", "d50")
+        if wb_preset == "d50":
+            wb_xy = None
+        else:
+            try:
+                temp_val = float(settings.get("temperature") or 5000)
+                tint_val = float(settings.get("tint") or 0)
+            except (TypeError, ValueError):
+                temp_val, tint_val = 5000.0, 0.0
+            wb_xy = temp_tint_to_xy(temp_val, tint_val)
+
+        num_workers = max(1, min(8, int(settings.get("numWorkers") or 4)))
+        log(f"Input: {len(fits_files)} FITS files → {output}")
+
+        result = run_batch_fits_to_dng(
+            fits_files=fits_files,
+            output_folder=output,
+            compression_name=compression,
+            auto_exposure=bool(settings.get("autoExposure", True)),
+            ev_value=settings.get("exposure") or 0,
+            use_tone_curve=bool(settings.get("toneCurve", True)),
+            wb_xy=wb_xy,
+            do_preview=bool(settings.get("preview")),
+            do_fast_load=bool(settings.get("fastLoad")),
+            num_workers=num_workers,
+            on_task_done=self._make_on_task_done(tab, progress_bar),
+            log_callback=log,
+        )
+
+        elapsed = result["elapsed"]
+        fps = result["written"] / elapsed if elapsed > 0 else 0
+        parts = [f"{result['written']} written"]
+        if result["skipped"]:
+            parts.append(f"{result['skipped']} skipped")
+        if result["errored"]:
+            parts.append(f"{result['errored']} errors")
+        log(
+            f"Done: {', '.join(parts)} / {result['total']} total "
+            f"in {elapsed:.1f}s ({fps:.1f} files/s)"
+        )
+        return "ok"
+
+    def _run_render(self, tab, settings, log, progress_bar):
+        """DNG → TIF/JPG/Video conversion (Render DNG tab)."""
+        mode = settings.get("mode", "tif")
+        dng_files, output = self._gather_input_files(settings, (".dng",), log)
+        if dng_files is None:
+            return "error"
+
+        if mode != "video":
             output_dir = Path(output)
-            existing = [f for f in dng_files if (output_dir / f.name).exists()]
-            if existing and not settings.get("overwriteConfirmed"):
-                return {
-                    "status": "confirm-overwrite",
-                    "existing": len(existing),
-                    "total": len(dng_files),
-                }
+            existing = [
+                f for f in dng_files
+                if (output_dir / (f.stem + "." + mode)).exists()
+            ]
+            dng_files, response = self._apply_overwrite_policy(dng_files, existing, settings, log)
+            if response is not None:
+                return response
 
-            # Process metadata ops
-            metadata_ops = settings.get("metadataOps", [])
-            strip_tags_set = set()
-            extra_tags_obj = MetadataTags()
-            time_offset_seconds = 0.0
-            time_timezone = None
+        # Rendering params — mirrors Flet's build_rendering_params
+        use_xmp = bool(settings.get("useXmp", True))
+        rendering_params = {}
+        if not use_xmp:
+            if settings.get("temperature"):
+                rendering_params["Temperature"] = float(settings["temperature"])
+            if settings.get("tint"):
+                rendering_params["Tint"] = float(settings["tint"])
+            rendering_params["Exposure2012"] = float(settings.get("exposure") or 0)
 
-            for op in metadata_ops:
-                op_type = op.get("type")
-                if op_type == "strip":
-                    strip_tags_set.add(op.get("name", "").strip())
-                elif op_type == "set":
-                    extra_tags_obj.add_tag(op.get("name", ""), op.get("value", ""))
-                elif op_type == "shift-time":
-                    from datetime import timedelta
-                    offset_str = op.get("offset", "").strip()
-                    if offset_str:
-                        try:
-                            sign = -1 if offset_str[0] == "-" else 1
-                            body = offset_str[1:] if offset_str[0] in "+-" else offset_str
-                            if " " in body:
-                                days_part, time_part = body.split(" ", 1)
-                                days = int(days_part)
-                            else:
-                                time_part = body
-                                days = 0
-                            h_m_s = [int(x) for x in time_part.split(":")]
-                            hours = h_m_s[0] if len(h_m_s) > 0 else 0
-                            minutes = h_m_s[1] if len(h_m_s) > 1 else 0
-                            seconds = h_m_s[2] if len(h_m_s) > 2 else 0
-                            delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
-                            time_offset_seconds += sign * delta.total_seconds()
-                        except (ValueError, IndexError):
-                            log(f"[warn] Could not parse time offset: {offset_str}")
-                elif op_type == "shift-timezone":
-                    tz = op.get("timezone", "").strip()
-                    if tz:
-                        time_timezone = tz
+        num_workers = max(1, min(8, int(settings.get("numWorkers") or 4)))
+        on_task_done = self._make_on_task_done(tab, progress_bar)
 
-            strip_tags_set = {t for t in strip_tags_set if t} or None
-            if not extra_tags_obj._tags:
-                extra_tags_obj = None
-
-            def on_task_done(completed, total):
-                frac = completed / total if total > 0 else 0
-                progress_bar(round(frac * 100, 1))
-                progress(f"{completed}/{total}")
-                return self.cancel_flags.get(tab, False)
-
-            log(f"Input: {len(dng_files)} DNG files → {output}")
-
-            jxl_distance_val = settings.get("jxlDistance")
-            num_workers = max(1, min(8, int(settings.get("numWorkers") or 4)))
-            result = run_batch_copy_dng(
+        if mode == "video":
+            from muimg.cli import run_batch_to_video
+            output_mp4 = Path(output)
+            log(f"Input: {len(dng_files)} DNG files → {output_mp4.name}")
+            w, h = (settings.get("resolution") or "1920x1080").lower().split("x")
+            result = run_batch_to_video(
+                dng_files=dng_files,
+                output_mp4=output_mp4,
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
+                resolution=(int(w), int(h)),
+                codec=settings.get("codec", "h264"),
+                crf=int(settings.get("crf") or 20),
+                bit_depth=settings.get("videoBitDepth", "8"),
+                frame_rate=float(settings.get("frameRate") or 30),
+                num_workers=num_workers,
+                overlay_txt=bool(settings.get("overlay")),
+                on_task_done=on_task_done,
+            )
+        else:
+            from muimg.cli import run_batch_convert
+            log(f"Input: {len(dng_files)} DNG files → .{mode}")
+            result = run_batch_convert(
                 dng_files=dng_files,
                 output_folder=output,
-                mode="transcode" if settings.get("transcode") else "copy",
-                compression_name=settings.get("compression", "uncompressed"),
-                jxl_distance=float(jxl_distance_val) if jxl_distance_val not in (None, "") else None,
-                jxl_effort=int(settings.get("jxlEffort") or 5),
+                output_format=mode,
+                bit_depth=settings.get("bitDepth", "16"),
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
                 scale=max(0.125, min(1.0, float(settings.get("scale") or 1.0))),
-                demosaic=bool(settings.get("demosaic")),
-                demosaic_algorithm=None,
-                do_preview=bool(settings.get("preview")),
-                do_fast_load=bool(settings.get("fastLoad")),
-                strip_tags=strip_tags_set,
-                extra_tags=extra_tags_obj,
-                time_offset_seconds=time_offset_seconds,
-                time_timezone=time_timezone,
                 num_workers=num_workers,
                 on_task_done=on_task_done,
             )
 
-            fps = result["completed"] / result["elapsed"] if result["elapsed"] > 0 else 0
-            log(
-                f"Done: {result['completed']}/{result['total']} files in "
-                f"{result['elapsed']:.1f}s ({fps:.1f} files/s, {num_workers} workers)"
-            )
-            progress("")
-            return "ok"
-        except Exception as e:
-            import traceback
-            log(f"ERROR: {e}\n{traceback.format_exc()}")
-            progress("Error")
-            return "error"
+        fps = result["completed"] / result["elapsed"] if result["elapsed"] > 0 else 0
+        log(
+            f"Done: {result['completed']}/{result['total']} files in "
+            f"{result['elapsed']:.1f}s ({fps:.1f} files/s, {num_workers} workers)"
+        )
+        return "ok"
     
     def get_settings(self, tab: str) -> Dict[str, Any]:
         """Get current settings for a tab."""
