@@ -462,13 +462,51 @@ class DNGConverter {
         el.addEventListener('keydown', e => { if (e.key === 'Enter') clamp(); });
     }
 
-    handleApplyMetadata() {
+    showAlert(title, message) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            overlay.innerHTML =
+                '<div class="modal">' +
+                `<p class="modal-title">${title}</p>` +
+                `<p class="modal-message">${message}</p>` +
+                '<div class="modal-buttons">' +
+                '<button class="modal-ok">OK</button>' +
+                '</div></div>';
+            document.body.appendChild(overlay);
+            overlay.querySelector('.modal-ok').addEventListener('click', () => {
+                overlay.remove();
+                resolve();
+            });
+        });
+    }
+
+    async handleApplyMetadata() {
         const op = document.getElementById('create-dng-metadata-op').value;
-        const name = document.getElementById('create-dng-tag-name').value;
+        const name = document.getElementById('create-dng-tag-name').value.trim();
         const value = document.getElementById('create-dng-tag-value').value;
         
-        if (!name) {
-            alert('Please enter a tag name');
+        if (op === 'set' || op === 'strip') {
+            if (!name) {
+                await this.showAlert('Missing tag name', 'Please enter a tag name.');
+                return;
+            }
+            // Validate against the TIFF tag registry on the Python side
+            if (window.pywebview && window.pywebview.api) {
+                const known = await window.pywebview.api.validate_tag(name);
+                if (!known) {
+                    await this.showAlert(
+                        'Unknown tag',
+                        `Tag '${name}' is not in the TIFF tag registry and was not added.`
+                    );
+                    return;
+                }
+            }
+        } else if (!value.trim()) {
+            const hint = op === 'shift-time'
+                ? 'Enter a time offset in the Value field (e.g. "+1:30" or "-2 04:00:00").'
+                : 'Enter a timezone in the Value field (e.g. "+05:00").';
+            await this.showAlert('Missing value', hint);
             return;
         }
         
@@ -477,12 +515,25 @@ class DNGConverter {
         
         // Record op data for run_conversion
         if (!this.metadataOps['create-dng']) this.metadataOps['create-dng'] = [];
-        this.metadataOps['create-dng'].push({ type: op, name: name, value: value });
+        const opData = { type: op, name: name, value: value };
+        this.metadataOps['create-dng'].push(opData);
         
-        // Add to operations list
+        // Add to operations list with a remove button
         const opItem = document.createElement('div');
-        opItem.textContent = opText;
-        opItem.style.padding = '2px 0';
+        opItem.className = 'metadata-op-item';
+        const text = document.createElement('span');
+        text.textContent = opText;
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'metadata-op-remove';
+        removeBtn.title = 'Remove';
+        removeBtn.textContent = '✕';
+        removeBtn.addEventListener('click', () => {
+            const ops = this.metadataOps['create-dng'] || [];
+            const idx = ops.indexOf(opData);
+            if (idx !== -1) ops.splice(idx, 1);
+            opItem.remove();
+        });
+        opItem.append(text, removeBtn);
         opsList.appendChild(opItem);
         
         // Clear inputs

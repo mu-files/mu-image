@@ -70,6 +70,15 @@ class WebViewBridge:
         payload = ", ".join(json.dumps(a) for a in args)
         self.window.evaluate_js(f"{fn}({payload})")
 
+    def validate_tag(self, name: str) -> bool:
+        """Check whether a tag name exists in the TIFF tag registry."""
+        try:
+            from muimg.tiff_metadata import TIFF_TAG_TYPE_REGISTRY
+            return name in TIFF_TAG_TYPE_REGISTRY
+        except Exception as e:
+            print(f"Error validating tag {name}: {e}")
+            return False
+
     def cancel_conversion(self, tab: str):
         """Handle cancel button click for a specific tab."""
         self.cancel_flags[tab] = True
@@ -408,5 +417,6 @@ def expose_to_window(window):
     window.expose(bridge.select_output)
     window.expose(bridge.run_conversion)
     window.expose(bridge.cancel_conversion)
+    window.expose(bridge.validate_tag)
     window.expose(bridge.get_settings)
     window.expose(bridge.set_settings)

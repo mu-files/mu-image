@@ -51,6 +51,7 @@ def main():
         height=780,
         resizable=True,
         min_size=(760, 500),
+        text_select=True,  # allow selecting/copying text (scoped to the log via CSS)
         js_api=expose_to_window  # This will expose the bridge methods
     )
 

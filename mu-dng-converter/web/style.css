@@ -10,6 +10,14 @@ html, body {
     height: 100%;
     overflow: hidden;
     overscroll-behavior: none;
+    /* Keep the app feeling native: no text selection except where opted in */
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 /* Persistent gutter-style scrollbars (Lightroom-like), instead of
@@ -448,6 +456,31 @@ main.tab-container {
     color: #b0b0b0;
 }
 
+.metadata-op-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 2px 0;
+}
+
+.metadata-op-remove {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 12px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 3px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.metadata-op-remove:hover {
+    color: #ff6b6b;
+    background-color: rgba(255, 107, 107, 0.15);
+}
+
 /* Form controls */
 .input-group {
     display: flex;
@@ -593,6 +626,9 @@ main.tab-container {
     margin-top: 16px;
     border: 1px solid #4a4a4a;
     border-radius: 4px;
+    -webkit-user-select: text;
+    user-select: text;
+    cursor: text;
     background-color: #323232;
     padding: 8px;
     font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
