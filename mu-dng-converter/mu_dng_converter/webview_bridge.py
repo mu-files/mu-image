@@ -5,7 +5,26 @@ from webview import FileDialog
 import asyncio
 from pathlib import Path
 import json
+import platform
 from typing import Dict, Any, Optional
+
+
+def _get_config_dir() -> Path:
+    """Get the application config directory (platform-specific)."""
+    if platform.system() == "Darwin":
+        config_dir = Path.home() / "Library" / "Application Support" / "mu-dng-converter"
+    elif platform.system() == "Windows":
+        config_dir = Path.home() / "AppData" / "Local" / "mu-dng-converter"
+    else:
+        config_dir = Path.home() / ".config" / "mu-dng-converter"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def _get_folder_cache_path() -> Path:
+    """Get the path to the folder cache JSON file."""
+    return _get_config_dir() / "folder_cache.json"
+
 
 class WebViewBridge:
     """Bridge class to handle JavaScript-Python communication."""
@@ -13,56 +32,142 @@ class WebViewBridge:
     def __init__(self):
         self.window = None
         self.cancel_flags = {}  # Cancel flags per tab
+        self.folder_cache = self._load_folder_cache()
+
+    def _load_folder_cache(self) -> Dict[str, str]:
+        """Load folder cache from disk."""
+        try:
+            cache_path = _get_folder_cache_path()
+            if cache_path.exists():
+                return json.loads(cache_path.read_text())
+        except Exception as e:
+            print(f"Failed to load folder cache: {e}")
+        return {}
+
+    def _save_folder_cache(self):
+        """Save folder cache to disk."""
+        try:
+            cache_path = _get_folder_cache_path()
+            cache_path.write_text(json.dumps(self.folder_cache, indent=2))
+        except Exception as e:
+            print(f"Failed to save folder cache: {e}")
+
+    def _get_cached_folder(self, key: str) -> str:
+        """Get cached folder for a button key, verifying it exists."""
+        folder = self.folder_cache.get(key)
+        if folder is not None and Path(folder).is_dir():
+            return folder
+        return ""
+
+    def _set_cached_folder(self, key: str, folder: Optional[str]):
+        """Set cached folder for a button key and persist."""
+        if folder is not None and Path(folder).is_dir():
+            self.folder_cache[key] = folder
+            self._save_folder_cache()
         
     def set_window(self, window):
         """Set the webview window instance."""
         self.window = window
         
-    def select_input(self, tab: str, mode: str = "folder", file_type: str = "dng") -> str:
+    def select_input(
+        self,
+        tab: str,
+        mode: str = "folder",
+        file_type: str = "dng",
+    ) -> str:
         """Handle input folder/file selection."""
         try:
+            cache_key = f"{tab}-input"
+            directory = self._get_cached_folder(cache_key) or None
+
             if mode == "folder":
-                result = self.window.create_file_dialog(FileDialog.FOLDER)
+                result = self.window.create_file_dialog(
+                    FileDialog.FOLDER,
+                    directory=directory,
+                ) if directory else self.window.create_file_dialog(FileDialog.FOLDER)
             else:
                 if file_type == "fits":
                     file_types = ('FITS files (*.fits;*.fit)', 'All files (*.*)')
                 else:
                     file_types = ('DNG files (*.dng)', 'All files (*.*)')
-                result = self.window.create_file_dialog(
-                    FileDialog.OPEN,
-                    allow_multiple=True,
-                    file_types=file_types,
-                )
+                if directory:
+                    result = self.window.create_file_dialog(
+                        FileDialog.OPEN,
+                        directory=directory,
+                        allow_multiple=True,
+                        file_types=file_types,
+                    )
+                else:
+                    result = self.window.create_file_dialog(
+                        FileDialog.OPEN,
+                        allow_multiple=True,
+                        file_types=file_types,
+                    )
 
             if result:
+                paths = result if isinstance(result, (list, tuple)) else [result]
+                # Cache the folder (first path's parent for files, or the folder itself)
+                if paths and paths[0]:
+                    folder = paths[0] if mode == "folder" else str(Path(paths[0]).parent)
+                    self._set_cached_folder(cache_key, folder)
                 if isinstance(result, (list, tuple)):
-                    return "\n".join(result)
+                    return "\n".join(str(p) for p in result if p)
                 return result
             return ""
         except Exception as e:
+            import traceback
             print(f"Error selecting input for {tab}: {e}")
+            traceback.print_exc()
             return ""
 
-    def select_output(self, tab: str, mode: str = "folder") -> str:
+    def select_output(
+        self,
+        tab: str,
+        mode: str = "folder",
+    ) -> str:
         """Handle output folder (or save-file) selection."""
         try:
+            cache_key = f"{tab}-output"
+            directory = self._get_cached_folder(cache_key) or None
+
             if mode == "file":
-                result = self.window.create_file_dialog(
-                    FileDialog.SAVE,
-                    save_filename="output.mp4",
-                )
+                if directory:
+                    result = self.window.create_file_dialog(
+                        FileDialog.SAVE,
+                        directory=directory,
+                        save_filename="output.mp4",
+                    )
+                else:
+                    result = self.window.create_file_dialog(
+                        FileDialog.SAVE,
+                        save_filename="output.mp4",
+                    )
                 if result:
                     path = result[0] if isinstance(result, (list, tuple)) else result
-                    if not path.lower().endswith(".mp4"):
-                        path += ".mp4"
-                    return path
+                    if path:
+                        if not path.lower().endswith(".mp4"):
+                            path += ".mp4"
+                        # Cache the parent folder
+                        self._set_cached_folder(cache_key, str(Path(path).parent))
+                        return path
                 return ""
-            result = self.window.create_file_dialog(FileDialog.FOLDER)
+            if directory:
+                result = self.window.create_file_dialog(
+                    FileDialog.FOLDER,
+                    directory=directory,
+                )
+            else:
+                result = self.window.create_file_dialog(FileDialog.FOLDER)
             if result:
-                return result[0] if isinstance(result, (list, tuple)) else result
+                folder = result[0] if isinstance(result, (list, tuple)) else result
+                if folder:
+                    self._set_cached_folder(cache_key, folder)
+                    return folder
             return ""
         except Exception as e:
+            import traceback
             print(f"Error selecting output for {tab}: {e}")
+            traceback.print_exc()
             return ""
     
     def _js(self, fn: str, *args):
