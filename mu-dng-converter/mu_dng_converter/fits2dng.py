@@ -547,9 +547,6 @@ def run_batch_fits_to_dng(
     import threading
     import time
 
-    import setproctitle
-    setproctitle.setproctitle("mu-dng-converter: FITS -> DNG")
-
     from astropy.io import fits as astropy_fits
     from tifffile import COMPRESSION
 
@@ -940,6 +937,9 @@ def main():
         help="Verbosity: -v INFO (pipeline stats), -vv DEBUG",
     )
     args = parser.parse_args()
+
+    import setproctitle
+    setproctitle.setproctitle("mu-dng-fits")
 
     if args.verbose:
         import logging
