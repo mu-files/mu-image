@@ -157,10 +157,22 @@ class WebViewBridge:
             return self.cancel_flags.get(tab, False)
         return on_task_done
 
+    def _parse_metadata_ops(self, metadata_ops, log):
+        """Parse UI metadata ops into engine arguments (see common.parse_metadata_ops)."""
+        from mu_dng_converter.common import parse_metadata_ops
+        return parse_metadata_ops(metadata_ops, log)
+
+    @staticmethod
+    def _resolve_demosaic_algorithm(settings):
+        from muimg.raw_render import DemosaicAlgorithm
+        try:
+            return DemosaicAlgorithm.lookup(settings.get("demosaicAlgo") or "DNGSDK_BILINEAR")
+        except Exception:
+            return DemosaicAlgorithm.DNGSDK_BILINEAR
+
     def _run_create_dng(self, tab, settings, log, progress_bar):
         """DNG → DNG copy/transcode (Create DNG tab, DNG input)."""
         from muimg.cli import run_batch_copy_dng
-        from muimg.tiff_metadata import MetadataTags
 
         dng_files, output = self._gather_input_files(settings, (".dng",), log)
         if dng_files is None:
@@ -172,48 +184,8 @@ class WebViewBridge:
         if response is not None:
             return response
 
-        # Process metadata ops
-        metadata_ops = settings.get("metadataOps", [])
-        strip_tags_set = set()
-        extra_tags_obj = MetadataTags()
-        time_offset_seconds = 0.0
-        time_timezone = None
-
-        for op in metadata_ops:
-            op_type = op.get("type")
-            if op_type == "strip":
-                strip_tags_set.add(op.get("name", "").strip())
-            elif op_type == "set":
-                extra_tags_obj.add_tag(op.get("name", ""), op.get("value", ""))
-            elif op_type == "shift-time":
-                from datetime import timedelta
-                offset_str = (op.get("offset") or op.get("value") or "").strip()
-                if offset_str:
-                    try:
-                        sign = -1 if offset_str[0] == "-" else 1
-                        body = offset_str[1:] if offset_str[0] in "+-" else offset_str
-                        if " " in body:
-                            days_part, time_part = body.split(" ", 1)
-                            days = int(days_part)
-                        else:
-                            time_part = body
-                            days = 0
-                        h_m_s = [int(x) for x in time_part.split(":")]
-                        hours = h_m_s[0] if len(h_m_s) > 0 else 0
-                        minutes = h_m_s[1] if len(h_m_s) > 1 else 0
-                        seconds = h_m_s[2] if len(h_m_s) > 2 else 0
-                        delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
-                        time_offset_seconds += sign * delta.total_seconds()
-                    except (ValueError, IndexError):
-                        log(f"[warn] Could not parse time offset: {offset_str}")
-            elif op_type == "shift-timezone":
-                tz = (op.get("timezone") or op.get("value") or "").strip()
-                if tz:
-                    time_timezone = tz
-
-        strip_tags_set = {t for t in strip_tags_set if t} or None
-        if not extra_tags_obj._tags:
-            extra_tags_obj = None
+        strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = \
+            self._parse_metadata_ops(settings.get("metadataOps"), log)
 
         log(f"Input: {len(dng_files)} DNG files → {output}")
 
@@ -228,7 +200,7 @@ class WebViewBridge:
             jxl_effort=int(settings.get("jxlEffort") or 5),
             scale=max(0.125, min(1.0, float(settings.get("scale") or 1.0))),
             demosaic=bool(settings.get("demosaic")),
-            demosaic_algorithm=None,
+            demosaic_algorithm=self._resolve_demosaic_algorithm(settings),
             do_preview=bool(settings.get("preview")),
             do_fast_load=bool(settings.get("fastLoad")),
             strip_tags=strip_tags_set,
@@ -261,24 +233,14 @@ class WebViewBridge:
         if response is not None:
             return response
 
-        # Options not yet supported by the FITS pipeline — warn and proceed
-        if settings.get("demosaic"):
-            log("[warn] Demosaic is not yet supported for FITS input — ignored.")
-        try:
-            scale = float(settings.get("scale") or 1.0)
-        except (TypeError, ValueError):
-            scale = 1.0
-        if settings.get("transcode") and scale != 1.0:
-            log("[warn] Scale is not yet supported for FITS input — ignored.")
-        if settings.get("metadataOps"):
-            log("[warn] Update Tags is not yet supported for FITS input — ignored.")
+        strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = \
+            self._parse_metadata_ops(settings.get("metadataOps"), log)
 
+        transcode = bool(settings.get("transcode"))
         compression = (
-            settings.get("compression", "uncompressed")
-            if settings.get("transcode") else "uncompressed"
+            settings.get("compression", "uncompressed") if transcode else "uncompressed"
         )
-        if compression.startswith("jxl"):
-            log("[warn] JXL distance/effort settings are not yet supported for FITS input — defaults used.")
+        jxl_distance_val = settings.get("jxlDistance")
 
         wb_preset = settings.get("wbPreset", "d50")
         if wb_preset == "d50":
@@ -298,10 +260,19 @@ class WebViewBridge:
             fits_files=fits_files,
             output_folder=output,
             compression_name=compression,
+            jxl_distance=float(jxl_distance_val) if transcode and jxl_distance_val not in (None, "") else None,
+            jxl_effort=int(settings.get("jxlEffort") or 5) if transcode else None,
+            demosaic=bool(settings.get("demosaic")),
+            demosaic_algorithm=self._resolve_demosaic_algorithm(settings),
+            scale=max(0.125, min(1.0, float(settings.get("scale") or 1.0))),
             auto_exposure=bool(settings.get("autoExposure", True)),
             ev_value=settings.get("exposure") or 0,
             use_tone_curve=bool(settings.get("toneCurve", True)),
             wb_xy=wb_xy,
+            strip_tags=strip_tags_set,
+            extra_tags=extra_tags_obj,
+            time_offset_seconds=time_offset_seconds,
+            time_timezone=time_timezone,
             do_preview=bool(settings.get("preview")),
             do_fast_load=bool(settings.get("fastLoad")),
             num_workers=num_workers,

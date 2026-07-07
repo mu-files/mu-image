@@ -77,6 +77,7 @@ class DNGConverter {
             settings.jxlDistance = val('create-dng-jxl-distance');
             settings.jxlEffort = val('create-dng-jxl-effort');
             settings.demosaic = chk('create-dng-demosaic');
+            settings.demosaicAlgo = val('create-dng-demosaic-algo');
             settings.scale = val('create-dng-scale');
             settings.preview = chk('create-dng-preview');
             settings.fastLoad = chk('create-dng-fast-load');
@@ -316,6 +317,23 @@ class DNGConverter {
             this.handleApplyMetadata();
         });
 
+        // Enable/disable Tag Name and Value based on the selected operation
+        const metadataOpSel = document.getElementById('create-dng-metadata-op');
+        const updateMetadataFieldState = () => {
+            const op = metadataOpSel.value;
+            const nameField = document.getElementById('create-dng-tag-name');
+            const valueField = document.getElementById('create-dng-tag-value');
+            // Strip only needs a tag name; shift ops only need a value
+            const nameDisabled = op === 'shift-time' || op === 'shift-timezone';
+            const valueDisabled = op === 'strip';
+            nameField.disabled = nameDisabled;
+            valueField.disabled = valueDisabled;
+            if (nameDisabled) nameField.value = '';
+            if (valueDisabled) valueField.value = '';
+        };
+        metadataOpSel.addEventListener('change', updateMetadataFieldState);
+        updateMetadataFieldState();
+
         const transcodeCheckbox = document.getElementById('create-dng-transcode');
         const transcodeControls = [
             'create-dng-compression', 'create-dng-jxl-distance', 'create-dng-jxl-effort',
@@ -484,7 +502,7 @@ class DNGConverter {
     async handleApplyMetadata() {
         const op = document.getElementById('create-dng-metadata-op').value;
         const name = document.getElementById('create-dng-tag-name').value.trim();
-        const value = document.getElementById('create-dng-tag-value').value;
+        const value = op === 'strip' ? '' : document.getElementById('create-dng-tag-value').value;
         
         if (op === 'set' || op === 'strip') {
             if (!name) {

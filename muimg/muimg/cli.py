@@ -1097,15 +1097,6 @@ def run_batch_copy_dng(
             )
         # uncompressed → transcode_encoding stays None (tifffile default)
 
-    # Build preview / pyramid params once
-    preview_params = None
-    if do_preview:
-        preview_params = PreviewParams(
-            scale=PreviewScale(2),  # level 2 = 1/4 reduction
-            compression=COMPRESSION.JPEG,
-            compression_args={"level": 90},
-        )
-
     pyramid_params = None
     if do_fast_load:
         pyramid_params = PyramidParams(
@@ -1155,6 +1146,24 @@ def run_batch_copy_dng(
                 file_extra_tags.add_tag("OffsetTimeOriginal", time_timezone)
                 file_extra_tags.add_tag("OffsetTimeDigitized", time_timezone)
                 file_extra_tags.add_tag("OffsetTime", time_timezone)
+
+            # Build preview params per-file so scale reflects actual image dimensions
+            preview_params = None
+            if do_preview:
+                h, w = page.shape[:2]
+                scaled_h, scaled_w = int(h * scale), int(w * scale)
+                min_dim = min(scaled_h, scaled_w)
+                if min_dim >= 128 * 4:
+                    preview_scale = PreviewScale.QUARTER
+                elif min_dim >= 128 * 2:
+                    preview_scale = PreviewScale.HALF
+                else:
+                    preview_scale = PreviewScale.FULL
+                preview_params = PreviewParams(
+                    scale=preview_scale,
+                    compression=COMPRESSION.JPEG,
+                    compression_args={"level": 90},
+                )
 
             out_buf = io.BytesIO()
             write_dng_from_page(

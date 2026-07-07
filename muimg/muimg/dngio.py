@@ -1707,9 +1707,18 @@ def write_dng(
                     raise ValueError(f"Failed to extract data from page (photometric={photometric}): {e}")
         else:
             # IfdDataSpec: data from array
-            if spec.data.dtype not in (np.uint8, np.uint16, np.float16, np.float32):
+            # DNG spec: unsigned 8-32 bits/sample, or float16/float32
+            # (signed integers not supported - SampleFormat must be 1 or 3)
+            supported_dtypes = (np.uint8, np.uint16, np.uint32, np.float16, np.float32)
+            if spec.data.dtype in (np.int8, np.int16, np.int32):
                 raise ValueError(
-                    f"Unsupported dtype {spec.data.dtype}. Supported: uint8, uint16, float16, float32"
+                    f"Signed integer dtype {spec.data.dtype} not supported by DNG. "
+                    f"Convert to unsigned or float."
+                )
+            if spec.data.dtype not in supported_dtypes:
+                raise ValueError(
+                    f"Unsupported dtype {spec.data.dtype}. "
+                    f"Supported: uint8, uint16, uint32, float16, float32"
                 )
             
             # Resolve bits_per_sample: spec field > metadata tag > dtype
@@ -1764,6 +1773,13 @@ def write_dng(
         
         # Validate encoding parameters and determine layout
         if encoding:
+            # DNG compression not supported for >16-bit data (32-bit int, float16, float32)
+            if bits_per_sample > 16 and compression != tifffile.COMPRESSION.NONE:
+                raise ValueError(
+                    f"DNG compression not supported for {bits_per_sample}-bit data. "
+                    f"Use uncompressed encoding or 8/16-bit data."
+                )
+
             # Validate mutual exclusivity
             if encoding.tile_size is not None and encoding.rows_per_strip is not None:
                 raise ValueError(

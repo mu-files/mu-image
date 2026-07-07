@@ -10,7 +10,6 @@ license = {text = "MIT"}
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 requires-python = ">=3.12"
 dependencies = [
-    "flet>=0.25",
     "pywebview>=4.0",
     "muimg @ git+https://github.com/mu-files/mu-image.git#subdirectory=muimg",
     "setproctitle",
@@ -19,8 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mu-dng-converter = "mu_dng_converter.main:main"
 fits2dng = "mu_dng_converter.fits2dng:main"
 
 [tool.setuptools]
-packages = ["mu_dng_converter", "mu_dng_converter.views"]
+packages = ["mu_dng_converter"]

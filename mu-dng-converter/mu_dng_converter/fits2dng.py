@@ -11,11 +11,13 @@ Can be used as a library (imported by the GUI view) or as a CLI:
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from mu_dng_converter.common import parse_time_shift
 
 # =============================================================================
 # AVM (Astronomy Visualization Metadata) XMP mapping
@@ -333,6 +335,8 @@ def _build_metadata_tags(
     ev_value=0,
     use_tone_curve: bool = True,
     wb_xy=None,
+    time_offset_seconds: float = 0.0,
+    time_timezone: str | None = None,
 ):
     """Build DNG MetadataTags from FITS header.
 
@@ -343,6 +347,8 @@ def _build_metadata_tags(
         ev_value: manual EV if not auto_exposure
         use_tone_curve: add S-curve XMP
         wb_xy: tuple (x, y) or None for default D50
+        time_offset_seconds: signed seconds to add to the DATE-OBS datetime
+        time_timezone: timezone offset string (e.g. "+02:00") for OffsetTime* tags
     """
     from muimg.tiff_metadata import MetadataTags
     from muimg.raw_render import add_supported_xmp_from_dict
@@ -378,7 +384,15 @@ def _build_metadata_tags(
     if date_obs is not None:
         dt = _parse_fits_datetime(str(date_obs))
         if dt is not None:
+            if time_offset_seconds:
+                dt = dt + timedelta(seconds=time_offset_seconds)
             tags.add_time_tags(dt, "original")
+
+    # Timezone offset tags
+    if time_timezone:
+        tags.add_tag("OffsetTimeOriginal", time_timezone)
+        tags.add_tag("OffsetTimeDigitized", time_timezone)
+        tags.add_tag("OffsetTime", time_timezone)
 
     # Black level and white level
     blklevel = header.get("PEDESTAL")
@@ -446,13 +460,24 @@ def _get_compression_map():
     }
 
 
-def _get_compression_args(compression_name: str) -> dict | None:
+def _get_compression_args(
+    compression_name: str,
+    jxl_distance: float | None = None,
+    jxl_effort: int | None = None,
+) -> dict | None:
     if compression_name == "jpeg_lossless":
         return {"lossless": True}
-    elif compression_name == "jxl_lossless":
-        return {"distance": 0.0, "effort": 2}
-    elif compression_name == "jxl_lossy":
-        return {"distance": 0.5, "effort": 4}
+    elif compression_name in ("jxl_lossless", "jxl_lossy"):
+        args = (
+            {"distance": 0.0, "effort": 2}
+            if compression_name == "jxl_lossless"
+            else {"distance": 0.5, "effort": 4}
+        )
+        if jxl_distance is not None:
+            args["distance"] = float(jxl_distance)
+        if jxl_effort is not None:
+            args["effort"] = int(jxl_effort)
+        return args
     return None
 
 
@@ -465,10 +490,19 @@ def run_batch_fits_to_dng(
     fits_files,
     output_folder,
     compression_name="uncompressed",
+    jxl_distance=None,
+    jxl_effort=None,
+    demosaic=False,
+    demosaic_algorithm=None,
+    scale=1.0,
     auto_exposure=True,
     ev_value=0,
     use_tone_curve=True,
     wb_xy=None,
+    strip_tags=None,
+    extra_tags=None,
+    time_offset_seconds=0.0,
+    time_timezone=None,
     do_preview=False,
     do_fast_load=False,
     num_workers=4,
@@ -484,10 +518,21 @@ def run_batch_fits_to_dng(
         output_folder: Path to output directory.
         compression_name: One of "uncompressed", "jpeg_lossless",
             "jxl_lossless", "jxl_lossy".
+        jxl_distance: JXL distance (0=lossless, >0=lossy). None = default.
+        jxl_effort: JXL effort (1-9). None = default.
+        demosaic: If True, demosaic CFA to LINEAR_RAW.
+        demosaic_algorithm: DemosaicAlgorithm enum value, or None for default.
+        scale: Scale factor (0.125–1.0). If != 1.0, forces LINEAR_RAW.
         auto_exposure: Whether to auto-compute BaselineExposure.
         ev_value: Manual EV if not auto_exposure.
         use_tone_curve: Whether to add default S-curve.
         wb_xy: (x, y) chromaticity tuple, or None for D50 default.
+        strip_tags: Set of tag name strings to strip from the generated
+            metadata, or None.
+        extra_tags: MetadataTags object with tags to add/override, or None.
+        time_offset_seconds: Signed seconds to add to the DATE-OBS datetime.
+        time_timezone: Timezone offset string (e.g. "+02:00") to set in all
+            OffsetTime* tags, or None.
         do_preview: Whether to generate JPEG preview IFD.
         do_fast_load: Whether to generate pyramid levels.
         num_workers: Number of parallel consumer threads.
@@ -517,6 +562,7 @@ def run_batch_fits_to_dng(
         write_dng_from_array,
     )
     from muimg.imgio import ImageSequencePipeline
+    from muimg.raw_render import DemosaicAlgorithm
 
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -541,16 +587,13 @@ def run_batch_fits_to_dng(
     # Compression setup
     comp_map = _get_compression_map()
     comp_enum = comp_map[compression_name]
-    comp_args = _get_compression_args(compression_name)
+    comp_args = _get_compression_args(compression_name, jxl_distance, jxl_effort)
 
-    # Preview params (JPEG quality 90, quarter scale)
-    preview_params = None
-    if do_preview:
-        preview_params = PreviewParams(
-            scale=PreviewScale.QUARTER,
-            compression=COMPRESSION.JPEG,
-            compression_args={"level": 90},
-        )
+    demosaic_algo = (
+        demosaic_algorithm
+        if demosaic_algorithm is not None
+        else DemosaicAlgorithm.DNGSDK_BILINEAR
+    )
 
     # Pyramid params (JXL distance 1.0, 3 levels)
     pyramid_params = None
@@ -574,19 +617,43 @@ def run_batch_fits_to_dng(
                 data = hdul[0].data
                 header = hdul[0].header
 
-            # Fix endianness, convert float64 to float32, reject unsupported types
-            # DNG spec: uint8, uint16, float16, float32 supported (native byte order)
+            # Fix endianness, convert unsupported types, reject invalid types
+            # DNG spec: unsigned 8-32 bits/sample, or float16/float32
+            # (signed integers not supported - SampleFormat must be 1 or 3)
             if data is not None:
                 data = normalize_array_to_target_byteorder(data, '<')
-                supported = (np.uint8, np.uint16, np.float16, np.float32)
+                supported = (np.uint8, np.uint16, np.uint32, np.float16, np.float32)
                 if data.dtype == np.float64:
                     _log(f"Converting float64 → float32: {Path(file_path).name}")
                     data = data.astype(np.float32)
+                elif data.dtype in (np.int8, np.int16, np.int32):
+                    raise ValueError(
+                        f"Signed integer dtype {data.dtype} not supported by DNG. "
+                        f"Convert to unsigned or float."
+                    )
                 elif data.dtype not in supported:
                     # Check for structured arrays (interferometry, tables, etc.)
                     if data.dtype.names is not None:
                         raise ValueError(f"Structured array (not image data): fields={list(data.dtype.names)}")
                     raise ValueError(f"Unsupported dtype: {data.dtype}")
+
+            # DNG compression not supported for 32-bit or float data
+            # Check after dtype conversion (float64 -> float32)
+            no_compress_dtypes = (np.uint32, np.float16, np.float32)
+            if (
+                data is not None
+                and data.dtype in no_compress_dtypes
+                and comp_enum != COMPRESSION.NONE
+            ):
+                _log(
+                    f"Warning: Compression disabled for {Path(file_path).name} "
+                    f"(DNG does not support compression with {data.dtype})"
+                )
+                file_comp_enum = COMPRESSION.NONE
+                file_comp_args = None
+            else:
+                file_comp_enum = comp_enum
+                file_comp_args = comp_args
 
             if data is None or data.ndim != 2:
                 if data is None:
@@ -610,18 +677,27 @@ def run_batch_fits_to_dng(
                 ev_value=ev_value,
                 use_tone_curve=use_tone_curve,
                 wb_xy=wb_xy,
+                time_offset_seconds=time_offset_seconds,
+                time_timezone=time_timezone,
             )
+
+            # Apply user tag operations (strip first, then add/override)
+            if strip_tags:
+                for tag_name in strip_tags:
+                    tags.remove_tag(tag_name)
+            if extra_tags is not None:
+                tags.extend(extra_tags)
 
             # Determine if image is CFA (color) or monochrome
             bayer_pat = header.get("BAYERPAT", "").strip().upper()
             is_cfa = bool(bayer_pat)
 
-            # Encoding
+            # Encoding (use per-file compression, may be overridden for 32-bit/float)
             encoding = PageEncoding(
-                compression=comp_enum,
-                compression_args=comp_args,
+                compression=file_comp_enum,
+                compression_args=file_comp_args,
                 tile_size=(
-                    (256, 256) if comp_enum != COMPRESSION.NONE else None
+                    (256, 256) if file_comp_enum != COMPRESSION.NONE else None
                 ),
             )
 
@@ -633,11 +709,32 @@ def run_batch_fits_to_dng(
                 extratags=tags,
             )
 
+            # Build preview params per-file so scale reflects actual image dimensions
+            preview_params = None
+            if do_preview:
+                h, w = data.shape[:2]
+                scaled_h, scaled_w = int(h * scale), int(w * scale)
+                min_dim = min(scaled_h, scaled_w)
+                if min_dim >= 128 * 4:
+                    preview_scale = PreviewScale.QUARTER
+                elif min_dim >= 128 * 2:
+                    preview_scale = PreviewScale.HALF
+                else:
+                    preview_scale = PreviewScale.FULL
+                preview_params = PreviewParams(
+                    scale=preview_scale,
+                    compression=COMPRESSION.JPEG,
+                    compression_args={"level": 90},
+                )
+
             # Write DNG to memory
             dng_buf = io.BytesIO()
             write_dng_from_array(
                 destination_file=dng_buf,
                 data_spec=data_spec,
+                scale=scale,
+                demosaic=demosaic,
+                demosaic_algorithm=demosaic_algo,
                 preview=preview_params,
                 pyramid=pyramid_params,
                 num_compression_workers=1,
@@ -731,6 +828,61 @@ def main():
         choices=["uncompressed", "jpeg_lossless", "jxl_lossless", "jxl_lossy"],
         default="uncompressed",
         help="Compression type (default: uncompressed)",
+    )
+    parser.add_argument(
+        "--jxl-distance",
+        type=float,
+        default=None,
+        help="JXL distance (0=lossless, >0=lossy). Default: per-compression preset",
+    )
+    parser.add_argument(
+        "--jxl-effort",
+        type=int,
+        default=None,
+        help="JXL effort 1-9. Default: per-compression preset",
+    )
+    parser.add_argument(
+        "--demosaic",
+        action="store_true",
+        help="Demosaic CFA to LINEAR_RAW",
+    )
+    parser.add_argument(
+        "--demosaic-algorithm",
+        default="DNGSDK_BILINEAR",
+        choices=["DNGSDK_BILINEAR", "OPENCV_EA", "VNG", "RCD"],
+        help="Demosaic algorithm (default: DNGSDK_BILINEAR)",
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+        help="Scale factor 0.125-1.0 (default: 1.0). If != 1.0, forces LINEAR_RAW",
+    )
+    parser.add_argument(
+        "--strip-tag",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Strip a tag from the output metadata (repeatable, comma-separated lists supported)",
+    )
+    parser.add_argument(
+        "--tag",
+        action="append",
+        default=None,
+        metavar="NAME=VALUE",
+        help="Add/override a metadata tag (repeatable)",
+    )
+    parser.add_argument(
+        "--time-shift",
+        default=None,
+        metavar="OFFSET",
+        help='Shift DATE-OBS times, format "[+|-][D ]HH:MM[:SS]" (e.g. "+1:30", "-2 04:00:00")',
+    )
+    parser.add_argument(
+        "--timezone",
+        default=None,
+        metavar="+HH:MM",
+        help='Set OffsetTime* tags to this timezone offset (e.g. "+05:00")',
     )
     parser.add_argument(
         "--workers",
@@ -840,6 +992,45 @@ def main():
         from muimg.raw_render import temp_tint_to_xy
         wb_xy = temp_tint_to_xy(args.wb_temperature, args.wb_tint)
 
+    # Demosaic algorithm
+    from muimg.raw_render import DemosaicAlgorithm
+    demosaic_algorithm = DemosaicAlgorithm.lookup(args.demosaic_algorithm)
+
+    # Parse --strip-tag options, supporting comma-separated lists
+    strip_tags = None
+    if args.strip_tag:
+        strip_tags = set()
+        for tag_spec in args.strip_tag:
+            for tag_name in tag_spec.split(","):
+                tag_name = tag_name.strip()
+                if tag_name:
+                    strip_tags.add(tag_name)
+
+    # Parse --tag NAME=VALUE options into MetadataTags
+    extra_tags = None
+    if args.tag:
+        from muimg.tiff_metadata import MetadataTags
+        extra_tags = MetadataTags()
+        for tag_spec in args.tag:
+            if "=" not in tag_spec:
+                print(f"ERROR: Invalid tag format '{tag_spec}'. Use NAME=VALUE", file=sys.stderr)
+                sys.exit(1)
+            name, value = tag_spec.split("=", 1)
+            try:
+                extra_tags.add_tag(name.strip(), value.strip())
+            except KeyError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
+
+    # Parse --time-shift
+    time_offset_seconds = 0.0
+    if args.time_shift:
+        try:
+            time_offset_seconds = parse_time_shift(args.time_shift)
+        except (ValueError, IndexError):
+            print(f"ERROR: Could not parse time shift: {args.time_shift}", file=sys.stderr)
+            sys.exit(1)
+
     def _log(msg):
         print(msg)
 
@@ -847,10 +1038,19 @@ def main():
         fits_files=fits_files,
         output_folder=output_folder,
         compression_name=args.compression,
+        jxl_distance=args.jxl_distance,
+        jxl_effort=args.jxl_effort,
+        demosaic=args.demosaic,
+        demosaic_algorithm=demosaic_algorithm,
+        scale=max(0.125, min(1.0, args.scale)),
         auto_exposure=not args.no_auto_exposure,
         ev_value=args.ev,
         use_tone_curve=not args.no_tone_curve,
         wb_xy=wb_xy,
+        strip_tags=strip_tags,
+        extra_tags=extra_tags,
+        time_offset_seconds=time_offset_seconds,
+        time_timezone=args.timezone,
         do_preview=args.preview,
         do_fast_load=args.fast_load,
         num_workers=max(1, args.workers),
