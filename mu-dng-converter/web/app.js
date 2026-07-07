@@ -501,7 +501,7 @@ class DNGConverter {
 
     async handleApplyMetadata() {
         const op = document.getElementById('create-dng-metadata-op').value;
-        const name = document.getElementById('create-dng-tag-name').value.trim();
+        let name = document.getElementById('create-dng-tag-name').value.trim();
         const value = op === 'strip' ? '' : document.getElementById('create-dng-tag-value').value;
         
         if (op === 'set' || op === 'strip') {
@@ -511,14 +511,15 @@ class DNGConverter {
             }
             // Validate against the TIFF tag registry on the Python side
             if (window.pywebview && window.pywebview.api) {
-                const known = await window.pywebview.api.validate_tag(name);
-                if (!known) {
+                const validName = await window.pywebview.api.validate_tag(name);
+                if (!validName) {
                     await this.showAlert(
                         'Unknown tag',
                         `Tag '${name}' is not in the TIFF tag registry and was not added.`
                     );
                     return;
                 }
+                name = validName;
             }
         } else if (!value.trim()) {
             const hint = op === 'shift-time'

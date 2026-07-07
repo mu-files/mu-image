@@ -70,14 +70,30 @@ class WebViewBridge:
         payload = ", ".join(json.dumps(a) for a in args)
         self.window.evaluate_js(f"{fn}({payload})")
 
-    def validate_tag(self, name: str) -> bool:
-        """Check whether a tag name exists in the TIFF tag registry."""
+    def validate_tag(self, name: str) -> Optional[str]:
+        """Check whether a tag name exists in the TIFF tag registry.
+        
+        Returns:
+            The correct case-sensitive tag name if found (exact or case-insensitive),
+            or None if not found.
+        """
         try:
             from muimg.tiff_metadata import TIFF_TAG_TYPE_REGISTRY
-            return name in TIFF_TAG_TYPE_REGISTRY
+            
+            # Exact match
+            if name in TIFF_TAG_TYPE_REGISTRY:
+                return name
+            
+            # Case-insensitive search
+            name_lower = name.lower()
+            for registry_name in TIFF_TAG_TYPE_REGISTRY:
+                if registry_name.lower() == name_lower:
+                    return registry_name
+            
+            return None
         except Exception as e:
             print(f"Error validating tag {name}: {e}")
-            return False
+            return None
 
     def cancel_conversion(self, tab: str):
         """Handle cancel button click for a specific tab."""
