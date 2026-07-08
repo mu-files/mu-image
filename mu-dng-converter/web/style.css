@@ -507,10 +507,6 @@ main.tab-container {
     width: 120px;
 }
 
-.input-group select {
-    min-width: 220px;
-}
-
 /* Checkbox styling */
 .checkbox-group {
     display: flex;
@@ -591,6 +587,10 @@ main.tab-container {
 /* Update Tags row: fixed-width operation select, flexible text fields */
 #dng-dng-metadata-op {
     min-width: 140px;
+}
+
+.input-group .labeled-field:has(.text-field-sm) {
+    flex: 0 0 auto;
 }
 
 .input-group .labeled-field:has(.text-field-md),

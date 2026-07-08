@@ -522,6 +522,41 @@ def clip_and_transform_color(
     )
 
 
+def compute_xmp_crop_bounds(
+    width: int,
+    height: int,
+    crop_params: dict,
+) -> tuple[int, int, int, int]:
+    """Compute pixel bounds for an XMP crop relative to image dimensions.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        crop_params: Dict that may contain 'HasCrop', 'CropTop', 'CropLeft',
+            'CropBottom', 'CropRight' as float fractions (0..1).
+
+    Returns:
+        Tuple of (top, left, bottom, right) pixel bounds, validated and clamped.
+        If HasCrop is False or crop coordinates are missing, returns (0, 0, height, width).
+    """
+    if not crop_params.get('HasCrop') or not all(
+        k in crop_params for k in ('CropTop', 'CropLeft', 'CropBottom', 'CropRight')
+    ):
+        return 0, 0, height, width
+
+    top = int(crop_params['CropTop'] * height)
+    left = int(crop_params['CropLeft'] * width)
+    bottom = int(crop_params['CropBottom'] * height)
+    right = int(crop_params['CropRight'] * width)
+
+    top = max(0, min(top, height))
+    left = max(0, min(left, width))
+    bottom = max(top + 1, min(bottom, height))
+    right = max(left + 1, min(right, width))
+
+    return top, left, bottom, right
+
+
 def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     """Apply TIFF/EXIF orientation rotation to an image.
     
@@ -2783,26 +2818,15 @@ def apply_post_rendering_operations(
         
         timer.end_step()
 
-    # Stage 3 - Apply crop (if HasCrop is True and all crop coordinates present)
-    if rendering_params.get('HasCrop') and all(
-        k in rendering_params for k in ('CropTop', 'CropLeft', 'CropBottom', 'CropRight')
-    ):
-        timer.start_step("xmp_crop")
-        h, w = rgb_output.shape[:2]
-        top = int(rendering_params['CropTop'] * h)
-        left = int(rendering_params['CropLeft'] * w)
-        bottom = int(rendering_params['CropBottom'] * h)
-        right = int(rendering_params['CropRight'] * w)
-        
-        # Validate crop bounds
-        top = max(0, min(top, h))
-        left = max(0, min(left, w))
-        bottom = max(top + 1, min(bottom, h))
-        right = max(left + 1, min(right, w))
-        
-        logger.debug(f"Applying crop: top={top}, left={left}, bottom={bottom}, right={right} (from {h}x{w})")
+    # Stage 3 - Apply XMP crop if present
+    h, w = rgb_output.shape[:2]
+    top, left, bottom, right = compute_xmp_crop_bounds(w, h, rendering_params)
+    if not (top == 0 and left == 0 and bottom == h and right == w):
+        logger.debug(
+            f"Applying XMP crop: top={top}, left={left}, bottom={bottom}, right={right} "
+            f"(from {w}x{h})"
+        )
         rgb_output = rgb_output[top:bottom, left:right].copy()
-        timer.end_step()
 
     return rgb_output
 

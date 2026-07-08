@@ -1493,10 +1493,6 @@ def run_batch_to_video(
             scale_w = target_width / render_width
             scale_h = target_height / render_height
             scale = min(scale_w, scale_h)
-            
-            orientation = params.get('orientation', 'None')
-            logger.info(f"Frame {index} ({Path(file_path).name}): orientation={orientation}, "
-                       f"rendered_size={render_width}x{render_height}, scale={scale:.3f}")
 
             img, _ = decode_dng(
                 file=dng_file,
@@ -1516,8 +1512,11 @@ def run_batch_to_video(
             # Apply letterboxing
             current_height, current_width = img.shape[:2]
             
-            logger.info(f"Frame {index}: decoded image size={current_width}x{current_height}, "
-                       f"target={target_width}x{target_height}")
+            print(
+                f"[DEBUG] Frame {index}: render_size={render_width}x{render_height}, "
+                f"scale={scale:.3f}, decoded={current_width}x{current_height}, "
+                f"target={target_width}x{target_height}"
+            )
             
             canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
             y_offset = (target_height - current_height) // 2

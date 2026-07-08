@@ -328,7 +328,7 @@ def test_orientation_handling(tmp_path):
     # Get original dimensions from DNG
     with DngFile(test_dng) as dng:
         page = dng.get_flattened_pages()[4]  # SubIFD 3
-        orig_w, orig_h = page.get_rendered_size(apply_orientation=True)
+        orig_w, orig_h = page.get_rendered_size(apply_post_render_ops=True)
         print(f"Original rendered size: {orig_w}x{orig_h}")
     
     # Test orientations: 6 (90° CW), 3 (180°), 8 (90° CCW)
@@ -364,7 +364,7 @@ def test_orientation_handling(tmp_path):
         # Verify get_rendered_size reports correct dimensions
         with DngFile(oriented_dng) as dng:
             # SubIFD 3 was copied to IFD0, so access it as main page
-            w, h = dng.get_rendered_size(apply_orientation=True)
+            w, h = dng.get_rendered_size(apply_post_render_ops=True)
             print(f"  Rendered size with orientation: {w}x{h}")
             
             # For 90° rotations, dimensions should be swapped

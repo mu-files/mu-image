@@ -162,18 +162,19 @@ class DngPage(tifffile.TiffPage):
         return value in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE)
 
     def get_rendered_size(
-        self, apply_orientation: bool = True, rendering_params: dict | None = None
+        self, apply_post_render_ops: bool = True, rendering_params: dict | None = None
     ) -> tuple[int, int]:
-        """Get the final dimensions after DefaultCrop is applied.
+        """Get the final dimensions after DefaultCrop and optionally XMP crop/orientation.
         
         Args:
-            apply_orientation: If True, swap width/height for 90° rotations
+            apply_post_render_ops: If True, apply XMP crop and orientation transforms.
+                If False, return dimensions after DefaultCrop only (before post-render ops).
             rendering_params: Optional rendering parameters dict. If provided
                 and contains 'orientation', that value will be used instead
                 of the metadata orientation.
         
         Returns:
-            Tuple of (width, height) after crop is applied.
+            Tuple of (width, height) after crops are applied.
             If DefaultCropSize is not present, returns (imagewidth, imagelength).
         """
         crop_size = self.get_tag("DefaultCropSize")
@@ -182,8 +183,17 @@ class DngPage(tifffile.TiffPage):
         else:
             w, h = self.imagewidth or 0, self.imagelength or 0
         
-        # Swap dimensions for 90° rotations if requested
-        if apply_orientation:            
+        # Apply XMP crop if present (chained after DefaultCrop) - only if post-render ops enabled
+        if apply_post_render_ops:
+            xmp = self.ifd0.get_xmp()
+            if xmp is not None:
+                xmp_params = raw_render.supported_xmp_to_dict(xmp)
+                top, left, bottom, right = raw_render.compute_xmp_crop_bounds(
+                    w, h, xmp_params
+                )
+                w, h = right - left, bottom - top
+        
+            # Swap dimensions for 90° rotations if requested
             # Use orientation from rendering_params if provided, otherwise from metadata
             orientation = self.ifd0.get_tag("Orientation")
             if rendering_params and 'orientation' in rendering_params:
@@ -836,8 +846,8 @@ class DngFile(tifffile.TiffFile):
         if main_page is None:
             return None
         
-        # Calculate target max dimension using cropped dimensions
-        main_w, main_h = main_page.get_rendered_size(apply_orientation=False)
+        # Calculate target max dimension using pre-crop dimensions
+        main_w, main_h = main_page.get_rendered_size(apply_post_render_ops=False)
         main_max_dim = max(main_w, main_h)
         target_max_dim = main_max_dim * scale
         
@@ -849,10 +859,10 @@ class DngFile(tifffile.TiffFile):
         if not raw_pages:
             return None
         
-        # Find pages that meet or exceed the target dimension (using cropped dimensions)
+        # Find pages that meet or exceed the target dimension (using pre-crop dimensions)
         candidates = []
         for page in raw_pages:
-            page_w, page_h = page.get_rendered_size(apply_orientation=False)
+            page_w, page_h = page.get_rendered_size(apply_post_render_ops=False)
             max_dim = max(page_w, page_h)
             if max_dim >= target_max_dim:
                 candidates.append((page, max_dim))
@@ -891,12 +901,12 @@ class DngFile(tifffile.TiffFile):
         return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
     
     def get_rendered_size(
-        self, apply_orientation: bool = True, rendering_params: dict | None = None
+        self, apply_post_render_ops: bool = True, rendering_params: dict | None = None
     ) -> tuple[int, int] | None:
         """See `DngPage.get_rendered_size`."""
         main_page = self.get_main_page()
         return main_page.get_rendered_size(
-            apply_orientation=apply_orientation, rendering_params=rendering_params
+            apply_post_render_ops=apply_post_render_ops, rendering_params=rendering_params
         ) if main_page else None
 
     def _forward_main_page(self, method_name: str, *args, require=None, **kwargs):
@@ -984,8 +994,8 @@ class DngFile(tifffile.TiffFile):
             if render_page is None:
                 return None
             
-            # Calculate target dimensions by scaling main page dimensions
-            main_w, main_h = main_page.get_rendered_size(apply_orientation=False)
+            # Calculate target dimensions by scaling main page pre-crop dimensions
+            main_w, main_h = main_page.get_rendered_size(apply_post_render_ops=False)
             target_w = int(main_w * scale)
             target_h = int(main_h * scale)
         
@@ -1007,7 +1017,7 @@ class DngFile(tifffile.TiffFile):
             # Apply resize if needed (when scaling and dimensions don't match)
             scale_needed = False
             if target_w is not None and target_h is not None:
-                render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
+                render_w, render_h = render_page.get_rendered_size(apply_post_render_ops=False)
                 if render_w != target_w or render_h != target_h:
                     # If upscaling, defer to post-render for better performance
                     if render_w < target_w and render_h < target_h:
