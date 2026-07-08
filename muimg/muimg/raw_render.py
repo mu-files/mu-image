@@ -2662,6 +2662,7 @@ def apply_post_rendering_operations(
     Processing pipeline:
     1. Apply tone curves in ProPhoto linear space (Adobe's approach)
     2. Apply lens distortion correction
+    3. Apply crop (if HasCrop is True)
     
     Tone curve processing follows Adobe's approach: curves are displayed in sRGB gamma 2.2
     space (Melissa RGB) but applied in linear ProPhoto RGB space.
@@ -2780,6 +2781,27 @@ def apply_post_rendering_operations(
                     rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
                 logger.debug("Applied radial distortion correction")
         
+        timer.end_step()
+
+    # Stage 3 - Apply crop (if HasCrop is True and all crop coordinates present)
+    if rendering_params.get('HasCrop') and all(
+        k in rendering_params for k in ('CropTop', 'CropLeft', 'CropBottom', 'CropRight')
+    ):
+        timer.start_step("xmp_crop")
+        h, w = rgb_output.shape[:2]
+        top = int(rendering_params['CropTop'] * h)
+        left = int(rendering_params['CropLeft'] * w)
+        bottom = int(rendering_params['CropBottom'] * h)
+        right = int(rendering_params['CropRight'] * w)
+        
+        # Validate crop bounds
+        top = max(0, min(top, h))
+        left = max(0, min(left, w))
+        bottom = max(top + 1, min(bottom, h))
+        right = max(left + 1, min(right, w))
+        
+        logger.debug(f"Applying crop: top={top}, left={left}, bottom={bottom}, right={right} (from {h}x{w})")
+        rgb_output = rgb_output[top:bottom, left:right].copy()
         timer.end_step()
 
     return rgb_output
@@ -3499,11 +3521,11 @@ def _render_camera_rgb(
         # Step 4-5: Apply tone curve + colorspace conversion (merged when no post-rendering)
         # SDK ref: dng_render.cpp lines 2040-2068
         # =====================================================================
-        # Check if there are actual post-rendering operations (tone curves or lens correction)
+        # Check if there are actual post-rendering operations (tone curves, lens correction, or crop)
         # Other params like exposure, temperature, orientation are handled elsewhere
         post_rendering_keys = {
             'ToneCurvePV2012', 'ToneCurvePV2012Red', 'ToneCurvePV2012Green', 
-            'ToneCurvePV2012Blue', 'crlcp:PerspectiveModel'
+            'ToneCurvePV2012Blue', 'crlcp:PerspectiveModel', 'HasCrop'
         }
         has_post_rendering = rendering_params and bool(post_rendering_keys & rendering_params.keys())
         
@@ -3855,6 +3877,11 @@ SUPPORTED_XMP_PARAMS = {
     'ToneCurvePV2012Green',  # Green channel tone curve (CubicSpline or list of (x,y) points)
     'ToneCurvePV2012Blue',   # Blue channel tone curve (CubicSpline or list of (x,y) points)
     'crlcp:PerspectiveModel', # Lens correction profile (nested dict with RadialDistort params)
+    'HasCrop',               # Boolean flag indicating crop is active
+    'CropTop',               # Crop top edge (normalized 0-1)
+    'CropLeft',              # Crop left edge (normalized 0-1)
+    'CropBottom',            # Crop bottom edge (normalized 0-1)
+    'CropRight',             # Crop right edge (normalized 0-1)
     
     # TODO: Add pixel processing implementations for these additional properties:
     # 'Contrast2012', 'Highlights2012', 'Shadows2012', 'Whites2012', 'Blacks2012',
@@ -3913,8 +3940,12 @@ def supported_xmp_to_dict(source: 'XmpMetadata' | 'MetadataTags' | 'DngFile' | '
         value = xmp.get_root_prop(prop)
         if value is not None and not _is_noop_xmp_value(prop, value, xmp):
             # Convert numeric properties to float for rendering pipeline
-            if prop in ('Temperature', 'Tint', 'Exposure2012'):
+            if prop in ('Temperature', 'Tint', 'Exposure2012',
+                        'CropTop', 'CropLeft', 'CropBottom', 'CropRight'):
                 result[prop] = float(value)
+            elif prop == 'HasCrop':
+                # Convert string "True"/"False" to bool
+                result[prop] = str(value).lower() == 'true'
             else:
                 result[prop] = value  # ToneCurve* already parsed as list[tuple]
     
