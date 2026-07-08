@@ -1132,9 +1132,16 @@ def run_batch_copy_dng(
 
             # Apply time offset to all date tags (DateTimeOriginal, DateTimeDigitized, DateTime)
             if time_offset_seconds != 0.0:
+                # Convert EXIF tags to get DateTimeOriginal/DateTimeDigitized
+                from .tiff_metadata import _convert_exif_dict_to_tags
+                time_tags = MetadataTags()
+                _convert_exif_dict_to_tags(time_tags, dng_file.get_tag('ExifTag'))
                 for time_type in ("original", "digitized", "modified"):
                     try:
-                        dt = page.get_time_from_tags(time_type=time_type)
+                        # Try converted EXIF tags first, fall back to IFD0 for DateTime
+                        dt = time_tags.get_time_from_tags(time_type=time_type)
+                        if dt is None:
+                            dt = dng_file.get_time_from_tags(time_type=time_type)
                         if dt is not None:
                             dt_adjusted = dt + timedelta(seconds=time_offset_seconds)
                             file_extra_tags.add_time_tags(dt_adjusted, time_type=time_type)

@@ -335,7 +335,9 @@ class DngPage(tifffile.TiffPage):
         # Apply EXIF conversion if requested
         if convert_exif:
             from .tiff_metadata import _convert_exif_dict_to_tags
-            _convert_exif_dict_to_tags(tags)
+            exif_dict = tags.get_tag('ExifTag', dict)
+            if exif_dict:
+                _convert_exif_dict_to_tags(tags, exif_dict)
         
         return tags
     
