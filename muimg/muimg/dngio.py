@@ -859,7 +859,7 @@ class DngFile(tifffile.TiffFile):
         if not raw_pages:
             return None
         
-        # Find pages that meet or exceed the target dimension (using pre-crop dimensions)
+        # Find pages that meet or exceed the target dimension (using pre-orient/crop dimensions)
         candidates = []
         for page in raw_pages:
             page_w, page_h = page.get_rendered_size(apply_post_render_ops=False)
@@ -1996,13 +1996,12 @@ class PreviewParams:
         compression: Compression type for preview (default: JPEG)
         compression_args: Arguments for compression (default: {'level': 90} for JPEG)
         rendering_params: Override rendering params (Temperature, Tint, etc.)
-        use_xmp: Use XMP metadata for preview rendering (default: True)
+    
     """
     scale: PreviewScale = PreviewScale.QUARTER
     compression: tifffile.COMPRESSION | None = None
     compression_args: dict | None = None
     rendering_params: dict | None = None
-    use_xmp: bool = True
 
 
 @dataclass(slots=True)
@@ -2305,16 +2304,35 @@ def _write_dng_with_params(
             ifd0_tags_no_orientation, is_monochrome=is_monochrome_preview
         )
         
-        # Render with color transforms
+        # Build preview rendering params: XMP (without crop) + user overrides
         timer.start_step("render_preview")
+        preview_rendering_params = {}
+        
+        # 1) Read XMP params and convert to dict
+        xmp = ifd0_tags_no_orientation.get_tag("XMP")
+        if xmp:
+            xmp_params = raw_render.supported_xmp_to_dict(xmp)
+            # 2) Remove crop XMP params and metadata-only fields
+            xmp_params_no_crop = {
+                k: v for k, v in xmp_params.items()
+                if k not in ('CropTop', 'CropLeft', 'CropBottom', 'CropRight', 'HasCrop',
+                             'tiff:Orientation', 'dc:subject')
+            }
+            preview_rendering_params.update(xmp_params_no_crop)
+        
+        # 3) Merge with user-supplied params (user takes priority)
+        if preview.rendering_params:
+            preview_rendering_params.update(preview.rendering_params)
+        
+        # 4) Pass merged dict to render
         if is_monochrome_preview:
             mono = raw_render._render_camera_monochrome(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 mono_camera=pyramid_images[preview_level_idx],
                 output_dtype=np.uint8,
-                rendering_params=preview.rendering_params,
-                use_xmp=preview.use_xmp,
+                rendering_params=preview_rendering_params,
+                use_xmp=False,
             )
             rendered_preview = np.stack([mono, mono, mono], axis=2)
             preview_photometric = "RGB"
@@ -2324,8 +2342,8 @@ def _write_dng_with_params(
                 raw_ifd_tags=main_spec.extratags,
                 rgb_camera=pyramid_images[preview_level_idx],
                 output_dtype=np.uint8,
-                rendering_params=preview.rendering_params,
-                use_xmp=preview.use_xmp,
+                rendering_params=preview_rendering_params,
+                use_xmp=False,
             )
             preview_photometric = "RGB"
         timer.end_step()
