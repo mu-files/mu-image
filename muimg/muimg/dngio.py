@@ -2257,7 +2257,9 @@ def _write_dng_with_params(
         # create pyramid tags
         pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
 
-        for level_idx in range(1, len(pyramid_images)):
+        # Only write the requested number of pyramid levels, not all generated levels
+        max_pyramid_level = min(pyramid.levels + 1, len(pyramid_images))
+        for level_idx in range(1, max_pyramid_level):
             level_data = pyramid_images[level_idx]
             pyramid_spec = IfdDataSpec(
                 data=raw_render.convert_dtype(level_data, raw_data.dtype),

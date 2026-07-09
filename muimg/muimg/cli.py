@@ -1073,9 +1073,9 @@ def run_batch_copy_dng(
     import io
     import time
     from datetime import timedelta
-    from .dngio import DngFile, IfdPageSpec, PageEncoding, PreviewParams, PreviewScale, PyramidParams, write_dng_from_page
+    from .dngio import DngFile, IfdPageSpec, PageEncoding, PreviewParams, PreviewScale, PyramidParams, write_dng_from_page, write_dng
     from .imgio import ImageSequencePipeline
-    from .tiff_metadata import MetadataTags
+    from .tiff_metadata import MetadataTags, SubFileType
 
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1100,7 @@ def run_batch_copy_dng(
     pyramid_params = None
     if do_fast_load:
         pyramid_params = PyramidParams(
-            levels=1,
+            levels=2,
             encoding=PageEncoding(
                 compression=COMPRESSION.JPEGXL_DNG,
                 compression_args={"distance": 1.0},
@@ -1118,27 +1118,77 @@ def run_batch_copy_dng(
                 logger.warning(f"Frame {index}: No main page in {Path(file_path).name}")
                 return (index, file_path, None)
 
-            page_spec = IfdPageSpec(
-                page=page,
-                transcode_encoding=transcode_encoding,
-                strip_tags=strip_tags,
-            )
-
+            # Detect existing preview and pyramid (fast-load) pages in input
+            # IFD0 is preview if it's not raw (CFA/LINEAR_RAW)
+            # Pages with NewSubfileType=0 are main image
+            # Pages with NewSubfileType!=0 (preview/reduced) are pyramid levels
+            all_pages = dng_file.get_flattened_pages()
+            input_preview_page = None
+            input_pyramid_pages = []
+            
+            # Check IFD0 for rendered preview (non-raw photometric)
+            if all_pages and not (all_pages[0].is_cfa or all_pages[0].is_linear_raw):
+                input_preview_page = all_pages[0]
+            
+            # Scan all pages for pyramid levels (NewSubfileType!=0, not IFD0, not main)
+            for i, p in enumerate(all_pages):
+                if i > 0 and not p.is_main_image:  # SubIFDs with NewSubfileType != 0
+                    input_pyramid_pages.append(p)
+            
+            input_has_preview = input_preview_page is not None
+            input_has_pyramid = len(input_pyramid_pages) > 0
+            
+            # Determine if we should use input's preview/pyramid or regenerate
+            needs_transform = (scale != 1.0 or demosaic)
+            use_input_preview = do_preview and input_has_preview and not needs_transform
+            use_input_pyramid = do_fast_load and input_has_pyramid and not needs_transform
+            
+            # Check for structure mismatch
+            structure_mismatch = False
+            if do_preview and not do_fast_load and input_has_pyramid and not input_has_preview:
+                structure_mismatch = True
+            elif do_fast_load and not do_preview and input_has_preview and not input_has_pyramid:
+                structure_mismatch = True
+            
+            if structure_mismatch:
+                use_input_preview = False
+                use_input_pyramid = False
+            
+            # Emit warnings when regenerating despite input having pages
+            regen_preview = input_has_preview and not use_input_preview
+            regen_pyramid = input_has_pyramid and not use_input_pyramid
+            
+            if regen_preview or regen_pyramid:
+                # Build list of what's being regenerated
+                items = []
+                if regen_preview:
+                    items.append("preview")
+                if regen_pyramid:
+                    items.append("pyramid")
+                items_str = " and ".join(items)
+                
+                # Determine reason
+                if needs_transform:
+                    reason = "scale/demosaic"
+                elif structure_mismatch:
+                    reason = "structure mismatch"
+                else:
+                    reason = "unknown"
+                
+                logger.warning(f"Frame {index}: Input has {items_str} but regenerating due to {reason}")
+            
             # Build per-file extra_tags
             file_extra_tags = MetadataTags()
-            # Copy static tags if provided
             if extra_tags is not None:
                 file_extra_tags.extend(extra_tags)
 
-            # Apply time offset to all date tags (DateTimeOriginal, DateTimeDigitized, DateTime)
+            # Apply time offset to all date tags
             if time_offset_seconds != 0.0:
-                # Convert EXIF tags to get DateTimeOriginal/DateTimeDigitized
                 from .tiff_metadata import _convert_exif_dict_to_tags
                 time_tags = MetadataTags()
                 _convert_exif_dict_to_tags(time_tags, dng_file.get_tag('ExifTag'))
                 for time_type in ("original", "digitized", "modified"):
                     try:
-                        # Try converted EXIF tags first, fall back to IFD0 for DateTime
                         dt = time_tags.get_time_from_tags(time_type=time_type)
                         if dt is None:
                             dt = dng_file.get_time_from_tags(time_type=time_type)
@@ -1148,42 +1198,101 @@ def run_batch_copy_dng(
                     except Exception as e:
                         logger.warning(f"Frame {index}: Could not adjust {time_type} time for {Path(file_path).name}: {e}")
 
-            # Apply timezone offset to all relevant tags if provided
+            # Apply timezone offset
             if time_timezone:
                 file_extra_tags.add_tag("OffsetTimeOriginal", time_timezone)
                 file_extra_tags.add_tag("OffsetTimeDigitized", time_timezone)
                 file_extra_tags.add_tag("OffsetTime", time_timezone)
 
-            # Build preview params per-file so scale reflects actual image dimensions
-            preview_params = None
-            if do_preview:
-                h, w = page.shape[:2]
-                scaled_h, scaled_w = int(h * scale), int(w * scale)
-                min_dim = min(scaled_h, scaled_w)
-                if min_dim >= 128 * 4:
-                    preview_scale = PreviewScale.QUARTER
-                elif min_dim >= 128 * 2:
-                    preview_scale = PreviewScale.HALF
-                else:
-                    preview_scale = PreviewScale.FULL
-                preview_params = PreviewParams(
-                    scale=preview_scale,
-                    compression=COMPRESSION.JPEG,
-                    compression_args={"level": 90},
+            out_buf = io.BytesIO()
+            
+            # COPY PATH: Use existing preview/pyramid from input
+            if use_input_preview or use_input_pyramid:
+                logger.info(f"Frame {index}: Copying existing preview={use_input_preview} pyramid={use_input_pyramid}")
+                
+                # Build specs
+                main_spec = IfdPageSpec(
+                    page=page,
+                    subfiletype=SubFileType.MAIN_IMAGE,
+                    transcode_encoding=transcode_encoding,
+                    strip_tags=strip_tags,
                 )
 
-            out_buf = io.BytesIO()
-            write_dng_from_page(
-                destination_file=out_buf,
-                page=page_spec,
-                scale=scale,
-                demosaic=demosaic,
-                demosaic_algorithm=demosaic_algo,
-                preview=preview_params,
-                pyramid=pyramid_params,
-                ifd0_extratags=file_extra_tags,
-                ifd0_strip_tags=strip_tags,
-            )
+                subifd_specs = []
+                
+                if use_input_preview:
+                    # Preview goes to IFD0
+                    ifd0_spec = IfdPageSpec(
+                        page=input_preview_page,
+                        subfiletype=SubFileType.PREVIEW_IMAGE,
+                        transcode_encoding=None,
+                        strip_tags=strip_tags,
+                        extratags=file_extra_tags,
+                    )
+                    # Main image goes to SubIFD[0]
+                    subifd_specs.append(main_spec)
+                else:
+                    # Main image goes to IFD0, add extratags
+                    from dataclasses import replace
+                    ifd0_spec = replace(main_spec, extratags=file_extra_tags)
+                
+                if use_input_pyramid:
+                    # Copy all pyramid levels
+                    for pyramid_page in input_pyramid_pages:
+                        pyramid_spec = IfdPageSpec(
+                            page=pyramid_page,
+                            subfiletype=SubFileType.PREVIEW_IMAGE,
+                            transcode_encoding=None,
+                            strip_tags=None,
+                        )
+                        subifd_specs.append(pyramid_spec)
+                
+                # Write using low-level write_dng
+                write_dng(
+                    destination_file=out_buf,
+                    ifd0_spec=ifd0_spec,
+                    subifds=subifd_specs if subifd_specs else None,
+                    num_compression_workers=1,
+                )
+            
+            # REGENERATE PATH: Use write_dng_from_page
+            else:
+                page_spec = IfdPageSpec(
+                    page=page,
+                    transcode_encoding=transcode_encoding,
+                    strip_tags=strip_tags,
+                )
+                
+                # Build preview params per-file
+                preview_params = None
+                if do_preview:
+                    h, w = page.shape[:2]
+                    scaled_h, scaled_w = int(h * scale), int(w * scale)
+                    min_dim = min(scaled_h, scaled_w)
+                    if min_dim >= 128 * 4:
+                        preview_scale = PreviewScale.QUARTER
+                    elif min_dim >= 128 * 2:
+                        preview_scale = PreviewScale.HALF
+                    else:
+                        preview_scale = PreviewScale.FULL
+                    preview_params = PreviewParams(
+                        scale=preview_scale,
+                        compression=COMPRESSION.JPEG,
+                        compression_args={"level": 90},
+                    )
+                
+                write_dng_from_page(
+                    destination_file=out_buf,
+                    page=page_spec,
+                    scale=scale,
+                    demosaic=demosaic,
+                    demosaic_algorithm=demosaic_algo,
+                    preview=preview_params,
+                    pyramid=pyramid_params,
+                    ifd0_extratags=file_extra_tags,
+                    ifd0_strip_tags=strip_tags,
+                )
+            
             return (index, file_path, out_buf.getvalue())
         except Exception as e:
             logger.error(f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}")
