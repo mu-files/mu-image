@@ -1095,7 +1095,12 @@ def run_batch_copy_dng(
                 compression=COMPRESSION.JPEGXL_DNG,
                 compression_args=compression_args or None,
             )
-        # uncompressed → transcode_encoding stays None (tifffile default)
+        elif compression_name == "uncompressed":
+            # Explicitly set to uncompressed (NONE) to avoid falling back to source compression
+            transcode_encoding = PageEncoding(
+                compression=COMPRESSION.NONE,
+                compression_args=None,
+            )
 
     pyramid_params = None
     if do_fast_load:
