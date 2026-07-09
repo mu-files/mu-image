@@ -255,26 +255,40 @@ class WebViewBridge:
         return files, output
 
     def _apply_overwrite_policy(self, files, existing, settings, log):
-        """Apply the overwrite action from the JS modal. Returns
-        (files, response); a non-None response should be returned as-is."""
+        """Check for existing files and apply overwrite action. Returns
+        (files, response); a non-None response should be returned as-is.
+        
+        Always prompts if files exist, regardless of previous overwriteAction.
+        The action only applies if it was set during THIS run (from the modal).
+        """
         action = settings.get("overwriteAction")
+        
+        # If files exist and no action was provided THIS run, prompt
         if existing and not action:
             return files, {
                 "status": "confirm-overwrite",
                 "existing": len(existing),
                 "total": len(files),
             }
+        
+        # If user chose 'skip' in the modal, filter out existing files
         if action == "skip" and existing:
             files = [f for f in files if f not in existing]
             if not files:
                 log("All files already exist — nothing to do.")
                 return files, "ok"
+        
+        # If action is 'overwrite' or no files exist, proceed with all files
         return files, None
 
     def _make_on_task_done(self, tab, progress_bar):
         def on_task_done(completed, total):
-            frac = completed / total if total > 0 else 0
-            progress_bar(round(frac * 100, 1))
+            if completed == 0 and total > 0:
+                # Show tiny progress (1%) to indicate work has started
+                progress_bar(1.)
+            else:
+                frac = completed / total if total > 0 else 0
+                progress_bar(round(frac * 100, 1))
             return self.cancel_flags.get(tab, False)
         return on_task_done
 
@@ -304,6 +318,9 @@ class WebViewBridge:
         dng_files, response = self._apply_overwrite_policy(dng_files, existing, settings, log)
         if response is not None:
             return response
+        
+        # Clear overwrite action after it's been used
+        settings.pop("overwriteAction", None)
 
         strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = \
             self._parse_metadata_ops(settings.get("metadataOps"), log)
@@ -353,6 +370,9 @@ class WebViewBridge:
         fits_files, response = self._apply_overwrite_policy(fits_files, existing, settings, log)
         if response is not None:
             return response
+        
+        # Clear overwrite action after it's been used
+        settings.pop("overwriteAction", None)
 
         strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = \
             self._parse_metadata_ops(settings.get("metadataOps"), log)
@@ -430,6 +450,9 @@ class WebViewBridge:
             dng_files, response = self._apply_overwrite_policy(dng_files, existing, settings, log)
             if response is not None:
                 return response
+            
+            # Clear overwrite action after it's been used
+            settings.pop("overwriteAction", None)
 
         # Rendering params — mirrors Flet's build_rendering_params
         use_xmp = bool(settings.get("useXmp", True))

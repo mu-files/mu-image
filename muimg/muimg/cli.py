@@ -1155,8 +1155,9 @@ def run_batch_copy_dng(
                 use_input_pyramid = False
             
             # Emit warnings when regenerating despite input having pages
-            regen_preview = input_has_preview and not use_input_preview
-            regen_pyramid = input_has_pyramid and not use_input_pyramid
+            # Only warn if user requested preview/pyramid but we're regenerating instead of copying
+            regen_preview = do_preview and input_has_preview and not use_input_preview
+            regen_pyramid = do_fast_load and input_has_pyramid and not use_input_pyramid
             
             if regen_preview or regen_pyramid:
                 # Build list of what's being regenerated
