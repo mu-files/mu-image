@@ -11,7 +11,7 @@ authors = [{name = "mu-files", email = "info@mu-files.com"}]
 requires-python = ">=3.12"
 dependencies = [
     "pywebview>=4.0",
-    "muimg[all]>=0.1.20260709",
+    "muimg[all]>=0.1.20260710",
     "setproctitle",
     "astropy",
     "pyavm",
