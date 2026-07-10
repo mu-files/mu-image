@@ -499,6 +499,7 @@ class WebViewBridge:
                 scale=max(0.125, min(1.0, float(settings.get("scale") or 1.0))),
                 num_workers=num_workers,
                 on_task_done=on_task_done,
+                log_callback=log,
             )
 
         fps = result["completed"] / result["elapsed"] if result["elapsed"] > 0 else 0

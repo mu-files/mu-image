@@ -1339,6 +1339,7 @@ def run_batch_convert(
     num_workers=4,
     settings_list=None,
     on_task_done=None,
+    log_callback=None,
 ):
     """Batch convert DNG files to TIFF/JXL/JPG images.
     
@@ -1401,14 +1402,22 @@ def run_batch_convert(
             )
             
             if img is None:
-                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                msg = f"ERROR: Failed to decode {Path(file_path).name}"
+                if log_callback:
+                    log_callback(msg)
+                else:
+                    logger.warning(f"Frame {index}: {msg}")
                 return (index, file_path, None)
             
             output_stream = io.BytesIO()
             write_image(img, output_stream, output_format_stream=output_format, metadata=metadata)
             return (index, file_path, output_stream.getvalue())
         except Exception as e:
-            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
+            msg = f"ERROR: {Path(file_path).name} ({type(e).__name__}): {e}"
+            if log_callback:
+                log_callback(msg)
+            else:
+                logger.error(f"Frame {index}: {msg}")
             return (index, file_path, None)
     
     pipeline = ImageSequencePipeline(
