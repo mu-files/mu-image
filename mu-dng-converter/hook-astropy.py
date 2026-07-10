@@ -9,3 +9,9 @@ hiddenimports = [
     'astropy.coordinates',
     'astropy.units',
 ]
+
+# Explicitly exclude visualization modules that require matplotlib
+excludedimports = [
+    'astropy.visualization',
+    'matplotlib',
+]
