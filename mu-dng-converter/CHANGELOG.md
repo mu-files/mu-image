@@ -4,15 +4,17 @@ All notable changes to mu-dng-converter will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## app-v0.1.20260601.0857 - 2026-06-01
+## [Unreleased]
 
 ### Changed
-- Migrated from Flet to PyWebView with custom HTML/CSS/JS interface
-- Added Create DNG tab for unified DNG→DNG and FITS→DNG conversion
-- Added metadata operations (set/strip tags, time shift, timezone)
-- Added transcode options (compression, demosaic, scale)
-- Added file vs folder input selection
-- Added overwrite policy handling with skip/overwrite prompt
+- **GUI**: Migrated from Flet to PyWebView with custom HTML/CSS/JS interface
+- **GUI**: Added Create DNG tab for unified DNG→DNG and FITS→DNG conversion
+- **GUI**: Added metadata operations (set/strip tags, time shift, timezone)
+- **GUI**: Added transcode options (compression, demosaic, scale)
+- **GUI**: Support for XMP crop metadata (crs:HasCrop, CropTop/Left/Bottom/Right)
+- **GUI**: Implement preview/pyramid copy in batch DNG conversion
+
+## [app-v0.1.20260601.0857] - 2026-06-01
 
 ### Fixed
 - **FITS→DNG**: Fixed monochrome preview JPEG encoding failure in batch/multi-threaded mode.

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.20260709.1718] - 2026-07-09
+
+### Added
+- **XMP Crop Support**: Read and apply XMP crop metadata (`crs:HasCrop`, `CropTop/Left/Bottom/Right`) during DNG rendering
+- **Batch DNG Copy/Transcode**: New `run_batch_copy_dng()` function for GUI batch DNG copy and transcode operations with progress callbacks
+
+### Changed
+- **Preview/Pyramid Copy**: Intelligently copy existing preview and pyramid pages when no transforms are applied, regenerate only when needed (scale/demosaic applied or structure mismatch)
+- **Pyramid Levels**: Set default pyramid levels to 2 for better fast-load performance
+- **Metadata Operations**: Improved timezone handling in DNG metadata operations
+- **Time Shift**: Fix time shift to update all datetime tags (DateTime, DateTimeOriginal, DateTimeDigitized)
+
+### Fixed
+- **Uncompressed Transcode**: Fixed uncompressed transcode to use `COMPRESSION.NONE` correctly
+- **XMP Rendering**: Apply XMP adjustments (except crop) to preview rendering
+- **Video XMP Crop**: Fixed video XMP crop rendering and UI layout
+
 ## [0.1.20260601.0852] - 2026-06-01
 
 ### Changed
