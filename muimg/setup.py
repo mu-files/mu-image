@@ -19,16 +19,25 @@ if sys.platform == 'win32':
     cpp_extra_args = ['/std:c++17']
 else:
     # GCC/Clang flags for macOS and Linux
+    # Skip -march=native in CI environments (causes issues with GitHub Actions runners)
+    is_ci = os.environ.get('CI') == 'true' or os.environ.get('GITHUB_ACTIONS') == 'true'
+    
     common_compile_args = [
         '-O3',                    # Maximum optimization
-        '-march=native',          # Use native CPU instructions (ARM on M1/M2/M3)
-        '-mtune=native',          # Optimize for specific CPU
         '-ffast-math',            # Fast math operations
         '-funroll-loops',         # Loop unrolling
         '-flto',                  # Link-time optimization
         '-fomit-frame-pointer',   # Don't keep frame pointer (faster)
         '-fno-strict-aliasing',   # Allow pointer aliasing optimizations
     ]
+    
+    # Only use native CPU optimizations when not in CI
+    if not is_ci:
+        common_compile_args.extend([
+            '-march=native',      # Use native CPU instructions (ARM on M1/M2/M3)
+            '-mtune=native',      # Optimize for specific CPU
+        ])
+    
     common_link_args = [
         '-flto',                  # Link-time optimization
     ]
