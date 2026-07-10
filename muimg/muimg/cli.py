@@ -1040,6 +1040,7 @@ def run_batch_copy_dng(
     time_timezone=None,
     num_workers=4,
     on_task_done=None,
+    log_callback=None,
 ):
     """Batch copy/transcode DNG files to a new folder.
 
@@ -1120,7 +1121,11 @@ def run_batch_copy_dng(
             dng_file = DngFile(io.BytesIO(blob))
             page = dng_file.get_main_page()
             if page is None:
-                logger.warning(f"Frame {index}: No main page in {Path(file_path).name}")
+                msg = f"ERROR: No main page in {Path(file_path).name}"
+                if log_callback:
+                    log_callback(msg)
+                else:
+                    logger.warning(f"Frame {index}: {msg}")
                 return (index, file_path, None)
 
             # Detect existing preview and pyramid (fast-load) pages in input
@@ -1301,7 +1306,11 @@ def run_batch_copy_dng(
             
             return (index, file_path, out_buf.getvalue())
         except Exception as e:
-            logger.error(f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}")
+            msg = f"ERROR: {Path(file_path).name} ({type(e).__name__}): {e}"
+            if log_callback:
+                log_callback(msg)
+            else:
+                logger.error(f"Frame {index}: {msg}")
             return (index, file_path, None)
 
     pipeline = ImageSequencePipeline(
@@ -1549,6 +1558,7 @@ def run_batch_to_video(
     overlay_txt=False,
     settings_list=None,
     on_task_done=None,
+    log_callback=None,
 ):
     """Batch convert DNG files to MP4 video.
     
@@ -1630,7 +1640,11 @@ def run_batch_to_video(
             )
             
             if img is None:
-                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                msg = f"ERROR: Failed to decode {Path(file_path).name}"
+                if log_callback:
+                    log_callback(msg)
+                else:
+                    logger.warning(f"Frame {index}: {msg}")
                 return (index, None)
             
             # Apply letterboxing
@@ -1656,7 +1670,11 @@ def run_batch_to_video(
             return (index, img)
             
         except Exception as e:
-            logger.error(f"Frame {index}: Error decoding {Path(file_path).name} ({type(e).__name__}): {e}")
+            msg = f"ERROR: {Path(file_path).name} ({type(e).__name__}): {e}"
+            if log_callback:
+                log_callback(msg)
+            else:
+                logger.error(f"Frame {index}: {msg}")
             return (index, None)
     
     pipeline = VideoEncodePipeline(

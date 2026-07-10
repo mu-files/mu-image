@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.20260710.1135] - 2026-07-10
+
+### Changed
+- **Error Reporting**: Add `log_callback` parameter to `run_batch_convert()`, `run_batch_copy_dng()`, and `run_batch_to_video()` to pass rendering errors to GUI applications instead of only logging to stderr
+
 ## [0.1.20260709.1718] - 2026-07-09
 
 ### Added
