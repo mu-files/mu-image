@@ -64,6 +64,7 @@ jobs:
             --icon "assets/icon.png" \
             --osx-bundle-identifier "com.mufiles.mu-dng-converter" \
             --additional-hooks-dir=. \
+            --hidden-import=astropy \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -80,6 +81,7 @@ jobs:
             --add-data "assets;assets" \
             --icon "assets/icon.png" \
             --additional-hooks-dir=. \
+            --hidden-import=astropy \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -95,6 +97,7 @@ jobs:
             --add-data "web:web" \
             --add-data "assets:assets" \
             --additional-hooks-dir=. \
+            --hidden-import=astropy \
             main.py
         env:
           PYTHONIOENCODING: utf-8

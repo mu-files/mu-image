@@ -10,6 +10,8 @@ hiddenimports = [
     'astropy.io.fits.header',
     'astropy.coordinates',
     'astropy.units',
+    'astropy.constants',
+    'astropy.constants.codata2022',
 ]
 
 # Explicitly exclude visualization modules that require matplotlib
