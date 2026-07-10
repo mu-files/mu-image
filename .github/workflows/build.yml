@@ -126,7 +126,7 @@ jobs:
         run: tar -czf mu-dng-converter-linux.tar.gz -C dist .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mu-dng-converter-${{ matrix.platform }}
           path: |
