@@ -63,6 +63,8 @@ jobs:
             --add-data "assets:assets" \
             --icon "assets/icon.png" \
             --osx-bundle-identifier "com.mufiles.mu-dng-converter" \
+            --exclude-module matplotlib \
+            --exclude-module astropy.visualization \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -78,6 +80,8 @@ jobs:
             --add-data "web;web" \
             --add-data "assets;assets" \
             --icon "assets/icon.png" \
+            --exclude-module matplotlib \
+            --exclude-module astropy.visualization \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -92,6 +96,8 @@ jobs:
             --onedir \
             --add-data "web:web" \
             --add-data "assets:assets" \
+            --exclude-module matplotlib \
+            --exclude-module astropy.visualization \
             main.py
         env:
           PYTHONIOENCODING: utf-8
