@@ -47,7 +47,7 @@ def main():
     web_dir = Path(__file__).parent / "web"
     index_file = web_dir / "index.html"
     
-    # Create a simple window with the same dimensions as Flet
+    # Create the main application window
     window = webview.create_window(
         title="mu DNG Converter",
         url=str(index_file),

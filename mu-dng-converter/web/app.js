@@ -395,7 +395,7 @@ class DNGConverter {
             this.applyWBPreset('create-dng');
         });
 
-        // Value clamping — mirrors Flet's _clamp_float / _clamp_workers
+        // Value clamping for numeric inputs
         this.addClamp('create-dng-jxl-distance', 0.0, 25.0, 1.0);
         this.addClamp('create-dng-jxl-effort',   1,   9,   5);
         this.addClamp('create-dng-scale',         0.125, 1.0, 1.0);

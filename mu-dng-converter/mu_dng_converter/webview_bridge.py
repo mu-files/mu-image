@@ -454,7 +454,7 @@ class WebViewBridge:
             # Clear overwrite action after it's been used
             settings.pop("overwriteAction", None)
 
-        # Rendering params — mirrors Flet's build_rendering_params
+        # Build rendering parameters from settings
         use_xmp = bool(settings.get("useXmp", True))
         rendering_params = {}
         if not use_xmp:

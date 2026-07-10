@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Migrated from Flet to PyWebView with custom HTML/CSS/JS interface
+- Added Create DNG tab for unified DNG→DNG and FITS→DNG conversion
+- Added metadata operations (set/strip tags, time shift, timezone)
+- Added transcode options (compression, demosaic, scale)
+- Added file vs folder input selection
+- Added overwrite policy handling with skip/overwrite prompt
+
 ### Fixed
 - **FITS→DNG**: Fixed monochrome preview JPEG encoding failure in batch/multi-threaded mode.
 
@@ -19,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [app-v0.1.20260529.1537] - 2026-05-29
 
 ### Added
-- Initial Flet-based GUI with batch DNG-to-TIF/JPEG conversion
+- Initial PyWebView-based GUI with batch DNG-to-TIF/JPEG conversion
 - Real-time progress bar and cancellation support
 - Configurable output format, bit depth, and white balance
 - Multi-worker parallel processing via `muimg` pipeline
