@@ -1647,16 +1647,15 @@ def run_batch_to_video(
                     logger.warning(f"Frame {index}: {msg}")
                 return (index, None)
             
+            # Convert grayscale to RGB for video encoding
+            if len(img.shape) == 2:
+                img = np.stack([img, img, img], axis=2)
+            
             # Apply letterboxing
             current_height, current_width = img.shape[:2]
             
-            print(
-                f"[DEBUG] Frame {index}: render_size={render_width}x{render_height}, "
-                f"scale={scale:.3f}, decoded={current_width}x{current_height}, "
-                f"target={target_width}x{target_height}"
-            )
-            
             canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
+            
             y_offset = (target_height - current_height) // 2
             x_offset = (target_width - current_width) // 2
             canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img

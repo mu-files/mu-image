@@ -441,7 +441,25 @@ class WebViewBridge:
         if dng_files is None:
             return "error"
 
-        if mode != "video":
+        if mode == "video":
+            # Check if video output file exists
+            output_mp4 = Path(output)
+            if output_mp4.exists():
+                action = settings.get("overwriteAction")
+                if not action:
+                    return {
+                        "status": "confirm-overwrite",
+                        "existing": 1,
+                        "total": 1,
+                    }
+                elif action == "skip":
+                    log(f"{output_mp4.name} already exists — skipping.")
+                    return "ok"
+                # If action is 'overwrite', proceed
+            
+            # Clear overwrite action after it's been used
+            settings.pop("overwriteAction", None)
+        else:
             output_dir = Path(output)
             existing = [
                 f for f in dng_files
@@ -485,6 +503,7 @@ class WebViewBridge:
                 num_workers=num_workers,
                 overlay_txt=bool(settings.get("overlay")),
                 on_task_done=on_task_done,
+                log_callback=log,
             )
         else:
             from muimg.cli import run_batch_convert
