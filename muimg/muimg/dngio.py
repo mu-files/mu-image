@@ -162,18 +162,19 @@ class DngPage(tifffile.TiffPage):
         return value in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE)
 
     def get_rendered_size(
-        self, apply_orientation: bool = True, rendering_params: dict | None = None
+        self, apply_post_render_ops: bool = True, rendering_params: dict | None = None
     ) -> tuple[int, int]:
-        """Get the final dimensions after DefaultCrop is applied.
+        """Get the final dimensions after DefaultCrop and optionally XMP crop/orientation.
         
         Args:
-            apply_orientation: If True, swap width/height for 90° rotations
+            apply_post_render_ops: If True, apply XMP crop and orientation transforms.
+                If False, return dimensions after DefaultCrop only (before post-render ops).
             rendering_params: Optional rendering parameters dict. If provided
                 and contains 'orientation', that value will be used instead
                 of the metadata orientation.
         
         Returns:
-            Tuple of (width, height) after crop is applied.
+            Tuple of (width, height) after crops are applied.
             If DefaultCropSize is not present, returns (imagewidth, imagelength).
         """
         crop_size = self.get_tag("DefaultCropSize")
@@ -182,8 +183,17 @@ class DngPage(tifffile.TiffPage):
         else:
             w, h = self.imagewidth or 0, self.imagelength or 0
         
-        # Swap dimensions for 90° rotations if requested
-        if apply_orientation:            
+        # Apply XMP crop if present (chained after DefaultCrop) - only if post-render ops enabled
+        if apply_post_render_ops:
+            xmp = self.ifd0.get_xmp()
+            if xmp is not None:
+                xmp_params = raw_render.supported_xmp_to_dict(xmp)
+                top, left, bottom, right = raw_render.compute_xmp_crop_bounds(
+                    w, h, xmp_params
+                )
+                w, h = right - left, bottom - top
+        
+            # Swap dimensions for 90° rotations if requested
             # Use orientation from rendering_params if provided, otherwise from metadata
             orientation = self.ifd0.get_tag("Orientation")
             if rendering_params and 'orientation' in rendering_params:
@@ -335,7 +345,9 @@ class DngPage(tifffile.TiffPage):
         # Apply EXIF conversion if requested
         if convert_exif:
             from .tiff_metadata import _convert_exif_dict_to_tags
-            _convert_exif_dict_to_tags(tags)
+            exif_dict = tags.get_tag('ExifTag', dict)
+            if exif_dict:
+                _convert_exif_dict_to_tags(tags, exif_dict)
         
         return tags
     
@@ -834,8 +846,8 @@ class DngFile(tifffile.TiffFile):
         if main_page is None:
             return None
         
-        # Calculate target max dimension using cropped dimensions
-        main_w, main_h = main_page.get_rendered_size(apply_orientation=False)
+        # Calculate target max dimension using pre-crop dimensions
+        main_w, main_h = main_page.get_rendered_size(apply_post_render_ops=False)
         main_max_dim = max(main_w, main_h)
         target_max_dim = main_max_dim * scale
         
@@ -847,10 +859,10 @@ class DngFile(tifffile.TiffFile):
         if not raw_pages:
             return None
         
-        # Find pages that meet or exceed the target dimension (using cropped dimensions)
+        # Find pages that meet or exceed the target dimension (using pre-orient/crop dimensions)
         candidates = []
         for page in raw_pages:
-            page_w, page_h = page.get_rendered_size(apply_orientation=False)
+            page_w, page_h = page.get_rendered_size(apply_post_render_ops=False)
             max_dim = max(page_w, page_h)
             if max_dim >= target_max_dim:
                 candidates.append((page, max_dim))
@@ -889,12 +901,12 @@ class DngFile(tifffile.TiffFile):
         return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
     
     def get_rendered_size(
-        self, apply_orientation: bool = True, rendering_params: dict | None = None
+        self, apply_post_render_ops: bool = True, rendering_params: dict | None = None
     ) -> tuple[int, int] | None:
         """See `DngPage.get_rendered_size`."""
         main_page = self.get_main_page()
         return main_page.get_rendered_size(
-            apply_orientation=apply_orientation, rendering_params=rendering_params
+            apply_post_render_ops=apply_post_render_ops, rendering_params=rendering_params
         ) if main_page else None
 
     def _forward_main_page(self, method_name: str, *args, require=None, **kwargs):
@@ -982,8 +994,8 @@ class DngFile(tifffile.TiffFile):
             if render_page is None:
                 return None
             
-            # Calculate target dimensions by scaling main page dimensions
-            main_w, main_h = main_page.get_rendered_size(apply_orientation=False)
+            # Calculate target dimensions by scaling main page pre-crop dimensions
+            main_w, main_h = main_page.get_rendered_size(apply_post_render_ops=False)
             target_w = int(main_w * scale)
             target_h = int(main_h * scale)
         
@@ -1005,7 +1017,7 @@ class DngFile(tifffile.TiffFile):
             # Apply resize if needed (when scaling and dimensions don't match)
             scale_needed = False
             if target_w is not None and target_h is not None:
-                render_w, render_h = render_page.get_rendered_size(apply_orientation=False)
+                render_w, render_h = render_page.get_rendered_size(apply_post_render_ops=False)
                 if render_w != target_w or render_h != target_h:
                     # If upscaling, defer to post-render for better performance
                     if render_w < target_w and render_h < target_h:
@@ -1707,9 +1719,18 @@ def write_dng(
                     raise ValueError(f"Failed to extract data from page (photometric={photometric}): {e}")
         else:
             # IfdDataSpec: data from array
-            if spec.data.dtype not in (np.uint8, np.uint16, np.float16, np.float32):
+            # DNG spec: unsigned 8-32 bits/sample, or float16/float32
+            # (signed integers not supported - SampleFormat must be 1 or 3)
+            supported_dtypes = (np.uint8, np.uint16, np.uint32, np.float16, np.float32)
+            if spec.data.dtype in (np.int8, np.int16, np.int32):
                 raise ValueError(
-                    f"Unsupported dtype {spec.data.dtype}. Supported: uint8, uint16, float16, float32"
+                    f"Signed integer dtype {spec.data.dtype} not supported by DNG. "
+                    f"Convert to unsigned or float."
+                )
+            if spec.data.dtype not in supported_dtypes:
+                raise ValueError(
+                    f"Unsupported dtype {spec.data.dtype}. "
+                    f"Supported: uint8, uint16, uint32, float16, float32"
                 )
             
             # Resolve bits_per_sample: spec field > metadata tag > dtype
@@ -1764,6 +1785,13 @@ def write_dng(
         
         # Validate encoding parameters and determine layout
         if encoding:
+            # DNG compression not supported for >16-bit data (32-bit int, float16, float32)
+            if bits_per_sample > 16 and compression != tifffile.COMPRESSION.NONE:
+                raise ValueError(
+                    f"DNG compression not supported for {bits_per_sample}-bit data. "
+                    f"Use uncompressed encoding or 8/16-bit data."
+                )
+
             # Validate mutual exclusivity
             if encoding.tile_size is not None and encoding.rows_per_strip is not None:
                 raise ValueError(
@@ -1968,13 +1996,12 @@ class PreviewParams:
         compression: Compression type for preview (default: JPEG)
         compression_args: Arguments for compression (default: {'level': 90} for JPEG)
         rendering_params: Override rendering params (Temperature, Tint, etc.)
-        use_xmp: Use XMP metadata for preview rendering (default: True)
+    
     """
     scale: PreviewScale = PreviewScale.QUARTER
     compression: tifffile.COMPRESSION | None = None
     compression_args: dict | None = None
     rendering_params: dict | None = None
-    use_xmp: bool = True
 
 
 @dataclass(slots=True)
@@ -2230,7 +2257,9 @@ def _write_dng_with_params(
         # create pyramid tags
         pyramid_tags = preview_tags | (pyramid.extratags if pyramid else None)
 
-        for level_idx in range(1, len(pyramid_images)):
+        # Only write the requested number of pyramid levels, not all generated levels
+        max_pyramid_level = min(pyramid.levels + 1, len(pyramid_images))
+        for level_idx in range(1, max_pyramid_level):
             level_data = pyramid_images[level_idx]
             pyramid_spec = IfdDataSpec(
                 data=raw_render.convert_dtype(level_data, raw_data.dtype),
@@ -2277,16 +2306,35 @@ def _write_dng_with_params(
             ifd0_tags_no_orientation, is_monochrome=is_monochrome_preview
         )
         
-        # Render with color transforms
+        # Build preview rendering params: XMP (without crop) + user overrides
         timer.start_step("render_preview")
+        preview_rendering_params = {}
+        
+        # 1) Read XMP params and convert to dict
+        xmp = ifd0_tags_no_orientation.get_tag("XMP")
+        if xmp:
+            xmp_params = raw_render.supported_xmp_to_dict(xmp)
+            # 2) Remove crop XMP params and metadata-only fields
+            xmp_params_no_crop = {
+                k: v for k, v in xmp_params.items()
+                if k not in ('CropTop', 'CropLeft', 'CropBottom', 'CropRight', 'HasCrop',
+                             'tiff:Orientation', 'dc:subject')
+            }
+            preview_rendering_params.update(xmp_params_no_crop)
+        
+        # 3) Merge with user-supplied params (user takes priority)
+        if preview.rendering_params:
+            preview_rendering_params.update(preview.rendering_params)
+        
+        # 4) Pass merged dict to render
         if is_monochrome_preview:
             mono = raw_render._render_camera_monochrome(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 mono_camera=pyramid_images[preview_level_idx],
                 output_dtype=np.uint8,
-                rendering_params=preview.rendering_params,
-                use_xmp=preview.use_xmp,
+                rendering_params=preview_rendering_params,
+                use_xmp=False,
             )
             rendered_preview = np.stack([mono, mono, mono], axis=2)
             preview_photometric = "RGB"
@@ -2296,8 +2344,8 @@ def _write_dng_with_params(
                 raw_ifd_tags=main_spec.extratags,
                 rgb_camera=pyramid_images[preview_level_idx],
                 output_dtype=np.uint8,
-                rendering_params=preview.rendering_params,
-                use_xmp=preview.use_xmp,
+                rendering_params=preview_rendering_params,
+                use_xmp=False,
             )
             preview_photometric = "RGB"
         timer.end_step()

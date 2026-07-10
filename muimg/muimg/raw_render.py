@@ -522,6 +522,41 @@ def clip_and_transform_color(
     )
 
 
+def compute_xmp_crop_bounds(
+    width: int,
+    height: int,
+    crop_params: dict,
+) -> tuple[int, int, int, int]:
+    """Compute pixel bounds for an XMP crop relative to image dimensions.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        crop_params: Dict that may contain 'HasCrop', 'CropTop', 'CropLeft',
+            'CropBottom', 'CropRight' as float fractions (0..1).
+
+    Returns:
+        Tuple of (top, left, bottom, right) pixel bounds, validated and clamped.
+        If HasCrop is False or crop coordinates are missing, returns (0, 0, height, width).
+    """
+    if not crop_params.get('HasCrop') or not all(
+        k in crop_params for k in ('CropTop', 'CropLeft', 'CropBottom', 'CropRight')
+    ):
+        return 0, 0, height, width
+
+    top = int(crop_params['CropTop'] * height)
+    left = int(crop_params['CropLeft'] * width)
+    bottom = int(crop_params['CropBottom'] * height)
+    right = int(crop_params['CropRight'] * width)
+
+    top = max(0, min(top, height))
+    left = max(0, min(left, width))
+    bottom = max(top + 1, min(bottom, height))
+    right = max(left + 1, min(right, width))
+
+    return top, left, bottom, right
+
+
 def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     """Apply TIFF/EXIF orientation rotation to an image.
     
@@ -2662,6 +2697,7 @@ def apply_post_rendering_operations(
     Processing pipeline:
     1. Apply tone curves in ProPhoto linear space (Adobe's approach)
     2. Apply lens distortion correction
+    3. Apply crop (if HasCrop is True)
     
     Tone curve processing follows Adobe's approach: curves are displayed in sRGB gamma 2.2
     space (Melissa RGB) but applied in linear ProPhoto RGB space.
@@ -2781,6 +2817,16 @@ def apply_post_rendering_operations(
                 logger.debug("Applied radial distortion correction")
         
         timer.end_step()
+
+    # Stage 3 - Apply XMP crop if present
+    h, w = rgb_output.shape[:2]
+    top, left, bottom, right = compute_xmp_crop_bounds(w, h, rendering_params)
+    if not (top == 0 and left == 0 and bottom == h and right == w):
+        logger.debug(
+            f"Applying XMP crop: top={top}, left={left}, bottom={bottom}, right={right} "
+            f"(from {w}x{h})"
+        )
+        rgb_output = rgb_output[top:bottom, left:right].copy()
 
     return rgb_output
 
@@ -3499,11 +3545,11 @@ def _render_camera_rgb(
         # Step 4-5: Apply tone curve + colorspace conversion (merged when no post-rendering)
         # SDK ref: dng_render.cpp lines 2040-2068
         # =====================================================================
-        # Check if there are actual post-rendering operations (tone curves or lens correction)
+        # Check if there are actual post-rendering operations (tone curves, lens correction, or crop)
         # Other params like exposure, temperature, orientation are handled elsewhere
         post_rendering_keys = {
             'ToneCurvePV2012', 'ToneCurvePV2012Red', 'ToneCurvePV2012Green', 
-            'ToneCurvePV2012Blue', 'crlcp:PerspectiveModel'
+            'ToneCurvePV2012Blue', 'crlcp:PerspectiveModel', 'HasCrop'
         }
         has_post_rendering = rendering_params and bool(post_rendering_keys & rendering_params.keys())
         
@@ -3855,6 +3901,11 @@ SUPPORTED_XMP_PARAMS = {
     'ToneCurvePV2012Green',  # Green channel tone curve (CubicSpline or list of (x,y) points)
     'ToneCurvePV2012Blue',   # Blue channel tone curve (CubicSpline or list of (x,y) points)
     'crlcp:PerspectiveModel', # Lens correction profile (nested dict with RadialDistort params)
+    'HasCrop',               # Boolean flag indicating crop is active
+    'CropTop',               # Crop top edge (normalized 0-1)
+    'CropLeft',              # Crop left edge (normalized 0-1)
+    'CropBottom',            # Crop bottom edge (normalized 0-1)
+    'CropRight',             # Crop right edge (normalized 0-1)
     
     # TODO: Add pixel processing implementations for these additional properties:
     # 'Contrast2012', 'Highlights2012', 'Shadows2012', 'Whites2012', 'Blacks2012',
@@ -3913,8 +3964,12 @@ def supported_xmp_to_dict(source: 'XmpMetadata' | 'MetadataTags' | 'DngFile' | '
         value = xmp.get_root_prop(prop)
         if value is not None and not _is_noop_xmp_value(prop, value, xmp):
             # Convert numeric properties to float for rendering pipeline
-            if prop in ('Temperature', 'Tint', 'Exposure2012'):
+            if prop in ('Temperature', 'Tint', 'Exposure2012',
+                        'CropTop', 'CropLeft', 'CropBottom', 'CropRight'):
                 result[prop] = float(value)
+            elif prop == 'HasCrop':
+                # Convert string "True"/"False" to bool
+                result[prop] = str(value).lower() == 'true'
             else:
                 result[prop] = value  # ToneCurve* already parsed as list[tuple]
     

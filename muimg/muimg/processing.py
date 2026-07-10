@@ -287,6 +287,10 @@ class ProcessingPipeline:
         the upstream pipeline enqueuing its consumer results into this pipeline's
         task queue (while still running its own writer side effects).
         """
+        # Call on_task_done immediately with 0 progress for instant feedback
+        if self._on_task_done and self._total_items > 0:
+            self._on_task_done(0, self._total_items)
+        
         if self.num_workers == 0:
             return self._run_sync()
         

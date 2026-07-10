@@ -1220,26 +1220,24 @@ def _get_time_impl(
     return dt_obj
 
 
-def _convert_exif_dict_to_tags(tags: MetadataTags) -> None:
+def _convert_exif_dict_to_tags(tags: MetadataTags, exif_dict: dict) -> None:
     """Convert ExifTag dictionary to individual TIFF tags.
     
     Since TiffWriter cannot write ExifIFD structures, this function converts
     EXIF tags from the dictionary format (as read by tifffile) to individual
-    TIFF tags that can be written as regular tags. The ExifTag dict itself
-    remains in the tags instance.
+    TIFF tags that can be written as regular tags.
     
     Args:
-        tags: MetadataTags instance containing ExifTag to convert.
+        tags: MetadataTags instance to add converted tags to.
               Individual EXIF tags are added. Existing tags are not overwritten.
+        exif_dict: ExifTag dictionary to convert.
         
     Example:
+        exif_dict = dng_file.get_tag('ExifTag')
         tags = MetadataTags()
-        tags.add_raw_tag('ExifTag', ...)  # Contains {"ExposureTime": [1, 400], ...}
-        convert_exif_dict_to_tags(tags)
-        # tags now contains ExposureTime and FNumber as regular TIFF tags
-        # plus the original ExifTag dict
+        _convert_exif_dict_to_tags(tags, exif_dict)
+        # tags now contains DateTimeOriginal, ExposureTime, etc. as regular TIFF tags
     """
-    exif_dict = tags.get_tag('ExifTag', dict)
     if not exif_dict:
         return
     

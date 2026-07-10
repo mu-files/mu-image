@@ -7,7 +7,7 @@
 The repository contains two packages:
 
 - **[`muimg`](muimg/README.md)**: A Python library and CLI engine for Adobe DNG manipulation, rendering, metadata handling, and multi-threaded batch processing.
-- **[`mu-dng-converter`](mu-dng-converter/README.md)**: A cross-platform desktop GUI application built on `muimg` and [Flet](https://flet.dev) for batch-converting raw image folders, time-lapse sequences, and astronomical data.
+- **[`mu-dng-converter`](mu-dng-converter/README.md)**: A cross-platform desktop GUI application built on `muimg` and [PyWebView](https://pywebview.flowrl.com/) for batch-converting raw image folders, time-lapse sequences, and astronomical data.
 
 ---
 

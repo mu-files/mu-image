@@ -37,53 +37,71 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.41.7'
-
-      - name: Install Flet
-        run: pip install flet==0.85.2
-
-      - name: Verify Flutter
-        run: flutter --version
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller
+          pip install -e .
 
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build libgtk-3-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
-      - name: Install CocoaPods (macOS)
+      - name: Install macOS dependencies
         if: matrix.platform == 'macos'
-        run: brew install cocoapods
+        run: pip install pyobjc-framework-WebKit pyobjc-framework-Cocoa
 
-      - name: Build app
+      - name: Build app (macOS)
+        if: matrix.platform == 'macos'
         shell: bash
-        run: >
-          flet build ${{ matrix.platform }}
-          --project mu-dng-converter
-          --product "mu DNG Converter"
-          --org com.mufiles
-          ${{ matrix.extra-args }}
+        run: |
+          pyinstaller --name "mu-dng-converter" \
+            --windowed \
+            --onedir \
+            --add-data "web:web" \
+            --add-data "assets:assets" \
+            --icon "assets/icon.png" \
+            --osx-bundle-identifier "com.mufiles.mu-dng-converter" \
+            main.py
         env:
-          FLET_FLUTTER_PATH: ${{ env.FLUTTER_ROOT }}
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
-          CI: true
-          TERM: dumb
-          NO_COLOR: 1
+
+      - name: Build app (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          pyinstaller --name "mu-dng-converter" \
+            --windowed \
+            --onedir \
+            --add-data "web;web" \
+            --add-data "assets;assets" \
+            --icon "assets/icon.png" \
+            main.py
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: 1
+
+      - name: Build app (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          pyinstaller --name "mu-dng-converter" \
+            --windowed \
+            --onedir \
+            --add-data "web:web" \
+            --add-data "assets:assets" \
+            main.py
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: 1
 
       - name: Package macOS build
         if: matrix.platform == 'macos'
         run: |
-          cd build/flutter/build/macos/Build/Products/Release
+          cd dist
           ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app $GITHUB_WORKSPACE/mu-dng-converter/mu-dng-converter-macos.zip
-
-      - name: Show Windows build output structure
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: Get-ChildItem -Recurse -Depth 6 build | Select-Object FullName
 
       - name: Build Windows installer
         if: matrix.platform == 'windows'
@@ -91,7 +109,7 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag -replace '^app-v', ''
-          $sourceDir = "${{ github.workspace }}\mu-dng-converter\build\flutter\build\windows\x64\runner\Release"
+          $sourceDir = "${{ github.workspace }}\mu-dng-converter\dist"
           $issScript = "${{ github.workspace }}\mu-dng-converter\installer\windows.iss"
           $outputDir = "${{ github.workspace }}\mu-dng-converter"
           iscc.exe `
@@ -102,7 +120,7 @@ jobs:
 
       - name: Package Linux build
         if: matrix.platform == 'linux'
-        run: tar -czf mu-dng-converter-linux.tar.gz -C build/linux .
+        run: tar -czf mu-dng-converter-linux.tar.gz -C dist .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

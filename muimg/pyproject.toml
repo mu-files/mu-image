@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260604.1719"
+version = "0.1.20260709.1441"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -35,11 +35,11 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
-    "click",                            # 114 KB
+    "click",                            # 116 KB
     "defusedxml",                       # 25 KB
-    "imagecodecs>=2026.3.6",            # 12 MB
-    "numpy",                            # 5.0 MB
-    "opencv-python-headless",           # 44 MB
+    "imagecodecs>=2026.3.6",            # 13 MB
+    "numpy",                            # 5.1 MB
+    "opencv-python-headless",           # 46 MB
     "setproctitle",                     # 13 KB
     "tifffile>=2026.6.1",               # 261 KB
 ]
@@ -48,10 +48,10 @@ dependencies = [
 # Video encoding + Google Photos integration + Testing
 all = [
     "av",                               # 18 MB
-    "google-auth>=2.0.0",               # 240 KB
+    "google-auth>=2.0.0",               # 251 KB
     "google-auth-oauthlib>=1.0.0",      # 19 KB
     "requests>=2.25.0",                 # 71 KB
-    "pytest",                           # 366 KB
+    "pytest",                           # 377 KB
 ]
 # macOS Core Image support
 coreimage = [
