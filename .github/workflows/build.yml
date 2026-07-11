@@ -154,9 +154,8 @@ jobs:
           cd dist
           ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app mu-dng-converter-notarize.zip
           
-          # Submit for notarization with retry logic for Apple server hiccups
-          MAX_ATTEMPTS=3
-          DELAY_SECONDS=60
+          # Submit for notarization with exponential backoff + jitter
+          MAX_ATTEMPTS=5
           SUCCESS=false
           
           for i in $(seq 1 $MAX_ATTEMPTS); do
@@ -173,8 +172,13 @@ jobs:
             else
               echo "Warning: Notarization attempt $i failed."
               if [ $i -lt $MAX_ATTEMPTS ]; then
-                echo "Waiting $DELAY_SECONDS seconds before retrying..."
-                sleep $DELAY_SECONDS
+                # Exponential backoff: 60, 120, 240, 480 seconds base
+                BASE_DELAY=$((60 * (2 ** (i - 1))))
+                # Add random jitter: 0-60 seconds
+                JITTER=$((RANDOM % 60))
+                DELAY=$((BASE_DELAY + JITTER))
+                echo "Waiting $DELAY seconds before retrying (base: ${BASE_DELAY}s + jitter: ${JITTER}s)..."
+                sleep $DELAY
               fi
             fi
           done
