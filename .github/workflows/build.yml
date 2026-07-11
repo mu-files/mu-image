@@ -63,6 +63,7 @@ jobs:
             --add-data "assets:assets" \
             --icon "assets/icon.png" \
             --osx-bundle-identifier "com.mufiles.mu-dng-converter" \
+            --additional-hooks-dir=. \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -78,6 +79,7 @@ jobs:
             --add-data "web;web" \
             --add-data "assets;assets" \
             --icon "assets/icon.png" \
+            --additional-hooks-dir=. \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -92,6 +94,7 @@ jobs:
             --onedir \
             --add-data "web:web" \
             --add-data "assets:assets" \
+            --additional-hooks-dir=. \
             main.py
         env:
           PYTHONIOENCODING: utf-8

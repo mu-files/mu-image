@@ -33,11 +33,6 @@ if [ ! -d "$VENV_DIR" ]; then
 fi
 source "$VENV_DIR/bin/activate"
 
-# Copy local hooks to cloned repo (for faster iteration without pushing)
-LOCAL_PROJECT="$(dirname "$SCRIPT_DIR")"
-echo "=== Copying local hooks to cloned repo ==="
-cp "$LOCAL_PROJECT"/hook-*.py "$PROJECT_DIR/"
-
 # Extract and run steps from build.yml
 cd "$PROJECT_DIR"
 
