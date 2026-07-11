@@ -52,6 +52,32 @@ jobs:
         if: matrix.platform == 'macos'
         run: pip install pyobjc-framework-WebKit pyobjc-framework-Cocoa
 
+      - name: Import Code Signing Certificate
+        if: matrix.platform == 'macos'
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          
+          # Decode certificate
+          echo "$MACOS_CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          
+          # Create and configure keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          
+          # Import certificate
+          security import $RUNNER_TEMP/certificate.p12 -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          
+          # Clean up certificate file
+          rm $RUNNER_TEMP/certificate.p12
+
       - name: Build app (macOS)
         if: matrix.platform == 'macos'
         shell: bash
@@ -99,6 +125,46 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
+
+      - name: Sign macOS app
+        if: matrix.platform == 'macos'
+        run: |
+          # Find the Developer ID Application certificate
+          CERT_NAME=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Signing with: $CERT_NAME"
+          
+          # Sign all executables and libraries in the app bundle
+          find dist/mu-dng-converter.app -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -exec codesign --force --options runtime --sign "$CERT_NAME" --timestamp {} \;
+          
+          # Sign the main app bundle
+          codesign --force --options runtime --sign "$CERT_NAME" --timestamp --deep dist/mu-dng-converter.app
+          
+          # Verify signature
+          codesign --verify --verbose dist/mu-dng-converter.app
+
+      - name: Notarize macOS app
+        if: matrix.platform == 'macos'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          # Create zip for notarization
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app mu-dng-converter-notarize.zip
+          
+          # Submit for notarization and wait
+          xcrun notarytool submit mu-dng-converter-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" \
+            --wait
+          
+          # Staple the notarization ticket
+          xcrun stapler staple mu-dng-converter.app
+          
+          # Clean up notarization zip
+          rm mu-dng-converter-notarize.zip
 
       - name: Package macOS build
         if: matrix.platform == 'macos'
