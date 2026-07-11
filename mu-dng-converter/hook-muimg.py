@@ -1,13 +1,13 @@
 # PyInstaller hook for muimg
-# muimg uses lazy loading proxies for heavy dependencies, so we need to explicitly include them
 
-# Just add the lazy-loaded dependencies that PyInstaller can't auto-detect
-# imagecodecs and astropy have their own custom hooks
-hiddenimports = [
-    'cv2',
-    'numpy',
-    'tifffile',
-    'defusedxml',
-    'click',
-    'setproctitle',
-]
+from PyInstaller.utils.hooks import collect_submodules, collect_dynamic_libs
+
+# muimg dependencies (excluding those with dedicated hooks: astropy, imagecodecs)
+DEPS = ['cv2', 'numpy', 'tifffile', 'defusedxml', 'click', 'setproctitle']
+
+hiddenimports = []
+binaries = []
+
+for dep in DEPS:
+    hiddenimports += collect_submodules(dep)
+    binaries += collect_dynamic_libs(dep)

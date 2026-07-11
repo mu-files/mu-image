@@ -1,18 +1,10 @@
 # Override the default astropy hook to avoid collecting visualization modules
 # that require matplotlib. We only need astropy.io.fits and astropy.coordinates.
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-# Don't collect all submodules - only specify what we actually need
-hiddenimports = [
-    'astropy.io.fits',
-    'astropy.io.fits.hdu',
-    'astropy.io.fits.header',
-    'astropy.coordinates',
-    'astropy.units',
-    'astropy.constants',
-    'astropy.constants.codata2022',
-]
+# Collect submodules we need (excluding visualization to avoid matplotlib)
+hiddenimports = collect_submodules('astropy', filter=lambda name: 'visualization' not in name)
 
 # Explicitly exclude visualization modules that require matplotlib
 excludedimports = [
@@ -20,5 +12,5 @@ excludedimports = [
     'matplotlib',
 ]
 
-# Include astropy data files (CITATION, etc.)
-datas = collect_data_files('astropy', include_py_files=False)
+# Include astropy data files AND Python files (needed for parser tables like generic_parsetab.py)
+datas = collect_data_files('astropy', include_py_files=True)

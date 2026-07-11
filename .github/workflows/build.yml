@@ -39,14 +39,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller Pillow
+          pip install pyinstaller
           pip install -e .
 
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
       - name: Install macOS dependencies
         if: matrix.platform == 'macos'
@@ -64,7 +64,6 @@ jobs:
             --icon "assets/icon.png" \
             --osx-bundle-identifier "com.mufiles.mu-dng-converter" \
             --additional-hooks-dir=. \
-            --hidden-import=astropy \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -81,7 +80,6 @@ jobs:
             --add-data "assets;assets" \
             --icon "assets/icon.png" \
             --additional-hooks-dir=. \
-            --hidden-import=astropy \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -97,7 +95,6 @@ jobs:
             --add-data "web:web" \
             --add-data "assets:assets" \
             --additional-hooks-dir=. \
-            --hidden-import=astropy \
             main.py
         env:
           PYTHONIOENCODING: utf-8
@@ -129,7 +126,7 @@ jobs:
         run: tar -czf mu-dng-converter-linux.tar.gz -C dist .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: mu-dng-converter-${{ matrix.platform }}
           path: |
