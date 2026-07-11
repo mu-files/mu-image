@@ -133,11 +133,11 @@ jobs:
           CERT_NAME=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Signing with: $CERT_NAME"
           
-          # Sign all executables and libraries in the app bundle
-          find dist/mu-dng-converter.app -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -exec codesign --force --options runtime --sign "$CERT_NAME" --timestamp {} \;
+          # Sign inside-out: libraries and executables first (deepest items)
+          find dist/mu-dng-converter.app -type f \( -name "*.dylib" -o -name "*.so" -o -perm /111 \) -exec codesign --force --options runtime --sign "$CERT_NAME" --timestamp {} \;
           
-          # Sign the main app bundle
-          codesign --force --options runtime --sign "$CERT_NAME" --timestamp --deep dist/mu-dng-converter.app
+          # Sign the main app bundle last (no --deep to preserve internal signatures)
+          codesign --force --options runtime --sign "$CERT_NAME" --timestamp dist/mu-dng-converter.app
           
           # Verify signature
           codesign --verify --verbose dist/mu-dng-converter.app
@@ -160,8 +160,8 @@ jobs:
             --password "$APPLE_NOTARY_PASSWORD" \
             --wait
           
-          # Staple the notarization ticket
-          xcrun stapler staple mu-dng-converter.app
+          # Staple the notarization ticket (already in dist directory)
+          xcrun stapler staple ./mu-dng-converter.app
           
           # Clean up notarization zip
           rm mu-dng-converter-notarize.zip
