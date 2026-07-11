@@ -134,7 +134,8 @@ jobs:
           echo "Signing with: $CERT_NAME"
           
           # Sign inside-out: libraries and executables first (deepest items)
-          find dist/mu-dng-converter.app -type f \( -name "*.dylib" -o -name "*.so" -o -perm /111 \) -exec codesign --force --options runtime --sign "$CERT_NAME" --timestamp {} \;
+          # BSD find uses +mode syntax for "any bit set"
+          find dist/mu-dng-converter.app -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -exec codesign --force --options runtime --sign "$CERT_NAME" --timestamp {} \;
           
           # Sign the main app bundle last (no --deep to preserve internal signatures)
           codesign --force --options runtime --sign "$CERT_NAME" --timestamp dist/mu-dng-converter.app
