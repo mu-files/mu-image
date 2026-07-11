@@ -39,7 +39,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller
+          pip install pyinstaller Pillow
           pip install -e .
 
       - name: Install Linux dependencies
