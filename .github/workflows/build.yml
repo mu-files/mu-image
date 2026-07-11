@@ -154,12 +154,35 @@ jobs:
           cd dist
           ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app mu-dng-converter-notarize.zip
           
-          # Submit for notarization and wait
-          xcrun notarytool submit mu-dng-converter-notarize.zip \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_NOTARY_PASSWORD" \
-            --wait
+          # Submit for notarization with retry logic for Apple server hiccups
+          MAX_ATTEMPTS=3
+          DELAY_SECONDS=60
+          SUCCESS=false
+          
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            echo "Attempt $i of $MAX_ATTEMPTS: Submitting to Apple Notary Service..."
+            
+            if xcrun notarytool submit mu-dng-converter-notarize.zip \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_NOTARY_PASSWORD" \
+              --wait; then
+              echo "Notarization submitted and approved successfully!"
+              SUCCESS=true
+              break
+            else
+              echo "Warning: Notarization attempt $i failed."
+              if [ $i -lt $MAX_ATTEMPTS ]; then
+                echo "Waiting $DELAY_SECONDS seconds before retrying..."
+                sleep $DELAY_SECONDS
+              fi
+            fi
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "Error: Notarization failed after $MAX_ATTEMPTS attempts."
+            exit 1
+          fi
           
           # Staple the notarization ticket (already in dist directory)
           xcrun stapler staple ./mu-dng-converter.app
