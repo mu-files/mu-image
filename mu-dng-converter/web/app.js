@@ -586,3 +586,32 @@ window.appendLog = (tab, message) => {
         window.dngConverter.appendLog(tab, message);
     }
 };
+
+// EULA Modal functions
+async function showEulaModal(mode = 'view') {
+    const modal = document.getElementById('eula-modal');
+    const textEl = document.getElementById('eula-text');
+    const viewButtons = document.getElementById('eula-view-buttons');
+    const acceptButtons = document.getElementById('eula-accept-buttons');
+    try {
+        const text = await pywebview.api.get_eula_text();
+        textEl.textContent = text;
+        viewButtons.style.display = mode === 'view' ? 'flex' : 'none';
+        acceptButtons.style.display = mode === 'acceptance' ? 'flex' : 'none';
+        modal.style.display = 'flex';
+    } catch (e) {
+        console.error('Failed to load EULA:', e);
+    }
+}
+
+function closeEulaModal() {
+    document.getElementById('eula-modal').style.display = 'none';
+}
+
+document.getElementById('eula-accept-btn').addEventListener('click', () => {
+    pywebview.api.accept_eula().then(() => closeEulaModal());
+});
+
+document.getElementById('eula-decline-btn').addEventListener('click', () => {
+    pywebview.api.decline_eula();
+});

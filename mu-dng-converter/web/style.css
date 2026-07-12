@@ -369,14 +369,14 @@ main.tab-container {
     margin-bottom: 10px;
 }
 
-.modal-cancel,
-.modal-skip {
+.modal-buttons button.modal-cancel,
+.modal-buttons button.modal-skip {
     background: rgba(255, 255, 255, 0.15);
     color: #e0e0e0;
 }
 
-.modal-ok,
-.modal-overwrite {
+.modal-buttons button.modal-ok,
+.modal-buttons button.modal-overwrite {
     background: #4a90d9;
     color: #fff;
 }
@@ -637,4 +637,85 @@ main.tab-container {
     height: 200px;
     overflow-y: auto;
     white-space: pre-wrap;
+}
+
+/* Info icon (EULA link) */
+.info-icon {
+    position: fixed;
+    bottom: 8px;
+    left: 12px;
+    color: #666;
+    font-size: 14px;
+    text-decoration: none;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.info-icon:hover {
+    opacity: 1;
+    color: #888;
+}
+
+/* EULA Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: #3a3a3a;
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 90%;
+    max-height: 80%;
+    display: flex;
+    flex-direction: column;
+}
+
+.eula-modal {
+    width: 500px;
+    height: 400px;
+}
+
+.eula-modal pre {
+    flex: 1;
+    background: #2a2a2a;
+    border: 1px solid #4a4a4a;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #ccc;
+    margin: 0;
+}
+
+.modal-buttons {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 16px;
+}
+
+.modal-buttons button {
+    padding: 8px 20px;
+    border-radius: 6px;
+    border: none;
+    background: #007AFF;
+    color: white;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.modal-buttons button:hover {
+    opacity: 0.9;
 }

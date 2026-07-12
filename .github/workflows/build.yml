@@ -82,6 +82,13 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
+          # Extract version from tag (e.g., app-v0.1.20260711.1657 -> 0.1.20260711.1657)
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          echo "Building version: $VERSION"
+          
+          # Inject version into main.py
+          sed -i '' "s/__version__ = \"0.0.0\"/__version__ = \"$VERSION\"/" main.py
+          
           pyinstaller --name "mu-dng-converter" \
             --windowed \
             --onedir \
@@ -91,6 +98,14 @@ jobs:
             --osx-bundle-identifier "com.mufiles.mu-dng-converter" \
             --additional-hooks-dir=. \
             main.py
+          
+          # Update Info.plist with version and metadata
+          PLIST="dist/mu-dng-converter.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName mu DNG Converter" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string © 2026 mu-files LLC" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Set :NSHumanReadableCopyright © 2026 mu-files LLC" "$PLIST"
         env:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
@@ -99,6 +114,13 @@ jobs:
         if: matrix.platform == 'windows'
         shell: bash
         run: |
+          # Extract version from tag
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          echo "Building version: $VERSION"
+          
+          # Inject version into main.py (Windows sed syntax)
+          sed -i "s/__version__ = \"0.0.0\"/__version__ = \"$VERSION\"/" main.py
+          
           pyinstaller --name "mu-dng-converter" \
             --windowed \
             --onedir \
@@ -115,6 +137,13 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          # Extract version from tag
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          echo "Building version: $VERSION"
+          
+          # Inject version into main.py
+          sed -i "s/__version__ = \"0.0.0\"/__version__ = \"$VERSION\"/" main.py
+          
           pyinstaller --name "mu-dng-converter" \
             --windowed \
             --onedir \

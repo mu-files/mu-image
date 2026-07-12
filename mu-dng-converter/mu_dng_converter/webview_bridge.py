@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 import json
 import platform
+import sys
 from typing import Dict, Any, Optional
 
 
@@ -538,6 +539,30 @@ class WebViewBridge:
         # TODO: Implement settings persistence to JavaScript
         pass
 
+    def get_eula_text(self) -> str:
+        """Return the EULA text for display in a JS modal."""
+        from main import EULA_TEXT
+        return EULA_TEXT
+
+    def accept_eula(self):
+        """Record EULA acceptance. The JS side closes the modal."""
+        from main import _save_eula_accepted
+        _save_eula_accepted()
+
+    def decline_eula(self):
+        """Decline EULA: quit the application cleanly."""
+        if sys.platform == "darwin":
+            from AppKit import NSApplication
+            app = NSApplication.sharedApplication()
+            app.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "terminate:", None, False
+            )
+        elif self.window:
+            self.window.destroy()
+        else:
+            import os
+            os._exit(0)
+
 
 # Global bridge instance
 bridge = WebViewBridge()
@@ -555,3 +580,6 @@ def expose_to_window(window):
     window.expose(bridge.validate_tag)
     window.expose(bridge.get_settings)
     window.expose(bridge.set_settings)
+    window.expose(bridge.get_eula_text)
+    window.expose(bridge.accept_eula)
+    window.expose(bridge.decline_eula)
