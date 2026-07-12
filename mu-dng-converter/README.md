@@ -104,12 +104,7 @@ input                   Input FITS file or folder (.fit / .fits)
 
 Download a pre-built binary from the [Releases](https://github.com/mu-files/mu-image/releases) page. No Python installation required.
 
-> **macOS note:** The app is not yet notarized. On first launch macOS may show a message saying the app cannot be opened. To allow it:
-> 1. Try to open the app (double-click) — macOS will block it
-> 2. Open **System Settings → Privacy & Security**
-> 3. Scroll down to the Security section — you will see a message about mu-dng-converter
-> 4. Click **Open Anyway**
-> 5. The app will open and you won't be prompted again
+> **macOS note:** The app is signed and notarized. On first launch, macOS will show a security prompt; click **Open** to proceed. Subsequent launches open normally.
 
 > **Windows note:** Download and run `mu-dng-converter-windows-setup.exe`. Windows SmartScreen may warn that the app is unrecognized — click **More info** then **Run anyway** to proceed. The installer adds a Start Menu shortcut and an optional desktop icon.
 
