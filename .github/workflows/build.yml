@@ -101,9 +101,12 @@ jobs:
           
           # Update Info.plist with version and metadata
           PLIST="dist/mu-dng-converter.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleName mu DNG Converter" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleName string mu DNG Converter" "$PLIST" || \
+            /usr/libexec/PlistBuddy -c "Set :CFBundleName mu DNG Converter" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string © 2026 mu-files LLC" "$PLIST" || \
             /usr/libexec/PlistBuddy -c "Set :NSHumanReadableCopyright © 2026 mu-files LLC" "$PLIST"
         env:
