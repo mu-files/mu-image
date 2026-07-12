@@ -154,45 +154,55 @@ jobs:
           cd dist
           ditto -c -k --sequesterRsrc --keepParent mu-dng-converter.app mu-dng-converter-notarize.zip
           
-          # Submit for notarization with exponential backoff + jitter
-          MAX_ATTEMPTS=5
-          SUCCESS=false
+          # Submit for notarization (async - don't wait)
+          echo "Submitting to Apple Notary Service..."
+          SUBMIT_OUTPUT=$(xcrun notarytool submit mu-dng-converter-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" \
+            --output-format json)
           
-          for i in $(seq 1 $MAX_ATTEMPTS); do
-            echo "Attempt $i of $MAX_ATTEMPTS: Submitting to Apple Notary Service..."
+          echo "$SUBMIT_OUTPUT"
+          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
+          echo "Submission ID: $SUBMISSION_ID"
+          
+          # Poll for completion with 15 minute timeout
+          TIMEOUT=900
+          POLL_INTERVAL=30
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
             
-            if xcrun notarytool submit mu-dng-converter-notarize.zip \
+            STATUS_OUTPUT=$(xcrun notarytool info "$SUBMISSION_ID" \
               --apple-id "$APPLE_ID" \
               --team-id "$APPLE_TEAM_ID" \
               --password "$APPLE_NOTARY_PASSWORD" \
-              --wait; then
-              echo "Notarization submitted and approved successfully!"
-              SUCCESS=true
-              break
-            else
-              echo "Warning: Notarization attempt $i failed."
-              if [ $i -lt $MAX_ATTEMPTS ]; then
-                # Exponential backoff: 60, 120, 240, 480 seconds base
-                BASE_DELAY=$((60 * (2 ** (i - 1))))
-                # Add random jitter: 0-60 seconds
-                JITTER=$((RANDOM % 60))
-                DELAY=$((BASE_DELAY + JITTER))
-                echo "Waiting $DELAY seconds before retrying (base: ${BASE_DELAY}s + jitter: ${JITTER}s)..."
-                sleep $DELAY
-              fi
+              --output-format json)
+            
+            STATUS=$(echo "$STATUS_OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['status'])")
+            echo "Status after ${ELAPSED}s: $STATUS"
+            
+            if [ "$STATUS" = "Accepted" ]; then
+              echo "Notarization successful!"
+              xcrun stapler staple ./mu-dng-converter.app
+              rm mu-dng-converter-notarize.zip
+              exit 0
+            elif [ "$STATUS" = "Invalid" ] || [ "$STATUS" = "Rejected" ]; then
+              echo "Notarization failed with status: $STATUS"
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_NOTARY_PASSWORD"
+              exit 1
             fi
           done
           
-          if [ "$SUCCESS" != "true" ]; then
-            echo "Error: Notarization failed after $MAX_ATTEMPTS attempts."
-            exit 1
-          fi
-          
-          # Staple the notarization ticket (already in dist directory)
-          xcrun stapler staple ./mu-dng-converter.app
-          
-          # Clean up notarization zip
-          rm mu-dng-converter-notarize.zip
+          # Timeout - fail the build
+          echo "ERROR: Notarization timed out after ${TIMEOUT}s."
+          echo "Submission ID for manual follow-up: $SUBMISSION_ID"
+          exit 1
 
       - name: Package macOS build
         if: matrix.platform == 'macos'
