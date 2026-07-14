@@ -106,7 +106,7 @@ Download a pre-built binary from the [Releases](https://github.com/mu-files/mu-i
 
 > **macOS note:** The app is signed and notarized. On first launch, macOS will show a security prompt; click **Open** to proceed. Subsequent launches open normally.
 
-> **Windows note:** Download and run `mu-dng-converter-windows-setup.exe`. Windows SmartScreen may warn that the app is unrecognized — click **More info** then **Run anyway** to proceed. The installer adds a Start Menu shortcut and an optional desktop icon.
+> **Windows note:** Download and run `mu-dng-converter-windows-setup.exe`. The installer is digitally signed by mu-files LLC. Windows SmartScreen may initially warn that the app is unrecognized while our certificate builds reputation — click **More info** then **Run anyway** to proceed. The installer adds a Start Menu shortcut and an optional desktop icon.
 
 ### Raspberry Pi
 
