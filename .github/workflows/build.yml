@@ -138,7 +138,7 @@ jobs:
 
       - name: Sign Windows executables (Azure Trusted Signing)
         if: matrix.platform == 'windows'
-        uses: azure/trusted-signing-action@v0.3
+        uses: azure/artifact-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -275,7 +275,7 @@ jobs:
 
       - name: Sign Windows installer (Azure Trusted Signing)
         if: matrix.platform == 'windows'
-        uses: azure/trusted-signing-action@v0.3
+        uses: azure/artifact-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
