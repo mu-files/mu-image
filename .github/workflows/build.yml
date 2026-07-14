@@ -144,9 +144,9 @@ jobs:
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           endpoint: https://wus2.codesigning.azure.net
-          trusted-signing-account-name: 'mufiles-signing-prod'
+          signing-account-name: 'mufiles-signing-prod'
           certificate-profile-name: 'mufiles-llc-profile'
-          files-folder: 'dist/mu-dng-converter'
+          files-folder: '${{ github.workspace }}/mu-dng-converter/dist/mu-dng-converter'
           files-folder-filter: 'exe,dll'
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
@@ -281,9 +281,9 @@ jobs:
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           endpoint: https://wus2.codesigning.azure.net
-          trusted-signing-account-name: 'mufiles-signing-prod'
+          signing-account-name: 'mufiles-signing-prod'
           certificate-profile-name: 'mufiles-llc-profile'
-          files-folder: 'mu-dng-converter'
+          files-folder: '${{ github.workspace }}/mu-dng-converter'
           files-folder-filter: 'exe'
           files-folder-recurse: false
           file-digest: SHA256
