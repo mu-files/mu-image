@@ -136,6 +136,22 @@ jobs:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
 
+      - name: Sign Windows executables (Azure Trusted Signing)
+        if: matrix.platform == 'windows'
+        uses: azure/trusted-signing-action@v0.3
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://wus2.codesigning.azure.net
+          trusted-signing-account-name: 'mufiles-signing-prod'
+          certificate-profile-name: 'mufiles-llc-profile'
+          files-folder: 'dist/mu-dng-converter'
+          files-folder-filter: 'exe,dll'
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Build app (Linux)
         if: matrix.platform == 'linux'
         shell: bash
@@ -256,6 +272,23 @@ jobs:
             /DSourceDir="$sourceDir" `
             /O"$outputDir" `
             "$issScript"
+
+      - name: Sign Windows installer (Azure Trusted Signing)
+        if: matrix.platform == 'windows'
+        uses: azure/trusted-signing-action@v0.3
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://wus2.codesigning.azure.net
+          trusted-signing-account-name: 'mufiles-signing-prod'
+          certificate-profile-name: 'mufiles-llc-profile'
+          files-folder: 'mu-dng-converter'
+          files-folder-filter: 'exe'
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Package Linux build
         if: matrix.platform == 'linux'

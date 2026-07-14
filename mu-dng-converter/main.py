@@ -15,13 +15,22 @@ EULA_TEXT = """mu-files LLC — End User License Agreement
 By using mu DNG Converter, you agree to the following terms:
 
 1. RISK OF DATA LOSS AND BACKUP REQUIREMENT
-This software modifies digital image files. By using this software, you acknowledge and agree that file alteration, damage, or corruption is an inherent risk of data processing. You agree that you are solely responsible for maintaining complete, independent backups of all original data and source files prior to using this software.
+This software modifies digital image files. By using this software, you
+acknowledge and agree that file alteration, damage, or corruption is an
+inherent risk of data processing. You agree that you are solely
+responsible for maintaining complete, independent backups of all original
+data and source files prior to using this software.
 
 2. LIMITATION OF LIABILITY
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL MU-FILES LLC OR ITS DEVELOPERS BE LIABLE FOR ANY DAMAGES, LOSS OF DATA, LOSS OF PROFITS, OR COSTS OF PROCUREMENT OF SUBSTITUTE GOODS ARISING OUT OF THE USE OR INABILITY TO USE THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. IN NO
+EVENT SHALL MU-FILES LLC OR ITS DEVELOPERS BE LIABLE FOR ANY DAMAGES,
+LOSS OF DATA, LOSS OF PROFITS, OR COSTS OF PROCUREMENT OF SUBSTITUTE
+GOODS ARISING OUT OF THE USE OR INABILITY TO USE THIS SOFTWARE, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 3. ACCEPTANCE
-By clicking "I Agree" you confirm that you have read and accept these terms."""
+By clicking "I Agree" you confirm that you have read and accept these
+terms."""
 
 
 def _get_config_dir() -> Path:
