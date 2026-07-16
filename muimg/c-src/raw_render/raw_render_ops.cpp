@@ -43,6 +43,48 @@
 #define NEON 0
 #endif
 
+#include <dlfcn.h>
+#include "../muimg_core.h"
+
+//=============================================================================
+// Core library loading (incremental migration)
+//=============================================================================
+
+static void* g_core_lib = nullptr;
+static int (*muimg_bilinear_demosaic_fn)(const MuImgBuffer*, MuImgBuffer*, const int[4]) = nullptr;
+
+static bool load_core_library() {
+    if (g_core_lib) return true;
+    
+#if defined(_WIN32)
+    const char* lib_name = "muimg/_binaries/muimg_core.dll";
+#elif defined(__APPLE__)
+    const char* lib_name = "muimg/_binaries/libmuimg_core.dylib";
+#else
+    const char* lib_name = "muimg/_binaries/libmuimg_core.so";
+#endif
+    
+    g_core_lib = dlopen(lib_name, RTLD_LAZY);
+    
+    if (!g_core_lib) {
+        PyErr_Format(PyExc_RuntimeError, 
+            "Failed to load muimg_core library: %s", lib_name);
+        return false;
+    }
+    
+    muimg_bilinear_demosaic_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const int[4]))
+        dlsym(g_core_lib, "muimg_bilinear_demosaic");
+    
+    if (!muimg_bilinear_demosaic_fn) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to load muimg_bilinear_demosaic from library");
+        dlclose(g_core_lib);
+        g_core_lib = nullptr;
+        return false;
+    }
+    
+    return true;
+}
+
 //=============================================================================
 // RAII wrapper for PyObject reference counting
 //=============================================================================
@@ -3038,169 +3080,6 @@ static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
     return (PyObject*)result.release();
 }
 
-//=============================================================================
-// Bilinear Demosaic (from dng_mosaic_info.cpp dng_bilinear_interpolator)
-//
-// This is a port of the DNG SDK's bilinear demosaicing algorithm.
-// For a 2x2 Bayer CFA pattern, each output pixel needs R, G, B values.
-// At positions where that color exists in the CFA, copy directly.
-// At other positions, interpolate from neighbors using bilinear weights.
-//
-// SDK reference: dng_mosaic_info.cpp lines 31-1090, dng_reference.cpp
-// RefBilinearRow16/RefBilinearRow32 lines 1293-1385
-//=============================================================================
-
-// CFA pattern is passed as a 2x2 array of color plane indices
-// SDK ref: dng_mosaic_info::fCFAPattern[row][col] contains plane index
-// Color plane indices: 0=Red, 1=Green, 2=Blue (per fCFAPlaneColor)
-
-// Get CFA color at position (row, col) for 2x2 pattern
-static inline int get_cfa_color(const int* cfa_colors, int row, int col) {
-    int pr = row & 1;
-    int pc = col & 1;
-    return cfa_colors[pr * 2 + pc];
-}
-
-// Bilinear demosaic for 2x2 Bayer pattern
-// SDK ref: dng_mosaic_info.cpp dng_bilinear_pattern::Calculate() and
-//          dng_bilinear_interpolator::Interpolate()
-//
-// For each output color plane, the kernel weights for a 2x2 Bayer pattern are:
-//
-// Red plane (planeColor=0):
-//   At R position: copy (weight 1.0)
-//   At G position in R row: average of E and W red neighbors
-//   At G position in B row: average of N and S red neighbors  
-//   At B position: average of 4 diagonal red neighbors (NW, NE, SW, SE)
-//
-// Blue plane (planeColor=2): same logic but for blue
-//
-// Green plane (planeColor=1):
-//   At G position: copy (weight 1.0)
-//   At R or B position: average of 4 adjacent green neighbors (N, S, E, W)
-//
-// SDK operates on float32 throughout (dng_pixel_buffer with ttFloat)
-//
-// NOTE: src and dst must not overlap (__restrict contract)
-static void bilinear_demosaic_kernel(
-    const float* __restrict src, float* __restrict dst,
-    npy_intp height, npy_intp width,
-    const int* __restrict cfa_colors
-) {
-    // Process each output pixel
-    for (npy_intp row = 0; row < height; row++) {
-        for (npy_intp col = 0; col < width; col++) {
-            npy_intp dst_idx = (row * width + col) * 3;
-            int this_color = get_cfa_color(cfa_colors, row, col);
-            
-            // For each output color plane (R=0, G=1, B=2)
-            for (int plane = 0; plane < 3; plane++) {
-                float sum = 0.0f;
-                int count = 0;
-                
-                if (this_color == plane) {
-                    // This position has the color we want - copy directly
-                    // SDK ref: lines 606-614 "Special case no interpolation case"
-                    dst[dst_idx + plane] = src[row * width + col];
-                }
-                else if (plane == 1) {
-                    // Green interpolation at R or B position
-                    // SDK ref: lines 634-646 "All sides" - average N,S,E,W
-                    // Check N
-                    if (row > 0) {
-                        sum += src[(row - 1) * width + col];
-                        count++;
-                    }
-                    // Check S
-                    if (row < height - 1) {
-                        sum += src[(row + 1) * width + col];
-                        count++;
-                    }
-                    // Check W
-                    if (col > 0) {
-                        sum += src[row * width + (col - 1)];
-                        count++;
-                    }
-                    // Check E
-                    if (col < width - 1) {
-                        sum += src[row * width + (col + 1)];
-                        count++;
-                    }
-                    dst[dst_idx + plane] = sum / (float)count;
-                }
-                else {
-                    // Red or Blue interpolation
-                    // Determine if we're interpolating R at B position or B at R position
-                    // or R/B at G position
-                    
-                    // Find which color is at this position
-                    if (this_color == 1) {
-                        // Green position - need to interpolate R or B
-                        // SDK ref: lines 648-670 "N & S" or "E & W"
-                        // Determine if horizontal or vertical neighbors have this color
-                        
-                        // Check if horizontal neighbors (E,W) have the target color
-                        int west_color = (col > 0) ? get_cfa_color(cfa_colors, row, col - 1) : -1;
-                        int east_color = (col < width - 1) ? get_cfa_color(cfa_colors, row, col + 1) : -1;
-                        
-                        if (west_color == plane || east_color == plane) {
-                            // Horizontal interpolation
-                            if (col > 0 && get_cfa_color(cfa_colors, row, col - 1) == plane) {
-                                sum += src[row * width + (col - 1)];
-                                count++;
-                            }
-                            if (col < width - 1 && get_cfa_color(cfa_colors, row, col + 1) == plane) {
-                                sum += src[row * width + (col + 1)];
-                                count++;
-                            }
-                        } else {
-                            // Vertical interpolation
-                            if (row > 0 && get_cfa_color(cfa_colors, row - 1, col) == plane) {
-                                sum += src[(row - 1) * width + col];
-                                count++;
-                            }
-                            if (row < height - 1 && get_cfa_color(cfa_colors, row + 1, col) == plane) {
-                                sum += src[(row + 1) * width + col];
-                                count++;
-                            }
-                        }
-                        if (count > 0) {
-                            dst[dst_idx + plane] = sum / (float)count;
-                        } else {
-                            dst[dst_idx + plane] = 0.0f;
-                        }
-                    }
-                    else {
-                        // R position needing B, or B position needing R
-                        // SDK ref: lines 724-736 "Four corners" - diagonal average
-                        if (row > 0 && col > 0) {
-                            sum += src[(row - 1) * width + (col - 1)];
-                            count++;
-                        }
-                        if (row > 0 && col < width - 1) {
-                            sum += src[(row - 1) * width + (col + 1)];
-                            count++;
-                        }
-                        if (row < height - 1 && col > 0) {
-                            sum += src[(row + 1) * width + (col - 1)];
-                            count++;
-                        }
-                        if (row < height - 1 && col < width - 1) {
-                            sum += src[(row + 1) * width + (col + 1)];
-                            count++;
-                        }
-                        if (count > 0) {
-                            dst[dst_idx + plane] = sum / (float)count;
-                        } else {
-                            dst[dst_idx + plane] = 0.0f;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 // Python wrapper for bilinear demosaic
 // SDK ref: dng_mosaic_info::InterpolateGeneric
 //
@@ -3279,14 +3158,42 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
         return NULL;
     }
     
-    const float* src_data = (const float*)PyArray_DATA(cfa_cont.get());
-    float* dst_data = (float*)PyArray_DATA(result.get());
+    // Load library if not already loaded
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    // Create input buffer
+    MuImgBuffer input = {
+        .data = PyArray_DATA(cfa_cont.get()),
+        .height = (size_t)height,
+        .width = (size_t)width,
+        .channels = 1,
+        .dtype = MUIMG_DTYPE_FLOAT32,
+        .stride = 0
+    };
+    
+    // Create output buffer
+    MuImgBuffer output = {
+        .data = PyArray_DATA(result.get()),
+        .height = (size_t)height,
+        .width = (size_t)width,
+        .channels = 3,
+        .dtype = MUIMG_DTYPE_FLOAT32,
+        .stride = 0
+    };
+    
+    int ret;
     Py_BEGIN_ALLOW_THREADS
-    // Run bilinear demosaic
-    bilinear_demosaic_kernel(src_data, dst_data, height, width, cfa_colors);
-    
+    // Call library function
+    ret = muimg_bilinear_demosaic_fn(&input, &output, cfa_colors);
     Py_END_ALLOW_THREADS
+    
+    if (ret != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_bilinear_demosaic failed with code %d", ret);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 

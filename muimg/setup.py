@@ -43,7 +43,17 @@ else:
     ]
     cpp_extra_args = ['-std=c++17']
 
-# Demosaic C extensions with ARM optimizations
+# Raw render extension - incrementally migrating to use libmuimg_core
+raw_render_extension = Extension(
+    'muimg._raw_render',
+    sources=['c-src/raw_render/raw_render_ops.cpp'],
+    include_dirs=[np.get_include(), 'c-src'],
+    extra_compile_args=common_compile_args + cpp_extra_args,
+    extra_link_args=common_link_args,
+    language='c++',
+)
+
+# VNG demosaic extension
 vng_extension = Extension(
     'muimg._vng',
     sources=['c-src/demosaic/vng.c'],
@@ -64,19 +74,8 @@ if os.path.exists(rcd_source):
         extra_link_args=common_link_args,
     )
 
-# DNG color processing C++ extension
-# Standalone implementation of DNG SDK color algorithms (no SDK dependencies)
-raw_render_extension = Extension(
-    'muimg._raw_render',
-    sources=['c-src/raw_render/raw_render_ops.cpp'],
-    include_dirs=[np.get_include()],
-    extra_compile_args=common_compile_args + cpp_extra_args,
-    extra_link_args=common_link_args,
-    language='c++',
-)
-
 # Build list of extensions
-ext_modules = [vng_extension, raw_render_extension]
+ext_modules = [raw_render_extension, vng_extension]
 if rcd_extension:
     ext_modules.append(rcd_extension)
 
