@@ -83,6 +83,26 @@ int muimg_mono_lut(
     int dst_bits
 );
 
+int muimg_transform_color(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    const float* input_lut,
+    size_t input_lut_size,
+    const float* matrix,
+    const float* output_lut,
+    size_t output_lut_size,
+    int src_bits,
+    int dst_bits,
+    bool hue_preserving
+);
+
+int muimg_clip_and_transform_color(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    const float clip_max[3],
+    const float matrix[9]
+);
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.

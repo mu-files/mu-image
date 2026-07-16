@@ -75,7 +75,7 @@ if os.path.exists(rcd_source):
     )
 
 # Build list of extensions
-ext_modules = [raw_render_extension]
+ext_modules = [raw_render_extension, vng_extension]
 if rcd_extension:
     ext_modules.append(rcd_extension)
 
