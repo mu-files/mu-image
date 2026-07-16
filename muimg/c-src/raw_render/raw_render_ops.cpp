@@ -52,6 +52,8 @@
 
 static void* g_core_lib = nullptr;
 static int (*muimg_bilinear_demosaic_fn)(const MuImgBuffer*, MuImgBuffer*, const int[4]) = nullptr;
+static int (*muimg_convert_dtype_fn)(const MuImgBuffer*, MuImgBuffer*, int, int, float) = nullptr;
+static int (*muimg_mono_lut_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, int, int) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -75,14 +77,32 @@ static bool load_core_library() {
     muimg_bilinear_demosaic_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const int[4]))
         dlsym(g_core_lib, "muimg_bilinear_demosaic");
     
-    if (!muimg_bilinear_demosaic_fn) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to load muimg_bilinear_demosaic from library");
+    muimg_convert_dtype_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, int, int, float))
+        dlsym(g_core_lib, "muimg_convert_dtype");
+    muimg_mono_lut_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, int, int))
+        dlsym(g_core_lib, "muimg_mono_lut");
+
+    if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
         return false;
     }
     
     return true;
+}
+
+static MuImgDType muimg_dtype_from_numpy(int dtype) {
+    switch (dtype) {
+        case NPY_UINT8:
+            return MUIMG_DTYPE_UINT8;
+        case NPY_UINT16:
+            return MUIMG_DTYPE_UINT16;
+        case NPY_FLOAT32:
+            return MUIMG_DTYPE_FLOAT32;
+        default:
+            return MUIMG_DTYPE_FLOAT16;
+    }
 }
 
 //=============================================================================
@@ -923,163 +943,6 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
     return (PyObject*)result.release();
 }
 
-//=============================================================================
-// Convert dtype with optional clip
-//=============================================================================
-
-//=============================================================================
-// Dtype Converter with optional clipping - NEON optimized for AArch64
-//=============================================================================
-//
-// Templated class for converting arrays of values between dtypes with scaling
-// and optional clipping. Optimized for AArch64 NEON.
-//
-// Usage pattern (similar to ColorMatrix3x3):
-//   DtypeConverter<uint8_t, uint16_t> converter(scale, clip_max);
-//   converter.convert(src, dst, count);
-//
-template<typename SrcT, typename DstT>
-class DtypeConverter {
-public:
-    DtypeConverter(float scale, float clip_max)
-        : scale_(scale), clip_max_(clip_max), do_clip_(clip_max >= 0.0f) {}
-
-    // Convert an array of elements
-    void convert(const SrcT* __restrict src, DstT* __restrict dst, int count) const {
-#if NEON
-        convert_neon(src, dst, count);
-#else
-        convert_scalar(src, dst, count);
-#endif
-    }
-
-private:
-    float scale_;
-    float clip_max_;
-    bool do_clip_;
-
-    // Scalar fallback - separate loops to avoid branch inside hot path
-    void convert_scalar(const SrcT* __restrict src, DstT* __restrict dst, int count) const {
-        // Special case: uint16_t -> float with unrolling for better auto-vectorization
-        if constexpr (std::is_same_v<SrcT, uint16_t> && std::is_same_v<DstT, float>) {
-            int i = 0;
-            for (; i <= count - 4; i += 4) {
-                float s0 = (float)src[i + 0];
-                float s1 = (float)src[i + 1];
-                float s2 = (float)src[i + 2];
-                float s3 = (float)src[i + 3];
-                dst[i + 0] = s0 * scale_;
-                dst[i + 1] = s1 * scale_;
-                dst[i + 2] = s2 * scale_;
-                dst[i + 3] = s3 * scale_;
-            }
-            for (; i < count; i++) {
-                dst[i] = (float)src[i] * scale_;
-            }
-        } else if (do_clip_) {
-            for (int i = 0; i < count; i++) {
-                dst[i] = (DstT)std::min(src[i] * scale_, clip_max_);
-            }
-        } else {
-            for (int i = 0; i < count; i++) {
-                dst[i] = (DstT)(src[i] * scale_);
-            }
-        }
-    }
-
-#if NEON
-    // NEON implementation - single path with merged clip logic
-    void convert_neon(const SrcT* __restrict src, DstT* __restrict dst,int count) const {
-        float32x4_t vscale = vdupq_n_f32(scale_);
-        // Clip limit is either clip_max (if specified) or dst_max (for safe conversion)
-        float clip_limit = do_clip_ ? clip_max_ : 
-            (std::is_same_v<DstT, uint8_t> ? 255.0f : 
-             std::is_same_v<DstT, uint16_t> ? 65535.0f : 
-             std::numeric_limits<float>::max());
-        float32x4_t vclip = vdupq_n_f32(clip_limit);
-        
-        int i = 0;
-        for (; i <= count - 4; i += 4) {
-            float32x4_t vsrc = load_src_neon(src + i);
-            float32x4_t vscaled = vmulq_f32(vsrc, vscale);
-            vscaled = vminq_f32(vscaled, vclip);  // clip to limit
-            store_dst_neon(dst + i, vscaled);
-        }
-        // Tail with scalar
-        if (i < count) {
-            convert_scalar(src + i, dst + i, count - i);
-        }
-    }
-
-    // Helper: Load source values as float32x4
-    float32x4_t load_src_neon(const SrcT* src) const {
-        if constexpr (std::is_same_v<SrcT, uint8_t>) {
-            // Load 8 uint8 values, use lower 4, convert to float32
-            uint8x8_t v8 = vld1_u8(src);  // Load 8 bytes
-            uint16x8_t v16_8 = vmovl_u8(v8);  // Widen to uint16x8
-            uint16x4_t v16 = vget_low_u16(v16_8);  // Get lower 4 uint16
-            uint32x4_t v32 = vmovl_u16(v16);  // Widen to uint32
-            return vcvtq_f32_u32(v32);  // Convert to float32
-        } else if constexpr (std::is_same_v<SrcT, uint16_t>) {
-            // Load 4 uint16 values, convert to float32
-            uint16x4_t v16 = vld1_u16(src);  // Load 4 uint16
-            uint32x4_t v32 = vmovl_u16(v16);  // Widen to uint32
-            return vcvtq_f32_u32(v32);  // Convert to float32
-        } else if constexpr (std::is_same_v<SrcT, float>) {
-            return vld1q_f32(src);  // Load 4 floats directly
-        }
-    }
-
-    // Helper: Store float32x4 as destination type
-    // Input val is already clipped to [0, clip_limit] in main loop, just convert
-    void store_dst_neon(DstT* dst, float32x4_t val) const {
-        if constexpr (std::is_same_v<DstT, uint8_t>) {
-            // Convert to uint8 (val is already in [0, 255] range)
-            uint32x4_t v32 = vcvtq_u32_f32(val);
-            uint16x4_t v16 = vmovn_u32(v32);
-            uint8x8_t v8 = vmovn_u16(vcombine_u16(v16, v16));
-            vst1_u8(dst, v8);
-        } else if constexpr (std::is_same_v<DstT, uint16_t>) {
-            // Convert to uint16 (val is already in [0, 65535] range)
-            uint32x4_t v32 = vcvtq_u32_f32(val);
-            uint16x4_t v16 = vqmovn_u32(v32);
-            vst1_u16(dst, v16);
-        } else if constexpr (std::is_same_v<DstT, float>) {
-            vst1q_f32(dst, val);  // Already clipped, store directly
-        }
-    }
-#endif
-};
-
-// Specialized: Monochrome LUT only (single channel, no matrix)
-// Use8bit256: true for uint8 input with 256-entry LUT (direct lookup, no interpolation)
-template<typename SrcT, typename DstT, bool Use8bit256>
-static void mono_lut_impl(
-    const SrcT* __restrict input,
-    DstT* __restrict output,
-    int total_pixels,
-    const float* __restrict lut,
-    int lut_size,
-    float src_scale,
-    float dst_scale
-) {
-    // Fused scale: src_scale * (lut_size - 1) in one multiply
-    float fused_scale = src_scale * (lut_size - 1);
-    float lut_max = (lut_size - 1);
-
-    for (int i = 0; i < total_pixels; ++i) {
-        float val;
-        if constexpr (Use8bit256) {
-            // 8-bit direct lookup (no interpolation)
-            val = lut_lookup_8bit(lut, input[i]);
-        } else {
-            val = lut_lookup_interp(lut, std::clamp(input[i] * fused_scale, 0.0f, lut_max));
-        }
-        // Clip and store
-        output[i] = (DstT)(std::clamp(val, 0.0f, 1.0f) * dst_scale);
-    }
-}
-
 // Python wrapper for mono_lut
 static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
     PyArrayObject* image_array = NULL;
@@ -1108,9 +971,11 @@ static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
         return NULL;
     }
 
-    int height = (int)PyArray_DIM(image_array, 0);
-    int width = (int)PyArray_DIM(image_array, 1);
-    int total_pixels = height * width;
+    npy_intp dims[3] = {
+        PyArray_DIM(image_array, 0), PyArray_DIM(image_array, 1), 1
+    };
+    size_t height = static_cast<size_t>(dims[0]);
+    size_t width = static_cast<size_t>(dims[1]);
 
     int src_dtype = PyArray_TYPE(image_array);
     int dst_dtype = dest_dtype_int;
@@ -1145,7 +1010,6 @@ static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
     if (!image_cont) return NULL;
 
     // Create output array matching input dimensionality
-    npy_intp dims[3] = {height, width, 1};
     int out_ndim = (ndim == 3) ? 3 : 2;
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_SimpleNew(out_ndim, dims, dst_dtype));
@@ -1154,51 +1018,31 @@ static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
     const void* src_data = PyArray_DATA(image_cont.get());
     void* dst_data = PyArray_DATA(result.get());
 
-    // Scale factors
-    float src_scale = 1.0f / get_max_value(src_dtype, src_bits);
-    float dst_scale = get_max_value(dst_dtype, dst_bits);
-
-    // Dispatch based on types
-    bool use_8bit = (src_dtype == NPY_UINT8 && lut_size == 256);
-
-    #define DISPATCH_MONO(SrcT, DstT) \
-        if (use_8bit) { \
-            mono_lut_impl<SrcT, DstT, true>( \
-                (const SrcT*)src_data, (DstT*)dst_data, total_pixels, \
-                lut_data, lut_size, src_scale, dst_scale); \
-        } else { \
-            mono_lut_impl<SrcT, DstT, false>( \
-                (const SrcT*)src_data, (DstT*)dst_data, total_pixels, \
-                lut_data, lut_size, src_scale, dst_scale); \
-        }
-
-    if (src_dtype == NPY_UINT8) {
-        if (dst_dtype == NPY_UINT8) {
-            DISPATCH_MONO(uint8_t, uint8_t)
-        } else if (dst_dtype == NPY_UINT16) {
-            DISPATCH_MONO(uint8_t, uint16_t)
-        } else {
-            DISPATCH_MONO(uint8_t, float)
-        }
-    } else if (src_dtype == NPY_UINT16) {
-        if (dst_dtype == NPY_UINT8) {
-            DISPATCH_MONO(uint16_t, uint8_t)
-        } else if (dst_dtype == NPY_UINT16) {
-            DISPATCH_MONO(uint16_t, uint16_t)
-        } else {
-            DISPATCH_MONO(uint16_t, float)
-        }
-    } else { // float32
-        if (dst_dtype == NPY_UINT8) {
-            DISPATCH_MONO(float, uint8_t)
-        } else if (dst_dtype == NPY_UINT16) {
-            DISPATCH_MONO(float, uint16_t)
-        } else {
-            DISPATCH_MONO(float, float)
-        }
+    if (!load_core_library()) {
+        return NULL;
     }
 
-    #undef DISPATCH_MONO
+    MuImgDType input_dtype = muimg_dtype_from_numpy(src_dtype);
+    MuImgDType output_dtype = muimg_dtype_from_numpy(dst_dtype);
+
+    MuImgBuffer input = {
+        const_cast<void*>(src_data), height, width, 1, input_dtype, 0
+    };
+    MuImgBuffer output = {
+        dst_data, height, width, 1, output_dtype, 0
+    };
+
+    int ret;
+    Py_BEGIN_ALLOW_THREADS
+    ret = muimg_mono_lut_fn(
+        &input, &output, lut_data, static_cast<size_t>(lut_size), src_bits,
+        dst_bits);
+    Py_END_ALLOW_THREADS
+
+    if (ret != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_mono_lut failed with code %d", ret);
+        return NULL;
+    }
 
     return (PyObject*)result.release();
 }
@@ -1230,11 +1074,13 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    int height = (int)PyArray_DIM(image_array, 0);
-    int width = (int)PyArray_DIM(image_array, 1);
-    int channels = (ndim == 3) ? (int)PyArray_DIM(image_array, 2) : 1;
-    int total_pixels = height * width * channels;
-    
+    npy_intp dims[3] = {
+        PyArray_DIM(image_array, 0), PyArray_DIM(image_array, 1),
+        ndim == 3 ? PyArray_DIM(image_array, 2) : 1
+    };
+    size_t height = static_cast<size_t>(dims[0]);
+    size_t width = static_cast<size_t>(dims[1]);
+    size_t channels = static_cast<size_t>(dims[2]);
     int src_dtype = PyArray_TYPE(image_array);
     int dst_dtype = dest_dtype_int;
     
@@ -1256,12 +1102,6 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
     if (!image_cont) return NULL;
     
     // Create output array with same dimensionality as input
-    npy_intp dims[3];
-    dims[0] = height;
-    dims[1] = width;
-    if (ndim == 3) {
-        dims[2] = channels;
-    }
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_SimpleNew(ndim, dims, dst_dtype));
     if (!result) return NULL;
@@ -1269,75 +1109,30 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
     const void* src_data = PyArray_DATA(image_cont.get());
     void* dst_data = PyArray_DATA(result.get());
     
-    // Determine effective bits for fast path check
-    int src_effective_bits = (src_bits > 0) ? src_bits : 
-        ((src_dtype == NPY_UINT8) ? 8 : (src_dtype == NPY_UINT16) ? 16 : 
-         (src_dtype == NPY_FLOAT32) ? 0 : 32);
-    int dst_effective_bits = (dst_bits > 0) ? dst_bits : 
-        ((dst_dtype == NPY_UINT8) ? 8 : (dst_dtype == NPY_UINT16) ? 16 : 
-         (dst_dtype == NPY_FLOAT32) ? 0 : 32);
-    
-    // Fast path: same dtype, same bits, no clip - just memcpy
-    if (src_dtype == dst_dtype && src_effective_bits == dst_effective_bits && clip_max < 0.0f) {
-        size_t elem_size = (src_dtype == NPY_UINT8) ? 1 : 
-                          (src_dtype == NPY_UINT16) ? 2 : 4;
-        size_t bytes = total_pixels * elem_size;
-        memcpy(dst_data, src_data, bytes);
-        return (PyObject*)result.release();
+    if (!load_core_library()) {
+        return NULL;
     }
-    
-    // Get max values for scaling (needed for conversion kernels)
-    float src_max = get_max_value(src_dtype, src_bits);
-    float dst_max = get_max_value(dst_dtype, dst_bits);
-    float scale = dst_max / src_max;
-    
-    // Skip clipping if clip_max >= destination max for integer types
-    // (For float, we always allow clipping even above 1.0 for HDR handling)
-    if (clip_max >= 0.0f && dst_dtype != NPY_FLOAT32 && clip_max >= dst_max) {
-        clip_max = -1.0f;
-    }
-    
+
+    MuImgDType input_dtype = muimg_dtype_from_numpy(src_dtype);
+    MuImgDType output_dtype = muimg_dtype_from_numpy(dst_dtype);
+
+    MuImgBuffer input = {
+        const_cast<void*>(src_data), height, width, channels, input_dtype, 0
+    };
+    MuImgBuffer output = {
+        dst_data, height, width, channels, output_dtype, 0
+    };
+
+    int ret;
     Py_BEGIN_ALLOW_THREADS
-    // Conversion kernels using DtypeConverter with NEON optimization
-    if (src_dtype == NPY_UINT8) {
-        const uint8_t* src = (const uint8_t*)src_data;
-        if (dst_dtype == NPY_UINT8) {
-            DtypeConverter<uint8_t, uint8_t> converter(scale, clip_max);
-            converter.convert(src, (uint8_t*)dst_data, total_pixels);
-        } else if (dst_dtype == NPY_UINT16) {
-            DtypeConverter<uint8_t, uint16_t> converter(scale, clip_max);
-            converter.convert(src, (uint16_t*)dst_data, total_pixels);
-        } else {  // NPY_FLOAT32
-            DtypeConverter<uint8_t, float> converter(scale, clip_max);
-            converter.convert(src, (float*)dst_data, total_pixels);
-        }
-    } else if (src_dtype == NPY_UINT16) {
-        const uint16_t* src = (const uint16_t*)src_data;
-        if (dst_dtype == NPY_UINT8) {
-            DtypeConverter<uint16_t, uint8_t> converter(scale, clip_max);
-            converter.convert(src, (uint8_t*)dst_data, total_pixels);
-        } else if (dst_dtype == NPY_UINT16) {
-            DtypeConverter<uint16_t, uint16_t> converter(scale, clip_max);
-            converter.convert(src, (uint16_t*)dst_data, total_pixels);
-        } else {  // NPY_FLOAT32
-            DtypeConverter<uint16_t, float> converter(scale, clip_max);
-            converter.convert(src, (float*)dst_data, total_pixels);
-        }
-    } else {  // NPY_FLOAT32
-        const float* src = (const float*)src_data;
-        if (dst_dtype == NPY_UINT8) {
-            DtypeConverter<float, uint8_t> converter(scale, clip_max);
-            converter.convert(src, (uint8_t*)dst_data, total_pixels);
-        } else if (dst_dtype == NPY_UINT16) {
-            DtypeConverter<float, uint16_t> converter(scale, clip_max);
-            converter.convert(src, (uint16_t*)dst_data, total_pixels);
-        } else {  // NPY_FLOAT32
-            DtypeConverter<float, float> converter(scale, clip_max);
-            converter.convert(src, (float*)dst_data, total_pixels);
-        }
-    }
-    
+    ret = muimg_convert_dtype_fn(&input, &output, src_bits, dst_bits, clip_max);
     Py_END_ALLOW_THREADS
+
+    if (ret != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_convert_dtype failed with code %d", ret);
+        return NULL;
+    }
+
     return (PyObject*)result.release();
 }
 
@@ -3163,21 +2958,22 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
         return NULL;
     }
     
-    // Create input buffer
+    size_t buffer_height = static_cast<size_t>(height);
+    size_t buffer_width = static_cast<size_t>(width);
+
     MuImgBuffer input = {
         .data = PyArray_DATA(cfa_cont.get()),
-        .height = (size_t)height,
-        .width = (size_t)width,
+        .height = buffer_height,
+        .width = buffer_width,
         .channels = 1,
         .dtype = MUIMG_DTYPE_FLOAT32,
         .stride = 0
     };
     
-    // Create output buffer
     MuImgBuffer output = {
         .data = PyArray_DATA(result.get()),
-        .height = (size_t)height,
-        .width = (size_t)width,
+        .height = buffer_height,
+        .width = buffer_width,
         .channels = 3,
         .dtype = MUIMG_DTYPE_FLOAT32,
         .stride = 0

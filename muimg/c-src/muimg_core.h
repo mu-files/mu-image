@@ -66,6 +66,23 @@ int muimg_bilinear_demosaic(
     const int cfa_pattern[4]
 );
 
+int muimg_convert_dtype(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    int src_bits,
+    int dst_bits,
+    float clip_max
+);
+
+int muimg_mono_lut(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    const float* lut,
+    size_t lut_size,
+    int src_bits,
+    int dst_bits
+);
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.
