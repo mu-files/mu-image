@@ -60,6 +60,7 @@ static int (*muimg_normalize_raw_fn)(const MuImgBuffer*, MuImgBuffer*, const flo
 static int (*muimg_apply_hue_sat_map_fn)(MuImgBuffer*, const float*, int, int, int) = nullptr;
 static int (*muimg_apply_exposure_ramp_fn)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool) = nullptr;
 static int (*muimg_apply_profile_gain_table_map_fn)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float) = nullptr;
+static int (*muimg_fix_vignette_fn)(MuImgBuffer*, const double*, int, double, double) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -99,10 +100,13 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_apply_exposure_ramp");
     muimg_apply_profile_gain_table_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float))
         dlsym(g_core_lib, "muimg_apply_profile_gain_table_map");
+    muimg_fix_vignette_fn = (int (*)(MuImgBuffer*, const double*, int, double, double))
+        dlsym(g_core_lib, "muimg_fix_vignette");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
         !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
-        !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn || !muimg_apply_profile_gain_table_map_fn) {
+        !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn || !muimg_apply_profile_gain_table_map_fn ||
+        !muimg_fix_vignette_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -848,46 +852,6 @@ static void warp_rectilinear(
     }
 }
 
-// Radial vignette correction
-// Applies gain = 1 + k0*r^2 + k1*r^4 + k2*r^6 + k3*r^8 + k4*r^10
-static void fix_vignette_radial(
-    float* data, npy_intp height, npy_intp width, int channels,
-    const double* params, int num_params,
-    double center_x, double center_y
-) {
-    double cx = center_x * width;
-    double cy = center_y * height;
-    double corner_dists[4] = {
-        std::sqrt(cx*cx + cy*cy),
-        std::sqrt((width-cx)*(width-cx) + cy*cy),
-        std::sqrt(cx*cx + (height-cy)*(height-cy)),
-        std::sqrt((width-cx)*(width-cx) + (height-cy)*(height-cy))
-    };
-    double max_dist = *std::max_element(corner_dists, corner_dists + 4);
-    if (max_dist < 1.0) max_dist = 1.0;
-    
-    for (npy_intp y = 0; y < height; y++) {
-        for (npy_intp x = 0; x < width; x++) {
-            double dx = ((double)x - cx) / max_dist;
-            double dy = ((double)y - cy) / max_dist;
-            double r2 = dx*dx + dy*dy;
-            
-            // Evaluate polynomial: gain = 1 + k0*r^2 + k1*r^4 + ...
-            double gain = 1.0;
-            double r2p = r2;
-            for (int i = 0; i < num_params && i < 5; i++) {
-                gain += params[i] * r2p;
-                r2p *= r2;
-            }
-            
-            // Apply gain and clip to [0,1]
-            npy_intp idx = (y * width + x) * channels;
-            for (int plane = 0; plane < channels; plane++) {
-                data[idx + plane] = std::max(0.0f, std::min(1.0f, data[idx + plane] * (float)gain));
-            }
-        }
-    }
-}
 
 // Apply gain map (flat-field correction) to CFA data
 // gain_map: 2D or 4D array of per-pixel gains
@@ -1573,10 +1537,29 @@ static PyObject* dng_color_op_fix_vignette(PyObject* self, PyObject* args) {
     const double* params = (const double*)PyArray_DATA(params_cont.get());
     int num_params = (int)PyArray_SIZE(params_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    fix_vignette_radial(data, height, width, 3, params, num_params, center_x, center_y);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_fix_vignette_fn(&buf, params, num_params, center_x, center_y);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_fix_vignette failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
@@ -1606,11 +1589,18 @@ static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
     auto cfa_cont = make_pyptr<PyArrayObject>((PyArrayObject*)PyArray_GETCONTIGUOUS(cfa_array));
     auto params_cont = make_pyptr<PyArrayObject>((PyArrayObject*)PyArray_GETCONTIGUOUS(params_array));
     
+    if (!cfa_cont || !params_cont) {
+        return NULL;
+    }
+    
     npy_intp height = PyArray_DIM(cfa_cont.get(), 0);
     npy_intp width = PyArray_DIM(cfa_cont.get(), 1);
     
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_NewLikeArray(cfa_cont.get(), NPY_ANYORDER, NULL, 0));
+    if (!result) {
+        return NULL;
+    }
     
     float* data = (float*)PyArray_DATA(result.get());
     const float* src = (const float*)PyArray_DATA(cfa_cont.get());
@@ -1619,11 +1609,29 @@ static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
     const double* params = (const double*)PyArray_DATA(params_cont.get());
     int num_params = (int)PyArray_SIZE(params_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    // Apply vignette correction to single-channel CFA data
-    fix_vignette_radial(data, height, width, 1, params, num_params, center_x, center_y);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        1,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_fix_vignette_fn(&buf, params, num_params, center_x, center_y);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_fix_vignette failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
