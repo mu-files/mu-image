@@ -141,6 +141,49 @@ int muimg_normalize_raw(
     int linearization_table_size
 );
 
+// Apply HueSatMap (3D LUT) to RGB image for camera profile color adjustments
+//
+// SDK ref: dng_hue_sat_map.cpp
+//
+// Args:
+//   rgb: RGB image data, float32, shape (H, W, 3) - modified in-place
+//   map_data: HueSatMap data, float32, flattened array of (hue_shift, sat_scale, val_scale) triplets
+//   hue_divs: Number of hue divisions in the map
+//   sat_divs: Number of saturation divisions in the map
+//   val_divs: Number of value divisions in the map (0 or 1 for 2.5D table)
+//
+// Returns: MUIMG_SUCCESS on success, error code otherwise
+int muimg_apply_hue_sat_map(
+    MuImgBuffer* rgb,
+    const float* map_data,
+    int hue_divs,
+    int sat_divs,
+    int val_divs
+);
+
+// Apply exposure ramp function (dng_function_exposure_ramp)
+//
+// SDK ref: dng_render.cpp lines 50-103
+// 3 regions: below black-radius=0, above black+radius=linear, between=quadratic
+//
+// Args:
+//   input: Input RGB image, float32, shape (H, W, 3)
+//   output: Output RGB image, float32, shape (H, W, 3)
+//   white: White point (1.0 / pow(2, max(0, exposure)))
+//   black: Black point (shadows * shadowScale * 0.001)
+//   minBlack: Minimum black for radius calculation
+//   supportOverrange: Allow values > 1.0
+//
+// Returns: MUIMG_SUCCESS on success, error code otherwise
+int muimg_apply_exposure_ramp(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    double white,
+    double black,
+    double minBlack,
+    bool supportOverrange
+);
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.

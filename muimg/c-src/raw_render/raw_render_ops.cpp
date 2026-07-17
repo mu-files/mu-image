@@ -57,6 +57,8 @@ static int (*muimg_mono_lut_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, 
 static int (*muimg_transform_color_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, const float*, const float*, size_t, int, int, bool) = nullptr;
 static int (*muimg_clip_and_transform_color_fn)(const MuImgBuffer*, MuImgBuffer*, const float[3], const float[9]) = nullptr;
 static int (*muimg_normalize_raw_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, int, int, int, const float*, int, const float*, int, const float*, int, const uint16_t*, int) = nullptr;
+static int (*muimg_apply_hue_sat_map_fn)(MuImgBuffer*, const float*, int, int, int) = nullptr;
+static int (*muimg_apply_exposure_ramp_fn)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -90,9 +92,14 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_clip_and_transform_color");
     muimg_normalize_raw_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float*, int, int, int, const float*, int, const float*, int, const float*, int, const uint16_t*, int))
         dlsym(g_core_lib, "muimg_normalize_raw");
+    muimg_apply_hue_sat_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, int))
+        dlsym(g_core_lib, "muimg_apply_hue_sat_map");
+    muimg_apply_exposure_ramp_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool))
+        dlsym(g_core_lib, "muimg_apply_exposure_ramp");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
-        !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn) {
+        !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
+        !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -584,190 +591,7 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     return (PyObject*)result.release();
 }
 
-//=============================================================================
-// RGB <-> HSV Conversion (from dng_utils.h)
-// H range: 0-6, S/V range: 0-1
-//=============================================================================
-
-static inline void rgb_to_hsv(float r, float g, float b, float& h, float& s, float& v) {
-    v = std::max(r, std::max(g, b));
-    float gap = v - std::min(r, std::min(g, b));
-    
-    if (gap > 0.0f) {
-        if (r == v) {
-            h = (g - b) / gap;
-            if (h < 0.0f) h += 6.0f;
-        } else if (g == v) {
-            h = 2.0f + (b - r) / gap;
-        } else {
-            h = 4.0f + (r - g) / gap;
-        }
-        s = gap / v;
-    } else {
-        h = 0.0f;
-        s = 0.0f;
-    }
-}
-
-static inline void hsv_to_rgb(float h, float s, float v, float& r, float& g, float& b) {
-    if (s > 0.0f) {
-        h = fmodf(h, 6.0f);
-        if (h < 0.0f) h += 6.0f;
-        
-        int i = (int)h;
-        float f = h - (float)i;
-        float p = v * (1.0f - s);
-        float q = v * (1.0f - s * f);
-        float t = v * (1.0f - s * (1.0f - f));
-        
-        switch (i) {
-            case 0: r = v; g = t; b = p; break;
-            case 1: r = q; g = v; b = p; break;
-            case 2: r = p; g = v; b = t; break;
-            case 3: r = p; g = q; b = v; break;
-            case 4: r = t; g = p; b = v; break;
-            case 5: r = v; g = p; b = q; break;
-            case 6: r = v; g = t; b = p; break;  // Edge case
-        }
-    } else {
-        r = v;
-        g = v;
-        b = v;
-    }
-}
-
-//=============================================================================
-// HueSatMap - 3D LUT for HSV adjustments (from dng_hue_sat_map.cpp)
-//=============================================================================
-
-struct HSBModify {
-    float hue_shift;   // Hue shift in degrees
-    float sat_scale;   // Saturation scale factor
-    float val_scale;   // Value scale factor
-};
-
-// Apply HueSatMap to a single pixel
-// map_data: flattened 3D array of HSBModify [val][hue][sat]
-// hue_divs, sat_divs, val_divs: table dimensions
-static void apply_hue_sat_map(
-    float& r, float& g, float& b,
-    const HSBModify* map_data,
-    uint32_t hue_divs, uint32_t sat_divs, uint32_t val_divs
-) {
-    // Convert to HSV
-    // Input is guaranteed to be in [0,1] from clip_and_transform_color
-    float h, s, v;
-    rgb_to_hsv(r, g, b, h, s, v);
-    
-    // Scale factors for indexing
-    float h_scale = (hue_divs < 2) ? 0.0f : (hue_divs * (1.0f / 6.0f));
-    float s_scale = (float)((int32_t)sat_divs - 1);
-    float v_scale = (float)((int32_t)val_divs - 1);
-    
-    int32_t max_hue_idx = (int32_t)hue_divs - 1;
-    int32_t max_sat_idx = (int32_t)sat_divs - 2;
-    int32_t max_val_idx = (int32_t)val_divs - 2;
-    
-    int32_t hue_step = sat_divs;
-    int32_t val_step = hue_divs * hue_step;
-    
-    float hue_shift, sat_scale, val_scale;
-    
-    if (val_divs < 2) {
-        // 2.5D table (most common)
-        float h_scaled = h * h_scale;
-        float s_scaled = s * s_scale;
-        
-        int32_t h_idx0 = (int32_t)h_scaled;
-        int32_t s_idx0 = (int32_t)s_scaled;
-        s_idx0 = std::min(s_idx0, max_sat_idx);
-        
-        int32_t h_idx1 = h_idx0 + 1;
-        if (h_idx0 >= max_hue_idx) {
-            h_idx0 = max_hue_idx;
-            h_idx1 = 0;
-        }
-        
-        float h_fract1 = h_scaled - (float)h_idx0;
-        float s_fract1 = s_scaled - (float)s_idx0;
-        float h_fract0 = 1.0f - h_fract1;
-        float s_fract0 = 1.0f - s_fract1;
-        
-        const HSBModify* e00 = map_data + h_idx0 * hue_step + s_idx0;
-        const HSBModify* e01 = map_data + h_idx1 * hue_step + s_idx0;
-        
-        float hs0 = h_fract0 * e00->hue_shift + h_fract1 * e01->hue_shift;
-        float ss0 = h_fract0 * e00->sat_scale + h_fract1 * e01->sat_scale;
-        float vs0 = h_fract0 * e00->val_scale + h_fract1 * e01->val_scale;
-        
-        e00++; e01++;
-        float hs1 = h_fract0 * e00->hue_shift + h_fract1 * e01->hue_shift;
-        float ss1 = h_fract0 * e00->sat_scale + h_fract1 * e01->sat_scale;
-        float vs1 = h_fract0 * e00->val_scale + h_fract1 * e01->val_scale;
-        
-        hue_shift = s_fract0 * hs0 + s_fract1 * hs1;
-        sat_scale = s_fract0 * ss0 + s_fract1 * ss1;
-        val_scale = s_fract0 * vs0 + s_fract1 * vs1;
-    } else {
-        // Full 3D table - trilinear interpolation
-        float h_scaled = h * h_scale;
-        float s_scaled = s * s_scale;
-        float v_scaled = v * v_scale;
-        
-        int32_t h_idx0 = (int32_t)h_scaled;
-        int32_t s_idx0 = (int32_t)s_scaled;
-        int32_t v_idx0 = (int32_t)v_scaled;
-        
-        s_idx0 = std::min(s_idx0, max_sat_idx);
-        v_idx0 = std::min(v_idx0, max_val_idx);
-        
-        int32_t h_idx1 = h_idx0 + 1;
-        if (h_idx0 >= max_hue_idx) {
-            h_idx0 = max_hue_idx;
-            h_idx1 = 0;
-        }
-        
-        float h_fract1 = h_scaled - (float)h_idx0;
-        float s_fract1 = s_scaled - (float)s_idx0;
-        float v_fract1 = v_scaled - (float)v_idx0;
-        float h_fract0 = 1.0f - h_fract1;
-        float s_fract0 = 1.0f - s_fract1;
-        float v_fract0 = 1.0f - v_fract1;
-        
-        const HSBModify* e00 = map_data + v_idx0 * val_step + h_idx0 * hue_step + s_idx0;
-        const HSBModify* e01 = map_data + v_idx0 * val_step + h_idx1 * hue_step + s_idx0;
-        const HSBModify* e10 = e00 + val_step;
-        const HSBModify* e11 = e01 + val_step;
-        
-        float hs0 = v_fract0 * (h_fract0 * e00->hue_shift + h_fract1 * e01->hue_shift) +
-                    v_fract1 * (h_fract0 * e10->hue_shift + h_fract1 * e11->hue_shift);
-        float ss0 = v_fract0 * (h_fract0 * e00->sat_scale + h_fract1 * e01->sat_scale) +
-                    v_fract1 * (h_fract0 * e10->sat_scale + h_fract1 * e11->sat_scale);
-        float vs0 = v_fract0 * (h_fract0 * e00->val_scale + h_fract1 * e01->val_scale) +
-                    v_fract1 * (h_fract0 * e10->val_scale + h_fract1 * e11->val_scale);
-        
-        e00++; e01++; e10++; e11++;
-        float hs1 = v_fract0 * (h_fract0 * e00->hue_shift + h_fract1 * e01->hue_shift) +
-                    v_fract1 * (h_fract0 * e10->hue_shift + h_fract1 * e11->hue_shift);
-        float ss1 = v_fract0 * (h_fract0 * e00->sat_scale + h_fract1 * e01->sat_scale) +
-                    v_fract1 * (h_fract0 * e10->sat_scale + h_fract1 * e11->sat_scale);
-        float vs1 = v_fract0 * (h_fract0 * e00->val_scale + h_fract1 * e01->val_scale) +
-                    v_fract1 * (h_fract0 * e10->val_scale + h_fract1 * e11->val_scale);
-        
-        hue_shift = s_fract0 * hs0 + s_fract1 * hs1;
-        sat_scale = s_fract0 * ss0 + s_fract1 * ss1;
-        val_scale = s_fract0 * vs0 + s_fract1 * vs1;
-    }
-    
-    // Apply adjustments
-    hue_shift *= (6.0f / 360.0f);  // Convert degrees to H range
-    h += hue_shift;
-    s = std::min(s * sat_scale, 1.0f);
-    v = std::max(0.0f, std::min(v * val_scale, 1.0f));
-    
-    // Convert back to RGB
-    hsv_to_rgb(h, s, v, r, g, b);
-}
+// RGB/HSV conversion and HueSatMap kernel moved to mu-image-engine/src/raw_render_profile.cpp
 
 //=============================================================================
 // Stage 1: Pre-Demosaic Operations (on RAW CFA data)
@@ -1153,64 +977,48 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    // Create output array
-    npy_intp dims[3] = {height, width, 3};
+    if (!load_core_library()) {
+        return NULL;
+    }
+    
+    // Create output array and copy input
     auto result = make_pyptr<PyArrayObject>(
-        (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
+        (PyArrayObject*)PyArray_NewCopy(rgb_cont.get(), NPY_CORDER));
     if (!result) {
         return NULL;
     }
     
-    float* src_data = (float*)PyArray_DATA(rgb_cont.get());
-    float* dst_data = (float*)PyArray_DATA(result.get());
-    const HSBModify* map_data = (const HSBModify*)PyArray_DATA(map_cont.get());
+    const float* map_data = (const float*)PyArray_DATA(map_cont.get());
     
+    MuImgBuffer rgb_buf = {
+        PyArray_DATA(result.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
     Py_BEGIN_ALLOW_THREADS
-    // Copy source to dest first
-    memcpy(dst_data, src_data, height * width * 3 * sizeof(float));
+    status = muimg_apply_hue_sat_map_fn(
+        &rgb_buf,
+        map_data,
+        hue_divs,
+        sat_divs,
+        val_divs
+    );
+    Py_END_ALLOW_THREADS
     
-    // Apply HueSatMap to each pixel
-    npy_intp total_pixels = height * width;
-    for (npy_intp p = 0; p < total_pixels; p++) {
-        npy_intp idx = p * 3;
-        apply_hue_sat_map(
-            dst_data[idx + 0], dst_data[idx + 1], dst_data[idx + 2],
-            map_data, hue_divs, sat_divs, val_divs
-        );
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "apply_hue_sat_map failed with code %d", status);
+        return NULL;
     }
     
-    Py_END_ALLOW_THREADS
     return (PyObject*)result.release();
 }
 
-// ============================================================================
-// Exposure Ramp (dng_function_exposure_ramp from dng_render.cpp lines 50-103)
-// Direct port of SDK code
-// ============================================================================
-
-// SDK ref: dng_render.cpp dng_function_exposure_ramp::Evaluate() lines 81-103
-static inline float exposure_ramp_evaluate(float x, float black, float slope, 
-                                           float radius, float qScale, 
-                                           bool supportOverrange) {
-    // Region 1: x <= black - radius → 0
-    if (x <= black - radius)
-        return 0.0f;
-    
-    // Region 2: x >= black + radius → linear ramp
-    if (x >= black + radius) {
-        float y = (x - black) * slope;
-        if (!supportOverrange)
-            y = std::min(y, 1.0f);
-        return y;
-    }
-    
-    // Region 3: quadratic blend
-    float y = x - (black - radius);
-    return qScale * y * y;
-}
-
-// Apply exposure ramp to RGB image
-// SDK ref: dng_render.cpp lines 50-103, 1907-1928
+// Exposure ramp kernel moved to mu-image-engine/src/raw_render_profile.cpp
 static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
     PyArrayObject* rgb_array = NULL;
     double white, black, minBlack;
@@ -1246,31 +1054,45 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    const float* src_data = (const float*)PyArray_DATA(rgb_cont.get());
-    float* dst_data = (float*)PyArray_DATA(result.get());
-    
-    // SDK ref: dng_render.cpp lines 55-75 (constructor)
-    float slope = 1.0f / (float)(white - black);
-    
-    // Compute radius for quadratic blend region
-    const float kMaxCurveX = 0.5f;      // Fraction of minBlack
-    const float kMaxCurveY = 1.0f / 16.0f;  // Fraction of white
-    
-    float radius = std::min(kMaxCurveX * (float)minBlack, kMaxCurveY / slope);
-    
-    float qScale = 0.0f;
-    if (radius > 0.0f)
-        qScale = slope / (4.0f * radius);
-    
-    Py_BEGIN_ALLOW_THREADS
-    // Process all pixels
-    npy_intp total = height * width * 3;
-    for (npy_intp i = 0; i < total; i++) {
-        dst_data[i] = exposure_ramp_evaluate(src_data[i], (float)black, slope, 
-                                              radius, qScale, supportOverrange != 0);
+    if (!load_core_library()) {
+        return NULL;
     }
     
+    MuImgBuffer input_buf = {
+        PyArray_DATA(rgb_cont.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    MuImgBuffer output_buf = {
+        PyArray_DATA(result.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_apply_exposure_ramp_fn(
+        &input_buf,
+        &output_buf,
+        white,
+        black,
+        minBlack,
+        supportOverrange != 0
+    );
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "apply_exposure_ramp failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
