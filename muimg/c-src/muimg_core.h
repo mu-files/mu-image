@@ -184,6 +184,41 @@ int muimg_apply_exposure_ramp(
     bool supportOverrange
 );
 
+// Apply ProfileGainTableMap - spatially-varying per-plane gain adjustment
+//
+// SDK ref: dng_reference.cpp RefBaselineProfileGainTableMap() lines 3260-3460
+// 3D trilinear interpolation: (spatial_v, spatial_h, exposure_weight)
+//
+// Args:
+//   rgb: RGB image data, float32, shape (H, W, 3) - modified in-place
+//   gains: Gain table, float32, shape (points_v, points_h, num_table_points) flattened
+//   points_v: Number of vertical grid points
+//   points_h: Number of horizontal grid points
+//   spacing_v: Vertical grid spacing in normalized coords
+//   spacing_h: Horizontal grid spacing in normalized coords
+//   origin_v: Vertical grid origin in normalized coords
+//   origin_h: Horizontal grid origin in normalized coords
+//   num_table_points: Number of exposure weight table points
+//   weights: MapInputWeights (5 floats): [R, G, B, min, max] coefficients
+//   gamma: Gamma applied to exposure weight
+//   exposure_weight_gain: pow(2, baseline_exposure)
+//
+// Returns: MUIMG_SUCCESS on success, error code otherwise
+int muimg_apply_profile_gain_table_map(
+    MuImgBuffer* rgb,
+    const float* gains,
+    int points_v,
+    int points_h,
+    float spacing_v,
+    float spacing_h,
+    float origin_v,
+    float origin_h,
+    int num_table_points,
+    const float* weights,
+    float gamma,
+    float exposure_weight_gain
+);
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.

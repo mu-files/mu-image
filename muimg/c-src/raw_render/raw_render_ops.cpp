@@ -59,6 +59,7 @@ static int (*muimg_clip_and_transform_color_fn)(const MuImgBuffer*, MuImgBuffer*
 static int (*muimg_normalize_raw_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, int, int, int, const float*, int, const float*, int, const float*, int, const uint16_t*, int) = nullptr;
 static int (*muimg_apply_hue_sat_map_fn)(MuImgBuffer*, const float*, int, int, int) = nullptr;
 static int (*muimg_apply_exposure_ramp_fn)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool) = nullptr;
+static int (*muimg_apply_profile_gain_table_map_fn)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -96,10 +97,12 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_apply_hue_sat_map");
     muimg_apply_exposure_ramp_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool))
         dlsym(g_core_lib, "muimg_apply_exposure_ramp");
+    muimg_apply_profile_gain_table_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float))
+        dlsym(g_core_lib, "muimg_apply_profile_gain_table_map");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
         !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
-        !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn) {
+        !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn || !muimg_apply_profile_gain_table_map_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -1342,253 +1345,7 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
     return (PyObject*)result.release();
 }
 
-// ============================================================================
-// ProfileGainTableMap application
-// Direct port from DNG SDK dng_reference.cpp RefBaselineProfileGainTableMap()
-// ============================================================================
-
-static inline float Lerp_real32(float a, float b, float t) {
-    return a + (b - a) * t;
-}
-
-static inline float Pin_real32(float lo, float x, float hi) {
-    return x < lo ? lo : (x > hi ? hi : x);
-}
-
-static inline float Min_real32(float a, float b) {
-    return a < b ? a : b;
-}
-
-static inline float Max_real32(float a, float b) {
-    return a > b ? a : b;
-}
-
-static inline int Min_int32(int a, int b) {
-    return a < b ? a : b;
-}
-
-// Direct port of RefBaselineProfileGainTableMap from dng_reference.cpp lines 3260-3460
-static void RefBaselineProfileGainTableMap(
-    const float* rSrcPtr,
-    const float* gSrcPtr,
-    const float* bSrcPtr,
-    float* rDstPtr,
-    float* gDstPtr,
-    float* bDstPtr,
-    const int cols,
-    const int top,
-    const int left,
-    const int imageAreaL,
-    const int imageAreaT,
-    const int imageAreaW,
-    const int imageAreaH,
-    const float exposureWeightGain,
-    // Gain table map parameters
-    const int points_v,
-    const int points_h,
-    const float mapSpacingV,
-    const float mapSpacingH,
-    const float mapOriginV,
-    const float mapOriginH,
-    const int numTablePoints,
-    const float* mapInputWeights,
-    const float gamma,
-    const float* gains,  // gains[row][col][tablePoint] flattened
-    const bool supportOverrange
-) {
-    const float miw0 = mapInputWeights[0];
-    const float miw1 = mapInputWeights[1];
-    const float miw2 = mapInputWeights[2];
-    const float miw3 = mapInputWeights[3];
-    const float miw4 = mapInputWeights[4];
-    
-    const float mapOriginH32 = mapOriginH;
-    const float mapOriginV32 = mapOriginV;
-    const float mapSpacingH32 = mapSpacingH;
-    const float mapSpacingV32 = mapSpacingV;
-    
-    const float xLimitLo = 0.0f;
-    const float yLimitLo = 0.0f;
-    const float xLimitHi = (float)(points_h - 1);
-    const float yLimitHi = (float)(points_v - 1);
-    
-    const int xPixelLimit = points_h - 1;
-    const int yPixelLimit = points_v - 1;
-    
-    const int tableSize = numTablePoints;
-    const int tableLimit = tableSize - 1;
-    
-    // For gain table indexing: gains[row * rowStep + col * colStep + tableIdx]
-    const int colStep = numTablePoints;
-    const int rowStep = points_h * numTablePoints;
-    
-    // Initialize sample position. Note the half-pixel offset.
-    float y = (float)top + 0.5f;
-    float x = (float)left + 0.5f;
-    
-    // Process each pixel in this row.
-    for (int col = 0; col < cols; col++) {
-        
-        // Transform to image-relative coordinates.
-        float u_image = (x - (float)imageAreaL) / (float)imageAreaW;
-        float v_image = (y - (float)imageAreaT) / (float)imageAreaH;
-        
-        // Transform to map-relative coordinates.
-        float x_map = (u_image - mapOriginH32) / mapSpacingH32;
-        float y_map = (v_image - mapOriginV32) / mapSpacingV32;
-        
-        // Clamp to valid sample positions.
-        x_map = Pin_real32(xLimitLo, x_map, xLimitHi);
-        y_map = Pin_real32(yLimitLo, y_map, yLimitHi);
-        
-        // Compute integer 2D indices.
-        int x0 = (int)x_map;
-        int x1 = Min_int32(x0 + 1, xPixelLimit);
-        
-        int y0 = (int)y_map;
-        int y1 = Min_int32(y0 + 1, yPixelLimit);
-        
-        // Compute fractional weights.
-        float xf = x_map - (float)x0;
-        float yf = y_map - (float)y0;
-        
-        // Read linear RGB values in RIMM space.
-        float r = rSrcPtr[col];
-        float g = gSrcPtr[col];
-        float b = bSrcPtr[col];
-        
-        // Apply MapInputWeights (5-element dot product).
-        float minValue = Min_real32(r, Min_real32(g, b));
-        float maxValue = Max_real32(r, Max_real32(g, b));
-        
-        float weight = ((miw0 * r) +
-                       (miw1 * g) +
-                       (miw2 * b) +
-                       (miw3 * minValue) +
-                       (miw4 * maxValue));
-        
-        // Scale weight by baseline exposure.
-        weight = weight * exposureWeightGain;
-        
-        // Clamp weight to [0,1].
-        weight = Pin_real32(0.0f, weight, 1.0f);
-        
-        // Apply gamma parameter.
-        if (gamma != 1.0f)
-            weight = powf(weight, gamma);
-        
-        // Scale weight by table size and compute table indices.
-        float weightScaled = weight * (float)tableSize;
-        
-        int w0 = Min_int32((int)weightScaled, tableLimit);
-        int w1 = Min_int32(w0 + 1, tableLimit);
-        
-        float wf = weightScaled - (float)w0;
-        
-        // Look up 8 gains.
-        float gain000 = gains[y0 * rowStep + x0 * colStep + w0];
-        float gain001 = gains[y0 * rowStep + x0 * colStep + w1];
-        float gain010 = gains[y0 * rowStep + x1 * colStep + w0];
-        float gain011 = gains[y0 * rowStep + x1 * colStep + w1];
-        float gain100 = gains[y1 * rowStep + x0 * colStep + w0];
-        float gain101 = gains[y1 * rowStep + x0 * colStep + w1];
-        float gain110 = gains[y1 * rowStep + x1 * colStep + w0];
-        float gain111 = gains[y1 * rowStep + x1 * colStep + w1];
-        
-        // Interpolate in table (w) direction.
-        float gain00_ = Lerp_real32(gain000, gain001, wf);
-        float gain01_ = Lerp_real32(gain010, gain011, wf);
-        float gain10_ = Lerp_real32(gain100, gain101, wf);
-        float gain11_ = Lerp_real32(gain110, gain111, wf);
-        
-        // Interpolate in column (x) direction.
-        float gain0__ = Lerp_real32(gain00_, gain01_, xf);
-        float gain1__ = Lerp_real32(gain10_, gain11_, xf);
-        
-        // Interpolate in row (y) direction.
-        float gain = Lerp_real32(gain0__, gain1__, yf);
-        
-        // Apply gain.
-        r *= gain;
-        g *= gain;
-        b *= gain;
-        
-        // Optionally clamp to [0,1].
-        if (!supportOverrange) {
-            r = Pin_real32(0.0f, r, 1.0f);
-            g = Pin_real32(0.0f, g, 1.0f);
-            b = Pin_real32(0.0f, b, 1.0f);
-        }
-        
-        // Store the result.
-        rDstPtr[col] = r;
-        gDstPtr[col] = g;
-        bDstPtr[col] = b;
-        
-        // Increment sample position for next column.
-        x += 1.0f;
-    }
-}
-
-// Wrapper that processes entire image using the SDK row-by-row approach
-static void apply_profile_gain_table_map(
-    float* rgb,  // Input/output RGB image, shape (H, W, 3), interleaved
-    int height, int width,
-    int points_v, int points_h,
-    float spacing_v, float spacing_h,
-    float origin_v, float origin_h,
-    int num_table_points,
-    const float* weights,
-    float gamma,
-    const float* gains,
-    float exposure_weight_gain
-) {
-    // Allocate temporary planar buffers for one row
-    std::vector<float> rRow(width), gRow(width), bRow(width);
-    
-    // Image area is the full image (0, 0, width, height)
-    const int imageAreaL = 0;
-    const int imageAreaT = 0;
-    const int imageAreaW = width;
-    const int imageAreaH = height;
-    
-    for (int row = 0; row < height; row++) {
-        // Deinterleave this row
-        for (int col = 0; col < width; col++) {
-            int idx = (row * width + col) * 3;
-            rRow[col] = rgb[idx + 0];
-            gRow[col] = rgb[idx + 1];
-            bRow[col] = rgb[idx + 2];
-        }
-        
-        // Process using exact SDK function
-        RefBaselineProfileGainTableMap(
-            rRow.data(), gRow.data(), bRow.data(),  // src
-            rRow.data(), gRow.data(), bRow.data(),  // dst (in-place)
-            width,      // cols
-            row,        // top
-            0,          // left
-            imageAreaL, imageAreaT, imageAreaW, imageAreaH,
-            exposure_weight_gain,
-            points_v, points_h,
-            spacing_v, spacing_h,
-            origin_v, origin_h,
-            num_table_points,
-            weights,
-            gamma,
-            gains,
-            false  // supportOverrange = false for standard rendering
-        );
-        
-        // Interleave back
-        for (int col = 0; col < width; col++) {
-            int idx = (row * width + col) * 3;
-            rgb[idx + 0] = rRow[col];
-            rgb[idx + 1] = gRow[col];
-            rgb[idx + 2] = bRow[col];
-        }
-    }
-}
+// ProfileGainTableMap kernel moved to mu-image-engine/src/raw_render_profile.cpp
 
 // Python wrapper for ProfileGainTableMap
 static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject* args) {
@@ -1646,6 +1403,10 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
         return NULL;
     }
     
+    if (!load_core_library()) {
+        return NULL;
+    }
+    
     // Copy RGB for output
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_NewCopy(rgb_cont.get(), NPY_CORDER));
@@ -1653,26 +1414,43 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA(result.get());
     const float* gains = (const float*)PyArray_DATA(gains_cont.get());
     const float* weights = (const float*)PyArray_DATA(weights_cont.get());
     
     float exposure_weight_gain = powf(2.0f, (float)baseline_exposure);
     
+    MuImgBuffer rgb_buf = {
+        PyArray_DATA(result.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
     Py_BEGIN_ALLOW_THREADS
-    apply_profile_gain_table_map(
-        result_data, (int)height, (int)width,
-        points_v, points_h,
-        (float)spacing_v, (float)spacing_h,
-        (float)origin_v, (float)origin_h,
+    status = muimg_apply_profile_gain_table_map_fn(
+        &rgb_buf,
+        gains,
+        points_v,
+        points_h,
+        (float)spacing_v,
+        (float)spacing_h,
+        (float)origin_v,
+        (float)origin_h,
         num_table_points,
         weights,
         (float)gamma,
-        gains,
         exposure_weight_gain
     );
-    
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "apply_profile_gain_table_map failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
@@ -1972,8 +1750,12 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
 // SDK ref: dng_reference.cpp RefBaselineMapPoly32
 // =============================================================================
 
+// Helper for MapPolynomial
+static inline float Pin_real32(float lo, float x, float hi) {
+    return x < lo ? lo : (x > hi ? hi : x);
+}
+
 // Port of RefBaselineMapPoly32 from dng_reference.cpp
-// Note: Uses existing Pin_real32() defined above
 // Applies polynomial: y = c0 + c1*x + c2*x^2 + ... 
 // For negative x, alternates signs on even powers
 static void RefBaselineMapPoly32(
