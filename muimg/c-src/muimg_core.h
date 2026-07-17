@@ -103,6 +103,44 @@ int muimg_clip_and_transform_color(
     const float matrix[9]
 );
 
+// Normalize RAW data using black/white levels per DNG spec Chapter 5
+//
+// Implements: linear = (raw - BlackLevel - DeltaH - DeltaV) / (WhiteLevel - BlackLevel - ...)
+//
+// Args:
+//   input: RAW pixel data, uint16 or float32, shape (H, W) or (H, W, samples_per_pixel)
+//   output: Normalized float32 pixel data, same shape as input
+//   black_level: BlackLevel pattern, float32, length = repeat_rows * repeat_cols * samples_per_pixel
+//   black_repeat_rows: Number of rows in repeating pattern
+//   black_repeat_cols: Number of cols in repeating pattern
+//   samples_per_pixel: 1 for CFA, 3 for LinearRaw
+//   white_level: WhiteLevel per sample, float32, length = samples_per_pixel
+//   white_count: Length of white_level array (must equal samples_per_pixel)
+//   black_delta_h: Optional per-column delta, float32, length = width (or NULL)
+//   delta_h_count: Length of black_delta_h array (or 0 if NULL)
+//   black_delta_v: Optional per-row delta, float32, length = height (or NULL)
+//   delta_v_count: Length of black_delta_v array (or 0 if NULL)
+//   linearization_table: Optional uint16 LUT (or NULL)
+//   linearization_table_size: Length of linearization_table (or 0 if NULL)
+//
+// Returns: MUIMG_SUCCESS on success, error code otherwise
+int muimg_normalize_raw(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    const float* black_level,
+    int black_repeat_rows,
+    int black_repeat_cols,
+    int samples_per_pixel,
+    const float* white_level,
+    int white_count,
+    const float* black_delta_h,
+    int delta_h_count,
+    const float* black_delta_v,
+    int delta_v_count,
+    const uint16_t* linearization_table,
+    int linearization_table_size
+);
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.

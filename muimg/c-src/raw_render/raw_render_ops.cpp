@@ -56,6 +56,7 @@ static int (*muimg_convert_dtype_fn)(const MuImgBuffer*, MuImgBuffer*, int, int,
 static int (*muimg_mono_lut_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, int, int) = nullptr;
 static int (*muimg_transform_color_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, const float*, const float*, size_t, int, int, bool) = nullptr;
 static int (*muimg_clip_and_transform_color_fn)(const MuImgBuffer*, MuImgBuffer*, const float[3], const float[9]) = nullptr;
+static int (*muimg_normalize_raw_fn)(const MuImgBuffer*, MuImgBuffer*, const float*, int, int, int, const float*, int, const float*, int, const float*, int, const uint16_t*, int) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -87,9 +88,11 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_transform_color");
     muimg_clip_and_transform_color_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float[3], const float[9]))
         dlsym(g_core_lib, "muimg_clip_and_transform_color");
+    muimg_normalize_raw_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float*, int, int, int, const float*, int, const float*, int, const float*, int, const uint16_t*, int))
+        dlsym(g_core_lib, "muimg_normalize_raw");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
-        !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn) {
+        !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -790,224 +793,7 @@ static void apply_linearization_table(
     }
 }
 
-// Normalize RAW data using black and white levels per DNG spec Chapter 5.
-// Implements: linear = (raw - BlackLevel[r%rR][c%rC][s] - DeltaH[c] - DeltaV[r]) / (WhiteLevel[s] - BlackLevel[...])
-//
-// Templated on SrcT (uint16_t or float) to allow fused int->float conversion.
-// Reads from src, writes normalized float32 to dst. src and dst may alias when SrcT=float.
-//
-// Parameters:
-//   src: input raw pixel data (uint16_t or float)
-//   dst: output float32 pixel data, same shape as src
-//   height, width: image dimensions
-//   samples_per_pixel: 1 for CFA, 3 for LinearRaw
-//   black_level: 3D array [repeat_rows][repeat_cols][samples_per_pixel] stored row-major
-//   black_repeat_rows, black_repeat_cols: dimensions of the repeating black level pattern
-//   black_delta_h: per-column delta array, length=width (or NULL if not used)
-//   black_delta_v: per-row delta array, length=height (or NULL if not used)
-//   white_level: per-sample white level array, length=samples_per_pixel
-//   white_count: always == samples_per_pixel per DNG spec (WhiteLevel count = SamplesPerPixel)
-//
-// SDK ref: dng_linearize_plane.cpp, dng_linearization_info
-template <typename SrcT>
-static inline float load_pixel(const SrcT* ptr, npy_intp idx);
-
-template <>
-inline float load_pixel<float>(const float* ptr, npy_intp idx) {
-    return ptr[idx];
-}
-
-template <>
-inline float load_pixel<uint16_t>(const uint16_t* ptr, npy_intp idx) {
-    return (float)ptr[idx];
-}
-
-template <typename SrcT>
-static void normalize_black_white(
-    const SrcT* src, float* dst, npy_intp height, npy_intp width, int samples_per_pixel,
-    const float* black_level, int black_repeat_rows, int black_repeat_cols,
-    const float* black_delta_h, npy_intp delta_h_count,
-    const float* black_delta_v, npy_intp delta_v_count,
-    const float* white_level, int white_count,
-    const uint16_t* linearization_table = nullptr, int linearization_table_size = 0
-) {
-    bool has_delta_h = (black_delta_h != nullptr && delta_h_count > 0);
-    bool has_delta_v = (black_delta_v != nullptr && delta_v_count > 0);
-    bool has_lut = (linearization_table != nullptr && linearization_table_size > 0);
-    bool has_extras = has_delta_h || has_delta_v || has_lut;
-
-    // Fast path: spp==1, no deltas/LUT, repeat dim 1x1 or 2x2
-    if (!has_extras && samples_per_pixel == 1 &&
-        ((black_repeat_rows == 2 && black_repeat_cols == 2) ||
-         (black_repeat_rows == 1 && black_repeat_cols == 1))) {
-        // CFA path: assumes 2x2 repeat pattern (promotes 1x1 to 2x2)
-        float bl[4]; // [row][col] in 2x2
-        if (black_repeat_rows == 1 && black_repeat_cols == 1) {
-            bl[0] = bl[1] = bl[2] = bl[3] = black_level[0];
-        } else {
-            bl[0] = black_level[0]; // row0, col0
-            bl[1] = black_level[1]; // row0, col1
-            bl[2] = black_level[2]; // row1, col0
-            bl[3] = black_level[3]; // row1, col1
-        }
-
-        float white0 = white_level[0];
-
-        // Even rows: bl[0] (col0), bl[1] (col1)
-        float black_even0 = bl[0];
-        float black_even1 = bl[1];
-        float inv_even0 = (white0 - black_even0 > 0.0f) ? 1.0f / (white0 - black_even0) : 0.0f;
-        float inv_even1 = (white0 - black_even1 > 0.0f) ? 1.0f / (white0 - black_even1) : 0.0f;
-
-        // Odd rows: bl[2] (col0), bl[3] (col1)
-        float black_odd0 = bl[2];
-        float black_odd1 = bl[3];
-        float inv_odd0 = (white0 - black_odd0 > 0.0f) ? 1.0f / (white0 - black_odd0) : 0.0f;
-        float inv_odd1 = (white0 - black_odd1 > 0.0f) ? 1.0f / (white0 - black_odd1) : 0.0f;
-
-        for (npy_intp row = 0; row < height; row++) {
-            float b0, b1, inv0, inv1;
-            if (row & 1) {
-                b0 = black_odd0;  b1 = black_odd1;
-                inv0 = inv_odd0;  inv1 = inv_odd1;
-            } else {
-                b0 = black_even0; b1 = black_even1;
-                inv0 = inv_even0; inv1 = inv_even1;
-            }
-
-            const SrcT* src_row = src + row * width;
-            float* dst_row = dst + row * width;
-            npy_intp col = 0;
-
-#if NEON
-            // Process 8 pixels (4 col-pairs) per iteration
-            // Interleave black/inv for even/odd columns: [b0,b1,b0,b1]
-            float32x4_t v_black = {b0, b1, b0, b1};
-            float32x4_t v_inv   = {inv0, inv1, inv0, inv1};
-            float32x4_t v_zero  = vdupq_n_f32(0.0f);
-            float32x4_t v_one   = vdupq_n_f32(1.0f);
-
-            if constexpr (std::is_same_v<SrcT, uint16_t>) {
-                for (; col <= width - 8; col += 8) {
-                    // Load 8 uint16 values and convert to 2x float32x4
-                    uint16x8_t u16 = vld1q_u16(src_row + col);
-                    float32x4_t p_lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(u16)));
-                    float32x4_t p_hi = vcvtq_f32_u32(vmovl_u16(vget_high_u16(u16)));
-
-                    float32x4_t r_lo = vmulq_f32(vsubq_f32(p_lo, v_black), v_inv);
-                    float32x4_t r_hi = vmulq_f32(vsubq_f32(p_hi, v_black), v_inv);
-
-                    r_lo = vmaxq_f32(v_zero, vminq_f32(v_one, r_lo));
-                    r_hi = vmaxq_f32(v_zero, vminq_f32(v_one, r_hi));
-
-                    vst1q_f32(dst_row + col, r_lo);
-                    vst1q_f32(dst_row + col + 4, r_hi);
-                }
-            } else {
-                for (; col <= width - 8; col += 8) {
-                    float32x4_t p_lo = vld1q_f32(src_row + col);
-                    float32x4_t p_hi = vld1q_f32(src_row + col + 4);
-
-                    float32x4_t r_lo = vmulq_f32(vsubq_f32(p_lo, v_black), v_inv);
-                    float32x4_t r_hi = vmulq_f32(vsubq_f32(p_hi, v_black), v_inv);
-
-                    r_lo = vmaxq_f32(v_zero, vminq_f32(v_one, r_lo));
-                    r_hi = vmaxq_f32(v_zero, vminq_f32(v_one, r_hi));
-
-                    vst1q_f32(dst_row + col, r_lo);
-                    vst1q_f32(dst_row + col + 4, r_hi);
-                }
-            }
-#endif
-            // Scalar tail
-            for (; col < width - 1; col += 2) {
-                float p0 = load_pixel(src_row, col);
-                float p1 = load_pixel(src_row, col + 1);
-                dst_row[col]     = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv0));
-                dst_row[col + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv1));
-            }
-            if (width & 1) {
-                float p = load_pixel(src_row, width - 1);
-                dst_row[width - 1] = std::max(0.0f, std::min(1.0f, (p - b0) * inv0));
-            }
-        }
-        return;
-    }
-
-    // Fast path: spp==3, no deltas/LUT, repeat dim 1x1
-    if (!has_extras && samples_per_pixel == 3 &&
-        black_repeat_rows == 1 && black_repeat_cols == 1) {
-        // Linear RGB path: single black level per sample
-        float b0 = black_level[0];
-        float b1 = black_level[1];
-        float b2 = black_level[2];
-
-        float inv_r0 = (white_level[0] - b0 > 0.0f) ? 1.0f / (white_level[0] - b0) : 0.0f;
-        float inv_r1 = (white_level[1] - b1 > 0.0f) ? 1.0f / (white_level[1] - b1) : 0.0f;
-        float inv_r2 = (white_level[2] - b2 > 0.0f) ? 1.0f / (white_level[2] - b2) : 0.0f;
-
-        for (npy_intp row = 0; row < height; row++) {
-            npy_intp pixel_base = row * width * 3;
-            for (npy_intp col = 0; col < width; col++) {
-                npy_intp idx = pixel_base + col * 3;
-                float p0 = load_pixel(src, idx + 0);
-                float p1 = load_pixel(src, idx + 1);
-                float p2 = load_pixel(src, idx + 2);
-
-                dst[idx + 0] = std::max(0.0f, std::min(1.0f, (p0 - b0) * inv_r0));
-                dst[idx + 1] = std::max(0.0f, std::min(1.0f, (p1 - b1) * inv_r1));
-                dst[idx + 2] = std::max(0.0f, std::min(1.0f, (p2 - b2) * inv_r2));
-            }
-        }
-        return;
-    }
-
-    // General path: handles all cases (deltas, LUT, arbitrary repeat dims/spp)
-    // Pre-allocate full-width delta_h array to eliminate modulo in inner loop
-    std::vector<float> delta_h_full(width, 0.0f);
-    if (has_delta_h) {
-        for (npy_intp col = 0; col < width; col++) {
-            delta_h_full[col] = black_delta_h[col % delta_h_count];
-        }
-    }
-
-    for (npy_intp row = 0; row < height; row++) {
-        float delta_v = has_delta_v ? black_delta_v[row % delta_v_count] : 0.0f;
-        int black_row = (int)(row % black_repeat_rows);
-
-        for (npy_intp col = 0; col < width; col++) {
-            float dh = delta_h_full[col];
-            int black_col = (int)(col % black_repeat_cols);
-
-            for (int sample = 0; sample < samples_per_pixel; sample++) {
-                npy_intp pixel_idx = (row * width + col) * samples_per_pixel + sample;
-
-                // Apply LinearizationTable if present (before black/white normalization)
-                // SDK ref: dng_linearize_plane::Process - LUT lookup on raw ADC values
-                float pixel_val = load_pixel(src, pixel_idx);
-                if (has_lut) {
-                    int lut_idx = (int)pixel_val;
-                    if (lut_idx >= linearization_table_size) lut_idx = linearization_table_size - 1;
-                    pixel_val = (float)linearization_table[lut_idx];
-                }
-
-                // BlackLevel index: [row][col][sample] in row-major order
-                int black_idx = (black_row * black_repeat_cols + black_col) * samples_per_pixel + sample;
-                float black = black_level[black_idx];
-                float white = white_level[sample % white_count];
-                float total_black = black + dh + delta_v;
-
-                float range = white - total_black;
-                if (range > 0.0f) {
-                    dst[pixel_idx] = (pixel_val - total_black) / range;
-                } else {
-                    dst[pixel_idx] = 0.0f;
-                }
-                dst[pixel_idx] = std::max(0.0f, std::min(1.0f, dst[pixel_idx]));
-            }
-        }
-    }
-}
+// normalize_black_white kernel moved to mu-image-engine/src/raw_render_normalize.cpp
 
 //=============================================================================
 // Stage 2: Post-Demosaic Operations (on RGB data)
@@ -1628,27 +1414,54 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     
     const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont.get()) : nullptr;
     
-    Py_BEGIN_ALLOW_THREADS
-    // Dispatch to templated kernel based on input dtype
-    if (src_type == NPY_UINT16) {
-        const uint16_t* src = (const uint16_t*)PyArray_DATA(data_cont.get());
-        normalize_black_white<uint16_t>(src, dst, height, width, samples_per_pixel,
-                             black, black_repeat_rows, black_repeat_cols,
-                             delta_h, delta_h_count,
-                             delta_v, delta_v_count,
-                             white, white_count,
-                             lin_table, lin_table_size);
-    } else {
-        const float* src = (const float*)PyArray_DATA(data_cont.get());
-        normalize_black_white<float>(src, dst, height, width, samples_per_pixel,
-                             black, black_repeat_rows, black_repeat_cols,
-                             delta_h, delta_h_count,
-                             delta_v, delta_v_count,
-                             white, white_count,
-                             lin_table, lin_table_size);
+    if (!load_core_library()) {
+        return NULL;
     }
     
+    // Prepare MuImgBuffer structures
+    MuImgBuffer input_buf = {
+        PyArray_DATA(data_cont.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        static_cast<size_t>(samples_per_pixel),
+        muimg_dtype_from_numpy(src_type),
+        0  // stride (contiguous)
+    };
+    
+    MuImgBuffer output_buf = {
+        dst,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        static_cast<size_t>(samples_per_pixel),
+        MUIMG_DTYPE_FLOAT32,
+        0  // stride (contiguous)
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_normalize_raw_fn(
+        &input_buf,
+        &output_buf,
+        black,
+        black_repeat_rows,
+        black_repeat_cols,
+        samples_per_pixel,
+        white,
+        white_count,
+        delta_h,
+        (int)delta_h_count,
+        delta_v,
+        (int)delta_v_count,
+        lin_table,
+        lin_table_size
+    );
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "normalize_raw failed with error code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
