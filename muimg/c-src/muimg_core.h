@@ -174,6 +174,22 @@ int muimg_apply_profile_gain_table_map(MuImgBuffer *rgb, const float *gains,
 int muimg_fix_vignette(MuImgBuffer *img, const double *params, int num_params,
                        double center_x, double center_y);
 
+// Apply lens distortion correction using WarpRectilinear opcode
+// radial_params: flattened array of size num_planes * num_coeffs
+// tangential_params: flattened array of size num_planes * 2 (or NULL)
+int muimg_warp_rectilinear(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    const double* radial_params,
+    int num_planes,
+    int num_coeffs,
+    const double* tangential_params,
+    double center_x,
+    double center_y,
+    bool use_bicubic
+);
+
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.

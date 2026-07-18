@@ -61,6 +61,7 @@ static int (*muimg_apply_hue_sat_map_fn)(MuImgBuffer*, const float*, int, int, i
 static int (*muimg_apply_exposure_ramp_fn)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool) = nullptr;
 static int (*muimg_apply_profile_gain_table_map_fn)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float) = nullptr;
 static int (*muimg_fix_vignette_fn)(MuImgBuffer*, const double*, int, double, double) = nullptr;
+static int (*muimg_warp_rectilinear_fn)(const MuImgBuffer*, MuImgBuffer*, const double*, int, int, const double*, double, double, bool) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -102,11 +103,13 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_apply_profile_gain_table_map");
     muimg_fix_vignette_fn = (int (*)(MuImgBuffer*, const double*, int, double, double))
         dlsym(g_core_lib, "muimg_fix_vignette");
+    muimg_warp_rectilinear_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const double*, int, int, const double*, double, double, bool))
+        dlsym(g_core_lib, "muimg_warp_rectilinear");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
         !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
         !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn || !muimg_apply_profile_gain_table_map_fn ||
-        !muimg_fix_vignette_fn) {
+        !muimg_fix_vignette_fn || !muimg_warp_rectilinear_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -698,162 +701,8 @@ static void init_bicubic_weights_2d() {
     }
 }
 
-// WarpRectilinear lens distortion correction with per-plane coefficients
-// SDK ref: dng_lens_correction.cpp dng_filter_warp::GetSrcPixelPosition, EvaluateRatio
-// Uses radial polynomial model: ratio = kr0 + kr2*r^2 + kr4*r^4 + kr6*r^6 (EVEN powers)
-// Each color plane has its own coefficients for lateral CA correction
-// center_x, center_y: optical center in normalized [0,1] coordinates
-// NOTE: src and dst must not overlap (__restrict contract)
-static void warp_rectilinear(
-    const float* __restrict src, float* __restrict dst,
-    npy_intp height, npy_intp width, int channels,
-    const double* __restrict radial_params, int num_planes, int num_coeffs,  // [num_planes][num_coeffs]
-    const double* __restrict tangential_params,  // [num_planes][2] or NULL
-    double center_x, double center_y,
-    bool use_bicubic = true  // SDK ref: dng_lens_correction.cpp line 1251 uses dng_resample_bicubic
-) {
-    // SDK ref: dng_lens_correction.cpp line 1253 - Initialize weights
-    if (use_bicubic) {
-        init_bicubic_weights_2d();
-    }
-    
-    // SDK ref: dng_lens_correction.cpp lines 1200-1236
-    double cx = center_x * width;
-    double cy = center_y * height;
-    
-    // SDK: fNormRadius = MaxDistancePointToRect(squareCenter, squareBounds)
-    double corner_dists[4] = {
-        std::sqrt(cx*cx + cy*cy),
-        std::sqrt((width-cx)*(width-cx) + cy*cy),
-        std::sqrt(cx*cx + (height-cy)*(height-cy)),
-        std::sqrt((width-cx)*(width-cx) + (height-cy)*(height-cy))
-    };
-    double fNormRadius = *std::max_element(corner_dists, corner_dists + 4);
-    if (fNormRadius < 1.0) fNormRadius = 1.0;
-    double fInvNormRadius = 1.0 / fNormRadius;
-    
-    for (npy_intp y = 0; y < height; y++) {
-        for (npy_intp x = 0; x < width; x++) {
-            // SDK ref: GetSrcPixelPosition lines 1601-1604
-            double diff_h = (double)x - cx;
-            double diff_v = (double)y - cy;
-            double diffNorm_h = diff_h * fInvNormRadius;
-            double diffNorm_v = diff_v * fInvNormRadius;
-            
-            // SDK: rr = Min(diffNormSqr.v + diffNormSqr.h, 1.0)
-            double rr = diffNorm_h * diffNorm_h + diffNorm_v * diffNorm_v;
-            if (rr > 1.0) rr = 1.0;
-            
-            npy_intp dst_idx = (y * width + x) * channels;
-            
-            // SDK applies different warp per color plane for lateral CA correction
-            for (int plane = 0; plane < num_planes && plane < channels; plane++) {
-                const double* plane_radial = radial_params + plane * num_coeffs;
-                const double* plane_tan = tangential_params ? tangential_params + plane * 2 : NULL;
-                
-                // SDK ref: WarpRectilinear v1 stores coeffs for EVEN powers (r^0, r^2, r^4, r^6)
-                // dng_lens_correction.cpp lines 1908-1911: fData[0], fData[2], fData[4], fData[6]
-                // Since rr = r^2, polynomial is: kr0 + kr2*rr + kr4*rr^2 + kr6*rr^3
-                double ratio = plane_radial[0];
-                double r_pow = rr;
-                for (int i = 1; i < num_coeffs && i < 4; i++) {
-                    ratio += plane_radial[i] * r_pow;
-                    r_pow *= rr;
-                }
-                
-                // SDK ref: GetSrcPixelPosition lines 1625-1626
-                double dSrc_h = diff_h * ratio;
-                double dSrc_v = diff_v * ratio;
-                
-                // Apply tangential warp if provided
-                if (plane_tan && (plane_tan[0] != 0.0 || plane_tan[1] != 0.0)) {
-                    double kt0 = plane_tan[0];
-                    double kt1 = plane_tan[1];
-                    double tan_h = 2*kt0*diffNorm_h*diffNorm_v + kt1*(rr + 2*diffNorm_h*diffNorm_h);
-                    double tan_v = 2*kt1*diffNorm_h*diffNorm_v + kt0*(rr + 2*diffNorm_v*diffNorm_v);
-                    dSrc_h += fNormRadius * tan_h;
-                    dSrc_v += fNormRadius * tan_v;
-                }
-                
-                // SDK ref: line 1663
-                double src_x = cx + dSrc_h;
-                double src_y = cy + dSrc_v;
-                
-                // SDK ref: lines 1511-1514 - clamp to image bounds
-                src_x = std::max(0.0, std::min(src_x, (double)(width - 1)));
-                src_y = std::max(0.0, std::min(src_y, (double)(height - 1)));
-                
-                if (use_bicubic) {
-                    // SDK ref: dng_lens_correction.cpp lines 1516-1577
-                    // Decompose into integer and fractional parts
-                    int32_t sInt_v = (int32_t)std::floor(src_y);
-                    int32_t sInt_h = (int32_t)std::floor(src_x);
-                    
-                    // SDK ref: line 1521-1522 - fractional part scaled to subsample count
-                    int32_t sFct_v = (int32_t)((src_y - (double)sInt_v) * kResampleSubsampleCount2D);
-                    int32_t sFct_h = (int32_t)((src_x - (double)sInt_h) * kResampleSubsampleCount2D);
-                    
-                    // SDK ref: line 1526 - add resample offset (1 - fRadius = 1 - 2 = -1)
-                    sInt_v += -1;
-                    sInt_h += -1;
-                    
-                    // SDK ref: lines 1530-1552 - clip
-                    int32_t hMin = 0;
-                    int32_t hMax = (int32_t)(width - kBicubicWidth);
-                    int32_t vMin = 0;
-                    int32_t vMax = (int32_t)(height - kBicubicWidth);
-                    
-                    if (sInt_h < hMin) { sInt_h = hMin; sFct_h = 0; }
-                    else if (sInt_h > hMax) { sInt_h = hMax; sFct_h = 0; }
-                    if (sInt_v < vMin) { sInt_v = vMin; sFct_v = 0; }
-                    else if (sInt_v > vMax) { sInt_v = vMax; sFct_v = 0; }
-                    
-                    // SDK ref: line 1556 - get precomputed weights
-                    const float* w = g_bicubic_weights_2d + 
-                                     (sFct_v * kResampleSubsampleCount2D + sFct_h) * kBicubicWidthSqr;
-                    
-                    // SDK ref: lines 1562-1577 - perform 2D resample
-                    float total = 0.0f;
-                    int32_t wIdx = 0;
-                    for (int32_t i = 0; i < (int32_t)kBicubicWidth; i++) {
-                        for (int32_t j = 0; j < (int32_t)kBicubicWidth; j++) {
-                            int32_t sy = sInt_v + i;
-                            int32_t sx = sInt_h + j;
-                            total += w[wIdx] * src[(sy * width + sx) * channels + plane];
-                            wIdx++;
-                        }
-                    }
-                    
-                    // SDK ref: line 1581 - Pin_real32
-                    dst[dst_idx + plane] = std::max(0.0f, std::min(1.0f, total));
-                } else {
-                    // Bilinear interpolation (fallback)
-                    int x0 = (int)std::floor(src_x);
-                    int y0 = (int)std::floor(src_y);
-                    int x1 = std::min(x0 + 1, (int)(width - 1));
-                    int y1 = std::min(y0 + 1, (int)(height - 1));
-                    double fx = src_x - x0;
-                    double fy = src_y - y0;
-                    
-                    double v00 = src[(y0 * width + x0) * channels + plane];
-                    double v01 = src[(y0 * width + x1) * channels + plane];
-                    double v10 = src[(y1 * width + x0) * channels + plane];
-                    double v11 = src[(y1 * width + x1) * channels + plane];
-                    
-                    dst[dst_idx + plane] = (float)(
-                        v00 * (1-fx) * (1-fy) +
-                        v01 * fx * (1-fy) +
-                        v10 * (1-fx) * fy +
-                        v11 * fx * fy
-                    );
-                }
-            }
-        }
-    }
-}
-
-
 // Apply gain map (flat-field correction) to CFA data
+
 // gain_map: 2D or 4D array of per-pixel gains
 // For Bayer CFA: can be (H/2, W/2, 4) for 2x2 pattern or (H, W) for single plane
 static void apply_gain_map_cfa(
@@ -1485,10 +1334,33 @@ static PyObject* dng_color_op_warp_rectilinear(PyObject* self, PyObject* args, P
     const double* radial = (const double*)PyArray_DATA(radial_cont.get());
     const double* tangential = tan_cont ? (const double*)PyArray_DATA(tan_cont.get()) : NULL;
     
-    Py_BEGIN_ALLOW_THREADS
-    warp_rectilinear(src, dst, height, width, 3, radial, num_planes, num_coeffs, tangential, center_x, center_y, (bool)use_bicubic);
+    if (!load_core_library()) return NULL;
     
+    MuImgBuffer in_buf = {};
+    in_buf.data = (void*)src;
+    in_buf.height = (size_t)height;
+    in_buf.width = (size_t)width;
+    in_buf.channels = 3;
+    in_buf.dtype = MUIMG_DTYPE_FLOAT32;
+    in_buf.stride = 0;
+    
+    MuImgBuffer out_buf = {};
+    out_buf.data = dst;
+    out_buf.height = (size_t)height;
+    out_buf.width = (size_t)width;
+    out_buf.channels = 3;
+    out_buf.dtype = MUIMG_DTYPE_FLOAT32;
+    out_buf.stride = 0;
+    
+    int ret;
+    Py_BEGIN_ALLOW_THREADS
+    ret = muimg_warp_rectilinear_fn(&in_buf, &out_buf, radial, num_planes, num_coeffs, tangential, center_x, center_y, (bool)use_bicubic);
     Py_END_ALLOW_THREADS
+    
+    if (ret != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_warp_rectilinear failed: %d", ret);
+        return NULL;
+    }
     return (PyObject*)result.release();
 }
 
