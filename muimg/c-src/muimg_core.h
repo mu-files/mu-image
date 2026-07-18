@@ -189,6 +189,51 @@ int muimg_warp_rectilinear(
     bool use_bicubic
 );
 
+// Apply GainMap opcode to RGB image data (OpcodeList2)
+// gain_values: flattened (points_v, points_h, map_planes) float32 array
+// top/left/bottom/right: area bounds (0 = full image for bottom/right)
+int muimg_apply_gain_map(
+    MuImgBuffer* img,
+    const float* gain_values,
+    int points_v, int points_h, int map_planes,
+    int top, int left, int bottom, int right,
+    int start_plane, int num_planes,
+    int row_pitch, int col_pitch,
+    double spacing_v, double spacing_h,
+    double origin_v, double origin_h
+);
+
+// Apply GainMap opcode to CFA image data (OpcodeList1)
+// gain_values: flattened (points_v, points_h, map_planes) float32 array
+int muimg_apply_gain_map_cfa(
+    MuImgBuffer* img,
+    const float* gain_values,
+    int points_v, int points_h, int map_planes,
+    int top, int left, int bottom, int right,
+    int row_pitch, int col_pitch,
+    double spacing_v, double spacing_h,
+    double origin_v, double origin_h
+);
+
+// Apply simple 2D flat-field gain map to CFA float32 image (in-place).
+// gain_map: row-major (gain_h, gain_w) float32; bilinearly scaled to image size.
+int muimg_apply_flat_gain_map(
+    MuImgBuffer* img,
+    const float* gain_map,
+    int gain_h, int gain_w
+);
+
+// Apply MapPolynomial opcode (OpcodeList2) in-place to float32 image.
+// Supports 1-channel CFA or 3-channel RGB (from img->channels).
+// top/left/bottom/right: area bounds (0,0 for bottom/right means full image).
+// coefficients: length degree+1
+int muimg_map_polynomial(
+    MuImgBuffer* img,
+    int top, int left, int bottom, int right,
+    int start_plane, int num_planes,
+    int row_pitch, int col_pitch,
+    const float* coefficients, int degree
+);
 
 // VNG (Variable Number of Gradients) demosaic
 //

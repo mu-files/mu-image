@@ -62,6 +62,10 @@ static int (*muimg_apply_exposure_ramp_fn)(const MuImgBuffer*, MuImgBuffer*, dou
 static int (*muimg_apply_profile_gain_table_map_fn)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float) = nullptr;
 static int (*muimg_fix_vignette_fn)(MuImgBuffer*, const double*, int, double, double) = nullptr;
 static int (*muimg_warp_rectilinear_fn)(const MuImgBuffer*, MuImgBuffer*, const double*, int, int, const double*, double, double, bool) = nullptr;
+static int (*muimg_apply_gain_map_fn)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, int, int, double, double, double, double) = nullptr;
+static int (*muimg_apply_gain_map_cfa_fn)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, double, double, double, double) = nullptr;
+static int (*muimg_apply_flat_gain_map_fn)(MuImgBuffer*, const float*, int, int) = nullptr;
+static int (*muimg_map_polynomial_fn)(MuImgBuffer*, int, int, int, int, int, int, int, int, const float*, int) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -105,11 +109,21 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_fix_vignette");
     muimg_warp_rectilinear_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const double*, int, int, const double*, double, double, bool))
         dlsym(g_core_lib, "muimg_warp_rectilinear");
+    muimg_apply_gain_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, int, int, double, double, double, double))
+        dlsym(g_core_lib, "muimg_apply_gain_map");
+    muimg_apply_gain_map_cfa_fn = (int (*)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, double, double, double, double))
+        dlsym(g_core_lib, "muimg_apply_gain_map_cfa");
+    muimg_apply_flat_gain_map_fn = (int (*)(MuImgBuffer*, const float*, int, int))
+        dlsym(g_core_lib, "muimg_apply_flat_gain_map");
+    muimg_map_polynomial_fn = (int (*)(MuImgBuffer*, int, int, int, int, int, int, int, int, const float*, int))
+        dlsym(g_core_lib, "muimg_map_polynomial");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
         !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
         !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn || !muimg_apply_profile_gain_table_map_fn ||
-        !muimg_fix_vignette_fn || !muimg_warp_rectilinear_fn) {
+        !muimg_fix_vignette_fn || !muimg_warp_rectilinear_fn ||
+        !muimg_apply_gain_map_fn || !muimg_apply_gain_map_cfa_fn || !muimg_apply_flat_gain_map_fn ||
+        !muimg_map_polynomial_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -705,42 +719,6 @@ static void init_bicubic_weights_2d() {
 
 // gain_map: 2D or 4D array of per-pixel gains
 // For Bayer CFA: can be (H/2, W/2, 4) for 2x2 pattern or (H, W) for single plane
-static void apply_gain_map_cfa(
-    float* data, npy_intp height, npy_intp width,
-    const float* gain_map, npy_intp gain_h, npy_intp gain_w,
-    int cfa_pattern_width, int cfa_pattern_height
-) {
-    // Scale gain map coordinates to data coordinates
-    float scale_y = (float)gain_h / (float)height;
-    float scale_x = (float)gain_w / (float)width;
-    
-    for (npy_intp y = 0; y < height; y++) {
-        for (npy_intp x = 0; x < width; x++) {
-            // Bilinear interpolation of gain map
-            float gy = y * scale_y;
-            float gx = x * scale_x;
-            
-            int gy0 = (int)gy;
-            int gx0 = (int)gx;
-            if (gy0 >= gain_h - 1) gy0 = gain_h - 2;
-            if (gx0 >= gain_w - 1) gx0 = gain_w - 2;
-            
-            float fy = gy - gy0;
-            float fx = gx - gx0;
-            
-            float g00 = gain_map[gy0 * gain_w + gx0];
-            float g01 = gain_map[gy0 * gain_w + gx0 + 1];
-            float g10 = gain_map[(gy0 + 1) * gain_w + gx0];
-            float g11 = gain_map[(gy0 + 1) * gain_w + gx0 + 1];
-            
-            float gain = g00 * (1-fx) * (1-fy) + g01 * fx * (1-fy) +
-                        g10 * (1-fx) * fy + g11 * fx * fy;
-            
-            data[y * width + x] *= gain;
-        }
-    }
-}
-
 //=============================================================================
 // Python Module Functions
 //=============================================================================
@@ -1104,6 +1082,7 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
 }
 
 // Apply gain map (flat-field correction) to RAW CFA
+// Kernel in mu-image-engine: muimg_apply_flat_gain_map
 static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
     PyArrayObject* data_array = NULL;
     PyArrayObject* gain_array = NULL;
@@ -1151,10 +1130,29 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
     float* result_data = (float*)PyArray_DATA(result.get());
     const float* gain = (const float*)PyArray_DATA(gain_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    apply_gain_map_cfa(result_data, height, width, gain, gain_h, gain_w, 2, 2);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        result_data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        1,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_apply_flat_gain_map_fn(&buf, gain, (int)gain_h, (int)gain_w);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_apply_flat_gain_map failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
@@ -1627,186 +1625,8 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
 
 // =============================================================================
 // MapPolynomial opcode (OpcodeList2)
-// SDK ref: dng_reference.cpp RefBaselineMapPoly32
+// Kernel in mu-image-engine: muimg_map_polynomial
 // =============================================================================
-
-// Helper for MapPolynomial
-static inline float Pin_real32(float lo, float x, float hi) {
-    return x < lo ? lo : (x > hi ? hi : x);
-}
-
-// Port of RefBaselineMapPoly32 from dng_reference.cpp
-// Applies polynomial: y = c0 + c1*x + c2*x^2 + ... 
-// For negative x, alternates signs on even powers
-static void RefBaselineMapPoly32(
-    float* dPtr,
-    const int32_t rowStep,
-    const uint32_t rows,
-    const uint32_t cols,
-    const uint32_t rowPitch,
-    const uint32_t colPitch,
-    const float* coefficients,
-    const uint32_t degree,
-    uint16_t blackLevel)
-{
-    float blackScale1 = 1.0f;
-    float blackScale2 = 1.0f;
-    float blackOffset1 = 0.0f;
-    float blackOffset2 = 0.0f;
-
-    if (blackLevel != 0) {
-        blackOffset2 = ((float)blackLevel) / 65535.0f;
-        blackScale2 = 1.0f - blackOffset2;
-        blackScale1 = (blackScale2 != 0.0f) ? 1.0f / blackScale2 : 0.0f;
-        blackOffset1 = 1.0f - blackScale1;
-    }
-
-    for (uint32_t row = 0; row < rows; row += rowPitch) {
-        
-        if (blackLevel != 0) {
-            for (uint32_t col = 0; col < cols; col += colPitch) {
-                dPtr[col] = dPtr[col] * blackScale1 + blackOffset1;
-            }
-        }
-
-        switch (degree) {
-            case 0: {
-                float y = Pin_real32(-1.0f, coefficients[0], 1.0f);
-                for (uint32_t col = 0; col < cols; col += colPitch) {
-                    dPtr[col] = y;
-                }
-                break;
-            }
-
-            case 1: {
-                for (uint32_t col = 0; col < cols; col += colPitch) {
-                    float x = dPtr[col];
-                    float y = coefficients[0] + x * coefficients[1];
-                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
-                }
-                break;
-            }
-
-            case 2: {
-                for (uint32_t col = 0; col < cols; col += colPitch) {
-                    float x = dPtr[col];
-                    float y;
-                    if (x < 0.0f) {
-                        y = coefficients[0] + x * (coefficients[1] - x * coefficients[2]);
-                    } else {
-                        y = coefficients[0] + x * (coefficients[1] + x * coefficients[2]);
-                    }
-                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
-                }
-                break;
-            }
-
-            case 3: {
-                for (uint32_t col = 0; col < cols; col += colPitch) {
-                    float x = dPtr[col];
-                    float y;
-                    if (x < 0.0f) {
-                        y = coefficients[0] + x * (coefficients[1] - x * (coefficients[2] - x * coefficients[3]));
-                    } else {
-                        y = coefficients[0] + x * (coefficients[1] + x * (coefficients[2] + x * coefficients[3]));
-                    }
-                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
-                }
-                break;
-            }
-
-            case 4: {
-                for (uint32_t col = 0; col < cols; col += colPitch) {
-                    float x = dPtr[col];
-                    float y;
-                    if (x < 0.0f) {
-                        y = coefficients[0] + x * (coefficients[1] - x * (coefficients[2] - x * (coefficients[3] - x * coefficients[4])));
-                    } else {
-                        y = coefficients[0] + x * (coefficients[1] + x * (coefficients[2] + x * (coefficients[3] + x * coefficients[4])));
-                    }
-                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
-                }
-                break;
-            }
-
-            default: {
-                for (uint32_t col = 0; col < cols; col += colPitch) {
-                    float x = dPtr[col];
-                    float y = coefficients[0];
-
-                    if (x < 0.0f) {
-                        x = -x;
-                        float xx = x;
-                        for (uint32_t j = 1; j <= degree; j++) {
-                            y -= coefficients[j] * xx;
-                            xx *= x;
-                        }
-                    } else {
-                        float xx = x;
-                        for (uint32_t j = 1; j <= degree; j++) {
-                            y += coefficients[j] * xx;
-                            xx *= x;
-                        }
-                    }
-                    dPtr[col] = Pin_real32(-1.0f, y, 1.0f);
-                }
-                break;
-            }
-        }
-
-        if (blackLevel != 0) {
-            for (uint32_t col = 0; col < cols; col += colPitch) {
-                dPtr[col] = dPtr[col] * blackScale2 + blackOffset2;
-            }
-        }
-
-        dPtr += rowStep;
-    }
-}
-
-// ============================================================================
-// MapPolynomial opcode - shared implementation
-// ============================================================================
-
-// Shared core implementation for MapPolynomial opcode
-static void apply_map_polynomial_impl(
-    float* data, int height, int width, int num_channels,
-    int top, int left, int bottom, int right,
-    int start_plane, int num_planes,
-    int row_pitch, int col_pitch,
-    const float* coefficients, int degree
-) {
-    // Handle area bounds (0 means full image per SDK)
-    if (top == 0 && bottom == 0) { top = 0; bottom = height; }
-    if (left == 0 && right == 0) { left = 0; right = width; }
-    
-    int area_height = bottom - top;
-    int area_width = right - left;
-    
-    for (int plane = start_plane; 
-         plane < start_plane + num_planes && plane < num_channels; 
-         plane++) {
-        // Get pointer to start of area for this plane
-        float* plane_ptr = data + (top * width + left) * num_channels + plane;
-        
-        // rowStep: elements to advance per row (width * num_channels)
-        int32_t rowStep = (int32_t)(width * num_channels * row_pitch);
-        
-        // cols: total elements in row (area_width * num_channels)
-        // colPitch: skip between same-plane values (num_channels * col_pitch)
-        RefBaselineMapPoly32(
-            plane_ptr,
-            rowStep,
-            (uint32_t)area_height,
-            (uint32_t)(area_width * num_channels),
-            (uint32_t)row_pitch,
-            (uint32_t)(col_pitch * num_channels),
-            coefficients,
-            (uint32_t)degree,
-            0  // blackLevel - stage 2 is already normalized
-        );
-    }
-}
 
 // MapPolynomial opcode for RGB data (OpcodeList2)
 static PyObject* dng_color_op_map_polynomial(PyObject* self, PyObject* args) {
@@ -1847,13 +1667,32 @@ static PyObject* dng_color_op_map_polynomial(PyObject* self, PyObject* args) {
     float* dst_data = (float*)PyArray_DATA(result.get());
     const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    apply_map_polynomial_impl(dst_data, height, width, 3,
-                              top, left, bottom, right,
-                              plane, planes, row_pitch, col_pitch,
-                              coefficients, degree);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        dst_data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_map_polynomial_fn(
+        &buf, top, left, bottom, right,
+        plane, planes, row_pitch, col_pitch,
+        coefficients, degree);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_map_polynomial failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
@@ -1896,208 +1735,38 @@ static PyObject* dng_color_op_map_polynomial_cfa(PyObject* self, PyObject* args)
     float* dst_data = (float*)PyArray_DATA(result.get());
     const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    apply_map_polynomial_impl(dst_data, height, width, 1,
-                              top, left, bottom, right,
-                              0, 1, row_pitch, col_pitch,
-                              coefficients, degree);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        dst_data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        1,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_map_polynomial_fn(
+        &buf, top, left, bottom, right,
+        0, 1, row_pitch, col_pitch,
+        coefficients, degree);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_map_polynomial failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
 // ============================================================================
-// GainMap opcode - Direct copy from DNG SDK dng_gain_map.cpp
+// GainMap opcode - kernel in mu-image-engine/src/raw_render.cpp
 // ============================================================================
-
-// dng_gain_map_interpolator - copied from SDK lines 23-249
-class dng_gain_map_interpolator {
-private:
-    const float* fGainValues;
-    npy_intp fPointsV;
-    npy_intp fPointsH;
-    npy_intp fMapPlanes;
-    double fOriginV;
-    double fOriginH;
-    double fSpacingV;
-    double fSpacingH;
-    
-    double fScaleV;
-    double fScaleH;
-    double fOffsetV;
-    double fOffsetH;
-    
-    int32_t fColumn;
-    uint32_t fPlane;
-    
-    uint32_t fRowIndex1;
-    uint32_t fRowIndex2;
-    float fRowFract;
-    
-    int32_t fResetColumn;
-    
-    float fValueBase;
-    float fValueStep;
-    float fValueIndex;
-    
-    float Entry(uint32_t row, uint32_t col, uint32_t plane) const {
-        return fGainValues[row * fPointsH * fMapPlanes + col * fMapPlanes + plane];
-    }
-    
-    float InterpolateEntry(uint32_t colIndex) {
-        return Entry(fRowIndex1, colIndex, fPlane) * (1.0f - fRowFract) +
-               Entry(fRowIndex2, colIndex, fPlane) * (       fRowFract);
-    }
-    
-    void ResetColumn() {
-        double colIndexF = ((fScaleH * (fColumn + fOffsetH)) - 
-                            fOriginH) / fSpacingH;
-        
-        if (colIndexF <= 0.0) {
-            fValueBase = InterpolateEntry(0);
-            fValueStep = 0.0f;
-            fResetColumn = (int32_t)ceil(fOriginH / fScaleH - fOffsetH);
-        } else {
-            uint32_t lastCol = static_cast<uint32_t>(fPointsH - 1);
-            
-            if (colIndexF >= static_cast<double>(lastCol)) {
-                fValueBase = InterpolateEntry(lastCol);
-                fValueStep = 0.0f;
-                fResetColumn = 0x7FFFFFFF;
-            } else {
-                uint32_t colIndex = static_cast<uint32_t>(colIndexF);
-                double base = InterpolateEntry(colIndex);
-                double delta = InterpolateEntry(colIndex + 1) - base;
-                
-                fValueBase = (float)(base + delta * (colIndexF - (double)colIndex));
-                fValueStep = (float)((delta * fScaleH) / fSpacingH);
-                fResetColumn = (int32_t)ceil(((colIndex + 1) * fSpacingH +
-                                              fOriginH) / fScaleH - fOffsetH);
-            }
-        }
-        fValueIndex = 0.0f;
-    }
-    
-public:
-    dng_gain_map_interpolator(const float* gainValues,
-                              npy_intp pointsV, npy_intp pointsH, npy_intp mapPlanes,
-                              double originV, double originH,
-                              double spacingV, double spacingH,
-                              npy_intp imageBoundsT, npy_intp imageBoundsL,
-                              npy_intp imageBoundsH, npy_intp imageBoundsW,
-                              int32_t row, int32_t column, uint32_t plane)
-        : fGainValues(gainValues)
-        , fPointsV(pointsV), fPointsH(pointsH), fMapPlanes(mapPlanes)
-        , fOriginV(originV), fOriginH(originH)
-        , fSpacingV(spacingV), fSpacingH(spacingH)
-        , fScaleV(1.0 / imageBoundsH)
-        , fScaleH(1.0 / imageBoundsW)
-        , fOffsetV(0.5 - imageBoundsT)
-        , fOffsetH(0.5 - imageBoundsL)
-        , fColumn(column)
-        , fPlane(plane)
-        , fRowIndex1(0), fRowIndex2(0), fRowFract(0.0f)
-        , fResetColumn(0)
-        , fValueBase(0.0f), fValueStep(0.0f), fValueIndex(0.0f)
-    {
-        double rowIndexF = (fScaleV * (row + fOffsetV) -
-                            fOriginV) / fSpacingV;
-        
-        if (rowIndexF <= 0.0) {
-            fRowIndex1 = 0;
-            fRowIndex2 = 0;
-            fRowFract = 0.0f;
-        } else {
-            uint32_t lastRow = static_cast<uint32_t>(fPointsV - 1);
-            
-            if (rowIndexF >= static_cast<double>(lastRow)) {
-                fRowIndex1 = lastRow;
-                fRowIndex2 = fRowIndex1;
-                fRowFract = 0.0f;
-            } else {
-                fRowIndex1 = static_cast<uint32_t>(rowIndexF);
-                fRowIndex2 = fRowIndex1 + 1;
-                fRowFract = (float)(rowIndexF - (double)fRowIndex1);
-            }
-        }
-        ResetColumn();
-    }
-    
-    float Interpolate() const {
-        return fValueBase + fValueStep * fValueIndex;
-    }
-    
-    void Increment() {
-        if (++fColumn >= fResetColumn) {
-            ResetColumn();
-        } else {
-            fValueIndex += 1.0f;
-        }
-    }
-};
-
-// ============================================================================
-// GainMap opcode - shared implementation
-// SDK ref: dng_gain_map.cpp dng_opcode_GainMap::ProcessArea
-// ============================================================================
-
-// Shared core implementation for GainMap opcode
-// is_cfa: true for 2D CFA data, false for 3D RGB data
-static void apply_gain_map_impl(
-    float* data, npy_intp height, npy_intp width, int num_channels,
-    const float* gain_values,
-    npy_intp points_v, npy_intp points_h, npy_intp map_planes,
-    int32_t top, int32_t left, int32_t bottom, int32_t right,
-    int start_plane, int num_planes,
-    int row_pitch, int col_pitch,
-    double spacing_v, double spacing_h, double origin_v, double origin_h
-) {
-    // Handle area bounds (0 means full image) - SDK dng_rect overlap
-    int32_t overlap_t = std::max(0, top);
-    int32_t overlap_l = std::max(0, left);
-    int32_t overlap_b = (bottom > 0) ? std::min((int32_t)height, bottom) : (int32_t)height;
-    int32_t overlap_r = (right > 0) ? std::min((int32_t)width, right) : (int32_t)width;
-    
-    if (overlap_t >= overlap_b || overlap_l >= overlap_r) {
-        return;
-    }
-    
-    uint32_t cols = overlap_r - overlap_l;
-    uint32_t colPitch = std::min((uint32_t)col_pitch, cols);
-    
-    // SDK ref: dng_gain_map.cpp:1337-1340 - loop over planes
-    for (int plane = start_plane; 
-         plane < start_plane + num_planes && plane < num_channels; 
-         plane++) {
-        
-        uint32_t mapPlane = std::min((uint32_t)plane, (uint32_t)(map_planes - 1));
-        
-        // SDK: for row in overlap.t to overlap.b by rowPitch
-        for (int32_t row = overlap_t; row < overlap_b; row += row_pitch) {
-            
-            // SDK: dng_gain_map_interpolator interp(*fGainMap, imageBounds, row, overlap.l, mapPlane)
-            dng_gain_map_interpolator interp(
-                gain_values, points_v, points_h, map_planes,
-                origin_v, origin_h, spacing_v, spacing_h,
-                0, 0, height, width,  // imageBounds: t=0, l=0, h=height, w=width
-                row, overlap_l, mapPlane
-            );
-            
-            // SDK: for col in 0 to cols by colPitch
-            for (uint32_t col = 0; col < cols; col += colPitch) {
-                float gain = interp.Interpolate();
-                
-                // Apply gain and clip to [0,1]
-                npy_intp pixel_idx = (row * width + overlap_l + col) * num_channels + plane;
-                data[pixel_idx] = std::max(0.0f, std::min(data[pixel_idx] * gain, 1.0f));
-                
-                for (uint32_t j = 0; j < colPitch; j++) {
-                    interp.Increment();
-                }
-            }
-        }
-    }
-}
 
 // GainMap opcode for RGB data (OpcodeList2)
 static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
@@ -2153,15 +1822,35 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
     float* data = (float*)PyArray_DATA(result.get());
     const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    apply_gain_map_impl(data, height, width, 3,
-                        gain_values, points_v, points_h, map_planes,
-                        top, left, bottom, right,
-                        start_plane, num_planes,
-                        row_pitch, col_pitch,
-                        spacing_v, spacing_h, origin_v, origin_h);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        3,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_apply_gain_map_fn(
+        &buf, gain_values,
+        (int)points_v, (int)points_h, (int)map_planes,
+        top, left, bottom, right,
+        start_plane, num_planes,
+        row_pitch, col_pitch,
+        spacing_v, spacing_h, origin_v, origin_h);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_apply_gain_map failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
@@ -2366,15 +2055,34 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
     float* data = (float*)PyArray_DATA(result.get());
     const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
     
-    Py_BEGIN_ALLOW_THREADS
-    apply_gain_map_impl(data, height, width, 1,
-                        gain_values, points_v, points_h, map_planes,
-                        top, left, bottom, right,
-                        0, 1,  // CFA: start_plane=0, num_planes=1
-                        row_pitch, col_pitch,
-                        spacing_v, spacing_h, origin_v, origin_h);
+    if (!load_core_library()) {
+        return NULL;
+    }
     
+    MuImgBuffer buf = {
+        data,
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        1,
+        MUIMG_DTYPE_FLOAT32,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_apply_gain_map_cfa_fn(
+        &buf, gain_values,
+        (int)points_v, (int)points_h, (int)map_planes,
+        top, left, bottom, right,
+        row_pitch, col_pitch,
+        spacing_v, spacing_h, origin_v, origin_h);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_apply_gain_map_cfa failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
