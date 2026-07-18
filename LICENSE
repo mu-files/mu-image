@@ -26,18 +26,5 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## Third-Party Components
-
-This software includes components under different licenses:
-
-- **Adobe DNG SDK** (c-src/raw_render/): Adobe DNG SDK License (permissive, royalty-free)
-  Copyright 2006-2024 Adobe Systems Incorporated
-
-- **VNG Demosaicing** (c-src/demosaic/vng.c): LGPL v2.1 / CDDL v1.0
-  Copyright Dave Coffin, LibRaw LLC
-
-The RCD demosaicing algorithm (GPL v3) is available as optional source code
-(rcd.txt) but is not built or distributed by default. Users who choose to
-enable it must accept its GPL v3 license terms.
-
-See the LICENSES directory for full license texts and details.
+Package-specific third-party components (Adobe DNG SDK, VNG, optional RCD)
+are documented in muimg/LICENSE and muimg/LICENSES/.

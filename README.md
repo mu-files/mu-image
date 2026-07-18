@@ -1,6 +1,6 @@
 ## RAW Image Infrastructure & Utilities
 
-[![License](https://img.shields.io/badge/License-PolyForm%20Small%20Business-blue.svg)](muimg/LICENSE)
+[![License](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
 `mu-image` is a cross-platform collection of high-performance tools for software engineers, astrophotographers, and time-lapse editors to process, convert, and render raw image files.
 
@@ -13,7 +13,7 @@ The repository contains two packages:
 
 ## Primary Use Cases
 
-- **DNG support in your app**: a source-available python package to add DNG support to your project (no restrictions except for large companies)
+- **DNG support in your app**: a BSD-3-Clause Python package to add DNG support to your project
 - **DNG to video time-lapse assembly**: Stitch folders of raw DNG frames directly into MP4/H.264 video clips. Suited for allsky camera sequences and day-to-night astrophotography arrays.
 - **Astronomical FITS to DNG conversion**: Convert scientific `.fits` files into compliant `.dng` raw images for editing in Adobe Photoshop, Lightroom, or Camera Raw.
 - **Batch image transcoding**: Mass-convert raw sequences to TIFF (8-bit/16-bit), JPEG, and JPEG XL (JXL) with multi-core parallel processing.

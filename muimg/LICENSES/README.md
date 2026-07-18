@@ -2,7 +2,7 @@
 
 ## Main Package License
 
-The muimg package is released under a modified PolyForm Small Business License.
+The muimg package is released under the BSD 3-Clause License.
 See the main [LICENSE](../LICENSE) file for details.
 
 ## Bundled Third-Party Components

@@ -1,5 +1,5 @@
-# Released under a modified PolyForm Small Business License.
-# Free for small businesses, individuals, and academics. See LICENSE for details.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 mu-files
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel", "numpy"]
@@ -7,12 +7,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260718.1242"
+version = "0.1.20260718.1511"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "PolyForm-Small-Business-1.0.0 (Modified)"}
+license = {text = "BSD-3-Clause"}
 keywords = [
     "dng", "dng-files", "dng-format",
     "raw-image", "raw-processing",
@@ -24,6 +24,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
     "Topic :: Multimedia :: Graphics",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Programming Language :: Python :: 3.12",

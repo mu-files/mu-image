@@ -1,5 +1,5 @@
-# Released under a modified PolyForm Small Business License.
-# Free for small businesses, individuals, and academics. See LICENSE for details.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 mu-files
 
 """Test write_dng(), write_dng_from_array(), and write_dng_from_page() functions.
 

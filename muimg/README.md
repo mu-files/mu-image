@@ -4,7 +4,7 @@
 
 # muimg
 
-[![License](https://img.shields.io/badge/License-PolyForm%20Small%20Business-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
 Python library for reading, writing, and rendering Adobe DNG (Digital Negative) raw image files. Provides both a comprehensive Python API and command-line tools for DNG manipulation, rendering, metadata handling, and multi-threaded batch processing. Performance-critical operations are implemented in C/C++ extensions, but this initial (May 1, 2026) release prioritizes rendering correctness over speed optimization.
 
@@ -384,7 +384,7 @@ See [docs/dng_render_pipeline.md](docs/dng_render_pipeline.md) for detailed impl
 - **OPENCV_EA**: Fastest, lower quality
 - **RCD** (optional, GPL-licensed): High quality, slower
 
-The RCD (Ratio Corrected Demosaicing) algorithm is disabled by default because it's licensed under **GPL v3**, which is separate from muimg's PolyForm Small Business license. To enable RCD:
+The RCD (Ratio Corrected Demosaicing) algorithm is disabled by default because it's licensed under **GPL v3**, which is separate from muimg's BSD-3-Clause license. To enable RCD:
 1. Rename `c-src/demosaic/rcd.txt` to `c-src/demosaic/rcd.c`
 2. Rebuild: `pip install -e .`
 
@@ -406,20 +406,9 @@ This document provides:
 
 ## License
 
-This software is released under a modified **PolyForm Small Business License 1.0.0**.
+This software is released under the **BSD 3-Clause License**. See [LICENSE](LICENSE) for full terms.
 
-**Free for:**
-- Small businesses (<100 employees, <$10M revenue)
-- Individuals
-- Academic institutions
-- Non-profit organizations
-- Government entities (non-commercial use)
-
-**Large enterprises** require a commercial license. Contact: license@mu-files.com
-
-⚠️ **AI Training Notice**: The core implementation source code is NOT licensed for AI/ML training. However, documentation, tests, examples, and CLI code are available for learning the API. See [llms.txt](../llms.txt) and [robots.txt](../robots.txt) for details.
-
-See [LICENSE](LICENSE) for full terms.
+AI/crawler preferences for documentation and examples are described in [llms.txt](../llms.txt) and [robots.txt](../robots.txt). Those files are project guidance for crawlers and agents, not additional license terms.
 
 ### Third-Party Components
 

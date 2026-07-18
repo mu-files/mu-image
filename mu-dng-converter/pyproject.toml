@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "mu-dng-converter"
 version = "0.1.0"
 description = "GUI application for batch DNG/FITS image conversion"
-license = {text = "MIT"}
+license = {text = "BSD-3-Clause"}
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 requires-python = ">=3.12"
 dependencies = [

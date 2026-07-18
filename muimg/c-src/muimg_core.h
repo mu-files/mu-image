@@ -4,8 +4,8 @@
  * Pure C interface for image processing operations.
  * No Python or NumPy dependencies.
  *
- * Copyright (c) 2024 mu-files
- * Licensed under a modified PolyForm Small Business License
+ * SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2026 mu-files
  */
 
 #ifndef MUIMG_CORE_H
