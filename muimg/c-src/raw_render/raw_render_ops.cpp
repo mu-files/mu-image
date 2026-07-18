@@ -28,20 +28,7 @@
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <numpy/arrayobject.h>
 
-#include <cmath>
-#include <cstring>
-#include <algorithm>
-#include <limits>
 #include <memory>
-#include <type_traits>
-#include <vector>
-
-#if defined(__aarch64__)
-#include <arm_neon.h>
-#define NEON 1  // Global switch: 1=enabled, 0=disabled
-#else
-#define NEON 0
-#endif
 
 #include <dlfcn.h>
 #include "../muimg_core.h"
@@ -66,6 +53,7 @@ static int (*muimg_apply_gain_map_fn)(MuImgBuffer*, const float*, int, int, int,
 static int (*muimg_apply_gain_map_cfa_fn)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, double, double, double, double) = nullptr;
 static int (*muimg_apply_flat_gain_map_fn)(MuImgBuffer*, const float*, int, int) = nullptr;
 static int (*muimg_map_polynomial_fn)(MuImgBuffer*, int, int, int, int, int, int, int, int, const float*, int) = nullptr;
+static int (*muimg_fix_bad_pixels_constant_fn)(const MuImgBuffer*, MuImgBuffer*, uint32_t, uint32_t) = nullptr;
 
 static bool load_core_library() {
     if (g_core_lib) return true;
@@ -117,13 +105,15 @@ static bool load_core_library() {
         dlsym(g_core_lib, "muimg_apply_flat_gain_map");
     muimg_map_polynomial_fn = (int (*)(MuImgBuffer*, int, int, int, int, int, int, int, int, const float*, int))
         dlsym(g_core_lib, "muimg_map_polynomial");
+    muimg_fix_bad_pixels_constant_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, uint32_t, uint32_t))
+        dlsym(g_core_lib, "muimg_fix_bad_pixels_constant");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
         !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
         !muimg_apply_hue_sat_map_fn || !muimg_apply_exposure_ramp_fn || !muimg_apply_profile_gain_table_map_fn ||
         !muimg_fix_vignette_fn || !muimg_warp_rectilinear_fn ||
         !muimg_apply_gain_map_fn || !muimg_apply_gain_map_cfa_fn || !muimg_apply_flat_gain_map_fn ||
-        !muimg_map_polynomial_fn) {
+        !muimg_map_polynomial_fn || !muimg_fix_bad_pixels_constant_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
         dlclose(g_core_lib);
         g_core_lib = nullptr;
@@ -615,110 +605,6 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     return (PyObject*)result.release();
 }
 
-// RGB/HSV conversion and HueSatMap kernel moved to mu-image-engine/src/raw_render_profile.cpp
-
-//=============================================================================
-// Stage 1: Pre-Demosaic Operations (on RAW CFA data)
-//=============================================================================
-
-// Apply linearization table to RAW data
-// Converts sensor ADC values to linear light values
-// table: LUT mapping input [0, max_val] to output
-// max_val: maximum input value (e.g., 16383 for 14-bit)
-static void apply_linearization_table(
-    float* data, npy_intp count,
-    const float* table, int table_size, float max_val
-) {
-    float scale = (float)(table_size - 1) / max_val;
-    for (npy_intp i = 0; i < count; i++) {
-        float val = data[i];
-        float idx = val * scale;
-        int i0 = (int)idx;
-        if (i0 < 0) i0 = 0;
-        if (i0 >= table_size - 1) i0 = table_size - 2;
-        float fract = idx - (float)i0;
-        data[i] = table[i0] * (1.0f - fract) + table[i0 + 1] * fract;
-    }
-}
-
-// normalize_black_white kernel moved to mu-image-engine/src/raw_render_normalize.cpp
-
-//=============================================================================
-// Stage 2: Post-Demosaic Operations (on RGB data)
-//=============================================================================
-
-// SDK ref: dng_resample.h lines 192-194
-const uint32_t kResampleSubsampleBits2D = 5;
-const uint32_t kResampleSubsampleCount2D = 1 << kResampleSubsampleBits2D;  // 32
-
-// SDK ref: dng_resample.cpp dng_resample_bicubic::Evaluate lines 33-48
-static inline double dng_resample_bicubic_Evaluate(double x) {
-    const double A = -0.75;
-    x = std::abs(x);
-    
-    if (x >= 2.0)
-        return 0.0;
-    else if (x >= 1.0)
-        return (((A * x - 5.0 * A) * x + 8.0 * A) * x - 4.0 * A);
-    else
-        return (((A + 2.0) * x - (A + 3.0)) * x * x + 1.0);
-}
-
-// SDK ref: dng_resample.cpp dng_resample_weights_2d::Initialize lines 308-441
-// Precomputed 2D bicubic weights: 32x32 fractional positions, 4x4 weights each
-// Total: 32 * 32 * 16 = 16384 weights
-static float* g_bicubic_weights_2d = nullptr;
-static const uint32_t kBicubicWidth = 4;  // 2 * radius where radius = 2
-static const uint32_t kBicubicWidthSqr = 16;
-
-static void init_bicubic_weights_2d() {
-    if (g_bicubic_weights_2d != nullptr) return;
-    
-    g_bicubic_weights_2d = new float[kResampleSubsampleCount2D * kResampleSubsampleCount2D * kBicubicWidthSqr];
-    
-    // SDK ref: dng_resample.cpp lines 369-441
-    for (uint32_t y = 0; y < kResampleSubsampleCount2D; y++) {
-        double yFract = y * (1.0 / (double)kResampleSubsampleCount2D);
-        
-        for (uint32_t x = 0; x < kResampleSubsampleCount2D; x++) {
-            double xFract = x * (1.0 / (double)kResampleSubsampleCount2D);
-            
-            float* w32 = g_bicubic_weights_2d + 
-                         (y * kResampleSubsampleCount2D + x) * kBicubicWidthSqr;
-            
-            // SDK ref: lines 386-428
-            double t32 = 0.0;
-            uint32_t index = 0;
-            
-            for (uint32_t i = 0; i < kBicubicWidth; i++) {
-                int32_t yInt = ((int32_t)i) - 2 + 1;  // fRadius = 2, so -1, 0, 1, 2
-                double yPos = yInt - yFract;
-                
-                for (uint32_t j = 0; j < kBicubicWidth; j++) {
-                    int32_t xInt = ((int32_t)j) - 2 + 1;  // -1, 0, 1, 2
-                    double xPos = xInt - xFract;
-                    
-                    // SDK ref: lines 415-418 - Separable kernel
-                    w32[index] = (float)(dng_resample_bicubic_Evaluate(xPos) *
-                                         dng_resample_bicubic_Evaluate(yPos));
-                    t32 += w32[index];
-                    index++;
-                }
-            }
-            
-            // SDK ref: lines 430-438 - Normalize weights to sum to 1.0
-            float s32 = (float)(1.0 / t32);
-            for (uint32_t i = 0; i < kBicubicWidthSqr; i++) {
-                w32[i] *= s32;
-            }
-        }
-    }
-}
-
-// Apply gain map (flat-field correction) to CFA data
-
-// gain_map: 2D or 4D array of per-pixel gains
-// For Bayer CFA: can be (H/2, W/2, 4) for 2x2 pattern or (H, W) for single plane
 //=============================================================================
 // Python Module Functions
 //=============================================================================
@@ -1856,7 +1742,7 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
 
 //=============================================================================
 // FixBadPixelsConstant - Fix bad pixels marked with constant value (OpcodeList1)
-// SDK ref: dng_bad_pixels.cpp dng_opcode_FixBadPixelsConstant::ProcessArea
+// Kernel in mu-image-engine: muimg_fix_bad_pixels_constant
 //=============================================================================
 
 static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* args) {
@@ -1895,109 +1781,38 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
         return NULL;
     }
     
-    uint16_t* src_data = (uint16_t*)PyArray_DATA(data_cont.get());
-    uint16_t* dst_data = (uint16_t*)PyArray_DATA(result.get());
-    uint16_t bad_pixel = (uint16_t)constant;
-    
-    Py_BEGIN_ALLOW_THREADS
-    // SDK ref: dng_bad_pixels.cpp lines 146-275
-    // IsGreen formula: ((row + col + bayer_phase + (bayer_phase >> 1)) & 1) == 0
-    
-    for (npy_intp row = 0; row < height; row++) {
-        for (npy_intp col = 0; col < width; col++) {
-            npy_intp idx = row * width + col;
-            
-            if (src_data[idx] == bad_pixel) {
-                uint32_t count = 0;
-                uint32_t total = 0;
-                
-                // Determine if this is a green pixel
-                bool is_green = (((uint32_t)row + (uint32_t)col + bayer_phase + (bayer_phase >> 1)) & 1) == 0;
-                
-                if (is_green) {
-                    // Green pixel: use 4 diagonal neighbors (2x2 Bayer repeat)
-                    // Top-left
-                    if (row > 0 && col > 0) {
-                        uint16_t val = src_data[(row - 1) * width + (col - 1)];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                    // Top-right
-                    if (row > 0 && col < width - 1) {
-                        uint16_t val = src_data[(row - 1) * width + (col + 1)];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                    // Bottom-left
-                    if (row < height - 1 && col > 0) {
-                        uint16_t val = src_data[(row + 1) * width + (col - 1)];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                    // Bottom-right
-                    if (row < height - 1 && col < width - 1) {
-                        uint16_t val = src_data[(row + 1) * width + (col + 1)];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                } else {
-                    // Red/Blue pixel: use 4 same-color neighbors (2 rows/cols apart)
-                    // Top (2 rows up)
-                    if (row >= 2) {
-                        uint16_t val = src_data[(row - 2) * width + col];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                    // Bottom (2 rows down)
-                    if (row < height - 2) {
-                        uint16_t val = src_data[(row + 2) * width + col];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                    // Left (2 cols left)
-                    if (col >= 2) {
-                        uint16_t val = src_data[row * width + (col - 2)];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                    // Right (2 cols right)
-                    if (col < width - 2) {
-                        uint16_t val = src_data[row * width + (col + 2)];
-                        if (val != bad_pixel) {
-                            count++;
-                            total += val;
-                        }
-                    }
-                }
-                
-                // Compute replacement value
-                if (count == 4) {
-                    // Most common case: all 4 neighbors available
-                    dst_data[idx] = (uint16_t)((total + 2) >> 2);
-                } else if (count > 0) {
-                    // Some neighbors available
-                    dst_data[idx] = (uint16_t)((total + (count >> 1)) / count);
-                }
-                // else: no valid neighbors, leave as bad pixel
-            }
-        }
+    if (!load_core_library()) {
+        return NULL;
     }
     
+    MuImgBuffer in_buf = {
+        PyArray_DATA(data_cont.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        1,
+        MUIMG_DTYPE_UINT16,
+        0
+    };
+    MuImgBuffer out_buf = {
+        PyArray_DATA(result.get()),
+        static_cast<size_t>(height),
+        static_cast<size_t>(width),
+        1,
+        MUIMG_DTYPE_UINT16,
+        0
+    };
+    
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = muimg_fix_bad_pixels_constant_fn(
+        &in_buf, &out_buf, (uint32_t)constant, (uint32_t)bayer_phase);
     Py_END_ALLOW_THREADS
+    
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "muimg_fix_bad_pixels_constant failed with code %d", status);
+        return NULL;
+    }
+    
     return (PyObject*)result.release();
 }
 
@@ -2338,9 +2153,5 @@ static struct PyModuleDef raw_render_module = {
 // Module initialization
 PyMODINIT_FUNC PyInit__raw_render(void) {
     import_array();
-    
-    // Initialize bicubic weights table (thread-safe: happens once at module load)
-    init_bicubic_weights_2d();
-    
     return PyModule_Create(&raw_render_module);
 }

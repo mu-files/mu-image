@@ -235,6 +235,16 @@ int muimg_map_polynomial(
     const float* coefficients, int degree
 );
 
+// FixBadPixelsConstant opcode (OpcodeList1).
+// input/output: uint16 CFA, shape (H, W, 1). Neighbors are read from input;
+// replacements are written to output (non-bad pixels should already match input).
+int muimg_fix_bad_pixels_constant(
+    const MuImgBuffer* input,
+    MuImgBuffer* output,
+    uint32_t constant,
+    uint32_t bayer_phase
+);
+
 // VNG (Variable Number of Gradients) demosaic
 //
 // High-quality demosaicing algorithm.
