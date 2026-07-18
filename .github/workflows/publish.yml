@@ -64,6 +64,8 @@ jobs:
           CIBW_BUILD_VERBOSITY: 1
           # Prebuilt libmuimg_core.*.dylib requires macOS 14+
           CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=14.0
+          # Core .so is built newer than manylinux; Linux wheels are CI-only (not published).
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
 
       - uses: actions/upload-artifact@v4
         with:

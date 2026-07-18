@@ -4,7 +4,27 @@
 from setuptools import setup, Extension
 import numpy as np
 import os
+import platform
 import sys
+
+
+def host_core_binaries():
+    """Ship only the host libmuimg_core in wheels; sdist keeps all via MANIFEST.in."""
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Windows":
+        name = "muimg_core.windows-amd64.dll"
+    elif system == "Darwin":
+        if machine in ("arm64", "aarch64"):
+            name = "libmuimg_core.macos-arm64.dylib"
+        else:
+            name = "libmuimg_core.macos-x86_64.dylib"
+    else:
+        if machine in ("arm64", "aarch64"):
+            name = "libmuimg_core.linux-aarch64.so"
+        else:
+            name = "libmuimg_core.linux-x86_64.so"
+    return [f"_binaries/{name}"]
 
 if sys.platform == 'win32':
     # MSVC flags for Windows
@@ -85,4 +105,6 @@ if rcd_extension:
 
 setup(
     ext_modules=ext_modules,
+    include_package_data=False,
+    package_data={"muimg": host_core_binaries()},
 )
