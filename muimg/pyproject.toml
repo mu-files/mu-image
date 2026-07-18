@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260718.1627"
+version = "0.1.20260718.1630"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -69,6 +69,10 @@ Repository = "https://github.com/mu-files/mu-image"
 
 [tool.setuptools]
 packages = ["muimg"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+muimg = ["_binaries/*"]
 
 [tool.pytest.ini_options]
 log_cli = true

@@ -33,12 +33,43 @@
 #include <cstring>
 #include <memory>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include "../muimg_core.h"
 
 //=============================================================================
 // Core library loading (incremental migration)
 //=============================================================================
+
+static void* core_dlopen(const char* path) {
+#if defined(_WIN32)
+    return reinterpret_cast<void*>(LoadLibraryA(path));
+#else
+    return dlopen(path, RTLD_LAZY);
+#endif
+}
+
+static void* core_dlsym(void* handle, const char* name) {
+#if defined(_WIN32)
+    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
+#else
+    return dlsym(handle, name);
+#endif
+}
+
+static void core_dlclose(void* handle) {
+#if defined(_WIN32)
+    FreeLibrary(static_cast<HMODULE>(handle));
+#else
+    dlclose(handle);
+#endif
+}
 
 static void* g_core_lib = nullptr;
 static int (*muimg_bilinear_demosaic_fn)(const MuImgBuffer*, MuImgBuffer*, const int[4]) = nullptr;
@@ -119,7 +150,7 @@ static bool load_core_library() {
         return false;
     }
 
-    g_core_lib = dlopen(lib_path, RTLD_LAZY);
+    g_core_lib = core_dlopen(lib_path);
 
     if (!g_core_lib) {
         PyErr_Format(PyExc_RuntimeError,
@@ -128,38 +159,38 @@ static bool load_core_library() {
     }
     
     muimg_bilinear_demosaic_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const int[4]))
-        dlsym(g_core_lib, "muimg_bilinear_demosaic");
+        core_dlsym(g_core_lib, "muimg_bilinear_demosaic");
     
     muimg_convert_dtype_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, int, int, float))
-        dlsym(g_core_lib, "muimg_convert_dtype");
+        core_dlsym(g_core_lib, "muimg_convert_dtype");
     muimg_mono_lut_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, int, int))
-        dlsym(g_core_lib, "muimg_mono_lut");
+        core_dlsym(g_core_lib, "muimg_mono_lut");
     muimg_transform_color_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float*, size_t, const float*, const float*, size_t, int, int, bool))
-        dlsym(g_core_lib, "muimg_transform_color");
+        core_dlsym(g_core_lib, "muimg_transform_color");
     muimg_clip_and_transform_color_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float[3], const float[9]))
-        dlsym(g_core_lib, "muimg_clip_and_transform_color");
+        core_dlsym(g_core_lib, "muimg_clip_and_transform_color");
     muimg_normalize_raw_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const float*, int, int, int, const float*, int, const float*, int, const float*, int, const uint16_t*, int))
-        dlsym(g_core_lib, "muimg_normalize_raw");
+        core_dlsym(g_core_lib, "muimg_normalize_raw");
     muimg_apply_hue_sat_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, int))
-        dlsym(g_core_lib, "muimg_apply_hue_sat_map");
+        core_dlsym(g_core_lib, "muimg_apply_hue_sat_map");
     muimg_apply_exposure_ramp_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, double, double, double, bool))
-        dlsym(g_core_lib, "muimg_apply_exposure_ramp");
+        core_dlsym(g_core_lib, "muimg_apply_exposure_ramp");
     muimg_apply_profile_gain_table_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, float, float, float, float, int, const float*, float, float))
-        dlsym(g_core_lib, "muimg_apply_profile_gain_table_map");
+        core_dlsym(g_core_lib, "muimg_apply_profile_gain_table_map");
     muimg_fix_vignette_fn = (int (*)(MuImgBuffer*, const double*, int, double, double))
-        dlsym(g_core_lib, "muimg_fix_vignette");
+        core_dlsym(g_core_lib, "muimg_fix_vignette");
     muimg_warp_rectilinear_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, const double*, int, int, const double*, double, double, bool))
-        dlsym(g_core_lib, "muimg_warp_rectilinear");
+        core_dlsym(g_core_lib, "muimg_warp_rectilinear");
     muimg_apply_gain_map_fn = (int (*)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, int, int, double, double, double, double))
-        dlsym(g_core_lib, "muimg_apply_gain_map");
+        core_dlsym(g_core_lib, "muimg_apply_gain_map");
     muimg_apply_gain_map_cfa_fn = (int (*)(MuImgBuffer*, const float*, int, int, int, int, int, int, int, int, int, double, double, double, double))
-        dlsym(g_core_lib, "muimg_apply_gain_map_cfa");
+        core_dlsym(g_core_lib, "muimg_apply_gain_map_cfa");
     muimg_apply_flat_gain_map_fn = (int (*)(MuImgBuffer*, const float*, int, int))
-        dlsym(g_core_lib, "muimg_apply_flat_gain_map");
+        core_dlsym(g_core_lib, "muimg_apply_flat_gain_map");
     muimg_map_polynomial_fn = (int (*)(MuImgBuffer*, int, int, int, int, int, int, int, int, const float*, int))
-        dlsym(g_core_lib, "muimg_map_polynomial");
+        core_dlsym(g_core_lib, "muimg_map_polynomial");
     muimg_fix_bad_pixels_constant_fn = (int (*)(const MuImgBuffer*, MuImgBuffer*, uint32_t, uint32_t))
-        dlsym(g_core_lib, "muimg_fix_bad_pixels_constant");
+        core_dlsym(g_core_lib, "muimg_fix_bad_pixels_constant");
 
     if (!muimg_bilinear_demosaic_fn || !muimg_convert_dtype_fn || !muimg_mono_lut_fn ||
         !muimg_transform_color_fn || !muimg_clip_and_transform_color_fn || !muimg_normalize_raw_fn ||
@@ -168,7 +199,7 @@ static bool load_core_library() {
         !muimg_apply_gain_map_fn || !muimg_apply_gain_map_cfa_fn || !muimg_apply_flat_gain_map_fn ||
         !muimg_map_polynomial_fn || !muimg_fix_bad_pixels_constant_fn) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to load required muimg_core symbols");
-        dlclose(g_core_lib);
+        core_dlclose(g_core_lib);
         g_core_lib = nullptr;
         return false;
     }
