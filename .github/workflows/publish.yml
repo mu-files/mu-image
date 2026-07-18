@@ -117,8 +117,12 @@ jobs:
           EXTRAS: ${{ matrix.extras }}
 
       - name: Run pytest
-        working-directory: muimg
-        run: python -m pytest tests/ -v
+        # Run outside the checkout so the installed wheel wins over ./muimg/muimg source.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}"
+          python -m pytest "${GITHUB_WORKSPACE}/muimg/tests" -v
 
   publish:
     name: Publish to PyPI
