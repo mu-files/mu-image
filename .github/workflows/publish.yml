@@ -1,9 +1,11 @@
-name: Publish to PyPI
+name: Build, Test, and Publish
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main, dev-branch]
+    tags: ['v*']
+  pull_request:
+    branches: [main, dev-branch]
 
 jobs:
   build-sdist:
@@ -28,9 +30,22 @@ jobs:
           name: sdist
           path: muimg/dist/*.tar.gz
 
-  build-windows-wheels:
-    name: Build Windows wheels
-    runs-on: windows-latest
+  build-wheels:
+    name: Build wheels (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu
+            os: ubuntu-latest
+            cibw_build: "cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          - name: macos
+            os: macos-14
+            cibw_build: "cp312-macosx_arm64 cp313-macosx_arm64"
+          - name: windows
+            os: windows-latest
+            cibw_build: "cp312-win_amd64 cp313-win_amd64"
     steps:
       - uses: actions/checkout@v4
 
@@ -45,26 +60,81 @@ jobs:
         run: python -m cibuildwheel --output-dir dist
         working-directory: muimg
         env:
-          CIBW_BUILD: "cp312-win_amd64 cp313-win_amd64"
+          CIBW_BUILD: ${{ matrix.cibw_build }}
           CIBW_BUILD_VERBOSITY: 1
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-wheels
+          name: wheels-${{ matrix.name }}
           path: muimg/dist/*.whl
+
+  test:
+    name: Test (${{ matrix.name }})
+    needs: [build-wheels]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu
+            os: ubuntu-latest
+            artifact: wheels-ubuntu
+            extras: "[all]"
+          - name: macos
+            os: macos-14
+            artifact: wheels-macos
+            extras: "[all,coreimage]"
+          - name: windows
+            os: windows-latest
+            artifact: wheels-windows
+            extras: "[all]"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+
+      - name: Install wheel and extras
+        shell: bash
+        run: |
+          set -euo pipefail
+          whl=$(ls dist/muimg-*cp312*.whl | head -n 1)
+          echo "Installing ${whl}${EXTRAS}"
+          python -m pip install --upgrade pip
+          python -m pip install "${whl}${EXTRAS}"
+        env:
+          EXTRAS: ${{ matrix.extras }}
+
+      - name: Run pytest
+        working-directory: muimg
+        run: python -m pytest tests/ -v
 
   publish:
     name: Publish to PyPI
-    needs: [build-sdist, build-windows-wheels]
+    needs: [build-sdist, build-wheels, test]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
+      # Publish sdist + Windows wheels only. macOS/Linux wheels are CI-only.
       - uses: actions/download-artifact@v4
         with:
+          name: sdist
           path: dist
-          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows
+          path: dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

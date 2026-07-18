@@ -19,8 +19,12 @@ if sys.platform == 'win32':
     cpp_extra_args = ['/std:c++17']
 else:
     # GCC/Clang flags for macOS and Linux
-    # Skip -march=native in CI environments (causes issues with GitHub Actions runners)
-    is_ci = os.environ.get('CI') == 'true' or os.environ.get('GITHUB_ACTIONS') == 'true'
+    # Skip -march=native in CI / cibuildwheel (non-portable CPU flags break wheels)
+    is_ci = (
+        os.environ.get('CI') == 'true'
+        or os.environ.get('GITHUB_ACTIONS') == 'true'
+        or os.environ.get('CIBUILDWHEEL') == '1'
+    )
     
     common_compile_args = [
         '-O3',                    # Maximum optimization
