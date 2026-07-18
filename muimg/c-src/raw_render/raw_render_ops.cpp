@@ -28,6 +28,8 @@
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <numpy/arrayobject.h>
 
+#include <cmath>
+#include <cstring>
 #include <memory>
 
 #include <dlfcn.h>
@@ -156,6 +158,71 @@ PyPtr<T> make_pyptr(T* obj) {
     return PyPtr<T>(obj);
 }
 
+//=============================================================================
+// Engine call helpers (shared buffer / GIL / error pattern)
+//=============================================================================
+
+static MuImgBuffer make_buf(void* data, size_t height, size_t width,
+                            size_t channels, MuImgDType dtype) {
+    return { data, height, width, channels, dtype, 0 };
+}
+
+// Build MuImgBuffer from a NumPy array. Derives dtype from the array.
+// Validates: ndim is 2 (channels must be 1) or 3 (channels must match dim 2).
+// Returns false and sets a Python exception on mismatch.
+static bool make_buf_from_array(PyArrayObject* arr, size_t channels,
+                                MuImgBuffer* out) {
+    const int ndim = PyArray_NDIM(arr);
+    size_t arr_channels;
+    if (ndim == 2) {
+        arr_channels = 1;
+    } else if (ndim == 3) {
+        arr_channels = static_cast<size_t>(PyArray_DIM(arr, 2));
+    } else {
+        PyErr_SetString(PyExc_ValueError, "array must be 2D (H,W) or 3D (H,W,C)");
+        return false;
+    }
+    if (channels != arr_channels) {
+        PyErr_Format(PyExc_ValueError,
+            "expected %zu channel(s), array has %zu",
+            channels, arr_channels);
+        return false;
+    }
+
+    const int npy_type = PyArray_TYPE(arr);
+    if (npy_type != NPY_UINT8 && npy_type != NPY_UINT16 && npy_type != NPY_FLOAT32) {
+        PyErr_SetString(PyExc_TypeError,
+            "array dtype must be uint8, uint16, or float32");
+        return false;
+    }
+
+    *out = make_buf(
+        PyArray_DATA(arr),
+        static_cast<size_t>(PyArray_DIM(arr, 0)),
+        static_cast<size_t>(PyArray_DIM(arr, 1)),
+        channels,
+        muimg_dtype_from_numpy(npy_type)
+    );
+    return true;
+}
+
+// Load core lib, release GIL, call fn(), raise RuntimeError on failure.
+// Returns false if an exception is set.
+template <typename Fn>
+static bool call_core(const char* name, Fn&& fn) {
+    if (!load_core_library()) {
+        return false;
+    }
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = fn();
+    Py_END_ALLOW_THREADS
+    if (status != MUIMG_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "%s failed with code %d", name, status);
+        return false;
+    }
+    return true;
+}
 
 //=============================================================================
 // Python binding for transform_color
@@ -263,38 +330,22 @@ static PyObject* transform_color(PyObject* self, PyObject* args, PyObject* kwarg
         (PyArrayObject*)PyArray_SimpleNew(3, dims, dst_dtype));
     if (!result) return NULL;
     
-    if (!load_core_library()) {
+    MuImgBuffer input, output;
+    if (!make_buf_from_array(image_cont.get(), 3, &input) ||
+        !make_buf_from_array(result.get(), 3, &output)) {
         return NULL;
     }
 
-    MuImgDType input_dtype = muimg_dtype_from_numpy(src_dtype);
-    MuImgDType output_dtype = muimg_dtype_from_numpy(dst_dtype);
-
-    MuImgBuffer input = {
-        const_cast<void*>(PyArray_DATA(image_cont.get())),
-        static_cast<size_t>(height), static_cast<size_t>(width), 3,
-        input_dtype, 0
-    };
-    MuImgBuffer output = {
-        PyArray_DATA(result.get()),
-        static_cast<size_t>(height), static_cast<size_t>(width), 3,
-        output_dtype, 0
-    };
-
-    int ret;
-    Py_BEGIN_ALLOW_THREADS
-    ret = muimg_transform_color_fn(
-        &input, &output,
-        input_lut_ptr, input_lut_size,
-        matrix_ptr,
-        output_lut_ptr, output_lut_size,
-        src_bits, dst_bits,
-        static_cast<bool>(hue_preserving)
-    );
-    Py_END_ALLOW_THREADS
-
-    if (ret != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_transform_color failed with code %d", ret);
+    if (!call_core("muimg_transform_color", [&]() {
+        return muimg_transform_color_fn(
+            &input, &output,
+            input_lut_ptr, input_lut_size,
+            matrix_ptr,
+            output_lut_ptr, output_lut_size,
+            src_bits, dst_bits,
+            static_cast<bool>(hue_preserving)
+        );
+    })) {
         return NULL;
     }
     
@@ -332,8 +383,6 @@ static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
     npy_intp dims[3] = {
         PyArray_DIM(image_array, 0), PyArray_DIM(image_array, 1), 1
     };
-    size_t height = static_cast<size_t>(dims[0]);
-    size_t width = static_cast<size_t>(dims[1]);
 
     int src_dtype = PyArray_TYPE(image_array);
     int dst_dtype = dest_dtype_int;
@@ -373,32 +422,17 @@ static PyObject* mono_lut(PyObject* self, PyObject* args, PyObject* kwargs) {
         (PyArrayObject*)PyArray_SimpleNew(out_ndim, dims, dst_dtype));
     if (!result) return NULL;
 
-    const void* src_data = PyArray_DATA(image_cont.get());
-    void* dst_data = PyArray_DATA(result.get());
-
-    if (!load_core_library()) {
+    MuImgBuffer input, output;
+    if (!make_buf_from_array(image_cont.get(), 1, &input) ||
+        !make_buf_from_array(result.get(), 1, &output)) {
         return NULL;
     }
 
-    MuImgDType input_dtype = muimg_dtype_from_numpy(src_dtype);
-    MuImgDType output_dtype = muimg_dtype_from_numpy(dst_dtype);
-
-    MuImgBuffer input = {
-        const_cast<void*>(src_data), height, width, 1, input_dtype, 0
-    };
-    MuImgBuffer output = {
-        dst_data, height, width, 1, output_dtype, 0
-    };
-
-    int ret;
-    Py_BEGIN_ALLOW_THREADS
-    ret = muimg_mono_lut_fn(
-        &input, &output, lut_data, static_cast<size_t>(lut_size), src_bits,
-        dst_bits);
-    Py_END_ALLOW_THREADS
-
-    if (ret != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_mono_lut failed with code %d", ret);
+    if (!call_core("muimg_mono_lut", [&]() {
+        return muimg_mono_lut_fn(
+            &input, &output, lut_data, static_cast<size_t>(lut_size), src_bits,
+            dst_bits);
+    })) {
         return NULL;
     }
 
@@ -436,8 +470,6 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
         PyArray_DIM(image_array, 0), PyArray_DIM(image_array, 1),
         ndim == 3 ? PyArray_DIM(image_array, 2) : 1
     };
-    size_t height = static_cast<size_t>(dims[0]);
-    size_t width = static_cast<size_t>(dims[1]);
     size_t channels = static_cast<size_t>(dims[2]);
     int src_dtype = PyArray_TYPE(image_array);
     int dst_dtype = dest_dtype_int;
@@ -464,30 +496,15 @@ static PyObject* convert_dtype_with_clip(PyObject* self, PyObject* args, PyObjec
         (PyArrayObject*)PyArray_SimpleNew(ndim, dims, dst_dtype));
     if (!result) return NULL;
     
-    const void* src_data = PyArray_DATA(image_cont.get());
-    void* dst_data = PyArray_DATA(result.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer input, output;
+    if (!make_buf_from_array(image_cont.get(), channels, &input) ||
+        !make_buf_from_array(result.get(), channels, &output)) {
         return NULL;
     }
 
-    MuImgDType input_dtype = muimg_dtype_from_numpy(src_dtype);
-    MuImgDType output_dtype = muimg_dtype_from_numpy(dst_dtype);
-
-    MuImgBuffer input = {
-        const_cast<void*>(src_data), height, width, channels, input_dtype, 0
-    };
-    MuImgBuffer output = {
-        dst_data, height, width, channels, output_dtype, 0
-    };
-
-    int ret;
-    Py_BEGIN_ALLOW_THREADS
-    ret = muimg_convert_dtype_fn(&input, &output, src_bits, dst_bits, clip_max);
-    Py_END_ALLOW_THREADS
-
-    if (ret != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_convert_dtype failed with code %d", ret);
+    if (!call_core("muimg_convert_dtype", [&]() {
+        return muimg_convert_dtype_fn(&input, &output, src_bits, dst_bits, clip_max);
+    })) {
         return NULL;
     }
 
@@ -549,7 +566,6 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
     // Extract dimensions
     int height = (int)PyArray_DIM(image_array, 0);
     int width = (int)PyArray_DIM(image_array, 1);
-    int total_pixels = height * width;
     
     // Make contiguous
     auto image_cont = make_pyptr<PyArrayObject>(
@@ -564,8 +580,6 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)matrix_array, NPY_FLOAT32, 2, 2));
     if (!matrix_cont) return NULL;
     
-    // Get pointers
-    const float* input = (const float*)PyArray_DATA(image_cont.get());
     const float* clip_max = (const float*)PyArray_DATA(clip_max_cont.get());
     const float* matrix = (const float*)PyArray_DATA(matrix_cont.get());
     
@@ -575,30 +589,17 @@ static PyObject* clip_and_transform_color(PyObject* self, PyObject* args, PyObje
         (PyArrayObject*)PyArray_SimpleNew(3, dims, NPY_FLOAT32));
     if (!result) return NULL;
     
-    if (!load_core_library()) {
+    MuImgBuffer input_buf, output_buf;
+    if (!make_buf_from_array(image_cont.get(), 3, &input_buf) ||
+        !make_buf_from_array(result.get(), 3, &output_buf)) {
         return NULL;
     }
 
-    MuImgBuffer input_buf = {
-        const_cast<void*>(static_cast<const void*>(input)),
-        static_cast<size_t>(height), static_cast<size_t>(width), 3,
-        MUIMG_DTYPE_FLOAT32, 0
-    };
-    MuImgBuffer output_buf = {
-        static_cast<void*>(PyArray_DATA(result.get())),
-        static_cast<size_t>(height), static_cast<size_t>(width), 3,
-        MUIMG_DTYPE_FLOAT32, 0
-    };
-
-    int ret;
-    Py_BEGIN_ALLOW_THREADS
-    ret = muimg_clip_and_transform_color_fn(
-        &input_buf, &output_buf, clip_max, matrix
-    );
-    Py_END_ALLOW_THREADS
-
-    if (ret != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_clip_and_transform_color failed with code %d", ret);
+    if (!call_core("muimg_clip_and_transform_color", [&]() {
+        return muimg_clip_and_transform_color_fn(
+            &input_buf, &output_buf, clip_max, matrix
+        );
+    })) {
         return NULL;
     }
     
@@ -643,9 +644,6 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
     // Ensure contiguous input
     auto rgb_cont = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
@@ -657,10 +655,6 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    if (!load_core_library()) {
-        return NULL;
-    }
-    
     // Create output array and copy input
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_NewCopy(rgb_cont.get(), NPY_CORDER));
@@ -669,29 +663,16 @@ static PyObject* dng_color_apply_hue_sat_map(PyObject* self, PyObject* args) {
     }
     
     const float* map_data = (const float*)PyArray_DATA(map_cont.get());
+    MuImgBuffer rgb_buf;
+    if (!make_buf_from_array(result.get(), 3, &rgb_buf)) {
+        return NULL;
+    }
     
-    MuImgBuffer rgb_buf = {
-        PyArray_DATA(result.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_apply_hue_sat_map_fn(
-        &rgb_buf,
-        map_data,
-        hue_divs,
-        sat_divs,
-        val_divs
-    );
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "apply_hue_sat_map failed with code %d", status);
+    if (!call_core("muimg_apply_hue_sat_map", [&]() {
+        return muimg_apply_hue_sat_map_fn(
+            &rgb_buf, map_data, hue_divs, sat_divs, val_divs
+        );
+    })) {
         return NULL;
     }
     
@@ -734,42 +715,19 @@ static PyObject* dng_color_apply_exposure_ramp(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    if (!load_core_library()) {
+    MuImgBuffer input_buf, output_buf;
+    if (!make_buf_from_array(rgb_cont.get(), 3, &input_buf) ||
+        !make_buf_from_array(result.get(), 3, &output_buf)) {
         return NULL;
     }
     
-    MuImgBuffer input_buf = {
-        PyArray_DATA(rgb_cont.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    MuImgBuffer output_buf = {
-        PyArray_DATA(result.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_apply_exposure_ramp_fn(
-        &input_buf,
-        &output_buf,
-        white,
-        black,
-        minBlack,
-        supportOverrange != 0
-    );
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "apply_exposure_ramp failed with code %d", status);
+    if (!call_core("muimg_apply_exposure_ramp", [&]() {
+        return muimg_apply_exposure_ramp_fn(
+            &input_buf, &output_buf,
+            white, black, minBlack,
+            supportOverrange != 0
+        );
+    })) {
         return NULL;
     }
     
@@ -833,8 +791,6 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(data_array, 0);
-    npy_intp width = PyArray_DIM(data_array, 1);
     int data_samples = (ndim == 3) ? (int)PyArray_DIM(data_array, 2) : 1;
     
     if (data_samples != samples_per_pixel) {
@@ -907,7 +863,6 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
         return NULL;
     }
     
-    float* dst = (float*)PyArray_DATA(result.get());
     const float* black = (const float*)PyArray_DATA(black_cont.get());
     const float* white = (const float*)PyArray_DATA(white_cont.get());
     const float* delta_h = delta_h_cont ? (const float*)PyArray_DATA(delta_h_cont.get()) : NULL;
@@ -916,51 +871,30 @@ static PyObject* dng_color_normalize_raw(PyObject* self, PyObject* args, PyObjec
     
     const uint16_t* lin_table = lin_table_cont ? (const uint16_t*)PyArray_DATA(lin_table_cont.get()) : nullptr;
     
-    if (!load_core_library()) {
+    MuImgBuffer input_buf, output_buf;
+    if (!make_buf_from_array(data_cont.get(), (size_t)samples_per_pixel, &input_buf) ||
+        !make_buf_from_array(result.get(), (size_t)samples_per_pixel, &output_buf)) {
         return NULL;
     }
     
-    // Prepare MuImgBuffer structures
-    MuImgBuffer input_buf = {
-        PyArray_DATA(data_cont.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        static_cast<size_t>(samples_per_pixel),
-        muimg_dtype_from_numpy(src_type),
-        0  // stride (contiguous)
-    };
-    
-    MuImgBuffer output_buf = {
-        dst,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        static_cast<size_t>(samples_per_pixel),
-        MUIMG_DTYPE_FLOAT32,
-        0  // stride (contiguous)
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_normalize_raw_fn(
-        &input_buf,
-        &output_buf,
-        black,
-        black_repeat_rows,
-        black_repeat_cols,
-        samples_per_pixel,
-        white,
-        white_count,
-        delta_h,
-        (int)delta_h_count,
-        delta_v,
-        (int)delta_v_count,
-        lin_table,
-        lin_table_size
-    );
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "normalize_raw failed with error code %d", status);
+    if (!call_core("muimg_normalize_raw", [&]() {
+        return muimg_normalize_raw_fn(
+            &input_buf,
+            &output_buf,
+            black,
+            black_repeat_rows,
+            black_repeat_cols,
+            samples_per_pixel,
+            white,
+            white_count,
+            delta_h,
+            (int)delta_h_count,
+            delta_v,
+            (int)delta_v_count,
+            lin_table,
+            lin_table_size
+        );
+    })) {
         return NULL;
     }
     
@@ -992,8 +926,6 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(data_array, 0);
-    npy_intp width = PyArray_DIM(data_array, 1);
     npy_intp gain_h = PyArray_DIM(gain_array, 0);
     npy_intp gain_w = PyArray_DIM(gain_array, 1);
     
@@ -1013,29 +945,15 @@ static PyObject* dng_color_apply_gain_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    float* result_data = (float*)PyArray_DATA(result.get());
     const float* gain = (const float*)PyArray_DATA(gain_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 1, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        result_data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        1,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_apply_flat_gain_map_fn(&buf, gain, (int)gain_h, (int)gain_w);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_apply_flat_gain_map failed with code %d", status);
+    if (!call_core("muimg_apply_flat_gain_map", [&]() {
+        return muimg_apply_flat_gain_map_fn(&buf, gain, (int)gain_h, (int)gain_w);
+    })) {
         return NULL;
     }
     
@@ -1085,9 +1003,6 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
     // Get contiguous arrays
     auto rgb_cont = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
@@ -1097,10 +1012,6 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)weights_array, NPY_FLOAT32, 1, 1));
     
     if (!rgb_cont || !gains_cont || !weights_cont) {
-        return NULL;
-    }
-    
-    if (!load_core_library()) {
         return NULL;
     }
     
@@ -1116,35 +1027,27 @@ static PyObject* dng_color_apply_profile_gain_table_map(PyObject* self, PyObject
     
     float exposure_weight_gain = powf(2.0f, (float)baseline_exposure);
     
-    MuImgBuffer rgb_buf = {
-        PyArray_DATA(result.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
+    MuImgBuffer rgb_buf;
+    if (!make_buf_from_array(result.get(), 3, &rgb_buf)) {
+        return NULL;
+    }
     
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_apply_profile_gain_table_map_fn(
-        &rgb_buf,
-        gains,
-        points_v,
-        points_h,
-        (float)spacing_v,
-        (float)spacing_h,
-        (float)origin_v,
-        (float)origin_h,
-        num_table_points,
-        weights,
-        (float)gamma,
-        exposure_weight_gain
-    );
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "apply_profile_gain_table_map failed with code %d", status);
+    if (!call_core("muimg_apply_profile_gain_table_map", [&]() {
+        return muimg_apply_profile_gain_table_map_fn(
+            &rgb_buf,
+            gains,
+            points_v,
+            points_h,
+            (float)spacing_v,
+            (float)spacing_h,
+            (float)origin_v,
+            (float)origin_h,
+            num_table_points,
+            weights,
+            (float)gamma,
+            exposure_weight_gain
+        );
+    })) {
         return NULL;
     }
     
@@ -1213,36 +1116,20 @@ static PyObject* dng_color_op_warp_rectilinear(PyObject* self, PyObject* args, P
         return NULL;
     }
     
-    const float* src = (const float*)PyArray_DATA(rgb_cont.get());
-    float* dst = (float*)PyArray_DATA(result.get());
     const double* radial = (const double*)PyArray_DATA(radial_cont.get());
     const double* tangential = tan_cont ? (const double*)PyArray_DATA(tan_cont.get()) : NULL;
     
-    if (!load_core_library()) return NULL;
+    MuImgBuffer in_buf, out_buf;
+    if (!make_buf_from_array(rgb_cont.get(), 3, &in_buf) ||
+        !make_buf_from_array(result.get(), 3, &out_buf)) {
+        return NULL;
+    }
     
-    MuImgBuffer in_buf = {};
-    in_buf.data = (void*)src;
-    in_buf.height = (size_t)height;
-    in_buf.width = (size_t)width;
-    in_buf.channels = 3;
-    in_buf.dtype = MUIMG_DTYPE_FLOAT32;
-    in_buf.stride = 0;
-    
-    MuImgBuffer out_buf = {};
-    out_buf.data = dst;
-    out_buf.height = (size_t)height;
-    out_buf.width = (size_t)width;
-    out_buf.channels = 3;
-    out_buf.dtype = MUIMG_DTYPE_FLOAT32;
-    out_buf.stride = 0;
-    
-    int ret;
-    Py_BEGIN_ALLOW_THREADS
-    ret = muimg_warp_rectilinear_fn(&in_buf, &out_buf, radial, num_planes, num_coeffs, tangential, center_x, center_y, (bool)use_bicubic);
-    Py_END_ALLOW_THREADS
-    
-    if (ret != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_warp_rectilinear failed: %d", ret);
+    if (!call_core("muimg_warp_rectilinear", [&]() {
+        return muimg_warp_rectilinear_fn(
+            &in_buf, &out_buf, radial, num_planes, num_coeffs,
+            tangential, center_x, center_y, (bool)use_bicubic);
+    })) {
         return NULL;
     }
     return (PyObject*)result.release();
@@ -1270,9 +1157,6 @@ static PyObject* dng_color_op_fix_vignette(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
-    
     auto rgb_cont = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)rgb_array, NPY_FLOAT32, 3, 3));
     auto params_cont = make_pyptr<PyArrayObject>(
@@ -1289,30 +1173,16 @@ static PyObject* dng_color_op_fix_vignette(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    float* data = (float*)PyArray_DATA(result.get());
     const double* params = (const double*)PyArray_DATA(params_cont.get());
     int num_params = (int)PyArray_SIZE(params_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 3, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_fix_vignette_fn(&buf, params, num_params, center_x, center_y);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_fix_vignette failed with code %d", status);
+    if (!call_core("muimg_fix_vignette", [&]() {
+        return muimg_fix_vignette_fn(&buf, params, num_params, center_x, center_y);
+    })) {
         return NULL;
     }
     
@@ -1360,31 +1230,18 @@ static PyObject* dng_cfa_op_fix_vignette(PyObject* self, PyObject* args) {
     
     float* data = (float*)PyArray_DATA(result.get());
     const float* src = (const float*)PyArray_DATA(cfa_cont.get());
-    memcpy(data, src, height * width * sizeof(float));
+    memcpy(data, src, (size_t)height * (size_t)width * sizeof(float));
     
     const double* params = (const double*)PyArray_DATA(params_cont.get());
     int num_params = (int)PyArray_SIZE(params_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 1, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        1,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_fix_vignette_fn(&buf, params, num_params, center_x, center_y);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_fix_vignette failed with code %d", status);
+    if (!call_core("muimg_fix_vignette", [&]() {
+        return muimg_fix_vignette_fn(&buf, params, num_params, center_x, center_y);
+    })) {
         return NULL;
     }
     
@@ -1469,40 +1326,15 @@ static PyObject* dng_color_bilinear_demosaic(PyObject* self, PyObject* args, PyO
         return NULL;
     }
     
-    // Load library if not already loaded
-    if (!load_core_library()) {
+    MuImgBuffer input, output;
+    if (!make_buf_from_array(cfa_cont.get(), 1, &input) ||
+        !make_buf_from_array(result.get(), 3, &output)) {
         return NULL;
     }
     
-    size_t buffer_height = static_cast<size_t>(height);
-    size_t buffer_width = static_cast<size_t>(width);
-
-    MuImgBuffer input = {
-        .data = PyArray_DATA(cfa_cont.get()),
-        .height = buffer_height,
-        .width = buffer_width,
-        .channels = 1,
-        .dtype = MUIMG_DTYPE_FLOAT32,
-        .stride = 0
-    };
-    
-    MuImgBuffer output = {
-        .data = PyArray_DATA(result.get()),
-        .height = buffer_height,
-        .width = buffer_width,
-        .channels = 3,
-        .dtype = MUIMG_DTYPE_FLOAT32,
-        .stride = 0
-    };
-    
-    int ret;
-    Py_BEGIN_ALLOW_THREADS
-    // Call library function
-    ret = muimg_bilinear_demosaic_fn(&input, &output, cfa_colors);
-    Py_END_ALLOW_THREADS
-    
-    if (ret != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_bilinear_demosaic failed with code %d", ret);
+    if (!call_core("muimg_bilinear_demosaic", [&]() {
+        return muimg_bilinear_demosaic_fn(&input, &output, cfa_colors);
+    })) {
         return NULL;
     }
     
@@ -1539,10 +1371,6 @@ static PyObject* dng_color_op_map_polynomial(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    npy_intp* dims = PyArray_DIMS(rgb_cont.get());
-    int height = (int)dims[0];
-    int width = (int)dims[1];
-    
     // Create output (copy input)
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_Copy(rgb_cont.get()));
@@ -1550,32 +1378,18 @@ static PyObject* dng_color_op_map_polynomial(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    float* dst_data = (float*)PyArray_DATA(result.get());
     const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 3, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        dst_data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_map_polynomial_fn(
-        &buf, top, left, bottom, right,
-        plane, planes, row_pitch, col_pitch,
-        coefficients, degree);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_map_polynomial failed with code %d", status);
+    if (!call_core("muimg_map_polynomial", [&]() {
+        return muimg_map_polynomial_fn(
+            &buf, top, left, bottom, right,
+            plane, planes, row_pitch, col_pitch,
+            coefficients, degree);
+    })) {
         return NULL;
     }
     
@@ -1607,10 +1421,6 @@ static PyObject* dng_color_op_map_polynomial_cfa(PyObject* self, PyObject* args)
         return NULL;
     }
     
-    npy_intp* dims = PyArray_DIMS(cfa_cont.get());
-    int height = (int)dims[0];
-    int width = (int)dims[1];
-    
     // Create output (copy input)
     auto result = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_Copy(cfa_cont.get()));
@@ -1618,32 +1428,18 @@ static PyObject* dng_color_op_map_polynomial_cfa(PyObject* self, PyObject* args)
         return NULL;
     }
     
-    float* dst_data = (float*)PyArray_DATA(result.get());
     const float* coefficients = (const float*)PyArray_DATA(coeffs_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 1, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        dst_data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        1,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_map_polynomial_fn(
-        &buf, top, left, bottom, right,
-        0, 1, row_pitch, col_pitch,
-        coefficients, degree);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_map_polynomial failed with code %d", status);
+    if (!call_core("muimg_map_polynomial", [&]() {
+        return muimg_map_polynomial_fn(
+            &buf, top, left, bottom, right,
+            0, 1, row_pitch, col_pitch,
+            coefficients, degree);
+    })) {
         return NULL;
     }
     
@@ -1684,8 +1480,6 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(rgb_array, 0);
-    npy_intp width = PyArray_DIM(rgb_array, 1);
     npy_intp points_v = PyArray_DIM(gain_array, 0);
     npy_intp points_h = PyArray_DIM(gain_array, 1);
     npy_intp map_planes = PyArray_DIM(gain_array, 2);
@@ -1705,35 +1499,21 @@ static PyObject* dng_color_op_gain_map(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    float* data = (float*)PyArray_DATA(result.get());
     const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 3, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        3,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_apply_gain_map_fn(
-        &buf, gain_values,
-        (int)points_v, (int)points_h, (int)map_planes,
-        top, left, bottom, right,
-        start_plane, num_planes,
-        row_pitch, col_pitch,
-        spacing_v, spacing_h, origin_v, origin_h);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_apply_gain_map failed with code %d", status);
+    if (!call_core("muimg_apply_gain_map", [&]() {
+        return muimg_apply_gain_map_fn(
+            &buf, gain_values,
+            (int)points_v, (int)points_h, (int)map_planes,
+            top, left, bottom, right,
+            start_plane, num_planes,
+            row_pitch, col_pitch,
+            spacing_v, spacing_h, origin_v, origin_h);
+    })) {
         return NULL;
     }
     
@@ -1765,9 +1545,6 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(data_array, 0);
-    npy_intp width = PyArray_DIM(data_array, 1);
-    
     auto data_cont = make_pyptr<PyArrayObject>(
         (PyArrayObject*)PyArray_ContiguousFromAny((PyObject*)data_array, NPY_UINT16, 2, 2));
     
@@ -1781,35 +1558,16 @@ static PyObject* dng_color_op_fix_bad_pixels_constant(PyObject* self, PyObject* 
         return NULL;
     }
     
-    if (!load_core_library()) {
+    MuImgBuffer in_buf, out_buf;
+    if (!make_buf_from_array(data_cont.get(), 1, &in_buf) ||
+        !make_buf_from_array(result.get(), 1, &out_buf)) {
         return NULL;
     }
     
-    MuImgBuffer in_buf = {
-        PyArray_DATA(data_cont.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        1,
-        MUIMG_DTYPE_UINT16,
-        0
-    };
-    MuImgBuffer out_buf = {
-        PyArray_DATA(result.get()),
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        1,
-        MUIMG_DTYPE_UINT16,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_fix_bad_pixels_constant_fn(
-        &in_buf, &out_buf, (uint32_t)constant, (uint32_t)bayer_phase);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_fix_bad_pixels_constant failed with code %d", status);
+    if (!call_core("muimg_fix_bad_pixels_constant", [&]() {
+        return muimg_fix_bad_pixels_constant_fn(
+            &in_buf, &out_buf, (uint32_t)constant, (uint32_t)bayer_phase);
+    })) {
         return NULL;
     }
     
@@ -1846,8 +1604,6 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    npy_intp height = PyArray_DIM(cfa_array, 0);
-    npy_intp width = PyArray_DIM(cfa_array, 1);
     npy_intp points_v = PyArray_DIM(gain_array, 0);
     npy_intp points_h = PyArray_DIM(gain_array, 1);
     npy_intp map_planes = PyArray_DIM(gain_array, 2);
@@ -1867,34 +1623,20 @@ static PyObject* dng_color_op_gain_map_cfa(PyObject* self, PyObject* args) {
         return NULL;
     }
     
-    float* data = (float*)PyArray_DATA(result.get());
     const float* gain_values = (const float*)PyArray_DATA(gain_cont.get());
-    
-    if (!load_core_library()) {
+    MuImgBuffer buf;
+    if (!make_buf_from_array(result.get(), 1, &buf)) {
         return NULL;
     }
     
-    MuImgBuffer buf = {
-        data,
-        static_cast<size_t>(height),
-        static_cast<size_t>(width),
-        1,
-        MUIMG_DTYPE_FLOAT32,
-        0
-    };
-    
-    int status;
-    Py_BEGIN_ALLOW_THREADS
-    status = muimg_apply_gain_map_cfa_fn(
-        &buf, gain_values,
-        (int)points_v, (int)points_h, (int)map_planes,
-        top, left, bottom, right,
-        row_pitch, col_pitch,
-        spacing_v, spacing_h, origin_v, origin_h);
-    Py_END_ALLOW_THREADS
-    
-    if (status != MUIMG_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "muimg_apply_gain_map_cfa failed with code %d", status);
+    if (!call_core("muimg_apply_gain_map_cfa", [&]() {
+        return muimg_apply_gain_map_cfa_fn(
+            &buf, gain_values,
+            (int)points_v, (int)points_h, (int)map_planes,
+            top, left, bottom, right,
+            row_pitch, col_pitch,
+            spacing_v, spacing_h, origin_v, origin_h);
+    })) {
         return NULL;
     }
     
