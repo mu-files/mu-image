@@ -29,6 +29,7 @@
 #include <numpy/arrayobject.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 
@@ -57,22 +58,72 @@ static int (*muimg_apply_flat_gain_map_fn)(MuImgBuffer*, const float*, int, int)
 static int (*muimg_map_polynomial_fn)(MuImgBuffer*, int, int, int, int, int, int, int, int, const float*, int) = nullptr;
 static int (*muimg_fix_bad_pixels_constant_fn)(const MuImgBuffer*, MuImgBuffer*, uint32_t, uint32_t) = nullptr;
 
+// Arch-tagged basename matching private dist-binaries / copy_to_public.sh.
+static const char* core_lib_basename() {
+#if defined(_WIN32)
+    return "muimg_core.windows-amd64.dll";
+#elif defined(__APPLE__)
+#if defined(__aarch64__) || defined(__arm64__)
+    return "libmuimg_core.macos-arm64.dylib";
+#else
+    return "libmuimg_core.macos-x86_64.dylib";
+#endif
+#else
+#if defined(__aarch64__) || defined(__arm64__)
+    return "libmuimg_core.linux-aarch64.so";
+#else
+    return "libmuimg_core.linux-x86_64.so";
+#endif
+#endif
+}
+
+// Prefer muimg/_binaries next to the installed package; fall back to cwd-relative.
+static bool resolve_core_lib_path(char* out, size_t out_len) {
+    const char* basename = core_lib_basename();
+    PyObject* mod = PyImport_ImportModule("muimg");
+    if (mod) {
+        PyObject* file_obj = PyObject_GetAttrString(mod, "__file__");
+        Py_DECREF(mod);
+        if (file_obj && PyUnicode_Check(file_obj)) {
+            const char* package_file = PyUnicode_AsUTF8(file_obj);
+            if (package_file) {
+                const char* slash = strrchr(package_file, '/');
+#ifdef _WIN32
+                const char* bslash = strrchr(package_file, '\\');
+                if (!slash || (bslash && bslash > slash)) slash = bslash;
+#endif
+                if (slash) {
+                    size_t dir_len = static_cast<size_t>(slash - package_file);
+                    int n = snprintf(out, out_len, "%.*s/_binaries/%s",
+                                     static_cast<int>(dir_len), package_file, basename);
+                    Py_DECREF(file_obj);
+                    if (n > 0 && static_cast<size_t>(n) < out_len) {
+                        return true;
+                    }
+                }
+            }
+        }
+        Py_XDECREF(file_obj);
+    }
+    PyErr_Clear();
+    int n = snprintf(out, out_len, "muimg/_binaries/%s", basename);
+    return n > 0 && static_cast<size_t>(n) < out_len;
+}
+
 static bool load_core_library() {
     if (g_core_lib) return true;
-    
-#if defined(_WIN32)
-    const char* lib_name = "muimg/_binaries/muimg_core.dll";
-#elif defined(__APPLE__)
-    const char* lib_name = "muimg/_binaries/libmuimg_core.dylib";
-#else
-    const char* lib_name = "muimg/_binaries/libmuimg_core.so";
-#endif
-    
-    g_core_lib = dlopen(lib_name, RTLD_LAZY);
-    
+
+    char lib_path[4096];
+    if (!resolve_core_lib_path(lib_path, sizeof(lib_path))) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to resolve muimg_core library path");
+        return false;
+    }
+
+    g_core_lib = dlopen(lib_path, RTLD_LAZY);
+
     if (!g_core_lib) {
-        PyErr_Format(PyExc_RuntimeError, 
-            "Failed to load muimg_core library: %s", lib_name);
+        PyErr_Format(PyExc_RuntimeError,
+            "Failed to load muimg_core library: %s", lib_path);
         return false;
     }
     

@@ -18,6 +18,19 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
+// Export when building the shared library. Consumers load via dlopen/LoadLibrary
+// and should not link against an import library, so non-export builds leave
+// MUIMG_API empty (declarations are for types / documentation only).
+#if defined(MUIMG_CORE_EXPORTS)
+#if defined(_WIN32) || defined(_WIN64)
+#define MUIMG_API __declspec(dllexport)
+#else
+#define MUIMG_API __attribute__((visibility("default")))
+#endif
+#else
+#define MUIMG_API
+#endif
+
 // Return codes
 #define MUIMG_SUCCESS 0
 #define MUIMG_ERROR_INVALID_ARGUMENT 1
@@ -60,23 +73,23 @@ typedef struct {
 //                Values: 0=Red, 1=Green, 2=Blue
 //
 // Returns: MUIMG_SUCCESS on success, error code otherwise
-int muimg_bilinear_demosaic(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_bilinear_demosaic(const MuImgBuffer *input, MuImgBuffer *output,
                             const int cfa_pattern[4]);
 
-int muimg_convert_dtype(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_convert_dtype(const MuImgBuffer *input, MuImgBuffer *output,
                         int src_bits, int dst_bits, float clip_max);
 
-int muimg_mono_lut(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_mono_lut(const MuImgBuffer *input, MuImgBuffer *output,
                    const float *lut, size_t lut_size, int src_bits,
                    int dst_bits);
 
-int muimg_transform_color(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_transform_color(const MuImgBuffer *input, MuImgBuffer *output,
                           const float *input_lut, size_t input_lut_size,
                           const float *matrix, const float *output_lut,
                           size_t output_lut_size, int src_bits, int dst_bits,
                           bool hue_preserving);
 
-int muimg_clip_and_transform_color(const MuImgBuffer *input,
+MUIMG_API int muimg_clip_and_transform_color(const MuImgBuffer *input,
                                    MuImgBuffer *output, const float clip_max[3],
                                    const float matrix[9]);
 
@@ -102,7 +115,7 @@ int muimg_clip_and_transform_color(const MuImgBuffer *input,
 //   linearization_table_size: Length of linearization_table (or 0 if NULL)
 //
 // Returns: MUIMG_SUCCESS on success, error code otherwise
-int muimg_normalize_raw(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_normalize_raw(const MuImgBuffer *input, MuImgBuffer *output,
                         const float *black_level, int black_repeat_rows,
                         int black_repeat_cols, int samples_per_pixel,
                         const float *white_level, int white_count,
@@ -123,7 +136,7 @@ int muimg_normalize_raw(const MuImgBuffer *input, MuImgBuffer *output,
 //   val_divs: Number of value divisions in the map (0 or 1 for 2.5D table)
 //
 // Returns: MUIMG_SUCCESS on success, error code otherwise
-int muimg_apply_hue_sat_map(MuImgBuffer *rgb, const float *map_data,
+MUIMG_API int muimg_apply_hue_sat_map(MuImgBuffer *rgb, const float *map_data,
                             int hue_divs, int sat_divs, int val_divs);
 
 // Apply exposure ramp function (dng_function_exposure_ramp)
@@ -140,7 +153,7 @@ int muimg_apply_hue_sat_map(MuImgBuffer *rgb, const float *map_data,
 //   supportOverrange: Allow values > 1.0
 //
 // Returns: MUIMG_SUCCESS on success, error code otherwise
-int muimg_apply_exposure_ramp(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_apply_exposure_ramp(const MuImgBuffer *input, MuImgBuffer *output,
                               double white, double black, double minBlack,
                               bool supportOverrange);
 
@@ -162,7 +175,7 @@ int muimg_apply_exposure_ramp(const MuImgBuffer *input, MuImgBuffer *output,
 //   pow(2, baseline_exposure)
 //
 // Returns: MUIMG_SUCCESS on success, error code otherwise
-int muimg_apply_profile_gain_table_map(MuImgBuffer *rgb, const float *gains,
+MUIMG_API int muimg_apply_profile_gain_table_map(MuImgBuffer *rgb, const float *gains,
                                        int points_v, int points_h,
                                        float spacing_v, float spacing_h,
                                        float origin_v, float origin_h,
@@ -171,13 +184,13 @@ int muimg_apply_profile_gain_table_map(MuImgBuffer *rgb, const float *gains,
                                        float exposure_weight_gain);
 
 // Apply radial vignette correction to RGB or CFA data
-int muimg_fix_vignette(MuImgBuffer *img, const double *params, int num_params,
+MUIMG_API int muimg_fix_vignette(MuImgBuffer *img, const double *params, int num_params,
                        double center_x, double center_y);
 
 // Apply lens distortion correction using WarpRectilinear opcode
 // radial_params: flattened array of size num_planes * num_coeffs
 // tangential_params: flattened array of size num_planes * 2 (or NULL)
-int muimg_warp_rectilinear(
+MUIMG_API int muimg_warp_rectilinear(
     const MuImgBuffer* input,
     MuImgBuffer* output,
     const double* radial_params,
@@ -192,7 +205,7 @@ int muimg_warp_rectilinear(
 // Apply GainMap opcode to RGB image data (OpcodeList2)
 // gain_values: flattened (points_v, points_h, map_planes) float32 array
 // top/left/bottom/right: area bounds (0 = full image for bottom/right)
-int muimg_apply_gain_map(
+MUIMG_API int muimg_apply_gain_map(
     MuImgBuffer* img,
     const float* gain_values,
     int points_v, int points_h, int map_planes,
@@ -205,7 +218,7 @@ int muimg_apply_gain_map(
 
 // Apply GainMap opcode to CFA image data (OpcodeList1)
 // gain_values: flattened (points_v, points_h, map_planes) float32 array
-int muimg_apply_gain_map_cfa(
+MUIMG_API int muimg_apply_gain_map_cfa(
     MuImgBuffer* img,
     const float* gain_values,
     int points_v, int points_h, int map_planes,
@@ -217,7 +230,7 @@ int muimg_apply_gain_map_cfa(
 
 // Apply simple 2D flat-field gain map to CFA float32 image (in-place).
 // gain_map: row-major (gain_h, gain_w) float32; bilinearly scaled to image size.
-int muimg_apply_flat_gain_map(
+MUIMG_API int muimg_apply_flat_gain_map(
     MuImgBuffer* img,
     const float* gain_map,
     int gain_h, int gain_w
@@ -227,7 +240,7 @@ int muimg_apply_flat_gain_map(
 // Supports 1-channel CFA or 3-channel RGB (from img->channels).
 // top/left/bottom/right: area bounds (0,0 for bottom/right means full image).
 // coefficients: length degree+1
-int muimg_map_polynomial(
+MUIMG_API int muimg_map_polynomial(
     MuImgBuffer* img,
     int top, int left, int bottom, int right,
     int start_plane, int num_planes,
@@ -238,7 +251,7 @@ int muimg_map_polynomial(
 // FixBadPixelsConstant opcode (OpcodeList1).
 // input/output: uint16 CFA, shape (H, W, 1). Neighbors are read from input;
 // replacements are written to output (non-bad pixels should already match input).
-int muimg_fix_bad_pixels_constant(
+MUIMG_API int muimg_fix_bad_pixels_constant(
     const MuImgBuffer* input,
     MuImgBuffer* output,
     uint32_t constant,
@@ -255,14 +268,14 @@ int muimg_fix_bad_pixels_constant(
 //   cfa_pattern: String pattern like "RGGB", "BGGR", etc.
 //
 // Returns: MUIMG_SUCCESS on success, error code otherwise
-int muimg_vng_demosaic(const MuImgBuffer *input, MuImgBuffer *output,
+MUIMG_API int muimg_vng_demosaic(const MuImgBuffer *input, MuImgBuffer *output,
                        const char *cfa_pattern);
 
 //=============================================================================
 // Version information
 //=============================================================================
 
-const char *muimg_version(void);
+MUIMG_API const char *muimg_version(void);
 
 #ifdef __cplusplus
 }
