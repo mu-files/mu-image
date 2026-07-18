@@ -62,6 +62,8 @@ jobs:
         env:
           CIBW_BUILD: ${{ matrix.cibw_build }}
           CIBW_BUILD_VERBOSITY: 1
+          # Prebuilt libmuimg_core.*.dylib requires macOS 14+
+          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=14.0
 
       - uses: actions/upload-artifact@v4
         with:
