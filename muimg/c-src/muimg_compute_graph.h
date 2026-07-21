@@ -64,13 +64,14 @@ typedef enum {
   MUIMG_ATTR_F64 = 3,
   MUIMG_ATTR_I32_ARRAY = 4,
   MUIMG_ATTR_F32_ARRAY = 5,
-  MUIMG_ATTR_F64_ARRAY = 6
+  MUIMG_ATTR_F64_ARRAY = 6,
+  MUIMG_ATTR_STRING = 7 /* NUL-terminated; count == 1 */
 } MuImgAttrType;
 
 typedef struct {
   const char *key; /* NUL-terminated; e.g. "value", "matrix", "lut" */
   MuImgAttrType type;
-  size_t count; /* 1 for scalars; element count for arrays */
+  size_t count; /* 1 for scalars/strings; element count for arrays */
   union {
     int32_t i32;
     float f32;
@@ -78,6 +79,7 @@ typedef struct {
     const int32_t *i32_array;
     const float *f32_array;
     const double *f64_array;
+    const char *string;
   } value;
 } MuImgAttr;
 

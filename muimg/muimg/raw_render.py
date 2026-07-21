@@ -7,7 +7,7 @@ import logging
 import numpy as np
 
 from enum import Enum, IntEnum, StrEnum, auto
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # Package imports
 from . import _raw_render
@@ -20,6 +20,9 @@ from .tiff_metadata import (
     Illuminant,
     Orientation,
 )
+
+if TYPE_CHECKING:
+    from .mc import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -594,13 +597,18 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 
 
 def demosaic(
-    image_data: np.ndarray,
+    image_data: np.ndarray | Tensor,
     cfa_pattern: str,
     algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     clip_max: float | None = None,
     return_dtype: np.dtype | None = None,
-) -> np.ndarray:
+) -> np.ndarray | Tensor:
     """Demosaic CFA data to RGB.
+
+    Accepts a NumPy CFA array, or anything array-like (including ``mc.Tensor``).
+    Getting the array from a Tensor materializes its engine graph via the
+    NumPy ``__array__`` protocol. If the input was a Tensor, the RGB result is
+    wrapped in a concrete ``mc.Tensor`` so callers can continue with ``engine_ops``.
 
     Accepts uint8, uint16, or float32 input. Output dtype matches input dtype
     by default, or can be specified via return_dtype.
@@ -608,7 +616,9 @@ def demosaic(
     (with a warning logged).
 
     Args:
-        image_data: 2D raw CFA data array (uint8, uint16, or float32)
+        image_data: 2D raw CFA data array (uint8, uint16, or float32), or
+            ``mc.Tensor`` / array-like (graph is materialized when the array
+            is obtained)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         algorithm: Demosaic algorithm:
             - DemosaicAlgorithm.OPENCV_EA (default): Fastest, uint8/uint16 only
@@ -618,8 +628,16 @@ def demosaic(
         clip_max: Optional max value to clip output to (e.g., 1.0 for float32)
         return_dtype: Optional output dtype. If None, matches input dtype.
     Returns:
-        RGB array with dtype matching return_dtype or input dtype
+        RGB ndarray, or ``mc.Tensor`` when ``image_data`` was a Tensor
     """
+    from . import mc
+
+    was_tensor = isinstance(image_data, mc.Tensor)
+    if was_tensor:
+        if image_data.meta.channels != 1:
+            raise ValueError("demosaic input must be mono / CFA (1 channel)")
+    image_data = np.asarray(image_data)
+
     # Validate inputs
     if image_data.ndim != 2:
         raise ValueError(
@@ -717,7 +735,8 @@ def demosaic(
     rgb = convert_dtype(rgb, output_dtype, clip_max=clip_max)
     timer.end_step()
 
-    return rgb
+    return mc.Tensor(rgb) if was_tensor else rgb
+
 
 # =============================================================================
 # DNG SDK Port (Python + C++ Extension)

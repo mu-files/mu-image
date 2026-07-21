@@ -193,6 +193,7 @@ struct GraphScratch {
   /* deque: push_back must not invalidate c_str() pointers into elements. */
   std::deque<std::string> op_names;
   std::deque<std::string> attr_keys;
+  std::deque<std::string> attr_strings;
   std::vector<std::vector<MuImgTensorId>> node_ios;
   std::vector<std::vector<MuImgAttr>> node_attrs;
   std::vector<std::vector<float>> f32_arrays;
@@ -273,6 +274,17 @@ static bool parse_attr_value(PyObject *key_obj, PyObject *val,
   scratch.attr_keys.emplace_back(PyUnicode_AsUTF8(key_obj));
   attr.key = scratch.attr_keys.back().c_str();
 
+  if (PyUnicode_Check(val)) {
+    const char *s = PyUnicode_AsUTF8(val);
+    if (!s) {
+      return false;
+    }
+    scratch.attr_strings.emplace_back(s);
+    attr.type = MUIMG_ATTR_STRING;
+    attr.count = 1;
+    attr.value.string = scratch.attr_strings.back().c_str();
+    return true;
+  }
   if (PyFloat_Check(val)) {
     attr.type = MUIMG_ATTR_F32;
     attr.count = 1;
@@ -329,7 +341,7 @@ static bool parse_attr_value(PyObject *key_obj, PyObject *val,
   }
 
   PyErr_SetString(PyExc_TypeError,
-                  "attr value must be float, int, or 1-D float/int array");
+                  "attr value must be str, float, int, or 1-D float/int array");
   return false;
 }
 

@@ -1,17 +1,19 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
 """
-muimg.mc — lazy compute-graph API (Phase A.5–A.6).
+muimg.mc — lazy compute-graph API (Phase A.5–A.6 + A′).
 
-Graph/engine glue only: build a lazy DAG, partition by affinity, serialize
-engine segments to the A.4 dict IR and call muimg._compute_engine; python
-nodes invoke callables defined elsewhere (e.g. raw_render.demosaic).
+Graph/engine glue only: build a lazy DAG of **engine** catalog ops, serialize
+to the A.4 dict IR, and call muimg._compute_engine.
+
+Non-engine work does not live in the graph: call ``flush(x)`` (or ``x.compute()``)
+then run ordinary ndarray functions, and wrap results with ``Tensor(...)``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -28,6 +30,7 @@ _NUMPY_FROM_DTYPE = {
     "uint8": np.uint8,
     "uint16": np.uint16,
 }
+
 
 @dataclass(frozen=True)
 class TensorMeta:
@@ -48,10 +51,7 @@ class _OpNode:
     op: str
     inputs: Tuple["Tensor", ...]
     attrs: Dict[str, Any]
-    affinity: str
     out_meta: TensorMeta
-    # Optional python callable: (input_arrays..., attrs) -> ndarray
-    py_fn: Optional[Callable[..., np.ndarray]] = None
 
 
 def _meta_from_array(arr: np.ndarray) -> TensorMeta:
@@ -89,7 +89,7 @@ def _as_f32_array(value: Any, *, name: str, size: Optional[int] = None) -> np.nd
 
 
 class Tensor:
-    """Lazy tensor handle: either a concrete source buffer or an op result."""
+    """Lazy tensor handle: either a concrete source buffer or an engine op result."""
 
     __slots__ = ("_meta", "_data", "_node")
 
@@ -128,147 +128,130 @@ class Tensor:
 
     def __sub__(self, other: Any) -> "Tensor":
         value = _require_scalar(other, "sub_scalar")
-        return _unary_op(
-            self,
-            op="sub_scalar",
-            attrs={"value": value},
-            out_meta=self._meta,
-        )
+        return op("sub_scalar", self, value=value)
 
     def __mul__(self, other: Any) -> "Tensor":
         value = _require_scalar(other, "mul_scalar")
-        return _unary_op(
-            self,
-            op="mul_scalar",
-            attrs={"value": value},
-            out_meta=self._meta,
-        )
+        return op("mul_scalar", self, value=value)
 
     def compute(self) -> np.ndarray:
-        """Materialize this tensor via affinity-partitioned segments."""
+        """Materialize this tensor (engine graph only)."""
         return _compute(self)
 
+    def __array__(self, dtype: Any = None) -> np.ndarray:
+        """NumPy array protocol: getting the array materializes the graph."""
+        arr = self.compute()
+        if dtype is None:
+            return arr
+        return np.asarray(arr, dtype=dtype)
 
-def _python_demosaic_fn(
-    *arrays: np.ndarray, attrs: Dict[str, Any]
-) -> np.ndarray:
-    from .raw_render import DemosaicAlgorithm, demosaic as rr_demosaic
 
-    if len(arrays) != 1:
-        raise ValueError("python demosaic expects one input")
-    alg = DemosaicAlgorithm.lookup(attrs["alg"])
-    return_dtype = _NUMPY_FROM_DTYPE[attrs["return_dtype"]]
-    return rr_demosaic(
-        arrays[0],
-        attrs["cfa_pattern"],
-        algorithm=alg,
-        return_dtype=return_dtype,
+def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
+    """Coerce a Python attr value to the catalog wire form."""
+    key = spec["key"]
+    typ = spec["type"]
+    count = spec.get("count", 1)
+    if typ == "f32":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"attr {key!r} must be a float")
+        return float(value)
+    if typ == "i32":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"attr {key!r} must be an int")
+        return int(value)
+    if typ == "string":
+        if not isinstance(value, str):
+            raise TypeError(f"attr {key!r} must be a str")
+        return value
+    if typ == "f32_array":
+        size = count if count else None
+        arr = _as_f32_array(value, name=key, size=size)
+        if count == 0 and arr.size < 1:
+            raise ValueError(f"attr {key!r} must be a non-empty array")
+        return arr
+    if typ == "i32_array":
+        arr = np.ascontiguousarray(value, dtype=np.int32).reshape(-1)
+        if count and arr.size != count:
+            raise ValueError(f"attr {key!r} must have {count} elements")
+        if count == 0 and arr.size < 1:
+            raise ValueError(f"attr {key!r} must be a non-empty array")
+        return arr
+    raise ValueError(f"attr {key!r}: unsupported catalog type {typ!r}")
+
+
+def _validate_attrs(
+    name: str, schema: Dict[str, Any], attrs: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Validate/coerce attrs against the catalog; reject unknown keys."""
+    specs = schema.get("attrs") or []
+    by_key = {s["key"]: s for s in specs}
+    unknown = set(attrs) - set(by_key)
+    if unknown:
+        raise ValueError(f"op {name!r}: unknown attrs {sorted(unknown)}")
+    missing = set(by_key) - set(attrs)
+    if missing:
+        raise ValueError(f"op {name!r}: missing attrs {sorted(missing)}")
+    return {k: _coerce_attr(by_key[k], attrs[k]) for k in by_key}
+
+
+def _out_meta_from_catalog(inp: Tensor, schema: Dict[str, Any]) -> TensorMeta:
+    outs = schema.get("outputs") or [{"channels": "same"}]
+    if len(outs) != 1:
+        raise ValueError("Phase A′ only supports single-output ops")
+    ch = outs[0].get("channels", "same")
+    if ch == "same":
+        channels = inp.meta.channels
+    else:
+        channels = int(ch)
+    return TensorMeta(
+        dtype=inp.meta.dtype,
+        height=inp.meta.height,
+        width=inp.meta.width,
+        channels=channels,
     )
 
 
-@dataclass(frozen=True)
-class _OpSpec:
-    """Phase A hard-wired op metadata. Phase A′: from shared YAML catalog."""
-
-    affinity: str  # "engine" | "python"
-    py_fn: Optional[Callable[..., np.ndarray]] = None
-
-
-# Affinity (and python callables) live on the op, not on demosaic alg strings.
-_OPS: Dict[str, _OpSpec] = {
-    "sub_scalar": _OpSpec("engine"),
-    "mul_scalar": _OpSpec("engine"),
-    "bilinear_demosaic": _OpSpec("engine"),
-    "matrix": _OpSpec("engine"),
-    "lut": _OpSpec("engine"),
-    "python_demosaic": _OpSpec("python", py_fn=_python_demosaic_fn),
-}
-
-# Sugar only: which concrete op mc.demosaic(alg=...) emits.
-_DEMOSAIC_ALG_TO_OP = {
-    "bilinear": "bilinear_demosaic",
-    "DNGSDK_BILINEAR": "bilinear_demosaic",
-}
+def _check_inputs(name: str, schema: Dict[str, Any], inputs: Sequence[Tensor]) -> None:
+    specs = schema.get("inputs") or [{"channels": "any"}]
+    if len(inputs) != len(specs):
+        raise ValueError(
+            f"op {name!r}: expected {len(specs)} input(s), got {len(inputs)}"
+        )
+    for i, (tens, spec) in enumerate(zip(inputs, specs)):
+        ch = spec.get("channels", "any")
+        if ch != "any" and tens.meta.channels != int(ch):
+            raise ValueError(
+                f"op {name!r} input[{i}]: expected {ch} channel(s), "
+                f"got {tens.meta.channels}"
+            )
 
 
-def _unary_op(
-    inp: Tensor,
-    *,
-    op: str,
-    attrs: Dict[str, Any],
-    out_meta: TensorMeta,
-) -> Tensor:
-    spec = _OPS.get(op)
-    if spec is None:
-        raise ValueError(f"unknown op {op!r} (not in Phase A hard-wired catalog)")
-    if spec.affinity == "python" and spec.py_fn is None:
-        raise ValueError(f"python op {op!r} has no callable")
+def op(name: str, x: Tensor, /, **attrs: Any) -> Tensor:
+    """Emit an engine op from the shared catalog (YAML SSOT)."""
+    from .engine_ops import OPS_CATALOG
+
+    schema = OPS_CATALOG["ops"].get(name)
+    if schema is None:
+        raise ValueError(f"unknown engine op {name!r} (not in catalog)")
+    _check_inputs(name, schema, (x,))
+    coerced = _validate_attrs(name, schema, attrs)
+    out_meta = _out_meta_from_catalog(x, schema)
     node = _OpNode(
-        op=op,
-        inputs=(inp,),
-        attrs=attrs,
-        affinity=spec.affinity,
+        op=name,
+        inputs=(x,),
+        attrs=coerced,
         out_meta=out_meta,
-        py_fn=spec.py_fn,
     )
     return Tensor(_meta=out_meta, _node=node)
 
 
-# Phase A: hard-wired helpers matching engine / python op names+attrs.
-# Phase A′: shared YAML catalog generates (or validates) these stubs.
-def demosaic(x: Tensor, alg: str, cfa_pattern: str) -> Tensor:
-    """Demosaic sugar: map alg → op; affinity comes from that op's spec."""
-    from .tiff_metadata import CFA_PATTERN_TO_CODES
+def flush(x: Tensor) -> Tensor:
+    """Materialize a lazy engine graph into a concrete source Tensor.
 
-    if x.meta.channels != 1:
-        raise ValueError("demosaic input must be mono / CFA (1 channel)")
-    pattern = cfa_pattern.upper()
-    codes = CFA_PATTERN_TO_CODES.get(pattern)
-    if codes is None:
-        raise ValueError(
-            f"Invalid CFA pattern: {cfa_pattern!r}. "
-            f"Supported patterns are: {list(CFA_PATTERN_TO_CODES)}"
-        )
-    out_meta = TensorMeta(
-        dtype=x.meta.dtype,
-        height=x.meta.height,
-        width=x.meta.width,
-        channels=3,
-    )
-    op = _DEMOSAIC_ALG_TO_OP.get(alg, "python_demosaic")
-    if op == "bilinear_demosaic":
-        attrs: Dict[str, Any] = {
-            "cfa_pattern": np.ascontiguousarray(codes, dtype=np.int32),
-        }
-    else:
-        attrs = {
-            "alg": alg,
-            "cfa_pattern": pattern,
-            "return_dtype": x.meta.dtype,
-        }
-    return _unary_op(x, op=op, attrs=attrs, out_meta=out_meta)
-
-
-def matrix(x: Tensor, m: Union[Sequence[float], np.ndarray]) -> Tensor:
-    if x.meta.channels != 3:
-        raise ValueError("matrix input must be RGB (3 channels)")
-    mat = _as_f32_array(m, name="matrix", size=9)
-    return _unary_op(
-        x,
-        op="matrix",
-        attrs={"matrix": mat},
-        out_meta=x.meta,
-    )
-
-
-def lut(x: Tensor, samples: Union[Sequence[float], np.ndarray]) -> Tensor:
-    table = _as_f32_array(samples, name="lut")
-    return _unary_op(
-        x,
-        op="lut",
-        attrs={"lut": table},
-        out_meta=x.meta,
-    )
+    Use before non-engine (Python/ndarray) work, then continue with ``op`` /
+    ``Tensor`` as needed.
+    """
+    return Tensor(x.compute())
 
 
 def _reachable_tensors(root: Tensor) -> List[Tensor]:
@@ -293,23 +276,6 @@ def _reachable_tensors(root: Tensor) -> List[Tensor]:
 
     visit(root)
     return ordered
-
-
-def _partition_segments(
-    op_tensors: List[Tensor],
-) -> List[Tuple[str, List[Tensor]]]:
-    """Maximal contiguous runs of the same affinity (topo order)."""
-    segments: List[Tuple[str, List[Tensor]]] = []
-    for t in op_tensors:
-        assert t._node is not None
-        aff = t._node.affinity
-        if aff not in ("engine", "python"):
-            raise ValueError(f"unknown affinity: {aff!r}")
-        if not segments or segments[-1][0] != aff:
-            segments.append((aff, [t]))
-        else:
-            segments[-1][1].append(t)
-    return segments
 
 
 def _segment_boundary_outputs(
@@ -380,10 +346,6 @@ def _run_engine_segment(
     graph_nodes = []
     for t in nodes:
         assert t._node is not None
-        if t._node.affinity != "engine":
-            raise ValueError(
-                f"engine segment contains non-engine op {t._node.op!r}"
-            )
         graph_nodes.append(
             {
                 "id": len(graph_nodes),
@@ -416,26 +378,6 @@ def _run_engine_segment(
     _compute_engine.execute_graph(graph, in_binds, out_binds)
 
 
-def _run_python_node(t: Tensor, values: Dict[int, np.ndarray]) -> None:
-    assert t._node is not None
-    if t._node.py_fn is None:
-        raise ValueError(f"python op {t._node.op!r} has no callable")
-    arrays = []
-    for inp in t._node.inputs:
-        if id(inp) not in values:
-            raise ValueError(f"missing materialized input for op {t._node.op!r}")
-        arrays.append(values[id(inp)])
-    out = t._node.py_fn(*arrays, attrs=t._node.attrs)
-    out = np.ascontiguousarray(out)
-    # Keep declared meta; allow dtype/shape checks lightly.
-    if out.shape != t.meta.shape:
-        raise ValueError(
-            f"python op {t._node.op!r} produced shape {out.shape}, "
-            f"expected {t.meta.shape}"
-        )
-    values[id(t)] = out
-
-
 def _compute(root: Tensor) -> np.ndarray:
     tensors = _reachable_tensors(root)
     values: Dict[int, np.ndarray] = {}
@@ -450,18 +392,10 @@ def _compute(root: Tensor) -> np.ndarray:
     if not op_tensors:
         return values[id(root)]
 
-    segments = _partition_segments(op_tensors)
-    for aff, nodes in segments:
-        if aff == "python":
-            for t in nodes:
-                _run_python_node(t, values)
-        else:
-            outs = _segment_boundary_outputs(nodes, op_tensors, root)
-            if not outs:
-                # Segment results unused — still run so side-effect-free
-                # graphs fail clearly; treat last node as output.
-                outs = [nodes[-1]]
-            _run_engine_segment(nodes, values, outs)
+    outs = _segment_boundary_outputs(op_tensors, op_tensors, root)
+    if not outs:
+        outs = [op_tensors[-1]]
+    _run_engine_segment(op_tensors, values, outs)
 
     if id(root) not in values:
         raise RuntimeError("compute finished without materializing root")
