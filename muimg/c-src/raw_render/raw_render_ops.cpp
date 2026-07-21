@@ -220,25 +220,7 @@ static MuImgDType muimg_dtype_from_numpy(int dtype) {
     }
 }
 
-//=============================================================================
-// RAII wrapper for PyObject reference counting
-//=============================================================================
-
-struct PyObjectDeleter {
-    template<typename T>
-    void operator()(T* obj) const { 
-        Py_XDECREF((PyObject*)obj); 
-    }
-};
-
-template<typename T = PyObject>
-using PyPtr = std::unique_ptr<T, PyObjectDeleter>;
-
-// Helper to create PyPtr from raw pointer
-template<typename T = PyObject>
-PyPtr<T> make_pyptr(T* obj) {
-    return PyPtr<T>(obj);
-}
+#include "../py_ptr.h"
 
 //=============================================================================
 // Engine call helpers (shared buffer / GIL / error pattern)

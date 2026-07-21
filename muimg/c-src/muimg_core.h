@@ -4,8 +4,8 @@
  * Pure C interface for image processing operations.
  * No Python or NumPy dependencies.
  *
- * SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2026 mu-files
+ * Copyright (c) 2024 mu-files
+ * Licensed under a modified PolyForm Small Business License
  */
 
 #ifndef MUIMG_CORE_H
@@ -51,7 +51,7 @@ typedef struct {
   void *data;       // Pointer to raw buffer
   size_t height;    // Image height in pixels
   size_t width;     // Image width in pixels
-  size_t channels;  // Number of channels (1 for CFA, 3 for RGB)
+  size_t channels;  // Number of channels (1 mono/CFA, 3 RGB, 4 RGBA)
   MuImgDType dtype; // Data type
   size_t stride;    // Row stride in bytes (0 = packed/contiguous)
 } MuImgBuffer;

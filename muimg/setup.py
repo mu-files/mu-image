@@ -77,6 +77,16 @@ raw_render_extension = Extension(
     language='c++',
 )
 
+# Compute-graph engine binding (Phase A)
+compute_engine_extension = Extension(
+    'muimg._compute_engine',
+    sources=['c-src/compute_engine/compute_engine.cpp'],
+    include_dirs=[np.get_include(), 'c-src'],
+    extra_compile_args=common_compile_args + cpp_extra_args,
+    extra_link_args=common_link_args,
+    language='c++',
+)
+
 # VNG demosaic extension
 vng_extension = Extension(
     'muimg._vng',
@@ -99,7 +109,7 @@ if os.path.exists(rcd_source):
     )
 
 # Build list of extensions
-ext_modules = [raw_render_extension, vng_extension]
+ext_modules = [raw_render_extension, compute_engine_extension, vng_extension]
 if rcd_extension:
     ext_modules.append(rcd_extension)
 

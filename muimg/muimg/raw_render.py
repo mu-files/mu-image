@@ -14,7 +14,12 @@ from . import _raw_render
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
-from .tiff_metadata import get_cfa_pattern_codes, Illuminant, Orientation
+from .tiff_metadata import (
+    CFA_PATTERN_TO_CODES,
+    get_cfa_pattern_codes,
+    Illuminant,
+    Orientation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -629,11 +634,10 @@ def demosaic(
         )
     
     # Validate CFA pattern
-    valid_patterns = ["RGGB", "BGGR", "GRBG", "GBRG"]
-    if cfa_pattern not in valid_patterns:
+    if cfa_pattern not in CFA_PATTERN_TO_CODES:
         raise ValueError(
             f"Invalid CFA pattern: '{cfa_pattern}'. "
-            f"Supported patterns are: {valid_patterns}."
+            f"Supported patterns are: {list(CFA_PATTERN_TO_CODES)}."
         )
     
     # Validate algorithm
