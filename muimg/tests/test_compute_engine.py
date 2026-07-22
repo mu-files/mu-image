@@ -1,4 +1,4 @@
-"""Phase A.4: Python binding smoke tests for muimg._compute_engine."""
+"""Python binding smoke tests for muimg._compute_engine."""
 
 import numpy as np
 import pytest

@@ -5,6 +5,10 @@ which is a port of the Adobe DNG SDK (`dng_render.cpp`). It converts RAW CFA
 data to a final display-referred RGB image, mapping how each DNG tag is
 interpreted and applied during processing.
 
+**Future work:** a general-purpose image compute graph (`mc`) is planned to
+replace the imperative orchestration in `raw_render` while preserving this
+stage model. See [compute-graph-plan.md](compute-graph-plan.md).
+
 ## Pipeline Overview
 
 ```

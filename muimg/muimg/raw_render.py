@@ -10,13 +10,13 @@ from enum import Enum, IntEnum, StrEnum, auto
 from typing import TYPE_CHECKING, Any
 
 # Package imports
-from . import _raw_render
+from . import engine_ops
+from . import mc as _mc
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
 from .tiff_metadata import (
     CFA_PATTERN_TO_CODES,
-    get_cfa_pattern_codes,
     Illuminant,
     Orientation,
 )
@@ -25,6 +25,37 @@ if TYPE_CHECKING:
     from .mc import Tensor
 
 logger = logging.getLogger(__name__)
+
+
+def _as_tensor(x: np.ndarray | "_mc.Tensor") -> "_mc.Tensor":
+    if isinstance(x, _mc.Tensor):
+        return x
+    return _mc.Tensor(x)
+
+
+def _tensor_convert(t: "_mc.Tensor", dest_dtype: str) -> "_mc.Tensor":
+    """Lazy dtype conversion node (no execute until ``.compute()``)."""
+    if t.meta.dtype == dest_dtype:
+        return t
+    src_bits = -1 if t.meta.dtype.startswith("float") else (
+        8 if t.meta.dtype == "uint8" else 16
+    )
+    dst_bits = -1 if dest_dtype.startswith("float") else (
+        8 if dest_dtype == "uint8" else 16
+    )
+    return engine_ops.convert_dtype(
+        t,
+        dest_dtype=dest_dtype,
+        src_bits=src_bits,
+        dst_bits=dst_bits,
+        clip_max=-1.0,
+    )
+
+
+def _engine_run(t: "_mc.Tensor") -> np.ndarray:
+    """Materialize an engine graph (one or more lazy nodes)."""
+    return t.compute()
+
 
 # =============================================================================
 # Constants
@@ -157,12 +188,14 @@ def convert_dtype(
     clip_value = -1.0 if clip_max is None else float(clip_max)
     
     # Call C++ implementation (handles both 2D and 3D)
-    result = _raw_render.convert_dtype(
-        image,
-        dtype_to_npy[dest_dtype],
-        src_bits,
-        dst_bits,
-        clip_value
+    result = _engine_run(
+        engine_ops.convert_dtype(
+            _mc.Tensor(image),
+            dest_dtype=np.dtype(dest_dtype).name,
+            src_bits=int(src_bits),
+            dst_bits=int(dst_bits),
+            clip_max=float(clip_value),
+        )
     )
     
     # Convert back to float16 if that was the requested output
@@ -216,20 +249,22 @@ def mono_lut(
         output_dtype_inst = np.dtype(output_dtype)
         dst_bits = -1 if output_dtype_inst in (np.float32, np.float64, np.float16) else output_dtype_inst.itemsize * 8
 
-    # Validate and convert output dtype to numpy type number
+    # Validate output dtype
     if output_dtype not in (np.uint8, np.uint16, np.float32):
         raise TypeError(f"Unsupported output dtype: {output_dtype}")
-    dest_dtype_int = np.dtype(output_dtype).num
 
     # Call C++ implementation
-    result = _raw_render.mono_lut(
-        image,
-        lut_array,
-        src_bits,
-        dst_bits,
-        dest_dtype_int,
+    result = _engine_run(
+        engine_ops.mono_lut(
+            _mc.Tensor(image),
+            lut=lut_array,
+            src_bits=int(src_bits),
+            dst_bits=int(dst_bits),
+            dest_dtype=np.dtype(output_dtype).name,
+        )
     )
-
+    if result.ndim == 2:
+        result = result.reshape(result.shape[0], result.shape[1], 1)
     return result
 
 
@@ -476,15 +511,17 @@ def transform_color(
         raise ValueError(f"output_dtype must be uint8, uint16, or float32, got {output_dtype}")
     
     # Call C++ implementation
-    return _raw_render.transform_color(
-        image,
-        input_lut=input_lut_array,
-        matrix=matrix,
-        output_lut=output_lut_array,
-        src_bits=src_bits if src_bits is not None else -1,
-        dst_bits=dst_bits if dst_bits is not None else -1,
-        output_dtype=output_dtype,
-        hue_preserving=hue_preserving_input_lut
+    return _engine_run(
+        engine_ops.transform_color(
+            _mc.Tensor(image),
+            input_lut=input_lut_array,
+            matrix=None if matrix is None else np.asarray(matrix, dtype=np.float32).reshape(-1),
+            output_lut=output_lut_array,
+            src_bits=int(src_bits if src_bits is not None else -1),
+            dst_bits=int(dst_bits if dst_bits is not None else -1),
+            dest_dtype=np.dtype(output_dtype).name,
+            hue_preserving=bool(hue_preserving_input_lut),
+        )
     )
 
 
@@ -523,10 +560,12 @@ def clip_and_transform_color(
     if matrix.shape != (3, 3):
         raise ValueError(f"Matrix must be (3, 3), got {matrix.shape}")
     
-    return _raw_render.clip_and_transform_color(
-        image,
-        clip_max=clip_max.astype(np.float32),
-        matrix=matrix.astype(np.float32)
+    return _engine_run(
+        engine_ops.clip_and_transform_color(
+            _mc.Tensor(image),
+            clip_max=clip_max.astype(np.float32).reshape(-1),
+            matrix=matrix.astype(np.float32).reshape(-1),
+        )
     )
 
 
@@ -670,11 +709,14 @@ def demosaic(
     timer = get_active_timer()
 
     if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
-        cfa_codes = get_cfa_pattern_codes(cfa_pattern)
-        timer.start_step("convert_dtype (pre)")
-        data_f32 = convert_dtype(image_data, np.float32)  # bilinear expects float32
-        timer.start_step("bilinear_demosaic (c++)")
-        rgb = _raw_render.bilinear_demosaic(data_f32, np.array(cfa_codes, dtype=np.int32))
+        # convert_dtype + bilinear in one engine segment when needed
+        timer.start_step("bilinear_demosaic (engine)")
+        x = _as_tensor(image_data)
+        if x.meta.dtype != "float32":
+            x = _tensor_convert(x, "float32")
+        rgb = _engine_run(
+            engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
+        )
         timer.end_step()
 
     elif algorithm == DemosaicAlgorithm.RCD:
@@ -742,7 +784,7 @@ def demosaic(
 # DNG SDK Port (Python + C++ Extension)
 # =============================================================================
 # Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
-# C++ implementation in c-src/raw_render/raw_render_ops.cpp
+# Engine kernels via muimg.engine_ops / muimg._compute_engine.
 #
 # Key SDK source files referenced:
 #   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()
@@ -1864,10 +1906,12 @@ def apply_opcodes(
     """Apply parsed opcodes to image data.
 
     Supported opcodes:
-    - 1: WarpRectilinear (C++ op_warp_rectilinear)
-    - 3: FixVignetteRadial (C++ op_fix_vignette)
-    - 8: MapPolynomial (C++ op_map_polynomial)
-    - 9: GainMap (C++ op_gain_map)
+    - 1: WarpRectilinear
+    - 3: FixVignetteRadial
+    - 8: MapPolynomial
+    - 9: GainMap
+
+    Engine-only ops are chained into one lazy graph and executed once.
 
     Args:
         data: Image data (H, W, C), float32, range [0, 1]
@@ -1881,6 +1925,7 @@ def apply_opcodes(
     """
     result = data.astype(np.float32)
     num_channels = result.shape[2] if result.ndim >= 3 else 1
+    x = _as_tensor(result)
 
     for opcode in opcodes:
         opcode_type = opcode.get('type')
@@ -1897,17 +1942,22 @@ def apply_opcodes(
             # SDK applies different warp per color plane for lateral CA correction
             planes = opcode['planes']
             num_planes = len(planes)
-            
+
             # DNG SDK spec (dng_lens_correction.h:40-44): if num_planes==1,
             # apply same warp to all image planes
-            if num_planes == 1 and result.shape[2] > 1:
-                logger.debug(f"WarpRectilinear: Replicating single plane params for {result.shape[2]} channels")
-                planes = [planes[0]] * result.shape[2]
-                num_planes = result.shape[2]
-            
+            if num_planes == 1 and num_channels > 1:
+                logger.debug(
+                    f"WarpRectilinear: Replicating single plane params for "
+                    f"{num_channels} channels"
+                )
+                planes = [planes[0]] * num_channels
+                num_planes = num_channels
+
             num_planes = min(num_planes, 3)  # RGB
-            logger.debug(f"WarpRectilinear: center=({opcode['center_x']:.4f}, {opcode['center_y']:.4f})")
-            # Build per-plane radial/tangential arrays (num_planes x 4, num_planes x 2)
+            logger.debug(
+                f"WarpRectilinear: center=({opcode['center_x']:.4f}, "
+                f"{opcode['center_y']:.4f})"
+            )
             radial_list = []
             tangential_list = []
             for i, p in enumerate(planes[:num_planes]):
@@ -1916,58 +1966,70 @@ def apply_opcodes(
                 tangential_list.append(p['tangential'])
             radial_per_plane = np.array(radial_list, dtype=np.float64)
             tangential_per_plane = np.array(tangential_list, dtype=np.float64)
-            result = _raw_render.op_warp_rectilinear(
-                result, radial_per_plane,
-                center_x=opcode['center_x'],
-                center_y=opcode['center_y'],
-                tangential_params=tangential_per_plane,
-                use_bicubic=use_bicubic
+            x = engine_ops.warp_rectilinear(
+                x,
+                radial_params=radial_per_plane.reshape(-1),
+                num_planes=int(num_planes),
+                num_coeffs=int(radial_per_plane.shape[1]),
+                tangential_params=tangential_per_plane.reshape(-1),
+                center_x=float(opcode['center_x']),
+                center_y=float(opcode['center_y']),
+                use_bicubic=bool(use_bicubic),
             )
-            
+
         elif opcode_type == 'FixVignetteRadial':
-            result = _raw_render.op_fix_vignette(
-                result,
-                opcode['coefficients'],
-                opcode['center_x'],
-                opcode['center_y']
+            x = engine_ops.fix_vignette(
+                x,
+                params=np.asarray(opcode['coefficients'], dtype=np.float64).reshape(-1),
+                center_x=float(opcode['center_x']),
+                center_y=float(opcode['center_y']),
             )
-            
+
         elif opcode_type == 'MapPolynomial':
-            # C++ implementation matching SDK RefBaselineMapPoly32
             coefficients = opcode['coefficients'].astype(np.float32)
             area = opcode['area']
-            result = _raw_render.op_map_polynomial(
-                result,
-                coefficients,
-                area['top'], area['left'], area['bottom'], area['right'],
-                opcode['plane'], opcode['planes'],
-                opcode['row_pitch'], opcode['col_pitch'],
-                opcode['degree']
+            x = engine_ops.map_polynomial(
+                x,
+                top=int(area['top']), left=int(area['left']),
+                bottom=int(area['bottom']), right=int(area['right']),
+                start_plane=int(opcode['plane']), num_planes=int(opcode['planes']),
+                row_pitch=int(opcode['row_pitch']), col_pitch=int(opcode['col_pitch']),
+                coefficients=coefficients.reshape(-1),
+                degree=int(opcode['degree']),
             )
-            
+
         elif opcode_type == 'GainMap':
             area = opcode['area']
-            logger.debug(f"GainMap: area={area}, plane={opcode['plane']}, planes={opcode['planes']}, "
-                        f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
-                        f"points={opcode['points_v']}x{opcode['points_h']}, map_planes={opcode['map_planes']}, "
-                        f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
-                        f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
-                        f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
-            result = _raw_render.op_gain_map(
-                result,
-                opcode['gain_values'],
-                area['top'], area['left'], area['bottom'], area['right'],
-                opcode['plane'], opcode['planes'],
-                opcode['row_pitch'], opcode['col_pitch'],
-                opcode['spacing_v'], opcode['spacing_h'],
-                opcode['origin_v'], opcode['origin_h']
+            logger.debug(
+                f"GainMap: area={area}, plane={opcode['plane']}, "
+                f"planes={opcode['planes']}, "
+                f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
+                f"points={opcode['points_v']}x{opcode['points_h']}, "
+                f"map_planes={opcode['map_planes']}, "
+                f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
+                f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
+                f"gain_range=[{opcode['gain_values'].min():.4f}, "
+                f"{opcode['gain_values'].max():.4f}]"
             )
-            
+            gv = np.asarray(opcode['gain_values'], dtype=np.float32)
+            x = engine_ops.apply_gain_map(
+                x,
+                gain_values=gv.reshape(-1),
+                points_v=int(gv.shape[0]), points_h=int(gv.shape[1]),
+                map_planes=int(gv.shape[2]),
+                top=int(area['top']), left=int(area['left']),
+                bottom=int(area['bottom']), right=int(area['right']),
+                start_plane=int(opcode['plane']), num_planes=int(opcode['planes']),
+                row_pitch=int(opcode['row_pitch']), col_pitch=int(opcode['col_pitch']),
+                spacing_v=float(opcode['spacing_v']), spacing_h=float(opcode['spacing_h']),
+                origin_v=float(opcode['origin_v']), origin_h=float(opcode['origin_h']),
+            )
+
         else:
             name = enum_display_name(DngOpcode, opcode['id'])
             logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
-    
-    return result
+
+    return _engine_run(x)
 
 
 def apply_opcodes_cfa(
@@ -1976,129 +2038,132 @@ def apply_opcodes_cfa(
     opcode_list_name: str = "CFA"
 ) -> np.ndarray:
     """Apply parsed opcodes to CFA data.
-    
-    Handles both OpcodeList1 (pre-linearization, uint16) and OpcodeList2 
+
+    Handles both OpcodeList1 (pre-linearization, uint16) and OpcodeList2
     (post-linearization, float32).
-    
+
+    Engine ops (including dtype converts) are chained into one lazy graph and
+    executed once at the end.
+
     DNG Spec:
     - OpcodeList1: Applied to raw CFA sensor data before linearization (uint16)
     - OpcodeList2: Applied after linearization, can be applied to CFA or LINEAR_RAW
-    
+
     Supported opcodes:
     - FixBadPixelsConstant (OpcodeList1 only, requires uint16)
     - FixVignetteRadial (both lists)
     - MapPolynomial (both lists)
     - GainMap (both lists)
-    
+
     Args:
         data: CFA data (H, W)
               - uint16 for OpcodeList1 (raw sensor values)
               - float32 for OpcodeList2 (linearized [0,1])
         opcodes: List of parsed opcodes from parse_opcode_list
         opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList1")
-        
+
     Returns:
         Processed CFA data (same dtype as input)
     """
     if data.ndim != 2:
         logger.error(f"CFA opcodes require 2D data (H,W), got shape {data.shape}")
         return data
-    
-    is_uint16 = data.dtype == np.uint16
-    
-    # For uint16 data, we may need to convert to float for some opcodes
-    if is_uint16:
-        result_uint16 = data.astype(np.uint16)
-        result_float = None
-    else:
-        result_uint16 = None
-        result_float = data.astype(np.float32)
-    
+
+    want_uint16 = data.dtype == np.uint16
+    x = _as_tensor(
+        data.astype(np.uint16 if want_uint16 else np.float32, copy=False)
+    )
+
     for opcode in opcodes:
         opcode_type = opcode.get('type')
-        
+
         if opcode_type == 'FixBadPixelsConstant':
-            # Only works on uint16 data - convert back from float if needed
-            if is_uint16:
-                if result_float is not None:
-                    # We've already converted to float, need to go back to uint16
-                    result_uint16 = convert_dtype(result_float, np.uint16)
-                    result_float = None
-                constant = opcode['constant']
-                bayer_phase = opcode['bayer_phase']
-                logger.debug(f"FixBadPixelsConstant: constant={constant}, bayer_phase={bayer_phase}")
-                result_uint16 = _raw_render.op_fix_bad_pixels_constant(
-                    result_uint16,
-                    constant,
-                    bayer_phase
+            if not want_uint16:
+                logger.warning(
+                    "FixBadPixelsConstant requires uint16 input data, skipping"
                 )
-            else:
-                logger.warning("FixBadPixelsConstant requires uint16 input data, skipping")
-        
+                continue
+            x = _tensor_convert(x, "uint16")
+            constant = opcode['constant']
+            bayer_phase = opcode['bayer_phase']
+            logger.debug(
+                f"FixBadPixelsConstant: constant={constant}, "
+                f"bayer_phase={bayer_phase}"
+            )
+            x = engine_ops.fix_bad_pixels_constant(
+                x,
+                constant=int(constant),
+                bayer_phase=int(bayer_phase),
+            )
+
         elif opcode_type == 'GainMap':
-            # Works on float32 - convert uint16 if needed
-            if is_uint16 and result_float is None:
-                result_float = convert_dtype(result_uint16, np.float32)
-            
+            x = _tensor_convert(x, "float32")
             area = opcode['area']
-            logger.debug(f"GainMap CFA: area={area}, plane={opcode['plane']}, planes={opcode['planes']}, "
-                        f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
-                        f"points={opcode['points_v']}x{opcode['points_h']}, map_planes={opcode['map_planes']}, "
-                        f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
-                        f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
-                        f"gain_range=[{opcode['gain_values'].min():.4f}, {opcode['gain_values'].max():.4f}]")
-            result_float = _raw_render.op_gain_map_cfa(
-                result_float,
-                opcode['gain_values'],
-                area['top'], area['left'], area['bottom'], area['right'],
-                opcode['row_pitch'], opcode['col_pitch'],
-                opcode['spacing_v'], opcode['spacing_h'],
-                opcode['origin_v'], opcode['origin_h']
+            logger.debug(
+                f"GainMap CFA: area={area}, plane={opcode['plane']}, "
+                f"planes={opcode['planes']}, "
+                f"row_pitch={opcode['row_pitch']}, col_pitch={opcode['col_pitch']}, "
+                f"points={opcode['points_v']}x{opcode['points_h']}, "
+                f"map_planes={opcode['map_planes']}, "
+                f"spacing=({opcode['spacing_v']:.6f}, {opcode['spacing_h']:.6f}), "
+                f"origin=({opcode['origin_v']:.6f}, {opcode['origin_h']:.6f}), "
+                f"gain_range=[{opcode['gain_values'].min():.4f}, "
+                f"{opcode['gain_values'].max():.4f}]"
             )
-        
+            gv = np.asarray(opcode['gain_values'], dtype=np.float32)
+            x = engine_ops.apply_gain_map_cfa(
+                x,
+                gain_values=gv.reshape(-1),
+                points_v=int(gv.shape[0]), points_h=int(gv.shape[1]),
+                map_planes=int(gv.shape[2]),
+                top=int(area['top']), left=int(area['left']),
+                bottom=int(area['bottom']), right=int(area['right']),
+                row_pitch=int(opcode['row_pitch']), col_pitch=int(opcode['col_pitch']),
+                spacing_v=float(opcode['spacing_v']), spacing_h=float(opcode['spacing_h']),
+                origin_v=float(opcode['origin_v']), origin_h=float(opcode['origin_h']),
+            )
+
         elif opcode_type == 'MapPolynomial':
-            # Works on float32 - convert uint16 if needed
-            if is_uint16 and result_float is None:
-                result_float = convert_dtype(result_uint16, np.float32)
-            
+            x = _tensor_convert(x, "float32")
             area = opcode['area']
-            coefficients = np.asarray(opcode['coefficients'], dtype=np.float64)
-            logger.debug(f"MapPolynomial CFA: area={area}, degree={opcode['degree']}, coeffs={coefficients}")
-            result_float = _raw_render.op_map_polynomial_cfa(
-                result_float,
-                coefficients,
-                area['top'], area['left'], area['bottom'], area['right'],
-                opcode['row_pitch'], opcode['col_pitch'],
-                opcode['degree']
+            coefficients = np.asarray(opcode['coefficients'], dtype=np.float32)
+            logger.debug(
+                f"MapPolynomial CFA: area={area}, degree={opcode['degree']}, "
+                f"coeffs={coefficients}"
             )
-        
+            x = engine_ops.map_polynomial(
+                x,
+                top=int(area['top']), left=int(area['left']),
+                bottom=int(area['bottom']), right=int(area['right']),
+                start_plane=0, num_planes=1,
+                row_pitch=int(opcode['row_pitch']), col_pitch=int(opcode['col_pitch']),
+                coefficients=coefficients.reshape(-1),
+                degree=int(opcode['degree']),
+            )
+
         elif opcode_type == 'FixVignetteRadial':
-            # Works on float32 - convert uint16 if needed
-            if is_uint16 and result_float is None:
-                result_float = convert_dtype(result_uint16, np.float32)
-            
-            logger.debug(f"FixVignetteRadial CFA: center=({opcode['center_x']:.4f}, {opcode['center_y']:.4f}), "
-                        f"coeffs={opcode['coefficients']}")
-            
-            result_float = _raw_render.op_fix_vignette_cfa(
-                result_float,
-                opcode['coefficients'],
-                opcode['center_x'],
-                opcode['center_y']
+            x = _tensor_convert(x, "float32")
+            logger.debug(
+                f"FixVignetteRadial CFA: center=({opcode['center_x']:.4f}, "
+                f"{opcode['center_y']:.4f}), coeffs={opcode['coefficients']}"
             )
-            
+            x = engine_ops.fix_vignette(
+                x,
+                params=np.asarray(opcode['coefficients'], dtype=np.float64).reshape(-1),
+                center_x=float(opcode['center_x']),
+                center_y=float(opcode['center_y']),
+            )
+
         else:
             name = enum_display_name(DngOpcode, opcode['id'])
             logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
-    
-    # Return in original dtype
-    if is_uint16:
-        if result_float is not None:
-            # Convert back to uint16
-            return convert_dtype(result_float, np.uint16)
-        return result_uint16
-    else:
-        return result_float
+
+    if want_uint16:
+        x = _tensor_convert(x, "uint16")
+    out = _engine_run(x)
+    if out.ndim == 3 and out.shape[2] == 1:
+        out = out.squeeze(axis=2)
+    return out
 
 def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure: bool = True) -> np.ndarray:
     """Apply exposure tone function.
@@ -3052,16 +3117,21 @@ def _linearize(
             norm_data = norm_data.astype(np.float32)
         elif norm_data.dtype not in (np.uint16, np.float32):
             norm_data = norm_data.astype(np.float32)
-        normalized = _raw_render.normalize_raw(
-            data=norm_data,
-            black_level=black_level,
-            black_repeat_rows=black_repeat_rows,
-            black_repeat_cols=black_repeat_cols,
-            samples_per_pixel=samples_per_pixel,
-            white_level=white_level,
-            black_delta_h=black_delta_h,
-            black_delta_v=black_delta_v,
-            linearization_table=linearization_table,
+        lin = None
+        if linearization_table is not None and len(linearization_table) > 0:
+            lin = np.asarray(linearization_table, dtype=np.int32).reshape(-1)
+        normalized = _engine_run(
+            engine_ops.normalize_raw(
+                _mc.Tensor(norm_data),
+                black_level=np.asarray(black_level, dtype=np.float32).reshape(-1),
+                black_repeat_rows=int(black_repeat_rows),
+                black_repeat_cols=int(black_repeat_cols),
+                samples_per_pixel=int(samples_per_pixel),
+                white_level=np.asarray(white_level, dtype=np.float32).reshape(-1),
+                black_delta_h=None if black_delta_h is None else np.asarray(black_delta_h, dtype=np.float32).reshape(-1),
+                black_delta_v=None if black_delta_v is None else np.asarray(black_delta_v, dtype=np.float32).reshape(-1),
+                linearization_table=lin,
+            )
         )
     timer.end_step()
 
@@ -3362,15 +3432,19 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp lines 917-955, 1822-1837
         # Applied AFTER camera->ProPhoto, BEFORE exposure ramp
         # =====================================================================
+        # Chain HueSatMap + PGTM into one engine segment when both apply.
+        rgb_t = _as_tensor(rgb_prophoto)
+        engine_segment = False
+
         hue_sat_dims = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapDims")
         hue_sat_data1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData1")
-        
+
         if hue_sat_dims is not None and hue_sat_data1 is not None:
             hsm_timer = timer.start_step("hue_sat_map")
             hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
             hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
             hue_sat_data2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData2")
-            
+
             # Interpolate between dual illuminant HueSatMaps if available
             if hue_sat_data2 is not None and temp1 is not None and temp2 is not None and temp1 != temp2:
                 hue_sat_data2 = np.asarray(hue_sat_data2, dtype=np.float32)
@@ -3380,18 +3454,19 @@ def _render_camera_rgb(
                 hue_sat_map = interpolate_hue_sat_map(hue_sat_data1, hue_sat_data2, temp1, temp2, interp_scene_temp)
             else:
                 hue_sat_map = hue_sat_data1
-            
+
             logger.debug(f"ProfileHueSatMap: {hue_divs}x{sat_divs}x{val_divs}")
 
-            hsm_timer.start_step("apply_hue_sat_map (c++)")
-            rgb_prophoto = _raw_render.apply_hue_sat_map(
-                rgb_prophoto,
-                hue_sat_map,
-                hue_divs, sat_divs, val_divs
+            hsm_timer.start_step("apply_hue_sat_map (engine)")
+            rgb_t = engine_ops.apply_hue_sat_map(
+                rgb_t,
+                map_data=np.asarray(hue_sat_map, dtype=np.float32).reshape(-1),
+                hue_divs=int(hue_divs), sat_divs=int(sat_divs), val_divs=int(val_divs),
             )
+            engine_segment = True
             hsm_timer.end_step()
             hsm_timer.close()
-        
+
         # =====================================================================
         # Step 1.6: DoBaselineProfileGainTableMap
         # SDK ref: dng_render.cpp lines 1843-1903
@@ -3403,11 +3478,11 @@ def _render_camera_rgb(
         baseline_exposure = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "BaselineExposure") or 0.0
         baseline_exposure_offset = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "BaselineExposureOffset") or 0.0
         total_baseline_exposure = baseline_exposure + baseline_exposure_offset
-        
+
         # Add user exposure from rendering_params if provided
         user_exposure = rendering_params.get('Exposure2012', 0.0) if rendering_params else 0.0
         exposure = total_baseline_exposure + user_exposure
-        
+
         # =====================================================================
         # Step 2: DoProfileGainTableMap (PGTM)
         # SDK ref: dng_render.cpp lines 1862-1910
@@ -3416,13 +3491,13 @@ def _render_camera_rgb(
         # Check raw_ifd_tags first for PGTM (for files following the mistaken spec), then IFD0
         pgtm_data = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileGainTableMap2")
         is_version2 = pgtm_data is not None
-        
+
         if pgtm_data is None:
-            # Get PGTM on raw_ifd_tags (only raw_ifd tag in this function due to 
+            # Get PGTM on raw_ifd_tags (only raw_ifd tag in this function due to
             # mistake in DNG 1.6 spec)
             if raw_ifd_tags:
                 pgtm_data = raw_ifd_tags.get_tag("ProfileGainTableMap")
-        
+
         if pgtm_data is not None:
             pgtm_timer = timer.start_step("profile_gain_table_map")
             try:
@@ -3435,24 +3510,28 @@ def _render_camera_rgb(
                     is_version2=is_version2,
                     byteorder=system_byteorder,
                 )
-                pgtm_timer.start_step("apply_profile_gain_table_map (c++)")
-                rgb_prophoto = _raw_render.apply_profile_gain_table_map(
-                    rgb_prophoto,
-                    pgtm["gains"],
-                    pgtm["weights"],
-                    int(pgtm["points_v"]),
-                    int(pgtm["points_h"]),
-                    float(pgtm["spacing_v"]),
-                    float(pgtm["spacing_h"]),
-                    float(pgtm["origin_v"]),
-                    float(pgtm["origin_h"]),
-                    int(pgtm["num_table_points"]),
-                    float(pgtm["gamma"]),
-                    float(total_baseline_exposure),
+                pgtm_timer.start_step("apply_profile_gain_table_map (engine)")
+                rgb_t = engine_ops.apply_profile_gain_table_map(
+                    rgb_t,
+                    gains=pgtm["gains"],
+                    points_v=int(pgtm["points_v"]),
+                    points_h=int(pgtm["points_h"]),
+                    spacing_v=float(pgtm["spacing_v"]),
+                    spacing_h=float(pgtm["spacing_h"]),
+                    origin_v=float(pgtm["origin_v"]),
+                    origin_h=float(pgtm["origin_h"]),
+                    num_table_points=int(pgtm["num_table_points"]),
+                    weights=pgtm["weights"],
+                    gamma=float(pgtm["gamma"]),
+                    exposure_weight_gain=float(2.0 ** total_baseline_exposure),
                 )
+                engine_segment = True
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap ({type(e).__name__}): {e}")
             pgtm_timer.close()
+
+        if engine_segment:
+            rgb_prophoto = _engine_run(rgb_t)
 
         # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
@@ -3504,22 +3583,28 @@ def _render_camera_rgb(
         # If no look_table: exposure_ramp -> exposure_tone -> profile_curve (all baked into one LUT)
         # If look_table: exposure_tone -> profile_curve (exposure_ramp applied to pixels separately)
         if look_table is not None:
-            # Must apply exposure_ramp separately when look_table exists
+            # Exposure ramp LUT + look table in one engine segment.
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
-            timer.start_step("exposure_ramp (c++)")
-            rgb_exposed = transform_color(
-                rgb_prophoto, input_lut=exposure_ramp_lut, output_dtype=np.float32
+            timer.start_step("exposure_ramp+look_table (engine)")
+            lut_arr = np.asarray(exposure_ramp_lut, dtype=np.float32).reshape(-1)
+            rgb_exposed = _engine_run(
+                engine_ops.apply_hue_sat_map(
+                    engine_ops.transform_color(
+                        _as_tensor(rgb_prophoto),
+                        input_lut=lut_arr,
+                        src_bits=-1,
+                        dst_bits=-1,
+                        dest_dtype="float32",
+                        hue_preserving=False,
+                    ),
+                    map_data=np.asarray(look_table, dtype=np.float32).reshape(-1),
+                    hue_divs=int(look_hue_divs),
+                    sat_divs=int(look_sat_divs),
+                    val_divs=int(look_val_divs),
+                )
             )
             timer.end_step()
-            
-            timer.start_step("look_table (c++)")
-            rgb_exposed = _raw_render.apply_hue_sat_map(
-                rgb_exposed,
-                look_table,
-                look_hue_divs, look_sat_divs, look_val_divs
-            )
-            timer.end_step()
-            
+
             # Start combined curve with identity (exposure_ramp already applied to pixels)
             combined_curve = LUT(None, size=4096)
         else:

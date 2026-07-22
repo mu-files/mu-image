@@ -1,19 +1,22 @@
-"""Phase A.5–A.6 + A′: muimg.mc engine graph + eager flush at python barriers."""
+"""muimg.mc engine graph + eager flush at python barriers."""
 
 import numpy as np
 import pytest
 
 import muimg.engine_ops as engine_ops
 import muimg.mc as mc
-from muimg.engine_ops import OPS_CATALOG
+from muimg.engine_ops import OPS_BY_NAME
+from muimg.mc import EngineOp
 from muimg.raw_render import DemosaicAlgorithm, demosaic
 
 
 def test_catalog_engine_ops_io():
-    """Phase A′: engine_ops carries OPS_CATALOG + typed wrappers."""
-    assert "sub_scalar" in OPS_CATALOG["ops"]
-    assert OPS_CATALOG["ops"]["bilinear_demosaic"]["inputs"][0]["channels"] == 1
-    assert OPS_CATALOG["ops"]["bilinear_demosaic"]["outputs"][0]["channels"] == 3
+    """engine_ops carries EngineOp callables + OPS_BY_NAME."""
+    assert "sub_scalar" in OPS_BY_NAME
+    assert isinstance(engine_ops.bilinear_demosaic, EngineOp)
+    assert engine_ops.bilinear_demosaic._in_channels == 1
+    x = mc.Tensor(np.zeros((2, 2), dtype=np.float32))
+    assert engine_ops.bilinear_demosaic.infer_out_meta(x, {}).channels == 3
     assert callable(engine_ops.matrix)
     assert callable(engine_ops.lut)
     assert hasattr(mc, "flush")
@@ -57,8 +60,8 @@ def test_mc_op_rejects_bad_channels():
 
 def test_mc_op_rejects_unknown_attr():
     x = mc.Tensor(np.zeros((2, 2, 3), dtype=np.float32))
-    with pytest.raises(TypeError):
-        engine_ops.matrix(x, matrix=np.eye(3, dtype=np.float32), extra=1)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="unknown attrs"):
+        engine_ops.matrix(x, matrix=np.eye(3, dtype=np.float32), extra=1)
 
 
 def test_mc_rejects_tensor_tensor_sub():
@@ -105,3 +108,49 @@ def test_mc_flush_then_engine_again():
     assert out.shape == (16, 16, 3)
     assert out.dtype == np.float32
     np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
+
+
+def test_apply_opcodes_single_execute():
+    """Multi-opcode RGB chain runs one execute_graph."""
+    from muimg import _compute_engine
+    from muimg.raw_render import apply_opcodes
+
+    rgb = np.full((8, 8, 3), 0.5, dtype=np.float32)
+    opcodes = [
+        {
+            "type": "FixVignetteRadial",
+            "id": 3,
+            "coefficients": np.zeros(5, dtype=np.float64),
+            "center_x": 0.5,
+            "center_y": 0.5,
+            "planes": 1,
+        },
+        {
+            "type": "MapPolynomial",
+            "id": 8,
+            "coefficients": np.array([0.0, 1.0], dtype=np.float32),
+            "area": {"top": 0, "left": 0, "bottom": 0, "right": 0},
+            "plane": 0,
+            "planes": 3,
+            "row_pitch": 1,
+            "col_pitch": 1,
+            "degree": 1,
+        },
+    ]
+
+    calls = {"n": 0}
+    real = _compute_engine.execute_graph
+
+    def counting_execute(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    _compute_engine.execute_graph = counting_execute
+    try:
+        out = apply_opcodes(rgb, opcodes, use_bicubic=False)
+    finally:
+        _compute_engine.execute_graph = real
+
+    assert calls["n"] == 1
+    assert out.shape == rgb.shape
+    np.testing.assert_allclose(out, rgb, rtol=1e-5, atol=1e-5)

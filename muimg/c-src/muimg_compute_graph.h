@@ -1,11 +1,12 @@
 /*
- * muimg_compute_graph - Full-image compute graph segment API (Phase A)
+ * muimg_compute_graph - Compute graph segment API
  *
  * In-memory IR for one engine segment. Python owns affinity splitting and
  * only submits engine nodes here. No Python / NumPy dependencies.
  *
- * Serialization of this IR across the FFI is a later step (binding layer);
- * this header defines the structs the executor runs.
+ * The Python binding converts a structured dict IR into these structs;
+ * this header defines what the executor runs. Execution granularity
+ * (whole buffer vs span/tile) is an executor detail, not part of this IR.
  *
  * Copyright (c) 2026 mu-files
  */
@@ -88,8 +89,8 @@ typedef struct {
 //=============================================================================
 
 /*
- * Full-image op only in Phase A. Op name is a stable string matched by the
- * hard-wired dispatcher (e.g. "sub_scalar", "mul_scalar", "bilinear_demosaic").
+ * One op node. Op name is a stable string matched by the generated catalog
+ * dispatcher (e.g. "sub_scalar", "bilinear_demosaic").
  *
  * inputs/outputs are MuImgTensorId values (not positions in tensor_descs).
  * Pointers are borrowed; valid for the execute call.
@@ -126,13 +127,16 @@ typedef struct {
 } MuImgGraphBinding;
 
 //=============================================================================
-// Full-frame operator callback (registry / hard-wired dispatch target)
+// Operator callback (catalog dispatch target)
 //=============================================================================
 
 /*
  * Contract: read num_inputs buffers, write num_outputs buffers (pre-sized by
  * the executor to match tensor descriptors). Attr arrays are borrowed.
  * Return MUIMG_SUCCESS or an MUIMG_ERROR_* code.
+ *
+ * Today's catalog wrappers take whole MuImgBuffer values; span/tile entry
+ * points are an internal evolution of the executor, not of MuImgGraph.
  */
 typedef int (*MuImgFullImageOpFn)(const MuImgBuffer *inputs, size_t num_inputs,
                                   MuImgBuffer *outputs, size_t num_outputs,
@@ -159,7 +163,7 @@ typedef int (*MuImgFullImageOpFn)(const MuImgBuffer *inputs, size_t num_inputs,
  * MUIMG_ERROR_OUT_OF_MEMORY or MUIMG_ERROR_INTERNAL). Op callbacks must
  * likewise return error codes and must not throw.
  *
- * Phase A.2: implemented for hard-wired full-image ops (see engine sources).
+ * Implemented for catalogued ops (see engine sources).
  */
 MUIMG_API int muimg_execute_graph(const MuImgGraph *graph,
                                   const MuImgGraphBinding *input_bindings,

@@ -1,8 +1,8 @@
 /*
- * muimg._compute_engine - Python binding for muimg_execute_graph (Phase A.4)
+ * muimg._compute_engine - Python binding for muimg_execute_graph
  *
- * Phase A serialization: structured Python dict/list IR is converted to
- * in-memory MuImgGraph structs here (no binary blob yet).
+ * Structured Python dict/list IR is converted to in-memory MuImgGraph
+ * structs here (no binary blob).
  */
 
 #define PY_SSIZE_T_CLEAN
@@ -10,6 +10,7 @@
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <numpy/arrayobject.h>
+#include <numpy/arrayscalars.h>
 
 #include <cstdio>
 #include <cstring>
@@ -197,6 +198,7 @@ struct GraphScratch {
   std::vector<std::vector<MuImgTensorId>> node_ios;
   std::vector<std::vector<MuImgAttr>> node_attrs;
   std::vector<std::vector<float>> f32_arrays;
+  std::vector<std::vector<double>> f64_arrays;
   std::vector<std::vector<int32_t>> i32_arrays;
 };
 
@@ -285,22 +287,114 @@ static bool parse_attr_value(PyObject *key_obj, PyObject *val,
     attr.value.string = scratch.attr_strings.back().c_str();
     return true;
   }
+  if (PyBool_Check(val)) {
+    attr.type = MUIMG_ATTR_I32;
+    attr.count = 1;
+    attr.value.i32 = (val == Py_True) ? 1 : 0;
+    return true;
+  }
+  /* NumPy scalar floats preserve f32 vs f64 from mc coercion. */
+  if (PyArray_IsScalar(val, Float64)) {
+    attr.type = MUIMG_ATTR_F64;
+    attr.count = 1;
+    attr.value.f64 = PyArrayScalar_VAL(val, Float64);
+    return true;
+  }
+  if (PyArray_IsScalar(val, Float32)) {
+    attr.type = MUIMG_ATTR_F32;
+    attr.count = 1;
+    attr.value.f32 = PyArrayScalar_VAL(val, Float32);
+    return true;
+  }
   if (PyFloat_Check(val)) {
     attr.type = MUIMG_ATTR_F32;
     attr.count = 1;
     attr.value.f32 = static_cast<float>(PyFloat_AsDouble(val));
     return true;
   }
-  if (PyLong_Check(val) && !PyBool_Check(val)) {
+  if (PyLong_Check(val)) {
     attr.type = MUIMG_ATTR_I32;
     attr.count = 1;
     attr.value.i32 = static_cast<int32_t>(PyLong_AsLong(val));
     return !PyErr_Occurred();
   }
 
-  /* Prefer float32 arrays; fall back to int32. */
-  PyObject *f_obj =
-      PyArray_ContiguousFromAny(val, NPY_FLOAT32, 1, 1);
+  /* Typed 1-D arrays: keep dtype (f64 / f32 / i32). */
+  if (PyArray_Check(val)) {
+    PyArrayObject *src = reinterpret_cast<PyArrayObject *>(val);
+    if (PyArray_NDIM(src) != 1) {
+      PyErr_SetString(PyExc_ValueError, "attr array must be 1-D");
+      return false;
+    }
+    const int typenum = PyArray_TYPE(src);
+    if (typenum == NPY_FLOAT64) {
+      PyObject *obj = PyArray_ContiguousFromAny(val, NPY_FLOAT64, 1, 1);
+      if (!obj) {
+        return false;
+      }
+      PyArrayObject *arr = reinterpret_cast<PyArrayObject *>(obj);
+      npy_intp n = PyArray_DIM(arr, 0);
+      if (n < 1) {
+        Py_DECREF(obj);
+        PyErr_SetString(PyExc_ValueError, "attr array must be non-empty");
+        return false;
+      }
+      scratch.f64_arrays.emplace_back(
+          static_cast<double *>(PyArray_DATA(arr)),
+          static_cast<double *>(PyArray_DATA(arr)) + n);
+      attr.type = MUIMG_ATTR_F64_ARRAY;
+      attr.count = static_cast<size_t>(n);
+      attr.value.f64_array = scratch.f64_arrays.back().data();
+      Py_DECREF(obj);
+      return true;
+    }
+    if (typenum == NPY_FLOAT32) {
+      PyObject *obj = PyArray_ContiguousFromAny(val, NPY_FLOAT32, 1, 1);
+      if (!obj) {
+        return false;
+      }
+      PyArrayObject *arr = reinterpret_cast<PyArrayObject *>(obj);
+      npy_intp n = PyArray_DIM(arr, 0);
+      if (n < 1) {
+        Py_DECREF(obj);
+        PyErr_SetString(PyExc_ValueError, "attr array must be non-empty");
+        return false;
+      }
+      scratch.f32_arrays.emplace_back(
+          static_cast<float *>(PyArray_DATA(arr)),
+          static_cast<float *>(PyArray_DATA(arr)) + n);
+      attr.type = MUIMG_ATTR_F32_ARRAY;
+      attr.count = static_cast<size_t>(n);
+      attr.value.f32_array = scratch.f32_arrays.back().data();
+      Py_DECREF(obj);
+      return true;
+    }
+    if (typenum == NPY_INT32 || typenum == NPY_INT64 || typenum == NPY_UINT16 ||
+        typenum == NPY_INT16 || typenum == NPY_UINT8) {
+      PyObject *obj = PyArray_ContiguousFromAny(val, NPY_INT32, 1, 1);
+      if (!obj) {
+        return false;
+      }
+      PyArrayObject *arr = reinterpret_cast<PyArrayObject *>(obj);
+      npy_intp n = PyArray_DIM(arr, 0);
+      if (n < 1) {
+        Py_DECREF(obj);
+        PyErr_SetString(PyExc_ValueError, "attr array must be non-empty");
+        return false;
+      }
+      scratch.i32_arrays.emplace_back(
+          static_cast<int32_t *>(PyArray_DATA(arr)),
+          static_cast<int32_t *>(PyArray_DATA(arr)) + n);
+      attr.type = MUIMG_ATTR_I32_ARRAY;
+      attr.count = static_cast<size_t>(n);
+      attr.value.i32_array = scratch.i32_arrays.back().data();
+      Py_DECREF(obj);
+      return true;
+    }
+  }
+
+  /* Sequence fallback → float32 (legacy). */
+  PyObject *f_obj = PyArray_ContiguousFromAny(val, NPY_FLOAT32, 1, 1);
   if (f_obj) {
     PyArrayObject *arr = reinterpret_cast<PyArrayObject *>(f_obj);
     npy_intp n = PyArray_DIM(arr, 0);
@@ -320,28 +414,8 @@ static bool parse_attr_value(PyObject *key_obj, PyObject *val,
   }
   PyErr_Clear();
 
-  PyObject *i_obj =
-      PyArray_ContiguousFromAny(val, NPY_INT32, 1, 1);
-  if (i_obj) {
-    PyArrayObject *arr = reinterpret_cast<PyArrayObject *>(i_obj);
-    npy_intp n = PyArray_DIM(arr, 0);
-    if (n < 1) {
-      Py_DECREF(i_obj);
-      PyErr_SetString(PyExc_ValueError, "attr array must be non-empty");
-      return false;
-    }
-    scratch.i32_arrays.emplace_back(
-        static_cast<int32_t *>(PyArray_DATA(arr)),
-        static_cast<int32_t *>(PyArray_DATA(arr)) + n);
-    attr.type = MUIMG_ATTR_I32_ARRAY;
-    attr.count = static_cast<size_t>(n);
-    attr.value.i32_array = scratch.i32_arrays.back().data();
-    Py_DECREF(i_obj);
-    return true;
-  }
-
   PyErr_SetString(PyExc_TypeError,
-                  "attr value must be str, float, int, or 1-D float/int array");
+                  "attr value must be str, bool, float, int, or 1-D array");
   return false;
 }
 
@@ -584,8 +658,7 @@ static bool parse_bindings(PyObject *obj, const GraphScratch &scratch,
       PyErr_Format(PyExc_ValueError, "binding for unknown tensor id %u", tid);
       return false;
     }
-    /* Phase A simplification: packed only — see compute-graph-phase-a.md
-     * "Phase A simplifications (tracker)". */
+    /* Packed (C-contiguous) buffers only. */
     int requirements = NPY_ARRAY_C_CONTIGUOUS;
     if (is_output) {
       requirements |= NPY_ARRAY_WRITEABLE;
@@ -656,7 +729,7 @@ static PyMethodDef ComputeEngineMethods[] = {
 static struct PyModuleDef compute_engine_module = {
     PyModuleDef_HEAD_INIT,
     "_compute_engine",
-    "Compute-graph engine binding (Phase A).",
+    "Compute-graph engine binding.",
     -1,
     ComputeEngineMethods};
 

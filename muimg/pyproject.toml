@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260720.2243"
+version = "0.1.20260722.0936"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -49,7 +49,7 @@ dependencies = [
 # Video encoding + Google Photos integration + Testing
 all = [
     "av",                               # 18 MB
-    "google-auth>=2.0.0",               # 252 KB
+    "google-auth>=2.0.0",               # 253 KB
     "google-auth-oauthlib>=1.0.0",      # 19 KB
     "requests>=2.25.0",                 # 71 KB
     "pytest",                           # 377 KB
