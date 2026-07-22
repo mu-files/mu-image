@@ -28,7 +28,6 @@
 #include <dlfcn.h>
 #endif
 
-#include "../muimg_core.h"
 #include "../muimg_compute_graph.h"
 #include "../py_ptr.h"
 
