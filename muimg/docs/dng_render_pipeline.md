@@ -7,7 +7,8 @@ interpreted and applied during processing.
 
 **Future work:** a general-purpose image compute graph (`mc`) is planned to
 replace the imperative orchestration in `raw_render` while preserving this
-stage model. See [compute-graph-plan.md](compute-graph-plan.md).
+stage model. Planning docs live in the private `mu-image-engine` repo
+(`docs/compute-graph-*.md`).
 
 ## Pipeline Overview
 
