@@ -2336,7 +2336,12 @@ def _write_dng_with_params(
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             )
-            rendered_preview = np.stack([mono, mono, mono], axis=2)
+            # mono_lut returns (H, W, 1); squeeze before stacking or RGB
+            # becomes (H, W, 3, 1) and tifffile rejects sample count.
+            mono = np.asarray(mono)
+            if mono.ndim == 3 and mono.shape[-1] == 1:
+                mono = mono[..., 0]
+            rendered_preview = np.stack([mono, mono, mono], axis=-1)
             preview_photometric = "RGB"
         else:
             rendered_preview = raw_render._render_camera_rgb(
