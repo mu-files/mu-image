@@ -1,11 +1,11 @@
-"""Python binding smoke tests for muimg._compute_engine."""
+"""Python binding smoke tests for muimg.engines.core._compute_engine."""
 
 import numpy as np
 import pytest
 
 
 def test_execute_graph_sub_mul():
-    from muimg import _compute_engine
+    from muimg.engines.core import _compute_engine
 
     h = w = 2
     graph = {
@@ -40,7 +40,7 @@ def test_execute_graph_sub_mul():
 
 
 def test_execute_graph_unknown_op():
-    from muimg import _compute_engine
+    from muimg.engines.core import _compute_engine
 
     graph = {
         "tensor_descs": [
@@ -66,7 +66,7 @@ def test_execute_graph_unknown_op():
 
 
 def test_execute_graph_matrix_identity():
-    from muimg import _compute_engine
+    from muimg.engines.core import _compute_engine
 
     eye = np.eye(3, dtype=np.float32).reshape(-1)
     graph = {

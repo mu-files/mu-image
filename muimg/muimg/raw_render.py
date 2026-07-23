@@ -7,11 +7,11 @@ import logging
 import numpy as np
 
 from enum import Enum, IntEnum, StrEnum, auto
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 # Package imports
-from . import engine_ops
-from . import mc as _mc
+from .engines import ops as engine_ops
+from .tensor import Tensor
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
@@ -21,19 +21,16 @@ from .tiff_metadata import (
     Orientation,
 )
 
-if TYPE_CHECKING:
-    from .mc import Tensor
-
 logger = logging.getLogger(__name__)
 
 
-def _as_tensor(x: np.ndarray | "_mc.Tensor") -> "_mc.Tensor":
-    if isinstance(x, _mc.Tensor):
+def _as_tensor(x: np.ndarray | Tensor) -> Tensor:
+    if isinstance(x, Tensor):
         return x
-    return _mc.Tensor(x)
+    return Tensor(x)
 
 
-def _tensor_convert(t: "_mc.Tensor", dest_dtype: str) -> "_mc.Tensor":
+def _tensor_convert(t: Tensor, dest_dtype: str) -> Tensor:
     """Lazy dtype conversion node (no execute until ``.compute()``)."""
     if t.meta.dtype == dest_dtype:
         return t
@@ -52,7 +49,7 @@ def _tensor_convert(t: "_mc.Tensor", dest_dtype: str) -> "_mc.Tensor":
     )
 
 
-def _engine_run(t: "_mc.Tensor") -> np.ndarray:
+def _engine_run(t: Tensor) -> np.ndarray:
     """Materialize an engine graph (one or more lazy nodes)."""
     return t.compute()
 
@@ -190,7 +187,7 @@ def convert_dtype(
     # Call C++ implementation (handles both 2D and 3D)
     result = _engine_run(
         engine_ops.convert_dtype(
-            _mc.Tensor(image),
+            Tensor(image),
             dest_dtype=np.dtype(dest_dtype).name,
             src_bits=int(src_bits),
             dst_bits=int(dst_bits),
@@ -256,7 +253,7 @@ def mono_lut(
     # Call C++ implementation
     result = _engine_run(
         engine_ops.mono_lut(
-            _mc.Tensor(image),
+            Tensor(image),
             lut=lut_array,
             src_bits=int(src_bits),
             dst_bits=int(dst_bits),
@@ -513,7 +510,7 @@ def transform_color(
     # Call C++ implementation
     return _engine_run(
         engine_ops.transform_color(
-            _mc.Tensor(image),
+            Tensor(image),
             input_lut=input_lut_array,
             matrix=None if matrix is None else np.asarray(matrix, dtype=np.float32).reshape(-1),
             output_lut=output_lut_array,
@@ -562,7 +559,7 @@ def clip_and_transform_color(
     
     return _engine_run(
         engine_ops.clip_and_transform_color(
-            _mc.Tensor(image),
+            Tensor(image),
             clip_max=clip_max.astype(np.float32).reshape(-1),
             matrix=matrix.astype(np.float32).reshape(-1),
         )
@@ -644,10 +641,10 @@ def demosaic(
 ) -> np.ndarray | Tensor:
     """Demosaic CFA data to RGB.
 
-    Accepts a NumPy CFA array, or anything array-like (including ``mc.Tensor``).
+    Accepts a NumPy CFA array, or anything array-like (including ``Tensor``).
     Getting the array from a Tensor materializes its engine graph via the
     NumPy ``__array__`` protocol. If the input was a Tensor, the RGB result is
-    wrapped in a concrete ``mc.Tensor`` so callers can continue with ``engine_ops``.
+    wrapped in a concrete ``Tensor`` so callers can continue with ``engines.ops``.
 
     Accepts uint8, uint16, or float32 input. Output dtype matches input dtype
     by default, or can be specified via return_dtype.
@@ -656,7 +653,7 @@ def demosaic(
 
     Args:
         image_data: 2D raw CFA data array (uint8, uint16, or float32), or
-            ``mc.Tensor`` / array-like (graph is materialized when the array
+            ``Tensor`` / array-like (graph is materialized when the array
             is obtained)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         algorithm: Demosaic algorithm:
@@ -667,11 +664,9 @@ def demosaic(
         clip_max: Optional max value to clip output to (e.g., 1.0 for float32)
         return_dtype: Optional output dtype. If None, matches input dtype.
     Returns:
-        RGB ndarray, or ``mc.Tensor`` when ``image_data`` was a Tensor
+        RGB ndarray, or ``Tensor`` when ``image_data`` was a Tensor
     """
-    from . import mc
-
-    was_tensor = isinstance(image_data, mc.Tensor)
+    was_tensor = isinstance(image_data, Tensor)
     if was_tensor:
         if image_data.meta.channels != 1:
             raise ValueError("demosaic input must be mono / CFA (1 channel)")
@@ -777,14 +772,14 @@ def demosaic(
     rgb = convert_dtype(rgb, output_dtype, clip_max=clip_max)
     timer.end_step()
 
-    return mc.Tensor(rgb) if was_tensor else rgb
+    return Tensor(rgb) if was_tensor else rgb
 
 
 # =============================================================================
 # DNG SDK Port (Python + C++ Extension)
 # =============================================================================
 # Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
-# Engine kernels via muimg.engine_ops / muimg._compute_engine.
+# Engine kernels via muimg.engines.ops / muimg.engines.core._compute_engine.
 #
 # Key SDK source files referenced:
 #   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()
@@ -3122,7 +3117,7 @@ def _linearize(
             lin = np.asarray(linearization_table, dtype=np.int32).reshape(-1)
         normalized = _engine_run(
             engine_ops.normalize_raw(
-                _mc.Tensor(norm_data),
+                Tensor(norm_data),
                 black_level=np.asarray(black_level, dtype=np.float32).reshape(-1),
                 black_repeat_rows=int(black_repeat_rows),
                 black_repeat_cols=int(black_repeat_cols),

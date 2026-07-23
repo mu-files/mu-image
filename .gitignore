@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 # Ship prebuilt libmuimg_core for Linux (arch-tagged) from private CI
-!muimg/muimg/_binaries/*.so
+!muimg/muimg/engines/core/_binaries/*.so
 
 # Distribution / packaging
 .Python

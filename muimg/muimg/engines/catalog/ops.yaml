@@ -1,0 +1,492 @@
+# Portable engine op catalog (SSOT) — public muimg.
+# Location: muimg/engines/catalog/ops.yaml
+#
+# This file defines the portable op interface (names, attrs, I/O).
+# Engine providers consume it to implement compatible dispatch / kernels.
+#
+# Regenerate the public Python API:
+#   python -m muimg.engines.tools.gen_ops
+#   (writes muimg/engines/ops.py)
+#
+# inputs/outputs: unary ops for now.
+#   channels: <int> | any | same
+#     - inputs: int or any
+#     - outputs: int or same (same = copy input 0)
+#   dtype/height/width match input 0 unless outputs.dtype is set.
+
+version: 1
+
+ops:
+  - name: sub_scalar
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32
+        count: 1
+
+  - name: mul_scalar
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32
+        count: 1
+
+  - name: bilinear_demosaic
+    inputs:
+      - channels: 1
+    outputs:
+      - channels: 3
+    attrs:
+      - key: cfa_pattern
+        type: string
+        count: 1
+
+  - name: matrix
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: same
+    attrs:
+      - key: matrix
+        type: f32_array
+        count: 9
+
+  - name: lut
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: lut
+        type: f32_array
+        count: 0  # any length >= 1
+
+  - name: convert_dtype
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype:
+          from_attr: dest_dtype
+    attrs:
+      - key: dest_dtype
+        type: string
+        count: 1
+      - key: src_bits
+        type: i32
+        count: 1
+      - key: dst_bits
+        type: i32
+        count: 1
+      - key: clip_max
+        type: f32
+        count: 1
+
+  - name: mono_lut
+    inputs:
+      - channels: 1
+    outputs:
+      - channels: 1
+        dtype:
+          from_attr: dest_dtype
+    attrs:
+      - key: lut
+        type: f32_array
+        count: 0
+      - key: src_bits
+        type: i32
+        count: 1
+      - key: dst_bits
+        type: i32
+        count: 1
+      - key: dest_dtype
+        type: string
+        count: 1
+
+  - name: transform_color
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype:
+          from_attr: dest_dtype
+    attrs:
+      - key: input_lut
+        type: f32_array
+        count: 0
+        optional: true
+      - key: matrix
+        type: f32_array
+        count: 9
+        optional: true
+      - key: output_lut
+        type: f32_array
+        count: 0
+        optional: true
+      - key: src_bits
+        type: i32
+        count: 1
+      - key: dst_bits
+        type: i32
+        count: 1
+      - key: dest_dtype
+        type: string
+        count: 1
+      - key: hue_preserving
+        type: bool
+        count: 1
+
+  - name: clip_and_transform_color
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype: float32
+    attrs:
+      - key: clip_max
+        type: f32_array
+        count: 3
+      - key: matrix
+        type: f32_array
+        count: 9
+
+  - name: normalize_raw
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float32
+    attrs:
+      - key: black_level
+        type: f32_array
+        count: 0
+      - key: black_repeat_rows
+        type: i32
+        count: 1
+      - key: black_repeat_cols
+        type: i32
+        count: 1
+      - key: samples_per_pixel
+        type: i32
+        count: 1
+      - key: white_level
+        type: f32_array
+        count: 0
+      - key: black_delta_h
+        type: f32_array
+        count: 0
+        optional: true
+      - key: black_delta_v
+        type: f32_array
+        count: 0
+        optional: true
+      - key: linearization_table
+        type: i32_array
+        count: 0
+        optional: true
+
+  - name: apply_hue_sat_map
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype: float32
+    attrs:
+      - key: map_data
+        type: f32_array
+        count: 0
+      - key: hue_divs
+        type: i32
+        count: 1
+      - key: sat_divs
+        type: i32
+        count: 1
+      - key: val_divs
+        type: i32
+        count: 1
+
+  - name: apply_exposure_ramp
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype: float32
+    attrs:
+      - key: white
+        type: f64
+        count: 1
+      - key: black
+        type: f64
+        count: 1
+      - key: min_black
+        type: f64
+        count: 1
+      - key: support_overrange
+        type: bool
+        count: 1
+
+  - name: apply_profile_gain_table_map
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype: float32
+    attrs:
+      - key: gains
+        type: f32_array
+        count: 0
+      - key: points_v
+        type: i32
+        count: 1
+      - key: points_h
+        type: i32
+        count: 1
+      - key: spacing_v
+        type: f32
+        count: 1
+      - key: spacing_h
+        type: f32
+        count: 1
+      - key: origin_v
+        type: f32
+        count: 1
+      - key: origin_h
+        type: f32
+        count: 1
+      - key: num_table_points
+        type: i32
+        count: 1
+      - key: weights
+        type: f32_array
+        count: 5
+      - key: gamma
+        type: f32
+        count: 1
+      - key: exposure_weight_gain
+        type: f32
+        count: 1
+
+  - name: fix_vignette
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: params
+        type: f64_array
+        count: 0
+      - key: center_x
+        type: f64
+        count: 1
+      - key: center_y
+        type: f64
+        count: 1
+
+  - name: warp_rectilinear
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: radial_params
+        type: f64_array
+        count: 0
+      - key: num_planes
+        type: i32
+        count: 1
+      - key: num_coeffs
+        type: i32
+        count: 1
+      - key: tangential_params
+        type: f64_array
+        count: 0
+        optional: true
+      - key: center_x
+        type: f64
+        count: 1
+      - key: center_y
+        type: f64
+        count: 1
+      - key: use_bicubic
+        type: bool
+        count: 1
+
+  - name: apply_gain_map
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype: float32
+    attrs:
+      - key: gain_values
+        type: f32_array
+        count: 0
+      - key: points_v
+        type: i32
+        count: 1
+      - key: points_h
+        type: i32
+        count: 1
+      - key: map_planes
+        type: i32
+        count: 1
+      - key: top
+        type: i32
+        count: 1
+      - key: left
+        type: i32
+        count: 1
+      - key: bottom
+        type: i32
+        count: 1
+      - key: right
+        type: i32
+        count: 1
+      - key: start_plane
+        type: i32
+        count: 1
+      - key: num_planes
+        type: i32
+        count: 1
+      - key: row_pitch
+        type: i32
+        count: 1
+      - key: col_pitch
+        type: i32
+        count: 1
+      - key: spacing_v
+        type: f64
+        count: 1
+      - key: spacing_h
+        type: f64
+        count: 1
+      - key: origin_v
+        type: f64
+        count: 1
+      - key: origin_h
+        type: f64
+        count: 1
+
+  - name: apply_gain_map_cfa
+    inputs:
+      - channels: 1
+    outputs:
+      - channels: 1
+        dtype: float32
+    attrs:
+      - key: gain_values
+        type: f32_array
+        count: 0
+      - key: points_v
+        type: i32
+        count: 1
+      - key: points_h
+        type: i32
+        count: 1
+      - key: map_planes
+        type: i32
+        count: 1
+      - key: top
+        type: i32
+        count: 1
+      - key: left
+        type: i32
+        count: 1
+      - key: bottom
+        type: i32
+        count: 1
+      - key: right
+        type: i32
+        count: 1
+      - key: row_pitch
+        type: i32
+        count: 1
+      - key: col_pitch
+        type: i32
+        count: 1
+      - key: spacing_v
+        type: f64
+        count: 1
+      - key: spacing_h
+        type: f64
+        count: 1
+      - key: origin_v
+        type: f64
+        count: 1
+      - key: origin_h
+        type: f64
+        count: 1
+
+  - name: apply_flat_gain_map
+    inputs:
+      - channels: 1
+    outputs:
+      - channels: 1
+        dtype: float32
+    attrs:
+      - key: gain_map
+        type: f32_array
+        count: 0
+      - key: gain_h
+        type: i32
+        count: 1
+      - key: gain_w
+        type: i32
+        count: 1
+
+  - name: map_polynomial
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: top
+        type: i32
+        count: 1
+      - key: left
+        type: i32
+        count: 1
+      - key: bottom
+        type: i32
+        count: 1
+      - key: right
+        type: i32
+        count: 1
+      - key: start_plane
+        type: i32
+        count: 1
+      - key: num_planes
+        type: i32
+        count: 1
+      - key: row_pitch
+        type: i32
+        count: 1
+      - key: col_pitch
+        type: i32
+        count: 1
+      - key: coefficients
+        type: f32_array
+        count: 0
+      - key: degree
+        type: i32
+        count: 1
+
+  - name: fix_bad_pixels_constant
+    inputs:
+      - channels: 1
+    outputs:
+      - channels: 1
+        dtype: uint16
+    attrs:
+      - key: constant
+        type: i32
+        count: 1
+      - key: bayer_phase
+        type: i32
+        count: 1

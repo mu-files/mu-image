@@ -5,6 +5,8 @@ recursive-include LICENSES *
 recursive-include c-src *.c *.cpp *.h
 exclude c-src/demosaic/rcd.c
 include c-src/demosaic/rcd.txt
-recursive-include muimg/_binaries *
+recursive-include muimg/engines/core/_binaries *
+recursive-include muimg/engines/core/include *.h
+recursive-include muimg/engines/core/native *.cpp
 recursive-include docs *.md
 recursive-include examples *.py

@@ -1,5 +1,5 @@
 /*
- * muimg._compute_engine - Python binding for muimg_execute_graph
+ * muimg.engines.core._compute_engine - Python binding for muimg_execute_graph
  *
  * Structured Python dict/list IR is converted to in-memory MuImgGraph
  * structs here (no binary blob).
@@ -28,8 +28,8 @@
 #include <dlfcn.h>
 #endif
 
-#include "../muimg_compute_graph.h"
-#include "../py_ptr.h"
+#include "muimg_compute_graph.h"
+#include "py_ptr.h"
 
 //=============================================================================
 // Core library loading (same pattern as raw_render_ops.cpp)
@@ -83,7 +83,8 @@ static const char *core_lib_basename() {
 
 static bool resolve_core_lib_path(char *out, size_t out_len) {
   const char *basename = core_lib_basename();
-  PyObject *mod = PyImport_ImportModule("muimg");
+  // Prefer muimg.engines.core package dir → _binaries/<lib>
+  PyObject *mod = PyImport_ImportModule("muimg.engines.core");
   if (mod) {
     PyObject *file_obj = PyObject_GetAttrString(mod, "__file__");
     Py_DECREF(mod);
@@ -111,7 +112,7 @@ static bool resolve_core_lib_path(char *out, size_t out_len) {
     Py_XDECREF(file_obj);
     PyErr_Clear();
   }
-  int n = std::snprintf(out, out_len, "muimg/_binaries/%s", basename);
+  int n = std::snprintf(out, out_len, "muimg/engines/core/_binaries/%s", basename);
   return n > 0 && static_cast<size_t>(n) < out_len;
 }
 
@@ -292,7 +293,7 @@ static bool parse_attr_value(PyObject *key_obj, PyObject *val,
     attr.value.i32 = (val == Py_True) ? 1 : 0;
     return true;
   }
-  /* NumPy scalar floats preserve f32 vs f64 from mc coercion. */
+  /* NumPy scalar floats preserve f32 vs f64 from graph coercion. */
   if (PyArray_IsScalar(val, Float64)) {
     attr.type = MUIMG_ATTR_F64;
     attr.count = 1;

@@ -67,11 +67,11 @@ else:
     ]
     cpp_extra_args = ['-std=c++17']
 
-# Compute-graph engine binding (replaces retired _raw_render extension)
+# CoreEngine binding (libmuimg_core via dlopen)
 compute_engine_extension = Extension(
-    'muimg._compute_engine',
-    sources=['c-src/compute_engine/compute_engine.cpp'],
-    include_dirs=[np.get_include(), 'c-src'],
+    'muimg.engines.core._compute_engine',
+    sources=['muimg/engines/core/native/compute_engine.cpp'],
+    include_dirs=[np.get_include(), 'muimg/engines/core/include', 'c-src'],
     extra_compile_args=common_compile_args + cpp_extra_args,
     extra_link_args=common_link_args,
     language='c++',
@@ -106,5 +106,5 @@ if rcd_extension:
 setup(
     ext_modules=ext_modules,
     include_package_data=False,
-    package_data={"muimg": host_core_binaries()},
+    package_data={"muimg.engines.core": host_core_binaries()},
 )

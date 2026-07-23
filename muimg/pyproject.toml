@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260722.1736"
+version = "0.1.20260723.1519"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -68,9 +68,19 @@ Homepage = "https://github.com/mu-files/mu-image"
 Repository = "https://github.com/mu-files/mu-image"
 
 [tool.setuptools]
-packages = ["muimg"]
+packages = [
+    "muimg",
+    "muimg.engines",
+    "muimg.engines.tools",
+    "muimg.engines.core",
+]
 # Host-only core binary selection is in setup.py (package_data).
-# MANIFEST.in still ships all _binaries/* in the sdist.
+# MANIFEST.in still ships all engines/core/_binaries/* in the sdist.
+
+[tool.setuptools.package-data]
+"muimg.engines" = ["catalog/ops.yaml"]
+"muimg.engines.core" = ["_binaries/*"]
+
 
 [tool.pytest.ini_options]
 log_cli = true

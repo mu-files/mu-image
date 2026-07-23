@@ -1,14 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""
-muimg.mc — lazy compute-graph API.
-
-Graph/engine glue only: build a lazy DAG of **engine** catalog ops, serialize
-to a structured dict IR, and call muimg._compute_engine.
-
-Non-engine work does not live in the graph: call ``flush(x)`` (or ``x.compute()``)
-then run ordinary ndarray functions, and wrap results with ``Tensor(...)``.
-"""
+"""Graph IR: emit ops, flush barriers, and engine-agnostic compute orchestration."""
 
 from __future__ import annotations
 
@@ -17,33 +9,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-_DTYPE_FROM_NUMPY = {
-    np.dtype(np.float32): "float32",
-    np.dtype(np.float16): "float16",
-    np.dtype(np.uint8): "uint8",
-    np.dtype(np.uint16): "uint16",
-}
+from ..tensor import NUMPY_FROM_DTYPE, Tensor, TensorMeta
+from .base import get_default_engine
 
-_NUMPY_FROM_DTYPE = {
-    "float32": np.float32,
-    "float16": np.float16,
-    "uint8": np.uint8,
-    "uint16": np.uint16,
-}
-
-
-@dataclass(frozen=True)
-class TensorMeta:
-    dtype: str
-    height: int
-    width: int
-    channels: int
-
-    @property
-    def shape(self) -> Tuple[int, ...]:
-        if self.channels == 1:
-            return (self.height, self.width)
-        return (self.height, self.width, self.channels)
+OutMetaFn = Callable[[Tensor, Dict[str, Any]], Any]
 
 
 @dataclass(frozen=True)
@@ -56,12 +25,9 @@ class OpMeta:
     halo: int = 0
 
 
-OutMetaFn = Callable[["Tensor", Dict[str, Any]], Any]
-
-
 @dataclass(frozen=True)
 class EngineOp:
-    """Callable engine op + metadata. Public names live in ``engine_ops``."""
+    """Callable engine op + metadata. Public names live in ``engines.ops``."""
 
     meta: OpMeta
     _out_dtype: OutMetaFn
@@ -69,10 +35,10 @@ class EngineOp:
     _in_channels: Optional[int]  # None = any
     _attr_specs: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
 
-    def __call__(self, x: "Tensor", /, **attrs: Any) -> "Tensor":
+    def __call__(self, x: Tensor, /, **attrs: Any) -> Tensor:
         return emit(self, x, **attrs)
 
-    def infer_out_meta(self, x: "Tensor", attrs: Dict[str, Any]) -> TensorMeta:
+    def infer_out_meta(self, x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         return TensorMeta(
             dtype=self._out_dtype(x, attrs),
             height=x.meta.height,
@@ -84,75 +50,50 @@ class EngineOp:
         return f"EngineOp({self.meta.name!r})"
 
 
-def _out_dtype_same(x: "Tensor", attrs: Dict[str, Any]) -> str:
+def _out_dtype_same(x: Tensor, attrs: Dict[str, Any]) -> str:
     return x.meta.dtype
 
 
 def _out_dtype_const(dtype: str) -> OutMetaFn:
-    if dtype not in _NUMPY_FROM_DTYPE:
+    if dtype not in NUMPY_FROM_DTYPE:
         raise ValueError(f"unsupported output dtype {dtype!r}")
 
-    def _fn(x: "Tensor", attrs: Dict[str, Any]) -> str:
+    def _fn(x: Tensor, attrs: Dict[str, Any]) -> str:
         return dtype
 
     return _fn
 
 
 def _out_dtype_from_attr(key: str) -> OutMetaFn:
-    def _fn(x: "Tensor", attrs: Dict[str, Any]) -> str:
+    def _fn(x: Tensor, attrs: Dict[str, Any]) -> str:
         val = attrs.get(key)
-        if not isinstance(val, str) or val not in _NUMPY_FROM_DTYPE:
+        if not isinstance(val, str) or val not in NUMPY_FROM_DTYPE:
             raise ValueError(
                 f"attr {key!r} must be a dtype string "
-                f"(one of {sorted(_NUMPY_FROM_DTYPE)}), got {val!r}"
+                f"(one of {sorted(NUMPY_FROM_DTYPE)}), got {val!r}"
             )
         return val
 
     return _fn
 
 
-def _out_channels_same(x: "Tensor", attrs: Dict[str, Any]) -> int:
+def _out_channels_same(x: Tensor, attrs: Dict[str, Any]) -> int:
     return x.meta.channels
 
 
 def _out_channels_const(n: int) -> OutMetaFn:
-    def _fn(x: "Tensor", attrs: Dict[str, Any]) -> int:
+    def _fn(x: Tensor, attrs: Dict[str, Any]) -> int:
         return n
 
     return _fn
 
 
 @dataclass
-class _OpNode:
+class OpNode:
     op: str
-    inputs: Tuple["Tensor", ...]
+    inputs: Tuple[Tensor, ...]
     attrs: Dict[str, Any]
     out_meta: TensorMeta
-
-
-def _meta_from_array(arr: np.ndarray) -> TensorMeta:
-    if arr.ndim == 2:
-        h, w = arr.shape
-        channels = 1
-    elif arr.ndim == 3:
-        h, w, channels = arr.shape
-        if channels not in (1, 3, 4):
-            raise ValueError(f"unsupported channel count: {channels}")
-    else:
-        raise ValueError("array must be (H,W) or (H,W,C)")
-    dtype = _DTYPE_FROM_NUMPY.get(arr.dtype)
-    if dtype is None:
-        raise TypeError(f"unsupported ndarray dtype: {arr.dtype}")
-    return TensorMeta(dtype=dtype, height=h, width=w, channels=channels)
-
-
-def _require_scalar(value: Any, op: str) -> float:
-    if isinstance(value, Tensor):
-        raise TypeError(f"{op}: tensor–tensor arithmetic not supported")
-    try:
-        return float(value)
-    except (TypeError, ValueError) as e:
-        raise TypeError(f"{op}: RHS must be a scalar") from e
 
 
 def _as_f32_array(value: Any, *, name: str, size: Optional[int] = None) -> np.ndarray:
@@ -184,64 +125,6 @@ def _as_i32_array(value: Any, *, name: str, size: Optional[int] = None) -> np.nd
 
 def _attr_optional(spec: Dict[str, Any]) -> bool:
     return bool(spec.get("optional"))
-
-
-class Tensor:
-    """Lazy tensor handle: either a concrete source buffer or an engine op result."""
-
-    __slots__ = ("_meta", "_data", "_node")
-
-    def __init__(
-        self,
-        data: Optional[np.ndarray] = None,
-        *,
-        _meta: Optional[TensorMeta] = None,
-        _node: Optional[_OpNode] = None,
-    ):
-        if data is not None:
-            if _node is not None:
-                raise ValueError("source Tensor cannot also have an op node")
-            arr = np.asarray(data)
-            self._meta = _meta_from_array(arr)
-            self._data = arr
-            self._node = None
-        elif _meta is not None and _node is not None:
-            self._meta = _meta
-            self._data = None
-            self._node = _node
-        else:
-            raise ValueError("Tensor requires an ndarray source or an op node")
-
-    @property
-    def dtype(self) -> str:
-        return self._meta.dtype
-
-    @property
-    def shape(self) -> Tuple[int, ...]:
-        return self._meta.shape
-
-    @property
-    def meta(self) -> TensorMeta:
-        return self._meta
-
-    def __sub__(self, other: Any) -> "Tensor":
-        value = _require_scalar(other, "sub_scalar")
-        return op("sub_scalar", self, value=value)
-
-    def __mul__(self, other: Any) -> "Tensor":
-        value = _require_scalar(other, "mul_scalar")
-        return op("mul_scalar", self, value=value)
-
-    def compute(self) -> np.ndarray:
-        """Materialize this tensor (engine graph only)."""
-        return _compute(self)
-
-    def __array__(self, dtype: Any = None) -> np.ndarray:
-        """NumPy array protocol: getting the array materializes the graph."""
-        arr = self.compute()
-        if dtype is None:
-            return arr
-        return np.asarray(arr, dtype=dtype)
 
 
 def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
@@ -311,7 +194,7 @@ def emit(engine_op: EngineOp, x: Tensor, /, **attrs: Any) -> Tensor:
         )
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
     out_meta = engine_op.infer_out_meta(x, coerced)
-    node = _OpNode(
+    node = OpNode(
         op=name,
         inputs=(x,),
         attrs=coerced,
@@ -321,8 +204,8 @@ def emit(engine_op: EngineOp, x: Tensor, /, **attrs: Any) -> Tensor:
 
 
 def op(name: str, x: Tensor, /, **attrs: Any) -> Tensor:
-    """Emit a named engine op (thin alias over ``engine_ops.OPS_BY_NAME``)."""
-    from .engine_ops import OPS_BY_NAME
+    """Emit a named engine op (thin alias over ``engines.ops.OPS_BY_NAME``)."""
+    from .ops import OPS_BY_NAME
 
     engine_op = OPS_BY_NAME.get(name)
     if engine_op is None:
@@ -390,80 +273,8 @@ def _segment_boundary_outputs(
     return outs
 
 
-def _alloc_like(meta: TensorMeta) -> np.ndarray:
-    return np.zeros(meta.shape, dtype=_NUMPY_FROM_DTYPE[meta.dtype])
-
-
-def _run_engine_segment(
-    nodes: List[Tensor],
-    values: Dict[int, np.ndarray],
-    outputs: List[Tensor],
-) -> None:
-    from muimg import _compute_engine
-
-    produced = {id(t) for t in nodes}
-    input_tensors: List[Tensor] = []
-    seen_in: set[int] = set()
-    for t in nodes:
-        assert t._node is not None
-        for inp in t._node.inputs:
-            iid = id(inp)
-            if iid not in produced and iid not in seen_in:
-                input_tensors.append(inp)
-                seen_in.add(iid)
-
-    all_tensors = input_tensors + nodes
-    id_of = {id(t): i for i, t in enumerate(all_tensors)}
-
-    tensor_descs = []
-    for t in all_tensors:
-        m = t.meta
-        tensor_descs.append(
-            {
-                "id": id_of[id(t)],
-                "dtype": m.dtype,
-                "height": m.height,
-                "width": m.width,
-                "channels": m.channels,
-            }
-        )
-
-    graph_nodes = []
-    for t in nodes:
-        assert t._node is not None
-        graph_nodes.append(
-            {
-                "id": len(graph_nodes),
-                "op": t._node.op,
-                "inputs": [id_of[id(inp)] for inp in t._node.inputs],
-                "outputs": [id_of[id(t)]],
-                "attrs": dict(t._node.attrs),
-            }
-        )
-
-    in_binds: Dict[int, np.ndarray] = {}
-    for t in input_tensors:
-        tid = id(t)
-        if tid not in values:
-            raise ValueError(f"missing materialized input for tensor {tid}")
-        in_binds[id_of[tid]] = np.ascontiguousarray(values[tid])
-
-    out_binds: Dict[int, np.ndarray] = {}
-    for t in outputs:
-        arr = _alloc_like(t.meta)
-        values[id(t)] = arr
-        out_binds[id_of[id(t)]] = arr
-
-    graph = {
-        "tensor_descs": tensor_descs,
-        "inputs": [id_of[id(t)] for t in input_tensors],
-        "outputs": [id_of[id(t)] for t in outputs],
-        "nodes": graph_nodes,
-    }
-    _compute_engine.execute_graph(graph, in_binds, out_binds)
-
-
-def _compute(root: Tensor) -> np.ndarray:
+def compute(root: Tensor) -> np.ndarray:
+    """Topo-sort reachable nodes and execute via the default Engine."""
     tensors = _reachable_tensors(root)
     values: Dict[int, np.ndarray] = {}
 
@@ -480,7 +291,7 @@ def _compute(root: Tensor) -> np.ndarray:
     outs = _segment_boundary_outputs(op_tensors, op_tensors, root)
     if not outs:
         outs = [op_tensors[-1]]
-    _run_engine_segment(op_tensors, values, outs)
+    get_default_engine().execute_segment(op_tensors, values, outs)
 
     if id(root) not in values:
         raise RuntimeError("compute finished without materializing root")
