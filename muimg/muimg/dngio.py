@@ -28,6 +28,7 @@ from .deps import (
 from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 from .raw_render import DemosaicAlgorithm
+from .tensor import Tensor
 from .common import PerfTimer, get_active_timer, scoped_perf_timer
 from .tiff_metadata import (
     MetadataTags,
@@ -544,7 +545,7 @@ class DngPage(tifffile.TiffPage):
     def get_camera_raw(
         self,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA
-        ) -> np.ndarray | None:
+        ) -> Tensor | None:
         """Extract the camera-space intermediate from a raw page for the rendering pipeline.
 
         This corresponds to the `camera_data` input passed into
@@ -563,8 +564,8 @@ class DngPage(tifffile.TiffPage):
             demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
 
         Returns:
-            Camera space array (H, W, 3) float32 in [0, 1] for CFA/RGB, or
-            monochrome array (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
+            Camera-space ``Tensor`` (H, W, 3) float32 in [0, 1] for CFA/RGB, or
+            monochrome float32 in [0, 1] for monochrome LINEAR_RAW.
             Returns None if extraction fails.
         """
         # Validate this is a raw page
@@ -587,7 +588,7 @@ class DngPage(tifffile.TiffPage):
             data, cfa_pattern = cfa_result
 
         return raw_render._render_to_camera_space(
-            self, data, self.photometric_name, cfa_pattern, demosaic_algorithm
+            self, Tensor(data), self.photometric_name, cfa_pattern, demosaic_algorithm
         )
     
     def decode_to_rgb(
@@ -694,6 +695,7 @@ class DngPage(tifffile.TiffPage):
             if camera_data is None:
                 logger.error("Failed to extract camera data from DNG")
                 return None
+            camera_data = camera_data.compute()
 
             # Branch based on monochrome vs color
             if self.is_linear_raw and self.samplesperpixel == 1:
@@ -929,7 +931,7 @@ class DngFile(tifffile.TiffFile):
     def get_camera_raw(
         self,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
-    ) -> np.ndarray | None:
+    ) -> Tensor | None:
         """Extract camera-space data from main raw page.
 
         See `DngPage.get_camera_raw` for full documentation.
@@ -938,9 +940,7 @@ class DngFile(tifffile.TiffFile):
             demosaic_algorithm: Algorithm for CFA demosaicing
 
         Returns:
-            Camera space array (H, W, 3) float32 in [0, 1] for CFA/RGB, or
-            monochrome array (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
-            Returns None if extraction fails.
+            Camera-space ``Tensor`` float32 in [0, 1], or None if extraction fails.
         """
         return self._forward_main_page(
             "get_camera_raw",
@@ -1013,6 +1013,7 @@ class DngFile(tifffile.TiffFile):
             camera_data = render_page.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
             if camera_data is None:
                 return None
+            camera_data = camera_data.compute()
 
             # Apply resize if needed (when scaling and dimensions don't match)
             scale_needed = False
@@ -2179,8 +2180,9 @@ def _write_dng_with_params(
             )
 
     camera_raw = raw_render._render_to_camera_space(
-        main_spec.extratags, raw_data, photometric, cfa_pattern, demosaic_algorithm
+        main_spec.extratags, Tensor(raw_data), photometric, cfa_pattern, demosaic_algorithm
     )
+    camera_raw = camera_raw.compute()
     timer.end_step()
     
     # if we are transforming then the main_spec is always a DataSpec with the transformed data

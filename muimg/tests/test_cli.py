@@ -461,15 +461,16 @@ def test_raw_stage(tmp_path):
             # 2. Get data via API
             if stage == "camera-rgb":
                 api_data = page.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
+                assert api_data is not None, f"API returned None for {stage}"
+                api_arr = api_data.compute()
             else:
                 cfa_result = page.get_cfa()
                 assert cfa_result is not None
-                api_data, _ = cfa_result
-            
-            assert api_data is not None, f"API returned None for {stage}"
+                api_arr, _ = cfa_result
+                assert api_arr is not None, f"API returned None for {stage}"
             
             # 3. Convert API data to uint16
-            api_data_uint16 = convert_dtype(api_data, np.uint16)
+            api_data_uint16 = convert_dtype(api_arr, np.uint16)
             
             # 4. Load CLI output
             cli_data = tifffile.imread(cli_output)

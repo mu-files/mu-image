@@ -95,7 +95,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         camera_rgb = dng.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
         assert camera_rgb is not None
 
-        camera_rgb_u16 = np.clip((camera_rgb * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
+        camera_rgb_u16 = np.clip((camera_rgb.compute() * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
         pyramid_levels = _build_pyramid_rgb_u16(camera_rgb_u16)
         if not pyramid_levels:
             pytest.skip("Image too small for pyramid")

@@ -4,15 +4,18 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..tensor import NUMPY_FROM_DTYPE, Tensor, TensorMeta
+from ..tensor import NUMPY_FROM_DTYPE, Tensor, TensorMeta, meta_from_array
 from .base import get_default_engine
 
 OutMetaFn = Callable[[Tensor, Dict[str, Any]], Any]
+GraphOutMetaFn = Callable[[Tensor, Dict[str, Any]], TensorMeta]
 
 
 @dataclass(frozen=True)
@@ -90,10 +93,73 @@ def _out_channels_const(n: int) -> OutMetaFn:
 
 @dataclass
 class OpNode:
+    """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""
+
     op: str
     inputs: Tuple[Tensor, ...]
     attrs: Dict[str, Any]
     out_meta: TensorMeta
+    fn: Optional[Callable[..., np.ndarray]] = None
+
+
+def graph_op(
+    fn: Optional[Callable[..., np.ndarray]] = None,
+    /,
+    *,
+    out_meta: Optional[GraphOutMetaFn] = None,
+):
+    """Decorator: eager ndarray body; Tensor first-arg attaches a lazy graph node.
+
+    Usage::
+
+        @graph_op
+        def same_shape(arr, *, scale):
+            return arr * scale
+
+        @graph_op(out_meta=my_infer)
+        def crop_op(arr, x, y, w, h):
+            return arr[y:y+h, x:x+w]
+    """
+
+    def decorate(f: Callable[..., np.ndarray]) -> Callable[..., Any]:
+        sig = inspect.signature(f)
+        param_names = list(sig.parameters)
+        if not param_names:
+            raise ValueError(f"graph_op {f.__name__!r}: need at least one parameter")
+        first_name = param_names[0]
+
+        @functools.wraps(f)
+        def wrapper(image: Any, /, *args: Any, **kwargs: Any) -> Any:
+            if not isinstance(image, Tensor):
+                return f(image, *args, **kwargs)
+
+            placeholder = object()
+            bound = sig.bind(placeholder, *args, **kwargs)
+            bound.apply_defaults()
+            attrs = {
+                k: v for k, v in bound.arguments.items() if k != first_name
+            }
+
+            if out_meta is None:
+                resolved = image.meta
+            else:
+                resolved = out_meta(image, attrs)
+
+            node = OpNode(
+                op=f.__name__,
+                inputs=(image,),
+                attrs=attrs,
+                out_meta=resolved,
+                fn=f,
+            )
+            return Tensor(_meta=resolved, _node=node)
+
+        wrapper.__graph_op__ = True  # type: ignore[attr-defined]
+        return wrapper
+
+    if fn is not None:
+        return decorate(fn)
+    return decorate
 
 
 def _as_f32_array(value: Any, *, name: str, size: Optional[int] = None) -> np.ndarray:
@@ -214,12 +280,42 @@ def op(name: str, x: Tensor, /, **attrs: Any) -> Tensor:
 
 
 def flush(x: Tensor) -> Tensor:
-    """Materialize a lazy engine graph into a concrete source Tensor.
+    """Materialize a lazy graph into a concrete source Tensor.
 
-    Use before non-engine (Python/ndarray) work, then continue with ``op`` /
-    ``Tensor`` as needed.
+    Prefer ``@graph_op`` helpers for reusable Python steps; ``flush`` remains
+    for ad-hoc barriers.
     """
     return Tensor(x.compute())
+
+
+def _is_python_node(t: Tensor) -> bool:
+    return t._node is not None and t._node.fn is not None
+
+
+def _run_python_node(t: Tensor, values: Dict[int, np.ndarray]) -> None:
+    node = t._node
+    assert node is not None and node.fn is not None
+    if len(node.inputs) != 1:
+        raise ValueError(f"python op {node.op!r}: expected 1 input")
+    inp = values.get(id(node.inputs[0]))
+    if inp is None:
+        raise RuntimeError(f"python op {node.op!r}: missing input value")
+    out = node.fn(inp, **node.attrs)
+    if not isinstance(out, np.ndarray):
+        raise TypeError(f"python op {node.op!r}: kernel must return ndarray")
+    out = np.ascontiguousarray(out)
+    got = meta_from_array(out)
+    want = t.meta
+    if (
+        got.height != want.height
+        or got.width != want.width
+        or got.channels != want.channels
+        or got.dtype != want.dtype
+    ):
+        raise ValueError(
+            f"python op {node.op!r}: output meta {got} != inferred {want}"
+        )
+    values[id(t)] = out
 
 
 def _reachable_tensors(root: Tensor) -> List[Tensor]:
@@ -274,7 +370,7 @@ def _segment_boundary_outputs(
 
 
 def compute(root: Tensor) -> np.ndarray:
-    """Topo-sort reachable nodes and execute via the default Engine."""
+    """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels."""
     tensors = _reachable_tensors(root)
     values: Dict[int, np.ndarray] = {}
 
@@ -288,10 +384,23 @@ def compute(root: Tensor) -> np.ndarray:
     if not op_tensors:
         return values[id(root)]
 
-    outs = _segment_boundary_outputs(op_tensors, op_tensors, root)
-    if not outs:
-        outs = [op_tensors[-1]]
-    get_default_engine().execute_segment(op_tensors, values, outs)
+    engine = get_default_engine()
+    i = 0
+    while i < len(op_tensors):
+        if _is_python_node(op_tensors[i]):
+            _run_python_node(op_tensors[i], values)
+            i += 1
+            continue
+
+        j = i + 1
+        while j < len(op_tensors) and not _is_python_node(op_tensors[j]):
+            j += 1
+        segment = op_tensors[i:j]
+        outs = _segment_boundary_outputs(segment, op_tensors, root)
+        if not outs:
+            outs = [segment[-1]]
+        engine.execute_segment(segment, values, outs)
+        i = j
 
     if id(root) not in values:
         raise RuntimeError("compute finished without materializing root")

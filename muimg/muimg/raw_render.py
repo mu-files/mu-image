@@ -11,6 +11,7 @@ from typing import Any
 
 # Package imports
 from .engines import ops as engine_ops
+from .engines.pyops import cast_dtype_op, crop_op, demosaic_op
 from .tensor import Tensor
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
@@ -1893,11 +1894,11 @@ def parse_gain_map(data: bytes) -> dict:
     }
 
 def apply_opcodes(
-    data: np.ndarray,
+    data: Tensor,
     opcodes: list[dict],
     use_bicubic: bool = True,
     opcode_list_name: str = "RGB"
-) -> np.ndarray:
+) -> Tensor:
     """Apply parsed opcodes to image data.
 
     Supported opcodes:
@@ -1906,21 +1907,22 @@ def apply_opcodes(
     - 8: MapPolynomial
     - 9: GainMap
 
-    Engine-only ops are chained into one lazy graph and executed once.
+    Engine-only ops are chained into one lazy graph (caller materializes).
 
     Args:
-        data: Image data (H, W, C), float32, range [0, 1]
+        data: Image Tensor (H, W, C), float32, range [0, 1]
         opcodes: List of parsed opcodes from parse_opcode_list
         use_bicubic: If True, use SDK bicubic interpolation for WarpRectilinear;
                      if False, use bilinear (default: True)
         opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList3")
 
     Returns:
-        Processed image data
+        Processed image as a Tensor
     """
-    result = data.astype(np.float32)
-    num_channels = result.shape[2] if result.ndim >= 3 else 1
-    x = _as_tensor(result)
+    x = data
+    if x.meta.dtype != "float32":
+        x = _tensor_convert(x, "float32")
+    num_channels = x.meta.channels
 
     for opcode in opcodes:
         opcode_type = opcode.get('type')
@@ -2024,21 +2026,21 @@ def apply_opcodes(
             name = enum_display_name(DngOpcode, opcode['id'])
             logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
 
-    return _engine_run(x)
+    return x
 
 
 def apply_opcodes_cfa(
-    data: np.ndarray,
+    data: Tensor,
     opcodes: list[dict],
     opcode_list_name: str = "CFA"
-) -> np.ndarray:
+) -> Tensor:
     """Apply parsed opcodes to CFA data.
 
     Handles both OpcodeList1 (pre-linearization, uint16) and OpcodeList2
     (post-linearization, float32).
 
-    Engine ops (including dtype converts) are chained into one lazy graph and
-    executed once at the end.
+    Engine ops (including dtype converts) are chained into one lazy graph
+    (caller materializes).
 
     DNG Spec:
     - OpcodeList1: Applied to raw CFA sensor data before linearization (uint16)
@@ -2051,23 +2053,27 @@ def apply_opcodes_cfa(
     - GainMap (both lists)
 
     Args:
-        data: CFA data (H, W)
+        data: CFA Tensor (H, W)
               - uint16 for OpcodeList1 (raw sensor values)
               - float32 for OpcodeList2 (linearized [0,1])
         opcodes: List of parsed opcodes from parse_opcode_list
         opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList1")
 
     Returns:
-        Processed CFA data (same dtype as input)
+        Processed CFA Tensor (same dtype as input)
     """
-    if data.ndim != 2:
-        logger.error(f"CFA opcodes require 2D data (H,W), got shape {data.shape}")
-        return data
+    x0 = data
+    if x0.meta.channels != 1:
+        logger.error(
+            f"CFA opcodes require mono / CFA (1 channel), got channels={x0.meta.channels}"
+        )
+        return x0
 
-    want_uint16 = data.dtype == np.uint16
-    x = _as_tensor(
-        data.astype(np.uint16 if want_uint16 else np.float32, copy=False)
-    )
+    want_uint16 = x0.meta.dtype == "uint16"
+    if want_uint16:
+        x = x0 if x0.meta.dtype == "uint16" else _tensor_convert(x0, "uint16")
+    else:
+        x = x0 if x0.meta.dtype == "float32" else _tensor_convert(x0, "float32")
 
     for opcode in opcodes:
         opcode_type = opcode.get('type')
@@ -2155,10 +2161,7 @@ def apply_opcodes_cfa(
 
     if want_uint16:
         x = _tensor_convert(x, "uint16")
-    out = _engine_run(x)
-    if out.ndim == 3 and out.shape[2] == 1:
-        out = out.squeeze(axis=2)
-    return out
+    return x
 
 def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure: bool = True) -> np.ndarray:
     """Apply exposure tone function.
@@ -2959,18 +2962,18 @@ def _get_ifd0_tag(
 
 def _linearize(
     tags: "DngPage" | "MetadataTags",
-    data: np.ndarray,
+    x: Tensor,
     photometric: str,
-) -> np.ndarray:
+) -> Tensor:
     """Linearize raw sensor data: apply OpcodeList1, normalize, apply OpcodeList2.
 
     Args:
         tags: Tag source (raw IFD page or MetadataTags) providing linearization tags.
-        data: Raw decoded image data.
+        x: Raw decoded image Tensor.
         photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
 
     Returns:
-        Normalized float32 array with opcode lists applied.
+        Normalized float32 Tensor with opcode lists applied.
     """
     timer = get_active_timer()
     is_cfa = photometric == "CFA"
@@ -2993,7 +2996,7 @@ def _linearize(
             try:
                 logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
                 ops1_timer.start_step("apply_opcodes_cfa (c++)")
-                data = apply_opcodes_cfa(data, opcodes, "OpcodeList1")
+                x = apply_opcodes_cfa(x, opcodes, "OpcodeList1")
                 ops1_timer.end_step()
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
@@ -3081,13 +3084,19 @@ def _linearize(
     active_area = tags.get_tag("ActiveArea")
     if active_area is not None:
         aa_top, aa_left, aa_bottom, aa_right = active_area
-        data = data[aa_top:aa_bottom, aa_left:aa_right]
+        x = crop_op(
+            x,
+            int(aa_left),
+            int(aa_top),
+            int(aa_right) - int(aa_left),
+            int(aa_bottom) - int(aa_top),
+        )
 
     # Fast path: trivial normalization (black=0, white=default, no
     # deltas/LUT, uint16 data) can use optimized convert_dtype instead
     is_pure_convert = (
         samples_per_pixel == 3
-        and data.dtype == np.uint16
+        and x.meta.dtype == "uint16"
         and black_delta_h is None
         and black_delta_v is None
         and (linearization_table is None or len(linearization_table) == 0)
@@ -3097,36 +3106,35 @@ def _linearize(
 
     timer.start_step("linearize (c++)")
     if is_pure_convert:
-        normalized = convert_dtype(
-            data,
-            np.float32,
-            src_bits_per_element=bits_per_sample,
+        normalized = engine_ops.convert_dtype(
+            x,
+            dest_dtype="float32",
+            src_bits=int(bits_per_sample),
+            dst_bits=-1,
+            clip_max=-1.0,
         )
     else:
         # normalize_raw accepts uint16 or float32 natively;
-        # convert edge-case dtypes to the nearest supported type
-        norm_data = data
-        if norm_data.dtype == np.uint8:
-            norm_data = norm_data.astype(np.uint16)
-        elif norm_data.dtype == np.float16:
-            norm_data = norm_data.astype(np.float32)
-        elif norm_data.dtype not in (np.uint16, np.float32):
-            norm_data = norm_data.astype(np.float32)
+        # widen edge-case dtypes via lazy cast (no rescale).
+        if x.meta.dtype == "uint8":
+            x = cast_dtype_op(x, "uint16")
+        elif x.meta.dtype == "float16":
+            x = cast_dtype_op(x, "float32")
+        elif x.meta.dtype not in ("uint16", "float32"):
+            x = cast_dtype_op(x, "float32")
         lin = None
         if linearization_table is not None and len(linearization_table) > 0:
             lin = np.asarray(linearization_table, dtype=np.int32).reshape(-1)
-        normalized = _engine_run(
-            engine_ops.normalize_raw(
-                Tensor(norm_data),
-                black_level=np.asarray(black_level, dtype=np.float32).reshape(-1),
-                black_repeat_rows=int(black_repeat_rows),
-                black_repeat_cols=int(black_repeat_cols),
-                samples_per_pixel=int(samples_per_pixel),
-                white_level=np.asarray(white_level, dtype=np.float32).reshape(-1),
-                black_delta_h=None if black_delta_h is None else np.asarray(black_delta_h, dtype=np.float32).reshape(-1),
-                black_delta_v=None if black_delta_v is None else np.asarray(black_delta_v, dtype=np.float32).reshape(-1),
-                linearization_table=lin,
-            )
+        normalized = engine_ops.normalize_raw(
+            x,
+            black_level=np.asarray(black_level, dtype=np.float32).reshape(-1),
+            black_repeat_rows=int(black_repeat_rows),
+            black_repeat_cols=int(black_repeat_cols),
+            samples_per_pixel=int(samples_per_pixel),
+            white_level=np.asarray(white_level, dtype=np.float32).reshape(-1),
+            black_delta_h=None if black_delta_h is None else np.asarray(black_delta_h, dtype=np.float32).reshape(-1),
+            black_delta_v=None if black_delta_v is None else np.asarray(black_delta_v, dtype=np.float32).reshape(-1),
+            linearization_table=lin,
         )
     timer.end_step()
 
@@ -3170,36 +3178,44 @@ def _linearize(
 
 def _render_to_camera_space(
     tags: "DngPage" | "MetadataTags",
-    data: np.ndarray,
+    x: Tensor,
     photometric: str,
     cfa_pattern: str | None,
     demosaic_algorithm: "DemosaicAlgorithm",
-) -> np.ndarray:
+) -> Tensor:
     """Linearize raw data, demosaic if CFA, apply OpcodeList3 and DefaultCrop.
 
     Args:
         tags: Tag source (raw IFD page or MetadataTags) providing linearization/opcode tags.
-        data: Raw decoded image data.
+        x: Raw decoded image Tensor.
         photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
         cfa_pattern: CFA pattern string (e.g. "RGGB"), required if photometric == "CFA".
         demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
 
     Returns:
-        Camera space array (H, W, 3) float32 in [0, 1] for CFA/RGB, or
-        monochrome array (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
+        Camera-space Tensor: (H, W, 3) float32 in [0, 1] for CFA/RGB, or
+        monochrome (H, W) / (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
     """
     timer = get_active_timer()
 
-    normalized = _linearize(tags, data, photometric)
+    normalized = _linearize(tags, x, photometric)
 
     if photometric == "CFA":
         demosaic_timer = timer.start_step("demosaic")
-        # Bilinear guarantees [0,1] output through averaging - skip clip
-        clip_value = None if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR else 1.0
-        rgb_camera = demosaic(
-            normalized, cfa_pattern, algorithm=demosaic_algorithm,
-            clip_max=clip_value, return_dtype=np.float32
-        )
+        if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
+            # Engine bilinear (lazy); guarantees [0,1] via averaging — no clip
+            x = normalized
+            if x.meta.dtype != "float32":
+                x = _tensor_convert(x, "float32")
+            rgb_camera = engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
+        else:
+            rgb_camera = demosaic_op(
+                normalized,
+                cfa_pattern,
+                demosaic_algorithm.name,
+                clip_max=1.0,
+                return_dtype="float32",
+            )
         demosaic_timer.close()
     else:
         rgb_camera = normalized
@@ -3228,7 +3244,7 @@ def _render_to_camera_space(
                 logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
         ops3_timer.close()
 
-    # Apply DefaultCrop
+    # Apply DefaultCrop — Step 3: portable crop op (no .compute() here).
     crop_origin = tags.get_tag("DefaultCropOrigin")
     crop_size = tags.get_tag("DefaultCropSize")
 
@@ -3237,7 +3253,7 @@ def _render_to_camera_space(
         crop_y = int(crop_origin[1])
         crop_w = int(crop_size[0])
         crop_h = int(crop_size[1])
-        rgb_camera = rgb_camera[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+        rgb_camera = crop_op(rgb_camera, crop_x, crop_y, crop_w, crop_h)
 
     return rgb_camera
 

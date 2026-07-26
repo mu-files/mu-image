@@ -152,7 +152,8 @@ def test_apply_opcodes_single_execute():
 
     _compute_engine.execute_graph = counting_execute
     try:
-        out = apply_opcodes(rgb, opcodes, use_bicubic=False)
+        out_t = apply_opcodes(Tensor(rgb), opcodes, use_bicubic=False)
+        out = out_t.compute()
     finally:
         _compute_engine.execute_graph = real
 
@@ -207,3 +208,54 @@ def test_core_binaries_path():
         binaries.glob("muimg_core.*")
     )
     assert libs, f"no core libs under {binaries}"
+
+
+def test_graph_op_crop_cast():
+    from muimg.engines.pyops import cast_dtype_op, crop_op
+
+    src = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    np.testing.assert_array_equal(crop_op(src, 1, 1, 3, 2), src[1:3, 1:4])
+
+    x = cast_dtype_op(Tensor(src), "uint16")
+    x = crop_op(x, 1, 1, 3, 2)
+    assert x._node is not None and x._node.fn is not None
+    out = x.compute()
+    np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
+
+
+def test_graph_op_splits_engine_segments():
+    from muimg.engines.core import _compute_engine
+    from muimg.engines.pyops import crop_op
+
+    src = np.arange(16, dtype=np.float32).reshape(4, 4)
+    x = Tensor(src) - 0.0
+    x = crop_op(x, 0, 0, 2, 2)
+    x = x * 2.0
+
+    calls = {"n": 0}
+    real = _compute_engine.execute_graph
+
+    def counting_execute(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    _compute_engine.execute_graph = counting_execute
+    try:
+        out = x.compute()
+    finally:
+        _compute_engine.execute_graph = real
+
+    assert calls["n"] == 2
+    np.testing.assert_allclose(out, src[:2, :2] * 2.0)
+
+
+def test_demosaic_op_lazy():
+    from muimg.engines.pyops import demosaic_op
+
+    rng = np.random.default_rng(4)
+    cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
+    out = demosaic_op(
+        Tensor(cfa), "RGGB", "OPENCV_EA", return_dtype="uint16"
+    ).compute()
+    ref = demosaic(cfa, "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
+    np.testing.assert_array_equal(out, ref)

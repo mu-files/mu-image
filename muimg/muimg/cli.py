@@ -614,6 +614,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 if data is None:
                     click.echo("Error: Failed to extract camera RGB", err=True)
                     sys.exit(1)
+                data = data.compute()
             else:
                 # raw: decoded sensor data
                 if page.is_cfa:
