@@ -174,6 +174,7 @@ class _RecordingEngine:
         nodes: List[Tensor],
         values: Dict[int, np.ndarray],
         outputs: List[Tensor],
+        timer=None,
     ) -> None:
         self.calls.append(len(nodes))
         # Produce zeros for outputs (enough to exercise the dispatch path).
@@ -221,6 +222,54 @@ def test_graph_op_crop_cast():
     assert x._node is not None and x._node.fn is not None
     out = x.compute()
     np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
+
+
+def test_add_completed_step_duration():
+    from muimg.common import PerfTimer
+
+    root = PerfTimer("root")
+    child = root.add_completed_step("native_op (engine)", 0.025)
+    assert child.end_time is not None
+    assert abs(child.get_elapsed_ms() - 25.0) < 1.0
+    assert root.children == [child]
+    root.close()
+
+
+def test_compute_times_python_ops():
+    from muimg.common import PerfTimer
+    from muimg.engines.pyops import cast_dtype_op, crop_op
+
+    src = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    x = cast_dtype_op(Tensor(src), "uint16")
+    x = crop_op(x, 1, 1, 3, 2)
+
+    timer = PerfTimer("test")
+    parent = timer.start_step("camera_space")
+    out = x.compute(timer=parent)
+    parent.close()
+    timer.close()
+
+    np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
+    assert parent.name == "camera_space"
+    names = [c.name for c in parent.children]
+    assert names == ["cast_dtype_op (python)", "crop_op (python)"]
+    assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
+
+
+def test_compute_times_engine_ops():
+    from muimg.common import PerfTimer
+
+    timer = PerfTimer("test")
+    parent = timer.start_step("camera_space")
+    out = (Tensor(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0)
+    out = (out * 2.0).compute(timer=parent)
+    parent.close()
+    timer.close()
+
+    np.testing.assert_allclose(out, [[0.0, 2.0], [4.0, 6.0]])
+    names = [c.name for c in parent.children]
+    assert names == ["sub_scalar (engine)", "mul_scalar (engine)"]
+    assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
 
 
 def test_graph_op_splits_engine_segments():

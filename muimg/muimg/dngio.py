@@ -689,13 +689,17 @@ class DngPage(tifffile.TiffPage):
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
 
-        with scoped_perf_timer("render_raw_page", logger):
+        with scoped_perf_timer("render_raw_page", logger) as timer:
 
             camera_data = self.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
             if camera_data is None:
                 logger.error("Failed to extract camera data from DNG")
                 return None
-            camera_data = camera_data.compute()
+            _cam = timer.start_step("camera_space")
+            try:
+                camera_data = camera_data.compute(timer=_cam)
+            finally:
+                _cam.close()
 
             # Branch based on monochrome vs color
             if self.is_linear_raw and self.samplesperpixel == 1:
@@ -1013,7 +1017,11 @@ class DngFile(tifffile.TiffFile):
             camera_data = render_page.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
             if camera_data is None:
                 return None
-            camera_data = camera_data.compute()
+            _cam = _timer.start_step("camera_space")
+            try:
+                camera_data = camera_data.compute(timer=_cam)
+            finally:
+                _cam.close()
 
             # Apply resize if needed (when scaling and dimensions don't match)
             scale_needed = False
@@ -2182,7 +2190,8 @@ def _write_dng_with_params(
     camera_raw = raw_render._render_to_camera_space(
         main_spec.extratags, Tensor(raw_data), photometric, cfa_pattern, demosaic_algorithm
     )
-    camera_raw = camera_raw.compute()
+    # Op timings nest under the open ``extract_camera_rgb`` step.
+    camera_raw = camera_raw.compute(timer=timer)
     timer.end_step()
     
     # if we are transforming then the main_spec is always a DataSpec with the transformed data

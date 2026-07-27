@@ -160,6 +160,17 @@ typedef struct {
   MuImgBuffer buffer; /* real storage; geometry must match the MuImgTensorDesc */
 } MuImgGraphBinding;
 
+/*
+ * Optional per-op timing row filled by muimg_execute_graph when a timings
+ * buffer is provided. ``exclusive_ns`` is wall time around the op kernel only
+ * (not MemoryPool acquire/release). Callers map ``node_id`` to op name via
+ * the graph they submitted.
+ */
+typedef struct {
+  uint32_t node_id;
+  uint64_t exclusive_ns;
+} MuImgOpTiming;
+
 //=============================================================================
 // Exported ABI
 //=============================================================================
@@ -178,6 +189,11 @@ MUIMG_API const char *muimg_version(void);
  * Intermediate values (neither graph inputs nor outputs) are allocated and
  * freed by the executor for the duration of the call.
  *
+ * - timings / timings_len: optional profiling. Pass timings=NULL for no
+ *   profiling (zero overhead). If timings is non-NULL, timings_len must also
+ *   be non-NULL (else MUIMG_ERROR_INVALID_ARGUMENT): fill up to timings_cap
+ *   rows in topo execution order and set *timings_len to the filled count.
+ *
  * Error model: returns MUIMG_SUCCESS or MUIMG_ERROR_*. Does not throw across
  * this boundary (exceptions from std:: / bugs are caught and mapped to
  * MUIMG_ERROR_OUT_OF_MEMORY or MUIMG_ERROR_INTERNAL). Op callbacks must
@@ -187,7 +203,10 @@ MUIMG_API int muimg_execute_graph(const MuImgGraph *graph,
                                   const MuImgGraphBinding *input_bindings,
                                   size_t num_input_bindings,
                                   MuImgGraphBinding *output_bindings,
-                                  size_t num_output_bindings);
+                                  size_t num_output_bindings,
+                                  MuImgOpTiming *timings,
+                                  size_t timings_cap,
+                                  size_t *timings_len);
 
 #ifdef __cplusplus
 }

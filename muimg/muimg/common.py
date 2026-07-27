@@ -174,6 +174,24 @@ class PerfTimer:
         self._active_child = child
         return child
 
+    def add_completed_step(self, name: str, duration_s: float) -> "PerfTimer":
+        """Append a finished child with a known duration (e.g. native op timings).
+
+        Places the interval ending at ``perf_counter()`` so siblings stay ordered
+        for gap detection. Does not become the active child.
+        """
+        if self._active_child is not None and self._active_child.end_time is None:
+            self._active_child.close()
+
+        duration_s = max(0.0, float(duration_s))
+        end = time.perf_counter()
+        start = end - duration_s
+        child = PerfTimer(name, _parent=self, _depth=self.depth + 1, start_time=start)
+        child.end_time = end
+        self.children.append(child)
+        self._active_child = None
+        return child
+
     def __del__(self):
         if self.end_time is None:
             self.close()

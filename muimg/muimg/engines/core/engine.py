@@ -4,13 +4,14 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
 
 from ...tensor import NUMPY_FROM_DTYPE
 
 if TYPE_CHECKING:
+    from ...common import PerfTimer
     from ...tensor import Tensor
 
 
@@ -33,6 +34,7 @@ class CoreEngine:
         nodes: List["Tensor"],
         values: Dict[int, np.ndarray],
         outputs: List["Tensor"],
+        timer: Optional["PerfTimer"] = None,
     ) -> None:
         from . import _compute_engine
 
@@ -107,4 +109,13 @@ class CoreEngine:
             "outputs": [id_of[id(t)] for t in outputs],
             "nodes": graph_nodes,
         }
-        _compute_engine.execute_graph(graph, in_binds, out_binds)
+        timings = _compute_engine.execute_graph(
+            graph, in_binds, out_binds, timer is not None
+        )
+        if timer is not None and timings:
+            op_by_id = {n["id"]: n["op"] for n in graph_nodes}
+            for row in timings:
+                op = op_by_id.get(row["node_id"], f"node_{row['node_id']}")
+                timer.add_completed_step(
+                    f"{op} (engine)", row["exclusive_ns"] * 1e-9
+                )

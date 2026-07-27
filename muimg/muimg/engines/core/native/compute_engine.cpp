@@ -61,7 +61,8 @@ static void core_dlclose(void *handle) {
 
 static void *g_core_lib = nullptr;
 static int (*muimg_execute_graph_fn)(const MuImgGraph *, const MuImgGraphBinding *,
-                                     size_t, MuImgGraphBinding *, size_t) = nullptr;
+                                     size_t, MuImgGraphBinding *, size_t,
+                                     MuImgOpTiming *, size_t, size_t *) = nullptr;
 
 static const char *core_lib_basename() {
 #if defined(_WIN32)
@@ -136,7 +137,8 @@ static bool load_core_library() {
 
   muimg_execute_graph_fn =
       reinterpret_cast<int (*)(const MuImgGraph *, const MuImgGraphBinding *, size_t,
-                               MuImgGraphBinding *, size_t)>(
+                               MuImgGraphBinding *, size_t, MuImgOpTiming *, size_t,
+                               size_t *)>(
           core_dlsym(g_core_lib, "muimg_execute_graph"));
   if (!muimg_execute_graph_fn) {
     PyErr_SetString(PyExc_RuntimeError,
@@ -680,14 +682,16 @@ static bool parse_bindings(PyObject *obj, const GraphScratch &scratch,
 }
 
 //=============================================================================
-// execute_graph(graph, inputs, outputs) -> None
+// execute_graph(graph, inputs, outputs, profile=False) -> None | list[dict]
 //=============================================================================
 
 static PyObject *py_execute_graph(PyObject * /*self*/, PyObject *args) {
   PyObject *graph_obj = nullptr;
   PyObject *inputs_obj = nullptr;
   PyObject *outputs_obj = nullptr;
-  if (!PyArg_ParseTuple(args, "OOO", &graph_obj, &inputs_obj, &outputs_obj)) {
+  int profile = 0;
+  if (!PyArg_ParseTuple(args, "OOO|p", &graph_obj, &inputs_obj, &outputs_obj,
+                        &profile)) {
     return nullptr;
   }
   if (!load_core_library()) {
@@ -709,19 +713,50 @@ static PyObject *py_execute_graph(PyObject * /*self*/, PyObject *args) {
     return nullptr;
   }
 
+  std::vector<MuImgOpTiming> timings;
+  MuImgOpTiming *timings_ptr = nullptr;
+  size_t timings_cap = 0;
+  size_t timings_len = 0;
+  if (profile) {
+    timings.resize(graph.num_nodes);
+    timings_ptr = timings.data();
+    timings_cap = timings.size();
+  }
+
   int rc = muimg_execute_graph_fn(&graph, in_binds.data(), in_binds.size(),
-                                  out_binds.data(), out_binds.size());
+                                  out_binds.data(), out_binds.size(),
+                                  timings_ptr, timings_cap, &timings_len);
   if (rc != MUIMG_SUCCESS) {
     set_python_error_from_muimg(rc);
     return nullptr;
   }
-  Py_RETURN_NONE;
+
+  if (!profile) {
+    Py_RETURN_NONE;
+  }
+
+  PyObject *out_list = PyList_New(static_cast<Py_ssize_t>(timings_len));
+  if (!out_list) {
+    return nullptr;
+  }
+  for (size_t i = 0; i < timings_len; ++i) {
+    PyObject *row = Py_BuildValue("{s:I,s:K}", "node_id", timings[i].node_id,
+                                  "exclusive_ns",
+                                  static_cast<unsigned long long>(timings[i].exclusive_ns));
+    if (!row) {
+      Py_DECREF(out_list);
+      return nullptr;
+    }
+    PyList_SET_ITEM(out_list, static_cast<Py_ssize_t>(i), row);
+  }
+  return out_list;
 }
 
 static PyMethodDef ComputeEngineMethods[] = {
     {"execute_graph", py_execute_graph, METH_VARARGS,
-     "execute_graph(graph, inputs, outputs) -> None\n\n"
-     "Run one engine segment.\n\n"
+     "execute_graph(graph, inputs, outputs, profile=False) -> None | list\n\n"
+     "Run one engine segment. If profile=True, return per-op timing dicts\n"
+     "with keys node_id, exclusive_ns.\n\n"
      "graph: dict with tensor_descs, inputs, outputs, nodes\n"
      "inputs/outputs: dict[tensor_id] -> C-contiguous ndarray\n"},
     {nullptr, nullptr, 0, nullptr}};

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Protocol, runtime_checka
 import numpy as np
 
 if TYPE_CHECKING:
+    from ..common import PerfTimer
     from ..tensor import Tensor
 
 _default_engine: Optional["Engine"] = None
@@ -28,8 +29,12 @@ class Engine(Protocol):
         nodes: List["Tensor"],
         values: Dict[int, np.ndarray],
         outputs: List["Tensor"],
+        timer: Optional["PerfTimer"] = None,
     ) -> None:
-        """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates)."""
+        """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).
+
+        If ``timer`` is set, record per-op engine timings under it.
+        """
         ...
 
 

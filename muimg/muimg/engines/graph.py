@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..common import PerfTimer
 from ..tensor import NUMPY_FROM_DTYPE, Tensor, TensorMeta, meta_from_array
 from .base import get_default_engine
 
@@ -369,8 +370,14 @@ def _segment_boundary_outputs(
     return outs
 
 
-def compute(root: Tensor) -> np.ndarray:
-    """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels."""
+def compute(root: Tensor, timer: PerfTimer | None = None) -> np.ndarray:
+    """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels.
+
+    If ``timer`` is provided, each python op is recorded as ``{op} (python)``
+    under it and engine ops as ``{op} (engine)`` via native per-op timings.
+    No timer is inferred from thread-local state — omit ``timer`` to skip op
+    timing. Callers own any outer named step before calling.
+    """
     tensors = _reachable_tensors(root)
     values: Dict[int, np.ndarray] = {}
 
@@ -388,7 +395,16 @@ def compute(root: Tensor) -> np.ndarray:
     i = 0
     while i < len(op_tensors):
         if _is_python_node(op_tensors[i]):
-            _run_python_node(op_tensors[i], values)
+            node = op_tensors[i]._node
+            assert node is not None
+            step = (
+                timer.start_step(f"{node.op} (python)") if timer is not None else None
+            )
+            try:
+                _run_python_node(op_tensors[i], values)
+            finally:
+                if step is not None:
+                    step.close()
             i += 1
             continue
 
@@ -399,7 +415,7 @@ def compute(root: Tensor) -> np.ndarray:
         outs = _segment_boundary_outputs(segment, op_tensors, root)
         if not outs:
             outs = [segment[-1]]
-        engine.execute_segment(segment, values, outs)
+        engine.execute_segment(segment, values, outs, timer=timer)
         i = j
 
     if id(root) not in values:
