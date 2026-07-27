@@ -15,6 +15,7 @@ Usage:
 import importlib
 import threading
 import types
+from typing import Any
 
 
 class LibraryBackgroundLoader(types.ModuleType):
@@ -58,7 +59,7 @@ class LibraryBackgroundLoader(types.ModuleType):
 
         return object.__getattribute__(self, "_bg_module")
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> Any:
         mod = self._wait_for_load()
         try:
             return getattr(mod, item)
@@ -86,11 +87,13 @@ class LibraryBackgroundLoader(types.ModuleType):
 # immediate=False → deferred to the single background thread below
 
 # immediate=True — loaded on main thread (needed at module-load for class inheritance).
-tifffile_proxy = LibraryBackgroundLoader("tifffile", immediate=True)
+# Annotated as Any so type checkers do not treat proxies as ModuleType (unknown attrs
+# would otherwise look like submodules and be non-callable).
+tifffile_proxy: Any = LibraryBackgroundLoader("tifffile", immediate=True)
 
-imagecodecs_proxy = LibraryBackgroundLoader("imagecodecs")
-defusedxml_proxy = LibraryBackgroundLoader("defusedxml")
-cv2_proxy = LibraryBackgroundLoader("cv2")
+imagecodecs_proxy: Any = LibraryBackgroundLoader("imagecodecs")
+defusedxml_proxy: Any = LibraryBackgroundLoader("defusedxml")
+cv2_proxy: Any = LibraryBackgroundLoader("cv2")
 
 # All proxies in load-priority order. The background thread skips any
 # that were already loaded with immediate=True.

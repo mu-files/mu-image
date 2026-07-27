@@ -412,6 +412,7 @@ def decode_dng_coreimage(
         
         # Import raw_render for parameter extraction
         from . import raw_render
+        from .tensor import Tensor
         
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
         extracted_params = raw_render.supported_xmp_to_dict(dng_file) if use_xmp else {}
@@ -489,10 +490,10 @@ def decode_dng_coreimage(
         
         # Convert Core Image output to ProPhoto linear for post-rendering
         rgb_prophoto_linear = raw_render.convert_colorspace(
-            ci_output,
+            Tensor(ci_output),
             source_colorspace,
             raw_render.ColorSpace.PROPHOTO_LINEAR
-        )
+        ).compute()
         
         # Apply all tone curves and lens corrections in ProPhoto linear
         if extracted_params:
@@ -505,11 +506,11 @@ def decode_dng_coreimage(
         
         # Convert to sRGB gamma with output dtype
         result = raw_render.convert_colorspace(
-            rgb_output,
+            Tensor(rgb_output),
             raw_render.ColorSpace.PROPHOTO_LINEAR,
             raw_render.ColorSpace.SRGB_GAMMA,
-            output_dtype=output_dtype
-        )
+            dst_dtype=np.dtype(output_dtype).name,
+        ).compute()
         
         logger.debug(f"Successfully decoded DNG to array with shape {result.shape} and dtype {result.dtype}")
         return result

@@ -76,20 +76,20 @@ def test_rejects_tensor_tensor_sub():
         _ = a - b
 
 
-def test_demosaic_tensor_auto_flush():
-    """demosaic(Tensor) computes the graph, runs eagerly, returns Tensor."""
+def test_demosaic_tensor_lazy():
+    """demosaic(Tensor) returns a lazy Tensor; compute materializes RGB."""
     rng = np.random.default_rng(0)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
     out_t = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
-    assert out_t._node is None
+    assert out_t._node is not None
     out = out_t.compute()
-    ref = demosaic(cfa, "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
+    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA).compute()
     assert out.shape == (16, 16, 3)
     np.testing.assert_array_equal(out, ref)
 
 
 def test_flush_then_engine_again():
-    """Normalize (engine) → demosaic(Tensor) flush → matrix+lut (new engine chain)."""
+    """Normalize (engine) → demosaic(Tensor) → matrix+lut (same DAG)."""
     rng = np.random.default_rng(1)
     cfa = (
         rng.integers(100, 1000, size=(16, 16), dtype=np.uint16).astype(np.float32)
@@ -108,8 +108,8 @@ def test_flush_then_engine_again():
     out = x.compute()
 
     ref = demosaic(
-        cfa, "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA, return_dtype=np.float32
-    )
+        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA, dst_dtype="float32"
+    ).compute()
     assert out.shape == (16, 16, 3)
     assert out.dtype == np.float32
     np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
@@ -303,8 +303,6 @@ def test_demosaic_op_lazy():
 
     rng = np.random.default_rng(4)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out = demosaic_op(
-        Tensor(cfa), "RGGB", "OPENCV_EA", return_dtype="uint16"
-    ).compute()
-    ref = demosaic(cfa, "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
+    out = demosaic_op(Tensor(cfa), "RGGB", "OPENCV_EA").compute()
+    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA).compute()
     np.testing.assert_array_equal(out, ref)

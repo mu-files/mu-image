@@ -8,6 +8,7 @@ from pathlib import Path
 import tifffile
 
 from muimg.dngio import DngFile
+from muimg.tensor import Tensor
 from muimg.raw_render import demosaic, convert_dtype, DemosaicAlgorithm
 from conftest import compute_diff_stats
 
@@ -21,7 +22,7 @@ def is_rcd_available():
     try:
         # Try to use RCD on a tiny test array
         test_cfa = np.zeros((4, 4), dtype=np.uint16)
-        demosaic(test_cfa, "RGGB", algorithm=DemosaicAlgorithm.RCD)
+        demosaic(Tensor(test_cfa), "RGGB", algorithm=DemosaicAlgorithm.RCD).compute()
         return True
     except ImportError:
         return False
@@ -42,8 +43,8 @@ def cfa_data():
         pytest.skip(f"Test file not found: {TEST_DNG}")
     
     with DngFile(TEST_DNG) as dng:
-        cfa, cfa_pattern = dng.get_cfa()
-        return cfa, cfa_pattern
+        cfa_t, cfa_pattern = dng.get_cfa()
+        return cfa_t.compute(), cfa_pattern
 
 
 def test_demosaic_uint8_consistency(cfa_data):
@@ -51,16 +52,16 @@ def test_demosaic_uint8_consistency(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Convert CFA to uint8
-    cfa_u8 = convert_dtype(cfa, np.uint8)
+    cfa_u8 = convert_dtype(Tensor(cfa), "uint8").compute()
     
     # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(cfa_u8, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+    reference = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
     assert reference.dtype == np.uint8
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
     for algorithm in get_available_algorithms():
-        result = demosaic(cfa_u8, cfa_pattern, algorithm=algorithm)
+        result = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=algorithm).compute()
         
         # Check dtype preservation
         assert result.dtype == np.uint8, f"{algorithm} should preserve uint8 dtype"
@@ -88,16 +89,16 @@ def test_demosaic_uint16_consistency(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Convert CFA to uint16
-    cfa_u16 = convert_dtype(cfa, np.uint16)
+    cfa_u16 = convert_dtype(Tensor(cfa), "uint16").compute()
     
     # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(cfa_u16, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+    reference = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
     assert reference.dtype == np.uint16
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
     for algorithm in get_available_algorithms():
-        result = demosaic(cfa_u16, cfa_pattern, algorithm=algorithm)
+        result = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=algorithm).compute()
         
         # Check dtype preservation
         assert result.dtype == np.uint16, f"{algorithm} should preserve uint16 dtype"
@@ -124,16 +125,16 @@ def test_demosaic_float32_consistency(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Convert CFA to float32 (0-1 range)
-    cfa_f32 = convert_dtype(cfa, np.float32)
+    cfa_f32 = convert_dtype(Tensor(cfa), "float32").compute()
     
     # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(cfa_f32, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+    reference = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
     assert reference.dtype == np.float32
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
     for algorithm in get_available_algorithms():
-        result = demosaic(cfa_f32, cfa_pattern, algorithm=algorithm)
+        result = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=algorithm).compute()
         
         # Check dtype preservation
         assert result.dtype == np.float32, f"{algorithm} should preserve float32 dtype"
@@ -160,15 +161,15 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Get float32 reference
-    cfa_f32 = convert_dtype(cfa, np.float32)
-    result_f32 = demosaic(cfa_f32, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+    cfa_f32 = convert_dtype(Tensor(cfa), "float32").compute()
+    result_f32 = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
     
     # Convert to uint16 and demosaic
-    cfa_u16 = convert_dtype(cfa, np.uint16)
-    result_u16 = demosaic(cfa_u16, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+    cfa_u16 = convert_dtype(Tensor(cfa), "uint16").compute()
+    result_u16 = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
     
     # Convert uint16 result back to float32 for comparison
-    result_u16_as_f32 = convert_dtype(result_u16, np.float32)
+    result_u16_as_f32 = convert_dtype(Tensor(result_u16), "float32").compute()
     
     # Results should be very close (within quantization error)
     # uint16 has 65536 levels, so max error is ~1/65536 ≈ 0.000015
@@ -176,9 +177,9 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     assert max_diff < 0.001, f"Float32 and uint16 results differ by {max_diff}"
     
     # Same test for uint8
-    cfa_u8 = convert_dtype(cfa, np.uint8)
-    result_u8 = demosaic(cfa_u8, cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
-    result_u8_as_f32 = convert_dtype(result_u8, np.float32)
+    cfa_u8 = convert_dtype(Tensor(cfa), "uint8").compute()
+    result_u8 = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    result_u8_as_f32 = convert_dtype(Tensor(result_u8), "float32").compute()
     
     # uint8 has only 256 levels, so allow larger error
     max_diff = np.abs(result_f32 - result_u8_as_f32).max()
@@ -190,7 +191,7 @@ def test_demosaic_invalid_algorithm(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     with pytest.raises(TypeError, match="algorithm must be a DemosaicAlgorithm enum"):
-        demosaic(cfa, cfa_pattern, algorithm="INVALID_ALGO")
+        demosaic(Tensor(cfa), cfa_pattern, algorithm="INVALID_ALGO").compute()
 
 
 def test_demosaic_invalid_pattern(cfa_data):
@@ -198,7 +199,7 @@ def test_demosaic_invalid_pattern(cfa_data):
     cfa, _ = cfa_data
     
     with pytest.raises(ValueError, match="Invalid CFA pattern"):
-        demosaic(cfa, "INVALID_PATTERN", algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+        demosaic(Tensor(cfa), "INVALID_PATTERN", algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
 
 
 def test_demosaic_cfa_pattern_consistency(cfa_data):
@@ -222,7 +223,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
     assert cfa_pattern == "RGGB", f"Test expects RGGB pattern, got {cfa_pattern}"
     
     # Convert to uint16 for testing
-    cfa_u16 = convert_dtype(cfa, np.uint16)
+    cfa_u16 = convert_dtype(Tensor(cfa), "uint16").compute()
     
     # Pattern transformations: (crop_x, crop_y) -> new_pattern
     pattern_crops = {
@@ -237,7 +238,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
     
     for ref_algorithm in algorithms:
         # Demosaic the original RGGB pattern with reference algorithm
-        reference_rgb = demosaic(cfa_u16, "RGGB", algorithm=ref_algorithm)
+        reference_rgb = demosaic(Tensor(cfa_u16), "RGGB", algorithm=ref_algorithm).compute()
         
         # Test each pattern variant
         for pattern_name, (crop_x, crop_y) in pattern_crops.items():
@@ -262,7 +263,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
             # Test demosaicing the cropped pattern with all algorithms
             for test_algorithm in algorithms:
                 # Demosaic the cropped CFA with the test algorithm
-                cropped_rgb = demosaic(cropped_cfa, pattern_name, algorithm=test_algorithm)
+                cropped_rgb = demosaic(Tensor(cropped_cfa), pattern_name, algorithm=test_algorithm).compute()
                 
                 # Results should have correct shape
                 assert cropped_rgb.shape == expected_rgb.shape, \

@@ -143,8 +143,9 @@ def _test_write_mono(
         assert main_page.samplesperpixel == 1
         
         # Read back the raw data using our API
-        raw_data = dng.get_linear_raw()
-        assert raw_data is not None, f"Failed to get LINEAR_RAW from {label}"
+        raw_t = dng.get_linear_raw()
+        assert raw_t is not None, f"Failed to get LINEAR_RAW from {label}"
+        raw_data = raw_t.compute()
         
         # Verify shape - should be 2D for monochrome (H, W) or 3D (H, W, 1)
         if raw_data.ndim == 3:

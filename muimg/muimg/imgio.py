@@ -13,6 +13,7 @@ from typing import IO, Callable, Iterable, Any
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
+from .tensor import Tensor
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, TiffType
 from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
@@ -95,7 +96,7 @@ def write_image(
     
     # Handle JPEG with imagecodecs (8-bit lossy only)
     elif format_ext in ('.jpg', '.jpeg'):
-        img_8bit = image if image.dtype == np.uint8 else convert_dtype(image, np.uint8)
+        img_8bit = image if image.dtype == np.uint8 else convert_dtype(Tensor(image), "uint8").compute()
         jpeg_data = imagecodecs.jpeg_encode(img_8bit, level=90)
 
         if isinstance(output, (str, Path)):
@@ -180,7 +181,7 @@ def decode_image(
             raise ValueError("Failed to decode JXL image")
         
         # JXL already returns RGB, just convert dtype if needed
-        return convert_dtype(img, output_dtype)
+        return convert_dtype(Tensor(img), np.dtype(output_dtype).name).compute()
     
     # Check if it's a TIFF file - use tifffile to avoid OpenCV warnings about EXIF tags
     if isinstance(file, (str, Path)) and str(file).lower().endswith(('.tif', '.tiff')):
@@ -189,7 +190,7 @@ def decode_image(
             raise ValueError("Failed to decode TIFF image")
         
         # tifffile returns RGB, just convert dtype if needed
-        return convert_dtype(img, output_dtype)
+        return convert_dtype(Tensor(img), np.dtype(output_dtype).name).compute()
     
     # Fall back to cv2 for other formats
     if isinstance(file, (str, Path)):
@@ -214,7 +215,7 @@ def decode_image(
     else:
         raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
-    return convert_dtype(img, output_dtype)
+    return convert_dtype(Tensor(img), np.dtype(output_dtype).name).compute()
 
 def convert_imgformat(
     file: str | Path | IO[bytes],

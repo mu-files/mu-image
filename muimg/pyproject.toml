@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260726.2114"
+version = "0.1.20260727.1234"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -87,3 +87,14 @@ log_cli = true
 log_cli_level = "WARNING"
 log_cli_format = "%(levelname)-8s %(name)s:%(filename)s:%(lineno)d %(message)s"
 addopts = "--tb=no"
+
+# Type checker (basedpyright / pyright / Cursor). Config root is this directory.
+[tool.basedpyright]
+venvPath = "."
+venv = "venv"
+pythonVersion = "3.12"
+
+[tool.pyright]
+venvPath = "."
+venv = "venv"
+pythonVersion = "3.12"

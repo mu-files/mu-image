@@ -601,20 +601,15 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 sys.exit(1)
             
             # Extract data based on stage
-            data = None
-            cfa_pattern = None
-            
+            t = None
+
             if stage == "camera-rgb":
                 # camera-rgb: linearize + demosaic (full pipeline)
                 if demosaic is not None:
                     algorithm = DemosaicAlgorithm.lookup(demosaic)
                 else:
                     algorithm = DemosaicAlgorithm.OPENCV_EA
-                data = page.get_camera_raw(demosaic_algorithm=algorithm)
-                if data is None:
-                    click.echo("Error: Failed to extract camera RGB", err=True)
-                    sys.exit(1)
-                data = data.compute()
+                t = page.get_camera_raw(demosaic_algorithm=algorithm)
             else:
                 # raw: decoded sensor data
                 if page.is_cfa:
@@ -622,40 +617,35 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                     if cfa_result is None:
                         click.echo("Error: Failed to extract CFA data", err=True)
                         sys.exit(1)
-                    data, cfa_pattern = cfa_result
-                    
+                    t, cfa_pattern = cfa_result
+
                     # Apply demosaic if requested
                     if demosaic is not None:
                         algorithm = DemosaicAlgorithm.lookup(demosaic)
-                        data = raw_render.demosaic(
-                            data, cfa_pattern, algorithm=algorithm
-                        )
+                        t = raw_render.demosaic(t, cfa_pattern, algorithm=algorithm)
                 else:
                     if demosaic is not None:
                         click.echo("Warning: --demosaic ignored for LINEAR_RAW page (already RGB)", err=True)
-                    data = page.get_linear_raw()
-                    if data is None:
-                        click.echo("Error: Failed to extract raw data", err=True)
-                        sys.exit(1)
-            
-            if data is None:
+                    t = page.get_linear_raw()
+
+            if t is None:
                 click.echo(f"Error: Failed to extract {stage} stage", err=True)
                 sys.exit(1)
-            
-            # Convert to uint16
-            data_uint16 = raw_render.convert_dtype(data, np.uint16)
-            
+
+            # Convert to uint16 (single compute at the write boundary)
+            data_uint16 = raw_render.convert_dtype(t, "uint16").compute()
+
             # Save as TIFF
             tifffile.imwrite(output_file, data_uint16)
-            
+
             # Report actual extracted data dimensions
-            if data.ndim == 3:
-                h, w, c = data.shape
+            if data_uint16.ndim == 3:
+                h, w, c = data_uint16.shape
                 dims_str = f"{w}x{h}x{c}"
             else:
-                h, w = data.shape
+                h, w = data_uint16.shape
                 dims_str = f"{w}x{h}"
-            
+
             click.echo(f"Extracted {stage} stage from {ifd_name} ({page.photometric_name}): {dims_str} -> {output_file}")
     
     except Exception as e:

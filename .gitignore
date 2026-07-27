@@ -96,7 +96,8 @@ ENV/
 
 # IDE / Editor specific files
 .idea/
-.vscode/  # Allow .vscode for launch configurations
+# Local editor settings (do not commit)
+.vscode/
 *.project
 *.pydevproject
 *.sublime-workspace

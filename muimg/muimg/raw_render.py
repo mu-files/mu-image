@@ -25,36 +25,6 @@ from .tiff_metadata import (
 logger = logging.getLogger(__name__)
 
 
-def _as_tensor(x: np.ndarray | Tensor) -> Tensor:
-    if isinstance(x, Tensor):
-        return x
-    return Tensor(x)
-
-
-def _tensor_convert(t: Tensor, dest_dtype: str) -> Tensor:
-    """Lazy dtype conversion node (no execute until ``.compute()``)."""
-    if t.meta.dtype == dest_dtype:
-        return t
-    src_bits = -1 if t.meta.dtype.startswith("float") else (
-        8 if t.meta.dtype == "uint8" else 16
-    )
-    dst_bits = -1 if dest_dtype.startswith("float") else (
-        8 if dest_dtype == "uint8" else 16
-    )
-    return engine_ops.convert_dtype(
-        t,
-        dest_dtype=dest_dtype,
-        src_bits=src_bits,
-        dst_bits=dst_bits,
-        clip_max=-1.0,
-    )
-
-
-def _engine_run(t: Tensor) -> np.ndarray:
-    """Materialize an engine graph (one or more lazy nodes)."""
-    return t.compute()
-
-
 # =============================================================================
 # Constants
 # =============================================================================
@@ -103,167 +73,158 @@ class DemosaicAlgorithm(StrEnum):
 
 
 def convert_dtype(
-    image: np.ndarray,
-    dest_dtype: np.dtype,
-    src_bits_per_element: int | None = None,
-    dest_bits_per_element: int | None = None,
-    clip_max: float | None = None
-) -> np.ndarray:
+    image: Tensor,
+    dst_dtype: str,
+    src_bits: int | None = None,
+    dst_bits: int | None = None,
+    clip_max: float | None = None,
+) -> Tensor:
     """Convert image between data types with proper normalization and optional clipping.
-    
-    Handles conversion between uint8, uint16, and float types with
-    appropriate scaling to preserve value ranges. Uses optimized C++
-    implementation with NEON support on AArch64.
-    
+
+    Wrapper: validate arguments and append ops to a deferred compute graph.
+    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
+
     Args:
-        image: Input image (must be 3D: H, W, C)
-        dest_dtype: Destination data type (np.uint8, np.uint16, np.float32)
-        src_bits_per_element: Custom bit depth for source data (e.g., 12 for 12-bit data
+        image: Input Tensor (H, W) or (H, W, C)
+        dst_dtype: Destination dtype name (``"uint8"``, ``"uint16"``,
+            ``"float16"``, or ``"float32"``) — same vocabulary as ``TensorMeta.dtype``
+        src_bits: Custom bit depth for source data (e.g., 12 for 12-bit data
             in uint16 container). Must be None for float types. Defaults to container
             bit depth if None.
-        dest_bits_per_element: Custom bit depth for destination data. Must be None for
+        dst_bits: Custom bit depth for destination data. Must be None for
             float types. Defaults to container bit depth if None.
         clip_max: Maximum value to clip to in destination space. If None, no clipping
             is performed. For integer destinations, values are clipped to [0, clip_max].
             For float destinations, only upper bound clipping is applied.
-        
+
     Returns:
-        Converted image with dest_dtype
-        
-    Example:
-        # Convert 12-bit data stored in uint16 to 8-bit uint8
-        image_u16 = np.array([0, 2047, 4095], dtype=np.uint16)
-        result = convert_dtype(image_u16, np.uint8, src_bits_per_element=12)
-        
-        # Convert float to uint8 with clipping
-        result = convert_dtype(image_f32, np.uint8, clip_max=255.0)
+        Lazy ``Tensor`` with dst_dtype
     """
-    dest_dtype = np.dtype(dest_dtype)
+    t = image
+    dest_name = dst_dtype
 
-    # Early-out: same float dtype with no clip - return input unchanged
-    if image.dtype == dest_dtype and clip_max is None and image.dtype in (np.float16, np.float32, np.float64):
-        return image
+    # Early-out: same float dtype with no clip
+    if (
+        t.meta.dtype == dest_name
+        and clip_max is None
+        and dest_name in ("float16", "float32", "float64")
+    ):
+        return t
 
-    # Handle float16 by converting through float32 (same pattern as convert_colorspace)
-    input_was_float16 = image.dtype == np.float16
-    if input_was_float16:
-        image = image.astype(np.float32)
+    output_is_float16 = dest_name == "float16"
+    engine_dest = "float32" if output_is_float16 else dest_name
 
-    output_is_float16 = dest_dtype == np.float16
-    if output_is_float16:
-        dest_dtype = np.dtype(np.float32)
-    
-    # Map numpy dtype to NPY type number for C++ function
-    dtype_to_npy = {
-        np.dtype(np.uint8): 2,      # NPY_UINT8
-        np.dtype(np.uint16): 4,     # NPY_UINT16
-        np.dtype(np.float32): 11,  # NPY_FLOAT32
-    }
-    
-    if dest_dtype not in dtype_to_npy:
-        raise TypeError(f"Unsupported destination dtype: {dest_dtype}. Must be uint8, uint16, float16, or float32")
-    
-    if image.dtype not in dtype_to_npy:
-        raise TypeError(f"Unsupported source dtype: {image.dtype}. Must be uint8, uint16, float16, or float32")
-    
-    # Compute bits from dtype. For ints: use itemsize*8. For floats: use -1 (default).
-    if src_bits_per_element is None:
-        src_bits = -1 if image.dtype in (np.float32, np.float64, np.float16) else image.dtype.itemsize * 8
-    else:
-        src_bits = int(src_bits_per_element)
+    # float16 → float32 via python op (engine has no float16 kernels)
+    if t.meta.dtype == "float16":
+        t = cast_dtype_op(t, "float32")
 
-    if dest_bits_per_element is None:
-        dst_bits = -1 if dest_dtype in (np.float32, np.float64, np.float16) else dest_dtype.itemsize * 8
-    else:
-        dst_bits = int(dest_bits_per_element)
-    
-    # Early-out: same dtype, same bits, no clip, and not float16 output - return input unchanged
-    # (float16 requires conversion back to float16 at the end, so can't early-out)
-    if image.dtype == dest_dtype and src_bits == dst_bits and clip_max is None and not output_is_float16:
-        return image
-    
-    # Use -1 for no clipping, else pass the clip value
-    clip_value = -1.0 if clip_max is None else float(clip_max)
-    
-    # Call C++ implementation (handles both 2D and 3D)
-    result = _engine_run(
-        engine_ops.convert_dtype(
-            Tensor(image),
-            dest_dtype=np.dtype(dest_dtype).name,
-            src_bits=int(src_bits),
-            dst_bits=int(dst_bits),
-            clip_max=float(clip_value),
+    _engine_dtypes = ("uint8", "uint16", "float32")
+    if engine_dest not in _engine_dtypes:
+        raise TypeError(
+            f"Unsupported destination dtype: {dest_name}. "
+            "Must be uint8, uint16, float16, or float32"
         )
-    )
-    
-    # Convert back to float16 if that was the requested output
-    if output_is_float16:
-        result = result.astype(np.float16)
+    if t.meta.dtype not in _engine_dtypes:
+        raise TypeError(
+            f"Unsupported source dtype: {t.meta.dtype}. "
+            "Must be uint8, uint16, float16, or float32"
+        )
 
+    if src_bits is None:
+        src_bits = (
+            -1
+            if t.meta.dtype.startswith("float")
+            else (8 if t.meta.dtype == "uint8" else 16)
+        )
+    else:
+        src_bits = int(src_bits)
+
+    if dst_bits is None:
+        dst_bits = (
+            -1
+            if engine_dest.startswith("float")
+            else (8 if engine_dest == "uint8" else 16)
+        )
+    else:
+        dst_bits = int(dst_bits)
+
+    # Early-out: same dtype, same bits, no clip, not float16 output
+    if (
+        t.meta.dtype == engine_dest
+        and src_bits == dst_bits
+        and clip_max is None
+        and not output_is_float16
+    ):
+        return t
+
+    clip_value = -1.0 if clip_max is None else float(clip_max)
+    result = engine_ops.convert_dtype(
+        t,
+        dest_dtype=engine_dest,
+        src_bits=int(src_bits),
+        dst_bits=int(dst_bits),
+        clip_max=float(clip_value),
+    )
+    if output_is_float16:
+        result = cast_dtype_op(result, "float16")
     return result
 
 
 def mono_lut(
-    image: np.ndarray,
-    output_lut: LUT | np.ndarray | None = None,
+    image: Tensor,
+    lut: LUT | np.ndarray | None = None,
     src_bits: int | None = None,
     dst_bits: int | None = None,
-    output_dtype: np.dtype = np.float32,
-) -> np.ndarray:
+    dst_dtype: str = "float32",
+) -> Tensor:
     """Apply LUT to monochrome (single channel) image.
 
-    Optimized C++ implementation with 8-bit direct lookup optimization.
-    Output is always (H, W, 1) regardless of input shape (2D or 3D).
+    Wrapper: validate arguments and append ops to a deferred compute graph.
+    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
 
     Args:
-        image: Input image (H, W) or (H, W, 1), dtype: uint8, uint16, or float32
-        output_lut: LUT to apply. If None, image is passed through.
-        src_bits: Source bit depth. If None, inferred from dtype
-                  (8 for uint8, 16 for uint16, ignored for float32).
-        dst_bits: Destination bit depth. If None, inferred from output_dtype.
-        output_dtype: Output data type (np.uint8, np.uint16, or np.float32).
-                      Default: np.float32
+        image: Input Tensor (H, W) or (H, W, 1)
+        lut: LUT to apply. If None, image is passed through via convert_dtype.
+        src_bits: Source bit depth. If None, inferred from dtype.
+        dst_bits: Destination bit depth. If None, inferred from dst_dtype.
+        dst_dtype: Destination dtype name (``"uint8"``, ``"uint16"``, or ``"float32"``).
 
     Returns:
-        Transformed image (H, W, 1) with output_dtype
+        Lazy ``Tensor`` (H, W, 1) with dst_dtype
     """
-    # Validate input
-    if image.ndim not in (2, 3):
-        raise ValueError(f"Image must be 2D (H, W) or 3D (H, W, 1), got shape {image.shape}")
-    if image.ndim == 3 and image.shape[2] != 1:
-        raise ValueError(f"Monochrome image must have 1 channel, got shape {image.shape}")
-
-    # Handle no LUT case: just dtype conversion
-    if output_lut is None:
-        return convert_dtype(image, output_dtype, src_bits, dst_bits)
-
-    # Convert LUT to float32 array
-    lut_array = np.asarray(output_lut, dtype=np.float32)
-
-    # Compute bits from dtype
-    if src_bits is None:
-        src_bits = -1 if image.dtype in (np.float32, np.float64, np.float16) else image.dtype.itemsize * 8
-    if dst_bits is None:
-        output_dtype_inst = np.dtype(output_dtype)
-        dst_bits = -1 if output_dtype_inst in (np.float32, np.float64, np.float16) else output_dtype_inst.itemsize * 8
-
-    # Validate output dtype
-    if output_dtype not in (np.uint8, np.uint16, np.float32):
-        raise TypeError(f"Unsupported output dtype: {output_dtype}")
-
-    # Call C++ implementation
-    result = _engine_run(
-        engine_ops.mono_lut(
-            Tensor(image),
-            lut=lut_array,
-            src_bits=int(src_bits),
-            dst_bits=int(dst_bits),
-            dest_dtype=np.dtype(output_dtype).name,
+    t = image
+    if t.meta.channels != 1:
+        raise ValueError(
+            f"Monochrome image must have 1 channel, got channels={t.meta.channels}"
         )
+
+    if lut is None:
+        return convert_dtype(t, dst_dtype, src_bits, dst_bits)
+
+    lut_array = np.asarray(lut, dtype=np.float32)
+    if dst_dtype not in ("uint8", "uint16", "float32"):
+        raise TypeError(f"Unsupported destination dtype: {dst_dtype}")
+
+    if src_bits is None:
+        src_bits = (
+            -1
+            if t.meta.dtype.startswith("float")
+            else (8 if t.meta.dtype == "uint8" else 16)
+        )
+    if dst_bits is None:
+        dst_bits = (
+            -1
+            if dst_dtype.startswith("float")
+            else (8 if dst_dtype == "uint8" else 16)
+        )
+
+    return engine_ops.mono_lut(
+        t,
+        lut=lut_array,
+        src_bits=int(src_bits),
+        dst_bits=int(dst_bits),
+        dest_dtype=dst_dtype,
     )
-    if result.ndim == 2:
-        result = result.reshape(result.shape[0], result.shape[1], 1)
-    return result
 
 
 def compute_colorspace_matrix(
@@ -315,255 +276,164 @@ def compute_colorspace_matrix(
 
 
 def convert_colorspace(
-    image: np.ndarray,
+    image: Tensor,
     source_space: ColorSpace,
     dest_space: ColorSpace,
-    output_dtype: np.dtype = np.float32
-) -> np.ndarray:
+    dst_dtype: str = "float32",
+) -> Tensor:
     """Convert image between color spaces with optional dtype conversion.
-    
-    Convenience wrapper around compute_colorspace_matrix + transform_color.
-    Handles gamma decoding, matrix transforms, chromatic adaptation, and gamma encoding
-    in a single fused pass for maximum performance.
-    
-    Args:
-        image: Input image (H, W, 3) in source color space.
-               Can be uint8 (0-255), uint16 (0-65535), float16 (0-1), or float32 (0-1).
-        source_space: Source ColorSpace
-        dest_space: Destination ColorSpace
-        output_dtype: Output data type (np.uint8, np.uint16, np.float16, np.float32)
-        
-    Returns:
-        Converted image (H, W, 3) in destination color space with output_dtype
+
+    Wrapper: validate arguments and append ops to a deferred compute graph
+    (typically via ``transform_color`` / ``convert_dtype``). Does not run pixels;
+    call ``.compute()`` on the returned ``Tensor`` to materialize.
     """
-    output_dtype = np.dtype(output_dtype)
-    
-    if source_space == dest_space and image.dtype == output_dtype:
-        return image
-    
-    # Handle float16 by converting to float32 for processing
-    input_was_float16 = image.dtype == np.float16
-    if input_was_float16:
-        image = image.astype(np.float32)
-    
-    output_is_float16 = output_dtype == np.dtype(np.float16)
-    if output_is_float16:
-        output_dtype = np.dtype(np.float32)
-    
-    # Determine input LUT (gamma decode if needed)
+    t = image
+
+    if source_space == dest_space:
+        return convert_dtype(t, dst_dtype)
+
+    output_is_float16 = dst_dtype == "float16"
+    engine_out = "float32" if output_is_float16 else dst_dtype
+
+    if t.meta.dtype == "float16":
+        t = cast_dtype_op(t, "float32")
+
     input_lut = None
     if source_space.is_gamma():
-        # Use 8-bit LUT for uint8 input, otherwise 4096
-        lut_size = 256 if image.dtype == np.uint8 else 4096
+        lut_size = 256 if t.meta.dtype == "uint8" else 4096
         input_lut = ColorSpaceLUT(source_space, inverse=True, size=lut_size)
-    
-    # Compute colorspace conversion matrix
+
     matrix = compute_colorspace_matrix(source_space, dest_space)
-    
-    # Determine output LUT (gamma encode if needed)
+
     output_lut = None
     if dest_space.is_gamma():
         output_lut = ColorSpaceLUT(dest_space, inverse=False, size=4096)
-    
-    # Use fused transform_color pipeline
-    result = transform_color(
-        image,
-        input_lut=input_lut,
-        matrix=matrix,
-        output_lut=output_lut,
-        output_dtype=output_dtype
-    )
-    
-    # Convert back to float16 if requested
+
+    # Same linear space, dtype-only: convert_dtype
+    if input_lut is None and matrix is None and output_lut is None:
+        result = convert_dtype(t, engine_out)
+    else:
+        result = transform_color(
+            t,
+            input_lut=input_lut,
+            matrix=matrix,
+            output_lut=output_lut,
+            dst_dtype=engine_out,
+        )
+
     if output_is_float16:
-        result = result.astype(np.float16)
-    
+        result = cast_dtype_op(result, "float16")
     return result
 
 
 def transform_color(
-    image: np.ndarray,
+    image: Tensor,
     input_lut: LUT | np.ndarray | None = None,
     matrix: np.ndarray | None = None,
     output_lut: LUT | np.ndarray | None = None,
     src_bits: int | None = None,
     dst_bits: int | None = None,
-    output_dtype: np.dtype = np.float32,
-    hue_preserving_input_lut: bool = False
-) -> np.ndarray:
+    dst_dtype: str = "float32",
+    hue_preserving_input_lut: bool = False,
+) -> Tensor:
     """Apply fused LUT→Matrix→LUT color transformation pipeline.
-    
-    This is the recommended way to apply color transformations when you need
-    to combine gamma decoding, color matrix, and gamma encoding in a single
-    efficient pass.
-    
-    Args:
-        image: Input image (H, W, 3), dtype: uint8, uint16, or float32
-        input_lut: Optional input LUT for gamma decoding. Can be:
-                   - LUT object (preferred - automatically converted to C array)
-                   - np.ndarray with shape (N+1,) float32 (last value repeated)
-                   Maps input values to [0, 1] range.
-        matrix: Optional 3x3 color transformation matrix, float32.
-                Applied in linear space after input LUT.
-        output_lut: Optional output LUT for gamma encoding. Can be:
-                    - LUT object (preferred - automatically converted to C array)
-                    - np.ndarray with shape (N+1,) float32 (last value repeated)
-                    Maps [0, 1] values to output range.
-        src_bits: Source bit depth. If None, inferred from dtype
-                  (8 for uint8, 16 for uint16, ignored for float32).
-        dst_bits: Destination bit depth. If None, inferred from output_dtype.
-        output_dtype: Output data type (np.uint8, np.uint16, or np.float32).
-                      Default: np.float32
-        hue_preserving_input_lut: If True, applies hue-preserving tone curve algorithm
-                                  to the input LUT. Only supports float32 input/output.
-                                  Requires input_lut. Default: False
-    
-    Returns:
-        Transformed image (H, W, 3) with output_dtype
-    
-    Examples:
-        >>> from muimg.splines import LUT
-        >>> 
-        >>> # Gamma decode only (12-bit → linear float) using LUT class
-        >>> decode_lut = LUT(lambda x: x ** 2.2, size=4096)
-        >>> linear = transform_color(raw_img, input_lut=decode_lut)
-        
-        >>> # Color matrix only
-        >>> matrix = camera_to_xyz @ xyz_to_srgb
-        >>> rgb = transform_color(linear_img, matrix=matrix)
-        
-        >>> # Full pipeline: decode → matrix → encode
-        >>> decode_lut = LUT(lambda x: x ** 2.2, size=4096)
-        >>> encode_lut = LUT(lambda x: x ** (1/2.2), size=4096)
-        >>> result = transform_color(
-        ...     raw_img,
-        ...     input_lut=decode_lut,
-        ...     matrix=color_matrix,
-        ...     output_lut=encode_lut,
-        ...     src_bits=12,
-        ...     dst_bits=12,
-        ...     output_dtype=np.uint16
-        ... )
-        
-        >>> # Using raw numpy arrays (legacy API)
-        >>> decode_arr = np.linspace(0, 1, 4096) ** 2.2
-        >>> decode_arr = np.append(decode_arr, decode_arr[-1]).astype(np.float32)
-        >>> linear = transform_color(raw_img, input_lut=decode_arr)
-    
-    Notes:
-        - LUT objects are preferred - they automatically handle C array conversion
-        - For numpy arrays, must have size+1 entries with last value repeated
-        - For 8-bit input with 256-entry LUT, uses optimized direct lookup (no interpolation)
-        - All operations are fused in a single pass for maximum cache efficiency
-        - Processes in 128-pixel spans for optimal L1 cache usage
+
+    Wrapper: validate arguments and append ops to a deferred compute graph.
+    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
     """
-    # Validate inputs
-    if image.ndim != 3 or image.shape[2] != 3:
-        raise ValueError(f"Image must be (H, W, 3), got shape {image.shape}")
-    
-    if image.dtype not in (np.dtype(np.uint8), np.dtype(np.uint16), np.dtype(np.float32)):
-        raise ValueError(f"Image dtype must be uint8, uint16, or float32, got {image.dtype}")
-    
-    # Ensure at least one transform is provided
+    t = image
+    if t.meta.channels != 3:
+        raise ValueError(
+            f"Image must be (H, W, 3), got channels={t.meta.channels}"
+        )
+    if t.meta.dtype not in ("uint8", "uint16", "float32"):
+        raise ValueError(
+            f"Image dtype must be uint8, uint16, or float32, got {t.meta.dtype}"
+        )
+
     if input_lut is None and matrix is None and output_lut is None:
-        raise ValueError("transform_color requires at least one of: input_lut, matrix, or output_lut")
-    
-    # Validate hue-preserving mode requirements
+        raise ValueError(
+            "transform_color requires at least one of: input_lut, matrix, or output_lut"
+        )
+
+    if dst_dtype not in ("uint8", "uint16", "float32"):
+        raise ValueError(
+            f"dst_dtype must be uint8, uint16, or float32, got {dst_dtype}"
+        )
+
     if hue_preserving_input_lut:
         if input_lut is None:
             raise ValueError("hue_preserving_input_lut=True requires input_lut")
-        if image.dtype != np.dtype(np.float32):
-            raise ValueError(f"hue_preserving_input_lut=True requires float32 input, got {image.dtype}")
-        # Float32 output only required for LUT-only case (no matrix)
+        if t.meta.dtype != "float32":
+            raise ValueError(
+                f"hue_preserving_input_lut=True requires float32 input, got {t.meta.dtype}"
+            )
         if matrix is None:
             if output_lut is not None:
-                raise ValueError("hue_preserving_input_lut=True with no matrix requires no output_lut")
-            if np.dtype(output_dtype) != np.dtype(np.float32):
-                raise ValueError(f"hue_preserving_input_lut=True with no matrix requires float32 output, got {output_dtype}")
-    
-    # Extract LUT data arrays
+                raise ValueError(
+                    "hue_preserving_input_lut=True with no matrix requires no output_lut"
+                )
+            if dst_dtype != "float32":
+                raise ValueError(
+                    "hue_preserving_input_lut=True with no matrix requires float32 "
+                    f"output, got {dst_dtype}"
+                )
+
     input_lut_array = None
     if input_lut is not None:
         input_lut_array = np.asarray(input_lut, dtype=np.float32)
         if input_lut_array.ndim != 1:
             raise ValueError(f"input_lut must be 1D, got shape {input_lut_array.shape}")
-    
+
     output_lut_array = None
     if output_lut is not None:
         output_lut_array = np.asarray(output_lut, dtype=np.float32)
         if output_lut_array.ndim != 1:
-            raise ValueError(f"output_lut must be 1D, got shape {output_lut_array.shape}")
-    
-    # Validate matrix if provided
+            raise ValueError(
+                f"output_lut must be 1D, got shape {output_lut_array.shape}"
+            )
+
     if matrix is not None:
         if matrix.shape != (3, 3):
             raise ValueError(f"matrix must be (3, 3), got shape {matrix.shape}")
-        if matrix.dtype != np.float32:
-            matrix = matrix.astype(np.float32)
-    
-    # Convert output_dtype to numpy dtype if needed
-    if not isinstance(output_dtype, np.dtype):
-        output_dtype = np.dtype(output_dtype)
-    
-    if output_dtype not in (np.dtype('uint8'), np.dtype('uint16'), np.dtype('float32')):
-        raise ValueError(f"output_dtype must be uint8, uint16, or float32, got {output_dtype}")
-    
-    # Call C++ implementation
-    return _engine_run(
-        engine_ops.transform_color(
-            Tensor(image),
-            input_lut=input_lut_array,
-            matrix=None if matrix is None else np.asarray(matrix, dtype=np.float32).reshape(-1),
-            output_lut=output_lut_array,
-            src_bits=int(src_bits if src_bits is not None else -1),
-            dst_bits=int(dst_bits if dst_bits is not None else -1),
-            dest_dtype=np.dtype(output_dtype).name,
-            hue_preserving=bool(hue_preserving_input_lut),
-        )
+        matrix = np.asarray(matrix, dtype=np.float32)
+
+    return engine_ops.transform_color(
+        t,
+        input_lut=input_lut_array,
+        matrix=matrix,
+        output_lut=output_lut_array,
+        src_bits=int(src_bits if src_bits is not None else -1),
+        dst_bits=int(dst_bits if dst_bits is not None else -1),
+        dest_dtype=dst_dtype,
+        hue_preserving=bool(hue_preserving_input_lut),
     )
 
 
 def clip_and_transform_color(
-    image: np.ndarray,
+    image: Tensor,
     clip_max: np.ndarray,
-    matrix: np.ndarray
-) -> np.ndarray:
-    """Clip RGB channels and apply 3x3 color matrix in single pass.
-    
-    Optimized for camera-to-ProPhoto RGB conversion where per-channel
-    clipping to camera white point is needed before matrix transform.
-    Eliminates temporary array allocation from np.minimum().
-    
-    Args:
-        image: Input RGB image, float32, (H, W, 3)
-        clip_max: Per-channel maximum values, float32, (3,)
-        matrix: 3x3 color transformation matrix, float32, (3, 3)
-    
-    Returns:
-        Transformed RGB image, float32, (H, W, 3)
-    
-    Examples:
-        >>> # Camera to ProPhoto RGB with white point clipping
-        >>> camera_white = np.array([1.0, 0.95, 0.98], dtype=np.float32)
-        >>> camera_to_prophoto = compute_camera_to_prophoto_matrix()
-        >>> rgb_prophoto = clip_and_transform_color(
-        ...     rgb_camera, clip_max=camera_white, matrix=camera_to_prophoto)
+    matrix: np.ndarray,
+) -> Tensor:
+    """Clip RGB channels and apply 3x3 color matrix in a single pass.
+
+    Wrapper: validate arguments and append ops to a deferred compute graph.
+    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
     """
-    if image.ndim != 3 or image.shape[2] != 3:
-        raise ValueError(f"Image must be (H, W, 3), got {image.shape}")
-    if image.dtype != np.float32:
-        raise ValueError(f"Image must be float32, got {image.dtype}")
+    t = image
+    if t.meta.channels != 3:
+        raise ValueError(f"Image must be (H, W, 3), got channels={t.meta.channels}")
+    if t.meta.dtype != "float32":
+        raise ValueError(f"Image must be float32, got {t.meta.dtype}")
     if clip_max.shape != (3,):
         raise ValueError(f"clip_max must be (3,), got {clip_max.shape}")
     if matrix.shape != (3, 3):
         raise ValueError(f"Matrix must be (3, 3), got {matrix.shape}")
-    
-    return _engine_run(
-        engine_ops.clip_and_transform_color(
-            Tensor(image),
-            clip_max=clip_max.astype(np.float32).reshape(-1),
-            matrix=matrix.astype(np.float32).reshape(-1),
-        )
+
+    return engine_ops.clip_and_transform_color(
+        t,
+        clip_max=np.asarray(clip_max, dtype=np.float32),
+        matrix=np.asarray(matrix, dtype=np.float32),
     )
 
 
@@ -634,146 +504,72 @@ def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
 
 
 def demosaic(
-    image_data: np.ndarray | Tensor,
+    image_data: Tensor,
     cfa_pattern: str,
     algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     clip_max: float | None = None,
-    return_dtype: np.dtype | None = None,
-) -> np.ndarray | Tensor:
+    dst_dtype: str | None = None,
+) -> Tensor:
     """Demosaic CFA data to RGB.
 
-    Accepts a NumPy CFA array, or anything array-like (including ``Tensor``).
-    Getting the array from a Tensor materializes its engine graph via the
-    NumPy ``__array__`` protocol. If the input was a Tensor, the RGB result is
-    wrapped in a concrete ``Tensor`` so callers can continue with ``engines.ops``.
-
-    Accepts uint8, uint16, or float32 input. Output dtype matches input dtype
-    by default, or can be specified via return_dtype.
-    Algorithms that don't support the input dtype will convert internally
-    (with a warning logged).
+    Wrapper: validate arguments and append ops to a deferred compute graph
+    (engine and/or python ops depending on ``algorithm``). Does not run pixels;
+    call ``.compute()`` on the returned ``Tensor`` to materialize.
 
     Args:
-        image_data: 2D raw CFA data array (uint8, uint16, or float32), or
-            ``Tensor`` / array-like (graph is materialized when the array
-            is obtained)
+        image_data: CFA Tensor (uint8, uint16, float16, float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
-        algorithm: Demosaic algorithm:
-            - DemosaicAlgorithm.OPENCV_EA (default): Fastest, uint8/uint16 only
-            - DemosaicAlgorithm.VNG: Variable Number of Gradients, uint16 only
-            - DemosaicAlgorithm.RCD: Best quality/speed, supports float32 natively (optional dependency)
-            - DemosaicAlgorithm.DNGSDK_BILINEAR: DNG SDK bilinear, float32 only
+        algorithm: Demosaic algorithm selector
         clip_max: Optional max value to clip output to (e.g., 1.0 for float32)
-        return_dtype: Optional output dtype. If None, matches input dtype.
-    Returns:
-        RGB ndarray, or ``Tensor`` when ``image_data`` was a Tensor
-    """
-    was_tensor = isinstance(image_data, Tensor)
-    if was_tensor:
-        if image_data.meta.channels != 1:
-            raise ValueError("demosaic input must be mono / CFA (1 channel)")
-    image_data = np.asarray(image_data)
+        dst_dtype: Optional destination dtype name. If None, matches input dtype.
 
-    # Validate inputs
-    if image_data.ndim != 2:
-        raise ValueError(
-            f"image_data must be a 2D array, but got {image_data.ndim} dimensions."
-        )
-    if image_data.size == 0:
+    Returns:
+        Lazy RGB ``Tensor``
+    """
+    t = image_data
+    if t.meta.channels != 1:
+        raise ValueError("demosaic input must be mono / CFA (1 channel)")
+    if t.meta.height < 1 or t.meta.width < 1:
         raise ValueError("image_data must not be empty.")
-    
+
     if not isinstance(cfa_pattern, str):
         raise TypeError(
             f"cfa_pattern must be a string, but got {type(cfa_pattern).__name__}."
         )
-    
-    # Validate CFA pattern
     if cfa_pattern not in CFA_PATTERN_TO_CODES:
         raise ValueError(
             f"Invalid CFA pattern: '{cfa_pattern}'. "
             f"Supported patterns are: {list(CFA_PATTERN_TO_CODES)}."
         )
-    
-    # Validate algorithm
     if not isinstance(algorithm, DemosaicAlgorithm):
         raise TypeError(
-            f"algorithm must be a DemosaicAlgorithm enum, but got {type(algorithm).__name__}. "
+            f"algorithm must be a DemosaicAlgorithm enum, but got "
+            f"{type(algorithm).__name__}. "
             f"Supported algorithms are: {list(DemosaicAlgorithm)}."
         )
 
-    input_dtype = image_data.dtype
-    output_dtype = return_dtype if return_dtype is not None else input_dtype
-    timer = get_active_timer()
+    out_dtype = dst_dtype if dst_dtype is not None else t.meta.dtype
 
     if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
-        # convert_dtype + bilinear in one engine segment when needed
-        timer.start_step("bilinear_demosaic (engine)")
-        x = _as_tensor(image_data)
-        if x.meta.dtype != "float32":
-            x = _tensor_convert(x, "float32")
-        rgb = _engine_run(
-            engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
-        )
-        timer.end_step()
+        x = convert_dtype(t, "float32")
+        rgb = engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
+        return convert_dtype(rgb, out_dtype, clip_max=clip_max)
 
-    elif algorithm == DemosaicAlgorithm.RCD:
-        # RCD: float32 kernel (expects 0-1 normalized data)
-        # RCD is GPL-licensed and optional - see README for setup instructions
-        try:
-            from . import _rcd
-        except ImportError:
-            raise ImportError(
-                "RCD demosaicing is not available. RCD is GPL-licensed and must be "
-                "enabled separately. See README.md for instructions to enable RCD, "
-                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
-            )
-        timer.start_step("convert_dtype (pre)")
-        data_f32 = convert_dtype(image_data, np.float32)  # RCD expects float32 in 0-1 range
-        timer.start_step("rcd_demosaic (c++)")
-        rgb = _rcd.rcd_demosaic(data_f32, cfa_pattern)
-        timer.end_step()
-
+    # Working dtype required by each python kernel
+    if algorithm == DemosaicAlgorithm.RCD:
+        work = convert_dtype(t, "float32")
     elif algorithm == DemosaicAlgorithm.VNG:
-        # VNG: uint16 kernel
-        if input_dtype in (np.float32, np.float64):
-            logger.debug(f"VNG requires uint16; converting from {input_dtype}")
-        from . import _vng
-        timer.start_step("convert_dtype (pre)")
-        data_u16 = convert_dtype(image_data, np.uint16)  # VNG expects uint16
-        timer.start_step("vng_demosaic (c++)")
-        rgb = _vng.vng_demosaic(data_u16, cfa_pattern)
-        timer.end_step()
-
+        work = convert_dtype(t, "uint16")
     elif algorithm == DemosaicAlgorithm.OPENCV_EA:
-        # Swapped Bayer patterns produce output compatible with pipeline
-        # Avoids costly [..., [2, 1, 0]] channel reordering after demosaicing
-        bayer_map_bgr = {
-            "RGGB": cv2.COLOR_BAYER_BG2RGB_EA,  # RGGB→BGR
-            "BGGR": cv2.COLOR_BAYER_RG2RGB_EA,  # BGGR→BGR
-            "GRBG": cv2.COLOR_BAYER_GB2RGB_EA,  # GRBG→BGR
-            "GBRG": cv2.COLOR_BAYER_GR2RGB_EA,  # GBRG→BGR
-        }
-        if input_dtype in (np.float32, np.float64):
-            logger.debug(f"OPENCV_EA requires uint8/uint16; converting from {input_dtype}")
-            timer.start_step("convert_dtype (pre)")
-            data_u16 = convert_dtype(image_data, np.uint16)
-
-            # demosaic output: (h, w, 3) uint16
-            timer.start_step("ea_demosaicing (opencv)")
-            rgb = cv2.demosaicing(data_u16, bayer_map_bgr[cfa_pattern])
-            timer.end_step()
+        if t.meta.dtype in ("uint8", "uint16"):
+            work = t
         else:
-            timer.start_step("ea_demosaicing (opencv)")
-            rgb = cv2.demosaicing(image_data, bayer_map_bgr[cfa_pattern])  # BGR output
-            timer.end_step()
-
+            work = convert_dtype(t, "uint16")
     else:
         raise ValueError(f"Unsupported demosaic algorithm: {algorithm}")
 
-    timer.start_step("convert_dtype (post)")
-    rgb = convert_dtype(rgb, output_dtype, clip_max=clip_max)
-    timer.end_step()
-
-    return Tensor(rgb) if was_tensor else rgb
+    rgb = demosaic_op(work, cfa_pattern, algorithm.name)
+    return convert_dtype(rgb, out_dtype, clip_max=clip_max)
 
 
 # =============================================================================
@@ -1921,7 +1717,7 @@ def apply_opcodes(
     """
     x = data
     if x.meta.dtype != "float32":
-        x = _tensor_convert(x, "float32")
+        x = convert_dtype(x, "float32")
     num_channels = x.meta.channels
 
     for opcode in opcodes:
@@ -2071,9 +1867,9 @@ def apply_opcodes_cfa(
 
     want_uint16 = x0.meta.dtype == "uint16"
     if want_uint16:
-        x = x0 if x0.meta.dtype == "uint16" else _tensor_convert(x0, "uint16")
+        x = x0 if x0.meta.dtype == "uint16" else convert_dtype(x0, "uint16")
     else:
-        x = x0 if x0.meta.dtype == "float32" else _tensor_convert(x0, "float32")
+        x = x0 if x0.meta.dtype == "float32" else convert_dtype(x0, "float32")
 
     for opcode in opcodes:
         opcode_type = opcode.get('type')
@@ -2084,7 +1880,7 @@ def apply_opcodes_cfa(
                     "FixBadPixelsConstant requires uint16 input data, skipping"
                 )
                 continue
-            x = _tensor_convert(x, "uint16")
+            x = convert_dtype(x, "uint16")
             constant = opcode['constant']
             bayer_phase = opcode['bayer_phase']
             logger.debug(
@@ -2098,7 +1894,7 @@ def apply_opcodes_cfa(
             )
 
         elif opcode_type == 'GainMap':
-            x = _tensor_convert(x, "float32")
+            x = convert_dtype(x, "float32")
             area = opcode['area']
             logger.debug(
                 f"GainMap CFA: area={area}, plane={opcode['plane']}, "
@@ -2125,7 +1921,7 @@ def apply_opcodes_cfa(
             )
 
         elif opcode_type == 'MapPolynomial':
-            x = _tensor_convert(x, "float32")
+            x = convert_dtype(x, "float32")
             area = opcode['area']
             coefficients = np.asarray(opcode['coefficients'], dtype=np.float32)
             logger.debug(
@@ -2143,7 +1939,7 @@ def apply_opcodes_cfa(
             )
 
         elif opcode_type == 'FixVignetteRadial':
-            x = _tensor_convert(x, "float32")
+            x = convert_dtype(x, "float32")
             logger.debug(
                 f"FixVignetteRadial CFA: center=({opcode['center_x']:.4f}, "
                 f"{opcode['center_y']:.4f}), coeffs={opcode['coefficients']}"
@@ -2160,7 +1956,7 @@ def apply_opcodes_cfa(
             logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
 
     if want_uint16:
-        x = _tensor_convert(x, "uint16")
+        x = convert_dtype(x, "uint16")
     return x
 
 def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure: bool = True) -> np.ndarray:
@@ -2814,11 +2610,11 @@ def apply_post_rendering_operations(
         
         xmp_tone_timer.start_step("transform_color (c++)")
         rgb_output = transform_color(
-            rgb_output,
+            Tensor(rgb_output),
             input_lut=main_curve_lut,
             hue_preserving_input_lut=True,
-            output_dtype=np.float32
-        )
+            dst_dtype="float32"
+        ).compute()
         xmp_tone_timer.close()
         logger.debug("Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)")
     
@@ -2975,7 +2771,6 @@ def _linearize(
     Returns:
         Normalized float32 Tensor with opcode lists applied.
     """
-    timer = get_active_timer()
     is_cfa = photometric == "CFA"
     is_linear_raw = photometric == "LINEAR_RAW"
 
@@ -2985,7 +2780,6 @@ def _linearize(
     if opcode_list1 is not None and not is_cfa:
         logger.warning("OpcodeList1 present on non-CFA page; skipping")
     if opcode_list1 is not None and is_cfa:
-        ops1_timer = timer.start_step("opcode_list1")
         try:
             opcodes = parse_opcode_list(bytes(opcode_list1))
         except Exception as e:
@@ -2995,12 +2789,9 @@ def _linearize(
         if opcodes:
             try:
                 logger.debug(f"OpcodeList1: {len(opcodes)} opcodes")
-                ops1_timer.start_step("apply_opcodes_cfa (c++)")
                 x = apply_opcodes_cfa(x, opcodes, "OpcodeList1")
-                ops1_timer.end_step()
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList1 ({type(e).__name__}): {e}")
-        ops1_timer.close()
 
     if is_cfa:
         samples_per_pixel = 1
@@ -3104,14 +2895,11 @@ def _linearize(
         and np.all(white_level == default_white)
     )
 
-    timer.start_step("linearize (c++)")
     if is_pure_convert:
-        normalized = engine_ops.convert_dtype(
+        normalized = convert_dtype(
             x,
-            dest_dtype="float32",
+            "float32",
             src_bits=int(bits_per_sample),
-            dst_bits=-1,
-            clip_max=-1.0,
         )
     else:
         # normalize_raw accepts uint16 or float32 natively;
@@ -3136,11 +2924,9 @@ def _linearize(
             black_delta_v=None if black_delta_v is None else np.asarray(black_delta_v, dtype=np.float32).reshape(-1),
             linearization_table=lin,
         )
-    timer.end_step()
 
     opcode_list2 = tags.get_tag("OpcodeList2")
     if opcode_list2 is not None:
-        ops2_timer = timer.start_step("opcode_list2")
         try:
             opcodes = parse_opcode_list(bytes(opcode_list2))
         except Exception as e:
@@ -3153,25 +2939,17 @@ def _linearize(
                             f"is_linear_raw={is_linear_raw}, is_cfa={is_cfa}, "
                             f"data.shape={normalized.shape}")
                 if is_linear_raw:
-                    ops2_timer.start_step("apply_opcodes (c++)")
-                    normalized = apply_opcodes(
+                    return apply_opcodes(
                         normalized, opcodes,
                         use_bicubic=False,
                         opcode_list_name="OpcodeList2"
                     )
-                    ops2_timer.close()
-                    return normalized
-                else:
-                    # CFA data
-                    ops2_timer.start_step("apply_opcodes_cfa (c++)")
-                    normalized = apply_opcodes_cfa(
-                        normalized, opcodes, "OpcodeList2"
-                    )
-                    ops2_timer.close()
-                    return normalized
+                # CFA data
+                return apply_opcodes_cfa(
+                    normalized, opcodes, "OpcodeList2"
+                )
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList2 ({type(e).__name__}): {e}")
-        ops2_timer.close()
 
     return normalized
 
@@ -3196,34 +2974,28 @@ def _render_to_camera_space(
         Camera-space Tensor: (H, W, 3) float32 in [0, 1] for CFA/RGB, or
         monochrome (H, W) / (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
     """
-    timer = get_active_timer()
-
     normalized = _linearize(tags, x, photometric)
 
     if photometric == "CFA":
-        demosaic_timer = timer.start_step("demosaic")
-        if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
-            # Engine bilinear (lazy); guarantees [0,1] via averaging — no clip
-            x = normalized
-            if x.meta.dtype != "float32":
-                x = _tensor_convert(x, "float32")
-            rgb_camera = engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
-        else:
-            rgb_camera = demosaic_op(
-                normalized,
-                cfa_pattern,
-                demosaic_algorithm.name,
-                clip_max=1.0,
-                return_dtype="float32",
-            )
-        demosaic_timer.close()
+        # Bilinear averages into [0,1] — no clip; others clip to 1.0
+        clip = (
+            None
+            if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR
+            else 1.0
+        )
+        rgb_camera = demosaic(
+            normalized,
+            cfa_pattern,
+            algorithm=demosaic_algorithm,
+            clip_max=clip,
+            dst_dtype="float32",
+        )
     else:
         rgb_camera = normalized
 
     # Apply OpcodeList3 (Stage3 operations)
     opcode_list3 = tags.get_tag("OpcodeList3")
     if opcode_list3 is not None:
-        ops3_timer = timer.start_step("opcode_list3")
         try:
             opcodes = parse_opcode_list(bytes(opcode_list3))
         except Exception as e:
@@ -3233,16 +3005,13 @@ def _render_to_camera_space(
         if opcodes:
             try:
                 logger.debug(f"OpcodeList3: {len(opcodes)} opcodes")
-                ops3_timer.start_step("apply_opcodes (c++)")
                 rgb_camera = apply_opcodes(
                     rgb_camera, opcodes,
                     use_bicubic=False,
                     opcode_list_name="OpcodeList3"
                 )
-                ops3_timer.end_step()
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
-        ops3_timer.close()
 
     # Apply DefaultCrop — Step 3: portable crop op (no .compute() here).
     crop_origin = tags.get_tag("DefaultCropOrigin")
@@ -3432,9 +3201,9 @@ def _render_camera_rgb(
         
         cam2pro_timer.start_step("clip_and_transform_color (c++)")
         rgb_prophoto = clip_and_transform_color(
-            rgb_camera,
+            Tensor(rgb_camera),
             clip_max=camera_white.astype(np.float32),
-            matrix=camera_to_prophoto.astype(np.float32))
+            matrix=camera_to_prophoto.astype(np.float32)).compute()
         cam2pro_timer.close()
         del rgb_camera
         
@@ -3444,7 +3213,7 @@ def _render_camera_rgb(
         # Applied AFTER camera->ProPhoto, BEFORE exposure ramp
         # =====================================================================
         # Chain HueSatMap + PGTM into one engine segment when both apply.
-        rgb_t = _as_tensor(rgb_prophoto)
+        rgb_t = Tensor(rgb_prophoto)
         engine_segment = False
 
         hue_sat_dims = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapDims")
@@ -3542,7 +3311,7 @@ def _render_camera_rgb(
             pgtm_timer.close()
 
         if engine_segment:
-            rgb_prophoto = _engine_run(rgb_t)
+            rgb_prophoto = rgb_t.compute()
 
         # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
@@ -3598,22 +3367,17 @@ def _render_camera_rgb(
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             timer.start_step("exposure_ramp+look_table (engine)")
             lut_arr = np.asarray(exposure_ramp_lut, dtype=np.float32).reshape(-1)
-            rgb_exposed = _engine_run(
-                engine_ops.apply_hue_sat_map(
-                    engine_ops.transform_color(
-                        _as_tensor(rgb_prophoto),
-                        input_lut=lut_arr,
-                        src_bits=-1,
-                        dst_bits=-1,
-                        dest_dtype="float32",
-                        hue_preserving=False,
-                    ),
-                    map_data=np.asarray(look_table, dtype=np.float32).reshape(-1),
-                    hue_divs=int(look_hue_divs),
-                    sat_divs=int(look_sat_divs),
-                    val_divs=int(look_val_divs),
-                )
-            )
+            rgb_exposed = engine_ops.apply_hue_sat_map(
+                transform_color(
+                    Tensor(rgb_prophoto),
+                    input_lut=lut_arr,
+                    dst_dtype="float32",
+                ),
+                map_data=np.asarray(look_table, dtype=np.float32).reshape(-1),
+                hue_divs=int(look_hue_divs),
+                sat_divs=int(look_sat_divs),
+                val_divs=int(look_val_divs),
+            ).compute()
             timer.end_step()
 
             # Start combined curve with identity (exposure_ramp already applied to pixels)
@@ -3676,11 +3440,11 @@ def _render_camera_rgb(
             # Post-rendering exists: apply tone curve first, then post-rendering
             timer.start_step("tone_curve (c++)")
             rgb_toned = transform_color(
-                rgb_exposed,
+                Tensor(rgb_exposed),
                 input_lut=combined_curve,
                 hue_preserving_input_lut=True,
-                output_dtype=np.float32
-            )
+                dst_dtype="float32"
+            ).compute()
             timer.end_step()
             del rgb_exposed
 
@@ -3703,13 +3467,13 @@ def _render_camera_rgb(
         output_lut = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=False, size=4096)
         convert_timer.start_step("transform_color (c++)")
         result = transform_color(
-            rgb_to_convert,
+            Tensor(rgb_to_convert),
             input_lut=tone_input_lut,
             matrix=matrix,
             output_lut=output_lut,
             hue_preserving_input_lut=True if tone_input_lut else False,
-            output_dtype=output_dtype
-        )
+            dst_dtype=np.dtype(output_dtype).name,
+        ).compute()
         convert_timer.close()
         del rgb_to_convert
 
@@ -3867,10 +3631,10 @@ def _render_camera_monochrome(
 
         # Use optimized C++ mono_lut for single channel processing
         result = mono_lut(
-            mono_camera,
-            output_lut=final_lut,
-            output_dtype=output_dtype,
-        )
+            Tensor(mono_camera),
+            lut=final_lut,
+            dst_dtype=np.dtype(output_dtype).name,
+        ).compute()
         timer.end_step()
 
         # =====================================================================

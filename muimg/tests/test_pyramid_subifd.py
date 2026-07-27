@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from muimg.dngio import DngFile, IfdPageSpec, IfdDataSpec, SubFileType, write_dng
+from muimg.tensor import Tensor
 from muimg.raw_render import DemosaicAlgorithm
 from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
@@ -146,8 +147,9 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         assert len(linear_pages) >= len(pyramid_levels) + pyramid_start_idx
 
         for i, expected in enumerate(pyramid_levels):
-            got_arr = linear_pages[i + pyramid_start_idx].get_linear_raw()
-            assert got_arr is not None
+            got_t = linear_pages[i + pyramid_start_idx].get_linear_raw()
+            assert got_t is not None
+            got_arr = got_t.compute()
             assert got_arr.shape == expected.shape
             assert got_arr.dtype == expected.dtype
             assert np.array_equal(got_arr, expected)
@@ -177,6 +179,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         cfa_result = page.get_cfa()
         assert cfa_result is not None
         cfa_u16_full, cfa_pattern = cfa_result
+        cfa_u16_full = cfa_u16_full.compute()
         assert cfa_u16_full.dtype == np.uint16
 
         crop_w, crop_h = 1100, 800
@@ -198,7 +201,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         from muimg import raw_render
 
         rgb_u16_active = raw_render.demosaic(
-            cfa_u16_active, cfa_pattern, algorithm=DemosaicAlgorithm.OPENCV_EA)
+            Tensor(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.OPENCV_EA).compute()
         assert rgb_u16_active.dtype == np.uint16
         pyramid_levels = _build_pyramid_rgb_u16(rgb_u16_active)
         if not pyramid_levels:
@@ -291,8 +294,9 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         assert len(linear_pages) >= len(pyramid_levels)
 
         for i, expected in enumerate(pyramid_levels):
-            got_arr = linear_pages[i].get_linear_raw()
-            assert got_arr is not None
+            got_t = linear_pages[i].get_linear_raw()
+            assert got_t is not None
+            got_arr = got_t.compute()
             assert got_arr.shape == expected.shape
             assert got_arr.dtype == expected.dtype
             assert np.array_equal(got_arr, expected)

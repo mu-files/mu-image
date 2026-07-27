@@ -15,6 +15,7 @@ import pytest
 import tifffile
 
 from muimg.raw_render import convert_dtype
+from muimg.tensor import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,7 @@ def generate_rgb_ramp(
     
     # Convert to target dtype if needed
     if dtype != np.float32:
-        img = convert_dtype(img, dtype)
+        img = convert_dtype(Tensor(img), np.dtype(dtype).name).compute()
     
     # Scale to specified bit depth if requested
     if bits_per_sample is not None:

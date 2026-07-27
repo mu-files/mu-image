@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import auto, Enum, IntEnum
 from pathlib import Path
-from typing import Any, IO, TypeAlias
+from typing import Any, IO, Sequence, TypeAlias
 
 from .deps import (
     cv2_proxy as cv2,
@@ -497,12 +497,13 @@ class DngPage(tifffile.TiffPage):
         else:
             return self.asarray()
 
-    def get_cfa(self) -> tuple[np.ndarray, str] | None:
+    def get_cfa(self) -> tuple[Tensor, str] | None:
         """Extract CFA data and pattern from this page.
 
         Returns:
-            Tuple of (cfa_array, cfa_pattern_str) or None if not a CFA page.
-            cfa_pattern_str is e.g., 'RGGB', 'BGGR'.
+            Tuple of (cfa ``Tensor``, cfa_pattern_str) or None if not a CFA page.
+            cfa_pattern_str is e.g., 'RGGB', 'BGGR'. Decode is eager; the
+            returned handle is a source ``Tensor`` for composing follow-on ops.
         """
         if not self.is_cfa:
             return None
@@ -524,13 +525,14 @@ class DngPage(tifffile.TiffPage):
 
         cfa_pattern = self.get_tag("CFAPattern", str) or "RGGB"
 
-        return raw_cfa, cfa_pattern
-    
-    def get_linear_raw(self) -> np.ndarray | None:
+        return Tensor(raw_cfa), cfa_pattern
+
+    def get_linear_raw(self) -> Tensor | None:
         """Extract LINEAR_RAW data from this page.
 
         Returns:
-            Raw linear data array or None if not a LINEAR_RAW page.
+            Source ``Tensor`` of linear raw data, or None if not a LINEAR_RAW
+            page. Decode is eager; callers compose follow-on ops and ``.compute()``.
         """
         if not self.is_linear_raw:
             return None
@@ -540,7 +542,9 @@ class DngPage(tifffile.TiffPage):
         raw_linear = self._decode_raw()
         timer.end_step()
 
-        return raw_linear
+        if raw_linear is None:
+            return None
+        return Tensor(raw_linear)
 
     def get_camera_raw(
         self,
@@ -588,7 +592,7 @@ class DngPage(tifffile.TiffPage):
             data, cfa_pattern = cfa_result
 
         return raw_render._render_to_camera_space(
-            self, Tensor(data), self.photometric_name, cfa_pattern, demosaic_algorithm
+            self, data, self.photometric_name, cfa_pattern, demosaic_algorithm
         )
     
     def decode_to_rgb(
@@ -627,7 +631,7 @@ class DngPage(tifffile.TiffPage):
         
         # Convert dtype if needed
         if image.dtype != output_dtype:
-            image = raw_render.convert_dtype(image, output_dtype)
+            image = raw_render.convert_dtype(Tensor(image), np.dtype(output_dtype).name).compute()
         
         return image
     
@@ -924,11 +928,11 @@ class DngFile(tifffile.TiffFile):
         method = getattr(page, method_name)
         return method(*args, **kwargs)
         
-    def get_cfa(self) -> tuple[np.ndarray, str] | None:
+    def get_cfa(self) -> tuple[Tensor, str] | None:
         """See `DngPage.get_cfa`."""
         return self._forward_main_page("get_cfa")
 
-    def get_linear_raw(self) -> np.ndarray | None:
+    def get_linear_raw(self) -> Tensor | None:
         """See `DngPage.get_linear_raw`."""
         return self._forward_main_page("get_linear_raw")
 
@@ -1464,7 +1468,7 @@ def write_dng(
     destination_file: str | Path | io.BytesIO,
     *,
     ifd0_spec: IfdSpec,
-    subifds: list[IfdSpec] = None,
+    subifds: Sequence[IfdSpec] | None = None,
     num_compression_workers: int = 1,
 ) -> None:
     """Write raw data to a DNG file using tifffile.
@@ -1479,6 +1483,8 @@ def write_dng(
             if IFD0 contains the main image (no preview).
         num_compression_workers: Number of parallel compression workers (default: 1).
     """
+    subifds_list: list[IfdSpec] = list(subifds) if subifds is not None else []
+
     def _write_page_ifd(
         writer: tifffile.TiffWriter,
         page: "DngPage",
@@ -1680,7 +1686,7 @@ def write_dng(
             is_ifd0,
             subfiletype,
             photometric,
-            len(subifds) if is_ifd0 else 0,
+            len(subifds_list) if is_ifd0 else 0,
             compression_args,
         )
         
@@ -1716,10 +1722,12 @@ def write_dng(
                 if cfa_result is None:
                     raise ValueError("Failed to extract CFA data from page")
                 uncomp_data, _ = cfa_result
+                uncomp_data = uncomp_data.compute()
             elif photometric == "LINEAR_RAW":
-                uncomp_data = spec.page.get_linear_raw()
-                if uncomp_data is None:
+                uncomp_t = spec.page.get_linear_raw()
+                if uncomp_t is None:
                     raise ValueError("Failed to extract LINEAR_RAW data from page")
+                uncomp_data = uncomp_t.compute()
             else:
                 # Non-raw photometric (RGB, YCBCR, etc.) - use asarray like decode() does
                 try:
@@ -1903,12 +1911,8 @@ def write_dng(
 
 
 
-    # Initialize subifds list
-    if subifds is None:
-        subifds = []
-    
     # Scan all IFD specs to find the main image
-    all_specs = [ifd0_spec] + subifds
+    all_specs = [ifd0_spec] + subifds_list
     main_specs = [spec for spec in all_specs if spec.subfiletype == SubFileType.MAIN_IMAGE]
     
     if len(main_specs) > 1:
@@ -1936,7 +1940,7 @@ def write_dng(
             )
 
             # Write subifds
-            for spec in subifds:
+            for spec in subifds_list:
                 _write_ifd_from_spec(
                     tif,
                     spec,
@@ -1958,7 +1962,7 @@ def write_dng(
 def create_dng(
     *,
     ifd0_spec: IfdSpec,
-    subifds: list[IfdSpec] = None,
+    subifds: Sequence[IfdSpec] | None = None,
 ) -> "DngFile":
     """Create a DNG file in memory and return as DngFile object.
     
@@ -2161,38 +2165,42 @@ def _write_dng_with_params(
     timer = get_active_timer()
 
     # Extract camera RGB (always needed if we didn't take fast return path)
-    timer.start_step("extract_camera_rgb")
     logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
-    cfa_pattern = None
-    if isinstance(main_spec, IfdPageSpec):
-        if main_spec.page.is_linear_raw:
-            raw_data = main_spec.page.get_linear_raw()
-        else:
-            cfa_result = main_spec.page.get_cfa()
-            if cfa_result is None:
-                raise RuntimeError("Failed to extract CFA data")
-            raw_data, cfa_pattern = cfa_result
-        if raw_data is None:
-            raise RuntimeError("Failed to extract raw data")
-        
-        photometric = main_spec.page.photometric_name
-    else:
-        raw_data = main_spec.data
-        photometric = main_spec.photometric
-        if photometric == "CFA":
-            cfa_pattern = (
-                main_spec.cfa_pattern
-                or (main_spec.extratags.get_tag("CFAPattern")
-                    if main_spec.extratags else None)
-                or "RGGB"
-            )
+    _extract = timer.start_step("extract_camera_rgb")
+    try:
+        cfa_pattern = None
+        if isinstance(main_spec, IfdPageSpec):
+            if main_spec.page.is_linear_raw:
+                raw_t = main_spec.page.get_linear_raw()
+            else:
+                cfa_result = main_spec.page.get_cfa()
+                if cfa_result is None:
+                    raise RuntimeError("Failed to extract CFA data")
+                raw_t, cfa_pattern = cfa_result
+            if raw_t is None:
+                raise RuntimeError("Failed to extract raw data")
 
-    camera_raw = raw_render._render_to_camera_space(
-        main_spec.extratags, Tensor(raw_data), photometric, cfa_pattern, demosaic_algorithm
-    )
-    # Op timings nest under the open ``extract_camera_rgb`` step.
-    camera_raw = camera_raw.compute(timer=timer)
-    timer.end_step()
+            photometric = main_spec.page.photometric_name
+            src_dtype = raw_t.dtype
+        else:
+            raw_t = Tensor(main_spec.data)
+            photometric = main_spec.photometric
+            src_dtype = raw_t.dtype
+            if photometric == "CFA":
+                cfa_pattern = (
+                    main_spec.cfa_pattern
+                    or (main_spec.extratags.get_tag("CFAPattern")
+                        if main_spec.extratags else None)
+                    or "RGGB"
+                )
+
+        camera_raw = raw_render._render_to_camera_space(
+            main_spec.extratags, raw_t, photometric, cfa_pattern, demosaic_algorithm
+        )
+        # Nest op timings under this step (not the parent root).
+        camera_raw = camera_raw.compute(timer=_extract)
+    finally:
+        _extract.close()
     
     # if we are transforming then the main_spec is always a DataSpec with the transformed data
     if ((demosaic and photometric == "CFA") or scale != 1.0):
@@ -2221,11 +2229,12 @@ def _write_dng_with_params(
         # Strip stage/digest tags since we are writing a new linear_raw DNG
         tags_to_strip = STAGE1_STAGE2_TAGS | STAGE3_TAGS | _DIGEST_TAGS
         _filter_metadata_tags(ifd0_tags, exclude_names=tags_to_strip)
-        _filter_metadata_tags(main_spec.extratags, exclude_names=tags_to_strip)
+        if main_spec.extratags is not None:
+            _filter_metadata_tags(main_spec.extratags, exclude_names=tags_to_strip)
 
         # change main_spec - preserve original input dtype
         main_spec = IfdDataSpec(
-            data=raw_render.convert_dtype(camera_raw, raw_data.dtype),
+            data=raw_render.convert_dtype(Tensor(camera_raw), src_dtype).compute(),
             photometric="LINEAR_RAW",
             subfiletype=SubFileType.MAIN_IMAGE,
             encoding=main_encoding,
@@ -2273,7 +2282,7 @@ def _write_dng_with_params(
         for level_idx in range(1, max_pyramid_level):
             level_data = pyramid_images[level_idx]
             pyramid_spec = IfdDataSpec(
-                data=raw_render.convert_dtype(level_data, raw_data.dtype),
+                data=raw_render.convert_dtype(Tensor(level_data), src_dtype).compute(),
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 encoding=pyramid.encoding,
