@@ -397,7 +397,11 @@ def compute(root: Tensor) -> np.ndarray:
         if _is_python_node(op_tensors[i]):
             node = op_tensors[i]._node
             assert node is not None
-            step = parent.start_step(f"{node.op} (python)") if record else PerfTimer.inactive
+            if record:
+                assert parent is not None
+                step = parent.start_step(f"{node.op} (python)")
+            else:
+                step = PerfTimer.inactive
             _run_python_node(op_tensors[i], values)
             step.close()
             i += 1
@@ -411,7 +415,11 @@ def compute(root: Tensor) -> np.ndarray:
         if not outs:
             outs = [segment[-1]]
 
-        seg_step = parent.start_step("graph_compute") if record else PerfTimer.inactive
+        if record:
+            assert parent is not None
+            seg_step = parent.start_step("graph_compute")
+        else:
+            seg_step = PerfTimer.inactive
         engine.execute_segment(segment, values, outs)
         seg_step.close()
         i = j

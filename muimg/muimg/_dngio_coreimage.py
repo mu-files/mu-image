@@ -8,10 +8,14 @@ import logging
 import numpy as np
 import os
 
-from typing import Any, IO
+from typing import TYPE_CHECKING, Any, IO
 
 # Package imports
 from .splines import CubicSpline
+
+if TYPE_CHECKING:
+    from .dngio import DngFile
+    from .tensor import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +367,10 @@ def render_dng_coreimage(
                 row_bytes = width * 4 * bytes_per_channel  # 4 channels (RGBA)
                 bitmap_buffer = NSMutableData.dataWithLength_(height * row_bytes)
 
-                context.context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
+                ci_context = context.context
+                if ci_context is None:
+                    raise RuntimeError("Core Image context is closed")
+                ci_context.render_toBitmap_rowBytes_bounds_format_colorSpace_(
                     output_ci_image,
                     bitmap_buffer,
                     row_bytes,

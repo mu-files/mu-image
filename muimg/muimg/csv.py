@@ -8,7 +8,7 @@ import threading
 from dataclasses import asdict, fields
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, get_args, get_type_hints
+from typing import Any, TextIO, get_args, get_type_hints
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,8 @@ class CsvWriter:
             else:
                 ordered_row.append(value)
         self.writer.writerow(ordered_row)
+        if self.file_handle is None:
+            raise RuntimeError("CSV file handle is closed")
         self.file_handle.flush()
 
     def close(self):
@@ -383,6 +385,9 @@ class CsvReader:
 
                 field_type = type_hints.get(field_name)
                 value_str = row_dict.get(field_name)
+
+                if field_type is None:
+                    continue
 
                 if value_str is None or (not value_str and field_name != "note"):
                     typed_params[field_name] = None

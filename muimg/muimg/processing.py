@@ -165,12 +165,15 @@ class ProcessingPipeline:
 
     def _producer_thread(self):
         """Internal method to run the producer and populate the task queue."""
+        producer = self.producer
+        if producer is None or not callable(producer):
+            raise RuntimeError("Producer thread requires a callable producer")
         task_prefix = f"{self.task_name}->" if self.task_name else ""
-        logger.info(f"--- Starting producer thread (target: {task_prefix}{self.producer.__name__}) ---")
+        logger.info(f"--- Starting producer thread (target: {task_prefix}{producer.__name__}) ---")
         try:
-            for item in self.producer():
+            for item in producer():
                 if self._stop_event.is_set():
-                    logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) cancelled. ---")
+                    logger.info(f"--- Producer thread ({task_prefix}{producer.__name__}) cancelled. ---")
                     break
                 while not self._stop_event.is_set():
                     try:
@@ -183,7 +186,7 @@ class ProcessingPipeline:
             if not self._stop_event.is_set():
                 for _ in range(self.num_workers):
                     self.task_queue.put(None)
-            logger.info(f"--- Producer thread ({task_prefix}{self.producer.__name__}) finished. ---")
+            logger.info(f"--- Producer thread ({task_prefix}{producer.__name__}) finished. ---")
 
     def _consumer_thread(self, thread_num: int):
         """Internal method for consumer workers."""
@@ -203,8 +206,9 @@ class ProcessingPipeline:
                     self._notify_task_done()
 
                     # If there's a writer, pass the result to the writer queue
-                    if self.writer and result is not None:
-                        self.writer_queue.put(result)
+                    writer_queue = self.writer_queue
+                    if self.writer and result is not None and writer_queue is not None:
+                        writer_queue.put(result)
                 except Exception as e:
                     logger.error(f"Exception in consumer thread {thread_num} processing task ({type(e).__name__}): {e}", exc_info=True)
                     # Continue processing other tasks even if one fails
@@ -216,21 +220,25 @@ class ProcessingPipeline:
 
     def _writer_thread(self):
         """Internal method for the writer thread. Only runs if a writer is configured."""
+        writer = self.writer
+        writer_queue = self.writer_queue
+        if writer is None or writer_queue is None:
+            raise RuntimeError("Writer thread requires a writer and writer queue")
         task_prefix = f"{self.task_name}->" if self.task_name else ""
-        logger.info(f"--- Starting writer thread (target: {task_prefix}{self.writer.__name__}) ---")
+        logger.info(f"--- Starting writer thread (target: {task_prefix}{writer.__name__}) ---")
         while not self._stop_event.is_set():
             try:
-                item_to_write = self.writer_queue.get(timeout=0.1)
+                item_to_write = writer_queue.get(timeout=0.1)
                 if item_to_write is None:  # Sentinel
-                    self.writer_queue.task_done()
+                    writer_queue.task_done()
                     break
 
-                self.writer(item_to_write)
-                self.writer_queue.task_done()
+                writer(item_to_write)
+                writer_queue.task_done()
             except queue.Empty:
                 continue
 
-        logger.info(f"--- Writer thread ({task_prefix}{self.writer.__name__}) finished. ---")
+        logger.info(f"--- Writer thread ({task_prefix}{writer.__name__}) finished. ---")
 
     def _monitor_queues(self, interval=0.1):
         """Monitors the queue sizes at regular intervals."""
@@ -360,8 +368,11 @@ class ProcessingPipeline:
 
         # Writer cleanup
         if writer_thread:
+            writer_queue = self.writer_queue
+            if writer_queue is None:
+                raise RuntimeError("Writer thread started without a writer queue")
             if not self._stop_event.is_set():
-                self.writer_queue.put(None)
+                writer_queue.put(None)
             writer_thread.join()
 
         # Stop monitor

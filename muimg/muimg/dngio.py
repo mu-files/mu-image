@@ -1053,7 +1053,10 @@ class DngFile(tifffile.TiffFile):
         # Post-render upscaling if needed
         if scale_needed:
             # Check if orientation swaps dimensions (same logic as get_rendered_size)
-            orientation = self.ifd0.get_tag("Orientation")
+            ifd0 = self.ifd0
+            if ifd0 is None:
+                raise RuntimeError("DNG file has no IFD0")
+            orientation = ifd0.get_tag("Orientation")
             if rendering_params and 'orientation' in rendering_params:
                 orientation = rendering_params['orientation']
 
@@ -1740,6 +1743,7 @@ def write_dng(
                 if spec.bits_per_sample is not None:
                     bits_per_sample = spec.bits_per_sample
                 else:
+                    assert meta_bps is not None
                     bits_per_sample = int(
                         meta_bps.flat[0] if isinstance(meta_bps, np.ndarray) else meta_bps)
 

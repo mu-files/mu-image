@@ -472,7 +472,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         xmp_str = value.get_formatted_string(strip_whitespace=True, filter_blank_lines=True)
         
         # Check for duplicates
-        if xmp_str and xmp_str in xmp_tracker:
+        if xmp_tracker is not None and xmp_str and xmp_str in xmp_tracker:
             # Duplicate found - show reference to first occurrence
             first_ifd = xmp_tracker[xmp_str]
             first_ifd_label = "IFD0" if first_ifd == 0 else f"SubIFD {first_ifd - 1}"
@@ -481,7 +481,8 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         
         # First occurrence - track it
         if xmp_str:
-            xmp_tracker[xmp_str] = ifd_num
+            if xmp_tracker is not None:
+                xmp_tracker[xmp_str] = ifd_num
         
             # Display the full XMP
             echo(f"{tag_display}:")

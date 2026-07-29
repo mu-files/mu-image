@@ -102,12 +102,13 @@ def add_text_overlay(
     
     # Auto-scale font to ~2% of frame height if not specified
     height, width = img.shape[:2]
-    if font_scale is None:
-        font_scale = height * 0.02 / 30  # Normalized for typical font size
+    resolved_font_scale = (
+        height * 0.02 / 30 if font_scale is None else font_scale
+    )
     
     # Render at 2x resolution for better quality, then downsample
     supersample = 2
-    font_scale_hires = font_scale * supersample
+    font_scale_hires = resolved_font_scale * supersample
     
     font = cv2.FONT_HERSHEY_DUPLEX  # Cleaner, more modern font
     thickness = max(1, int(font_scale_hires * 1.5))  # Slightly thinner for cleaner look
@@ -379,17 +380,21 @@ class VideoEncodePipeline(ImageSequencePipeline):
     
     def _finalize_encoder(self):
         """Flush and close the PyAV container."""
-        if self._container is not None:
+        container = self._container
+        stream = self._stream
+        if container is not None:
+            if stream is None:
+                raise RuntimeError("Video stream is not initialized")
             # Flush encoder
-            for packet in self._stream.encode():
-                self._container.mux(packet)
+            for packet in stream.encode():
+                container.mux(packet)
             
             # Apply container metadata before closing
             for key, value in self._container_metadata.items():
-                self._container.metadata[key] = value
+                container.metadata[key] = value
                 logger.debug(f"Set container metadata {key}={value}")
             
-            self._container.close()
+            container.close()
             self._container = None
         
         # Copy from temp file to final destination if needed
@@ -483,9 +488,13 @@ class VideoEncodePipeline(ImageSequencePipeline):
             
             # Encode frame
             import av
+            stream = self._stream
+            container = self._container
+            if stream is None or container is None:
+                raise RuntimeError("Video encoder is not initialized")
             frame = av.VideoFrame.from_ndarray(img, format=self.input_format)
-            for packet in self._stream.encode(frame):
-                self._container.mux(packet)
+            for packet in stream.encode(frame):
+                container.mux(packet)
             
             self._next_expected_index += 1
     

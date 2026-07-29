@@ -7,7 +7,7 @@ import logging
 import numpy as np
 
 from enum import Enum, IntEnum, StrEnum, auto
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # Package imports
 from .engines import ops as engine_ops
@@ -26,8 +26,13 @@ from .deps import cv2_proxy as cv2
 from .tiff_metadata import (
     CFA_PATTERN_TO_CODES,
     Illuminant,
+    MetadataTags,
     Orientation,
+    XmpMetadata,
 )
+
+if TYPE_CHECKING:
+    from .dngio import DngFile, DngPage
 
 logger = logging.getLogger(__name__)
 

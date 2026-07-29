@@ -26,7 +26,7 @@ class Engine(Protocol):
     def execute_segment(
         self,
         nodes: List["Tensor"],
-        values: Dict[int, np.ndarray],
+        values: dict[int, np.ndarray],
         outputs: List["Tensor"],
     ) -> None:
         """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).

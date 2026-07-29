@@ -308,7 +308,7 @@ def get_native_type(dtype: int | str | list[Any], count: int | None) -> type | N
 # Types verified against DNG SDK source and tifffile registry.
 # Registry sorted by tag code for easy lookup.
 
-TIFF_TAG_TYPE_REGISTRY: Dict[str, TagSpec] = {
+TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "ProcessingSoftware": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 11 (0x000B)
     "NewSubfileType": TagSpec(TiffType.LONG, 1, dng_ifd="any", enum_class=SubFileType),  # 254 (0x00FE)
     "SubfileType": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 255 (0x00FF)
@@ -708,8 +708,8 @@ class LocalTiffTags:
     }
     
     def __init__(self):
-        self._by_name: Dict[str, int] = {}
-        self._by_code: Dict[int, str] = {}
+        self._by_name: dict[str, int] = {}
+        self._by_code: dict[int, str] = {}
         
         # Add our extra/corrected tags first (these take precedence)
         for code, name in self._EXTRA_TAGS.items():
@@ -1120,7 +1120,7 @@ def get_cfa_pattern_codes(pattern: str) -> tuple[int, int, int, int]:
     return CFA_PATTERN_TO_CODES.get(pattern, (0, 1, 1, 2))
 
 
-def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: List[str]) -> 'MetadataTags':
+def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: list[str]) -> 'MetadataTags':
     """Filter tags to only those belonging to specified IFD categories.
     
     Args:
@@ -1265,7 +1265,7 @@ class MetadataTags:
         value: Any
     
     def __init__(self):
-        self._tags: Dict[int, MetadataTags.StoredTag] = {}
+        self._tags: dict[int, MetadataTags.StoredTag] = {}
 
     def __iter__(self):
         """Iterate over tags, sorted by tag code.
@@ -1679,7 +1679,7 @@ class XmpMetadata:
         self._attributes = self._parse(xmp_string)
     
     @classmethod
-    def from_attributes(cls, attributes: Dict[str, Any]) -> Self:
+    def from_attributes(cls, attributes: dict[str, Any]) -> Self:
         """Create XmpMetadata from a dict of fully-qualified XMP attributes.
         
         Args:
@@ -1732,7 +1732,7 @@ class XmpMetadata:
         import re
         DET = defusedxml_proxy.ElementTree
 
-        attributes: Dict[str, Any] = {}
+        attributes: dict[str, Any] = {}
 
         rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 

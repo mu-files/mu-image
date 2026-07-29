@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 # Check for optional Google Photos dependencies (no error raised at import time)
 try:
@@ -28,9 +28,6 @@ except ImportError:
         "Or install manually: pip install google-auth google-auth-oauthlib requests"
     )
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
 
 # Scopes required for uploading to Google Photos
@@ -44,6 +41,18 @@ DEFAULT_TOKEN_PATH = Path.home() / ".muimg" / "google-photos-token.json"
 DEFAULT_CREDENTIALS_PATH = (
     Path.home() / ".muimg" / "google-photos-credentials.json"
 )
+
+
+def _require_google_deps():
+    """Return Google Photos deps, raising if optional packages are missing."""
+    if (
+        requests is None
+        or Credentials is None
+        or Request is None
+        or InstalledAppFlow is None
+    ):
+        raise ImportError(_IMPORT_ERROR)
+    return requests, Credentials, Request, InstalledAppFlow
 
 
 class GooglePhotosClient:
@@ -63,8 +72,7 @@ class GooglePhotosClient:
         Raises:
             ImportError: If Google Photos dependencies are not installed
         """
-        if requests is None:
-            raise ImportError(_IMPORT_ERROR)
+        _require_google_deps()
         
         self.token_path = token_path or DEFAULT_TOKEN_PATH
         self.credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
@@ -79,10 +87,12 @@ class GooglePhotosClient:
         Returns:
             True if authentication successful, False otherwise
         """
+        _, Credentials_, Request_, InstalledAppFlow_ = _require_google_deps()
+
         # Load existing token if available
         if not force_reauth and self.token_path.exists():
             logger.info(f"Loading existing token from {self.token_path}")
-            self.creds = Credentials.from_authorized_user_file(
+            self.creds = Credentials_.from_authorized_user_file(
                 str(self.token_path), SCOPES
             )
 
@@ -90,7 +100,7 @@ class GooglePhotosClient:
         if not self.creds or not self.creds.valid:
             if self.creds and self.creds.expired and self.creds.refresh_token:
                 logger.info("Refreshing expired token")
-                self.creds.refresh(Request())
+                self.creds.refresh(Request_())
             else:
                 # Need to do interactive OAuth flow
                 if not self.credentials_path.exists():
@@ -106,7 +116,7 @@ class GooglePhotosClient:
                     return False
 
                 logger.info("Starting OAuth2 authentication flow...")
-                flow = InstalledAppFlow.from_client_secrets_file(
+                flow = InstalledAppFlow_.from_client_secrets_file(
                     str(self.credentials_path), SCOPES
                 )
                 self.creds = flow.run_local_server(port=0)
@@ -129,6 +139,7 @@ class GooglePhotosClient:
         if not self.creds:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
+        requests_, _, _, _ = _require_google_deps()
         albums = []
         page_token = None
         url = "https://photoslibrary.googleapis.com/v1/albums"
@@ -139,7 +150,7 @@ class GooglePhotosClient:
                 params["pageToken"] = page_token
 
             headers = {"Authorization": f"Bearer {self.creds.token}"}
-            response = requests.get(url, headers=headers, params=params)
+            response = requests_.get(url, headers=headers, params=params)
             response.raise_for_status()
             
             results = response.json()
@@ -164,6 +175,8 @@ class GooglePhotosClient:
         if not self.creds:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
+        requests_, _, _, _ = _require_google_deps()
+
         # Check if album already exists
         albums = self.list_albums()
         for album in albums:
@@ -179,7 +192,7 @@ class GooglePhotosClient:
             "Content-type": "application/json"
         }
         request_body = {"album": {"title": album_title}}
-        response = requests.post(url, headers=headers, json=request_body)
+        response = requests_.post(url, headers=headers, json=request_body)
         response.raise_for_status()
         
         result = response.json()
@@ -204,6 +217,8 @@ class GooglePhotosClient:
 
         if not image_path.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
+
+        requests_, _, _, _ = _require_google_deps()
 
         # Step 1: Upload the bytes to get an upload token
         logger.info(f"Uploading {image_path.name}...")
@@ -234,7 +249,7 @@ class GooglePhotosClient:
         with open(image_path, "rb") as f:
             image_bytes = f.read()
 
-        response = requests.post(upload_url, headers=headers, data=image_bytes)
+        response = requests_.post(upload_url, headers=headers, data=image_bytes)
 
         if response.status_code != 200:
             raise RuntimeError(
@@ -268,7 +283,7 @@ class GooglePhotosClient:
             "Authorization": f"Bearer {self.creds.token}",
             "Content-type": "application/json"
         }
-        create_response_obj = requests.post(create_url, headers=create_headers, json=create_body)
+        create_response_obj = requests_.post(create_url, headers=create_headers, json=create_body)
         
         if create_response_obj.status_code != 200:
             logger.error(f"Upload failed with status {create_response_obj.status_code}")
