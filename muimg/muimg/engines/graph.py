@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..common import PerfTimer
-from ..tensor import NUMPY_FROM_DTYPE, Tensor, TensorMeta, meta_from_array
+from ..tensor import ElementType, Tensor, TensorMeta, meta_from_array
 from .base import get_default_engine
 
 OutMetaFn = Callable[[Tensor, Dict[str, Any]], Any]
@@ -54,29 +54,29 @@ class EngineOp:
         return f"EngineOp({self.meta.name!r})"
 
 
-def _out_dtype_same(x: Tensor, attrs: Dict[str, Any]) -> str:
+def _out_dtype_same(x: Tensor, attrs: Dict[str, Any]) -> ElementType:
     return x.meta.dtype
 
 
-def _out_dtype_const(dtype: str) -> OutMetaFn:
-    if dtype not in NUMPY_FROM_DTYPE:
-        raise ValueError(f"unsupported output dtype {dtype!r}")
+def _out_dtype_const(dtype: str | ElementType) -> OutMetaFn:
+    resolved = ElementType.coerce(dtype)
 
-    def _fn(x: Tensor, attrs: Dict[str, Any]) -> str:
-        return dtype
+    def _fn(x: Tensor, attrs: Dict[str, Any]) -> ElementType:
+        return resolved
 
     return _fn
 
 
 def _out_dtype_from_attr(key: str) -> OutMetaFn:
-    def _fn(x: Tensor, attrs: Dict[str, Any]) -> str:
+    def _fn(x: Tensor, attrs: Dict[str, Any]) -> ElementType:
         val = attrs.get(key)
-        if not isinstance(val, str) or val not in NUMPY_FROM_DTYPE:
+        try:
+            return ElementType.coerce(val)
+        except (TypeError, KeyError) as e:
             raise ValueError(
-                f"attr {key!r} must be a dtype string "
-                f"(one of {sorted(NUMPY_FROM_DTYPE)}), got {val!r}"
-            )
-        return val
+                f"attr {key!r} must be a dtype "
+                f"(one of {[d.value for d in ElementType]}), got {val!r}"
+            ) from e
 
     return _fn
 

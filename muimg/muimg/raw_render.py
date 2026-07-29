@@ -19,7 +19,7 @@ from .engines.pyops import (
     orientation_op,
     radial_distortion_op,
 )
-from .tensor import Tensor
+from .tensor import ElementType, Tensor
 from .common import PerfTimer, enum_display_name
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
@@ -81,7 +81,7 @@ class DemosaicAlgorithm(StrEnum):
 
 def convert_dtype(
     image: Tensor,
-    dst_dtype: str,
+    dst_dtype: str | ElementType,
     src_bits: int | None = None,
     dst_bits: int | None = None,
     clip_max: float | None = None,
@@ -93,8 +93,8 @@ def convert_dtype(
 
     Args:
         image: Input Tensor (H, W) or (H, W, C)
-        dst_dtype: Destination dtype name (``"uint8"``, ``"uint16"``,
-            ``"float16"``, or ``"float32"``) — same vocabulary as ``TensorMeta.dtype``
+        dst_dtype: Destination ``ElementType`` or name (``"uint8"``, ``"uint16"``,
+            ``"float16"``, or ``"float32"``)
         src_bits: Custom bit depth for source data (e.g., 12 for 12-bit data
             in uint16 container). Must be None for float types. Defaults to container
             bit depth if None.
@@ -108,27 +108,29 @@ def convert_dtype(
         Lazy ``Tensor`` with dst_dtype
     """
     t = image
-    dest_name = dst_dtype
+    try:
+        dest = ElementType.coerce(dst_dtype)
+    except (TypeError, KeyError) as e:
+        raise TypeError(
+            f"Unsupported destination dtype: {dst_dtype!r}. "
+            "Must be uint8, uint16, float16, or float32"
+        ) from e
 
     # Early-out: same float dtype with no clip
-    if (
-        t.meta.dtype == dest_name
-        and clip_max is None
-        and dest_name in ("float16", "float32", "float64")
-    ):
+    if t.meta.dtype == dest and clip_max is None and dest in (ElementType.FLOAT16, ElementType.FLOAT32):
         return t
 
-    output_is_float16 = dest_name == "float16"
-    engine_dest = "float32" if output_is_float16 else dest_name
+    output_is_float16 = dest is ElementType.FLOAT16
+    engine_dest = ElementType.FLOAT32 if output_is_float16 else dest
 
     # float16 → float32 via python op (engine has no float16 kernels)
-    if t.meta.dtype == "float16":
-        t = cast_dtype_op(t, "float32")
+    if t.meta.dtype is ElementType.FLOAT16:
+        t = cast_dtype_op(t, ElementType.FLOAT32)
 
-    _engine_dtypes = ("uint8", "uint16", "float32")
+    _engine_dtypes = (ElementType.UINT8, ElementType.UINT16, ElementType.FLOAT32)
     if engine_dest not in _engine_dtypes:
         raise TypeError(
-            f"Unsupported destination dtype: {dest_name}. "
+            f"Unsupported destination dtype: {dest}. "
             "Must be uint8, uint16, float16, or float32"
         )
     if t.meta.dtype not in _engine_dtypes:
@@ -141,7 +143,7 @@ def convert_dtype(
         src_bits = (
             -1
             if t.meta.dtype.startswith("float")
-            else (8 if t.meta.dtype == "uint8" else 16)
+            else (8 if t.meta.dtype is ElementType.UINT8 else 16)
         )
     else:
         src_bits = int(src_bits)
@@ -150,7 +152,7 @@ def convert_dtype(
         dst_bits = (
             -1
             if engine_dest.startswith("float")
-            else (8 if engine_dest == "uint8" else 16)
+            else (8 if engine_dest is ElementType.UINT8 else 16)
         )
     else:
         dst_bits = int(dst_bits)
@@ -167,13 +169,13 @@ def convert_dtype(
     clip_value = -1.0 if clip_max is None else float(clip_max)
     result = engine_ops.convert_dtype(
         t,
-        dest_dtype=engine_dest,
+        dest_dtype=engine_dest.value,
         src_bits=int(src_bits),
         dst_bits=int(dst_bits),
         clip_max=float(clip_value),
     )
     if output_is_float16:
-        result = cast_dtype_op(result, "float16")
+        result = cast_dtype_op(result, ElementType.FLOAT16)
     return result
 
 

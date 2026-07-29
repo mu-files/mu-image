@@ -5,31 +5,74 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 
 import numpy as np
 
 if TYPE_CHECKING:
     from .engines.graph import OpNode
 
-_DTYPE_FROM_NUMPY = {
-    np.dtype(np.float32): "float32",
-    np.dtype(np.float16): "float16",
-    np.dtype(np.uint8): "uint8",
-    np.dtype(np.uint16): "uint16",
+
+class ElementType(StrEnum):
+    """Closed element-type vocabulary for Tensor / graph / engine IR.
+
+    String values match the native ``MuImgDType`` names and NumPy dtype names.
+    Distinct from ``np.dtype`` (buffer descriptors) and TIFF ``TiffType``
+    (tag wire formats).
+    """
+
+    FLOAT32 = "float32"
+    FLOAT16 = "float16"
+    UINT8 = "uint8"
+    UINT16 = "uint16"
+
+    @classmethod
+    def lookup(cls, value: str) -> "ElementType":
+        """Look up enum member by string value."""
+        from .common import enum_from_string
+
+        return enum_from_string(cls, value)
+
+    @classmethod
+    def from_numpy(cls, dtype: np.dtype | type) -> "ElementType":
+        """Map a NumPy dtype / scalar type onto ``ElementType``."""
+        key = np.dtype(dtype)
+        try:
+            return _ELEMENT_TYPE_FROM_NUMPY[key]
+        except KeyError as e:
+            raise TypeError(f"unsupported ndarray dtype: {dtype}") from e
+
+    @classmethod
+    def coerce(cls, value: Union[str, "ElementType", np.dtype, type]) -> "ElementType":
+        """Normalize a string, ``ElementType``, or NumPy dtype to ``ElementType``."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            return cls.lookup(value)
+        return cls.from_numpy(value)
+
+    @property
+    def numpy(self) -> type:
+        """NumPy scalar type for this element type."""
+        return NUMPY_FROM_ELEMENT_TYPE[self]
+
+
+NUMPY_FROM_ELEMENT_TYPE: dict[ElementType, type] = {
+    ElementType.FLOAT32: np.float32,
+    ElementType.FLOAT16: np.float16,
+    ElementType.UINT8: np.uint8,
+    ElementType.UINT16: np.uint16,
 }
 
-NUMPY_FROM_DTYPE = {
-    "float32": np.float32,
-    "float16": np.float16,
-    "uint8": np.uint8,
-    "uint16": np.uint16,
+_ELEMENT_TYPE_FROM_NUMPY = {
+    np.dtype(np_t): et for et, np_t in NUMPY_FROM_ELEMENT_TYPE.items()
 }
 
 
 @dataclass(frozen=True)
 class TensorMeta:
-    dtype: str
+    dtype: ElementType
     height: int
     width: int
     channels: int
@@ -51,10 +94,12 @@ def meta_from_array(arr: np.ndarray) -> TensorMeta:
             raise ValueError(f"unsupported channel count: {channels}")
     else:
         raise ValueError("array must be (H,W) or (H,W,C)")
-    dtype = _DTYPE_FROM_NUMPY.get(arr.dtype)
-    if dtype is None:
-        raise TypeError(f"unsupported ndarray dtype: {arr.dtype}")
-    return TensorMeta(dtype=dtype, height=h, width=w, channels=channels)
+    return TensorMeta(
+        dtype=ElementType.from_numpy(arr.dtype),
+        height=h,
+        width=w,
+        channels=channels,
+    )
 
 
 def _require_scalar(value: Any, op: str) -> float:
@@ -93,7 +138,7 @@ class Tensor:
             raise ValueError("Tensor requires an ndarray source or an op node")
 
     @property
-    def dtype(self) -> str:
+    def dtype(self) -> ElementType:
         return self._meta.dtype
 
     @property

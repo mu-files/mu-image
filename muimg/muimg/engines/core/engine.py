@@ -8,8 +8,6 @@ from typing import Dict, List, TYPE_CHECKING
 
 import numpy as np
 
-from ...tensor import NUMPY_FROM_DTYPE
-
 if TYPE_CHECKING:
     from ...tensor import Tensor
 
@@ -70,7 +68,7 @@ class CoreEngine:
             tensor_descs.append(
                 {
                     "id": id_of[id(t)],
-                    "dtype": m.dtype,
+                    "dtype": m.dtype.value,
                     "height": m.height,
                     "width": m.width,
                     "channels": m.channels,
@@ -101,7 +99,7 @@ class CoreEngine:
         for t in outputs:
             # empty, not zeros: kernels fully overwrite; zeros would first-touch
             # ~full-frame pages only to discard them (several ms on R5-sized buffers).
-            arr = np.empty(t.meta.shape, dtype=NUMPY_FROM_DTYPE[t.meta.dtype])
+            arr = np.empty(t.meta.shape, dtype=t.meta.dtype.numpy)
             values[id(t)] = arr
             out_binds[id_of[id(t)]] = arr
 

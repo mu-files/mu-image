@@ -13,7 +13,7 @@ from typing import Any, Dict
 import numpy as np
 
 from ..deps import cv2_proxy as cv2
-from ..tensor import NUMPY_FROM_DTYPE, Tensor, TensorMeta
+from ..tensor import ElementType, Tensor, TensorMeta
 from .graph import graph_op
 
 logger = logging.getLogger(__name__)
@@ -47,9 +47,7 @@ def crop_op(arr: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
 
 
 def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    dest = attrs["dst_dtype"]
-    if dest not in NUMPY_FROM_DTYPE:
-        raise ValueError(f"cast_dtype_op: unsupported dst_dtype {dest!r}")
+    dest = ElementType.coerce(attrs["dst_dtype"])
     return TensorMeta(
         dtype=dest,
         height=t.meta.height,
@@ -59,12 +57,10 @@ def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
 
 
 @graph_op(out_meta=_cast_dtype_out_meta)
-def cast_dtype_op(arr: np.ndarray, dst_dtype: str) -> np.ndarray:
+def cast_dtype_op(arr: np.ndarray, dst_dtype: str | ElementType) -> np.ndarray:
     """Bit-cast / widen with no rescale (unlike engine ``convert_dtype``)."""
-    np_dtype = NUMPY_FROM_DTYPE.get(dst_dtype)
-    if np_dtype is None:
-        raise ValueError(f"cast_dtype_op: unsupported dst_dtype {dst_dtype!r}")
-    return np.ascontiguousarray(arr.astype(np_dtype, copy=False))
+    dest = ElementType.coerce(dst_dtype)
+    return np.ascontiguousarray(arr.astype(dest.numpy, copy=False))
 
 
 def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
@@ -73,9 +69,9 @@ def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     algorithm = attrs.get("algorithm", "OPENCV_EA")
     # Working dtype is the algorithm's native output (= input after wrapper pre-convert)
     if algorithm == "RCD":
-        dtype = "float32"
+        dtype = ElementType.FLOAT32
     elif algorithm == "VNG":
-        dtype = "uint16"
+        dtype = ElementType.UINT16
     else:
         dtype = t.meta.dtype
     return TensorMeta(
