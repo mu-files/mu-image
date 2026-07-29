@@ -22,7 +22,7 @@ class ProcessingThreadPool:
         self.thread_name_prefix = thread_name_prefix
         self.threads: list[threading.Thread] = []
     
-    def run_workers(self, worker_func: Callable, worker_args_list: list[tuple]) -> None:
+    def run_workers(self, worker_func: Callable[..., Any], worker_args_list: list[tuple[Any, ...]]) -> None:
         """
         Run worker functions in parallel threads and wait for completion.
         
@@ -373,7 +373,7 @@ class ProcessingPipeline:
         task_desc = f" ({self.task_name})" if self.task_name else ""
         logger.info(f"Pipeline{task_desc} processing complete!")
 
-    def get_queue_stats(self) -> dict:
+    def get_queue_stats(self) -> dict[str, Any]:
         """Returns a dictionary with queue statistics."""
         stats = {}
         if not self._task_queue_samples:

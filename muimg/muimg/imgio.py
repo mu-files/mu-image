@@ -289,7 +289,7 @@ def convert_dng(
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     strict: bool = True,
     use_xmp: bool = True,
-    rendering_params: dict = None,
+    rendering_params: dict[str, Any] = None,
     use_coreimage_if_available: bool = False,
     output_format_stream: str = "jpg",
 ) -> bool:
@@ -355,7 +355,7 @@ def convert_dng_to_stream(
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     strict: bool = True,
     use_xmp: bool = True,
-    rendering_params: dict = None,
+    rendering_params: dict[str, Any] = None,
     use_coreimage_if_available: bool = False,
 ) -> IO[bytes]:
     """
@@ -414,7 +414,7 @@ class ImageSequencePipeline(ProcessingPipeline):
     
     def __init__(
         self,
-        source_files: list = None,
+        source_files: list[Any] = None,
         output_folder = None,
         output_format: str = "tif",
         output_dtype = None,

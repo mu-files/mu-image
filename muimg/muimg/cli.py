@@ -7,6 +7,7 @@ import logging
 import platform
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -983,7 +984,7 @@ def dng_convert(
             render_timer.close()
 
 
-def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict]]:
+def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict[str, Any]]]:
     """Load DNG rendering settings from CSV file.
     
     Returns:

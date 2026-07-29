@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 # Check for optional Google Photos dependencies (no error raised at import time)
 try:
@@ -120,7 +120,7 @@ class GooglePhotosClient:
         logger.info("Successfully authenticated with Google Photos API")
         return True
 
-    def list_albums(self) -> list:
+    def list_albums(self) -> list[dict[str, Any]]:
         """List all albums in the user's Google Photos library.
 
         Returns:
@@ -189,7 +189,7 @@ class GooglePhotosClient:
 
     def upload_image(
         self, image_path: Path, album_title: str | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Upload an image to Google Photos.
 
         Args:

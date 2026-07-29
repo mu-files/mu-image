@@ -163,7 +163,7 @@ class DngPage(tifffile.TiffPage):
         return value in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE)
 
     def get_rendered_size(
-        self, apply_post_render_ops: bool = True, rendering_params: dict | None = None
+        self, apply_post_render_ops: bool = True, rendering_params: dict[str, Any] | None = None
     ) -> tuple[int, int]:
         """Get the final dimensions after DefaultCrop and optionally XMP crop/orientation.
         
@@ -211,7 +211,7 @@ class DngPage(tifffile.TiffPage):
         xmp = self.get_tag("XMP")
         return xmp
 
-    def _get_tag_object(self, tag: str | int) -> tuple | None:
+    def _get_tag_object(self, tag: str | int) -> tuple[int, str | None, Any, Any, Any] | None:
         """Internal helper to get tag object and metadata with normalized values.
         
         All tag values are normalized to system byte order for consistent internal
@@ -641,7 +641,7 @@ class DngPage(tifffile.TiffPage):
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
         strict: bool = True,
         use_xmp: bool = True,
-        rendering_params: dict = None,
+        rendering_params: dict[str, Any] = None,
     ) -> "Tensor | None":
         """Render raw DNG page to an RGB ``Tensor`` with optional XMP adjustments.
         
@@ -793,7 +793,7 @@ class DngFile(tifffile.TiffFile):
             List of DngPage objects in flattened order. Tag inheritance
             falls back to IFD0 via TiffPage.parent.
         """
-        def build_recursive(pages_list: list | None) -> list[DngPage]:
+        def build_recursive(pages_list: list[Any] | None) -> list[DngPage]:
             """Build DngPage instances from TiffPages recursively."""
             result = []
             if pages_list is None:
@@ -904,7 +904,7 @@ class DngFile(tifffile.TiffFile):
         return self.ifd0.get_time_from_tags(time_type=time_type) if self.ifd0 else None
     
     def get_rendered_size(
-        self, apply_post_render_ops: bool = True, rendering_params: dict | None = None
+        self, apply_post_render_ops: bool = True, rendering_params: dict[str, Any] | None = None
     ) -> tuple[int, int] | None:
         """See `DngPage.get_rendered_size`."""
         main_page = self.get_main_page()
@@ -954,7 +954,7 @@ class DngFile(tifffile.TiffFile):
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
         strict: bool = True,
         use_xmp: bool = True,
-        rendering_params: dict = None,
+        rendering_params: dict[str, Any] = None,
         scale: float | None = None,
     ) -> "Tensor | None":
         """Render main raw DNG page to an RGB ``Tensor`` with optional scaling.
@@ -1114,8 +1114,8 @@ def _prepare_ifd_args(
     subfiletype: int,
     photometric: str,
     subifds_count: int = 0,
-    compressionargs: dict | None = None,
-) -> dict:
+    compressionargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Prepare TiffWriter IFD args, extracting tags that have kwargs equivalents.
     
     Initializes the args structure for tifffile write, this requires moving some tags
@@ -1335,11 +1335,11 @@ class PageEncoding:
         - tile_size and rows_per_strip cannot both be specified.
     """
     compression: tifffile.COMPRESSION | None = None
-    compression_args: dict | None = None
+    compression_args: dict[str, Any] | None = None
     tile_size: tuple[int, int] | None = None
     rows_per_strip: int | None = None
     
-    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict | None]:
+    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict[str, Any] | None]:
         """Get compression type and args with defaults applied.
         
         Returns:
@@ -1392,7 +1392,7 @@ class IfdPageSpec:
             )
         return False
     
-    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict | None]:
+    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict[str, Any] | None]:
         """Get compression and args for this spec.
         
         Returns:
@@ -1432,7 +1432,7 @@ class IfdDataSpec:
         """Check if this spec requires transcoding (always False for array data)."""
         return False
     
-    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict | None]:
+    def get_compression(self) -> tuple[tifffile.COMPRESSION, dict[str, Any] | None]:
         """Get compression and args for this spec.
         
         Returns:
@@ -1472,7 +1472,7 @@ def write_dng(
         writer: tifffile.TiffWriter,
         page: "DngPage",
         *,
-        raw_ifd_args: dict,
+        raw_ifd_args: dict[str, Any],
     ) -> None:
         # IFD args are already prepared by caller
         
@@ -1996,8 +1996,8 @@ class PreviewParams:
     """
     scale: PreviewScale = PreviewScale.QUARTER
     compression: tifffile.COMPRESSION | None = None
-    compression_args: dict | None = None
-    rendering_params: dict | None = None
+    compression_args: dict[str, Any] | None = None
+    rendering_params: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -2654,7 +2654,7 @@ def decode_dng(
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
-    rendering_params: dict = None,
+    rendering_params: dict[str, Any] = None,
     strict: bool = True,
     scale: float = 1.0,
 ) -> tuple[Tensor, "MetadataTags"]:

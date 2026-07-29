@@ -236,7 +236,7 @@ class TagSpec:
             raise ValueError(f"Unknown multi-type dtype list: {self.dtype}. "
                            f"Add explicit handling or use a defined constant.")
     
-def get_native_type(dtype: int | str | list, count: int | None) -> type | None:
+def get_native_type(dtype: int | str | list[Any], count: int | None) -> type | None:
     """Determine the most appropriate Python type for a TIFF tag.
     
     Args:
@@ -954,7 +954,7 @@ def convert_tag_value(
     return _decode_tag_value(tag_name, tag_value, tag_dtype, shape_spec, effective_type)
 
 
-def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple:
+def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple[Any, int, Any]:
     """Encode a Python value to TIFF format based on tag spec (Python → TIFF).
     
     Args:
@@ -1107,7 +1107,7 @@ def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
     
     return value
 
-def get_cfa_pattern_codes(pattern: str) -> tuple:
+def get_cfa_pattern_codes(pattern: str) -> tuple[int, int, int, int]:
     """Convert CFA pattern string to code tuple.
     
     Args:
@@ -1220,7 +1220,7 @@ def _get_time_impl(
     return dt_obj
 
 
-def _convert_exif_dict_to_tags(tags: MetadataTags, exif_dict: dict) -> None:
+def _convert_exif_dict_to_tags(tags: MetadataTags, exif_dict: dict[str, Any]) -> None:
     """Convert ExifTag dictionary to individual TIFF tags.
     
     Since TiffWriter cannot write ExifIFD structures, this function converts
@@ -1574,7 +1574,7 @@ class MetadataTags:
 
     def _get_tag_info(
         self, tag: str | int
-    ) -> tuple | None:
+    ) -> tuple[int, str | None, TagSpec | None, Any] | None:
         """Internal helper to resolve tag and get stored tag object.
         
         Args:
@@ -1857,7 +1857,7 @@ class XmpMetadata:
         result = self.xpath_query_with_parent(element_name, namespace_uri, include_parent=False)
         return result[0] if result else None
     
-    def xpath_query_with_parent(self, element_name: str, namespace_uri: str, include_parent: bool = True) -> tuple | None:
+    def xpath_query_with_parent(self, element_name: str, namespace_uri: str, include_parent: bool = True) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
         """Query XMP for elements and optionally include direct parent element attributes.
         
         General-purpose method that finds an element and optionally returns its parent's attributes.
@@ -1959,7 +1959,7 @@ class XmpMetadata:
             logger.debug(f"XPath query failed for {element_name}: {e}")
             return None
     
-    def get_root_prop(self, prop: str, return_type: Type | None = None) -> Any | None:
+    def get_root_prop(self, prop: str, return_type: Type[Any] | None = None) -> Any | None:
         """Get a root-level XMP property value with optional type conversion.
         
         Only works with properties at the root Description level. For deeply nested

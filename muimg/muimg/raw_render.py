@@ -449,7 +449,7 @@ def clip_and_transform_color(
 def compute_xmp_crop_bounds(
     width: int,
     height: int,
-    crop_params: dict,
+    crop_params: dict[str, Any],
 ) -> tuple[int, int, int, int]:
     """Compute pixel bounds for an XMP crop relative to image dimensions.
 
@@ -1266,7 +1266,7 @@ def transcode_pgtm_if_needed(
     
     return bytes(result)
 
-def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteorder: str = '<') -> dict:
+def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteorder: str = '<') -> dict[str, Any]:
     """Parse ProfileGainTableMap binary blob.
     
     SDK ref: dng_gain_map.cpp GetStream() lines 815-1100
@@ -1359,7 +1359,7 @@ def parse_profile_gain_table_map(data: bytes, is_version2: bool = False, byteord
     }
 
 
-def parse_opcode_list(data: bytes) -> list[dict]:
+def parse_opcode_list(data: bytes) -> list[dict[str, Any]]:
     """Parse OpcodeList1/2/3 binary blob.
     
     SDK ref: dng_opcode_list.cpp, dng_misc_opcodes.cpp
@@ -1529,7 +1529,7 @@ def get_opcode_summary(opcode_list_data: bytes, detailed: bool = False) -> str:
         return f"Invalid opcode list: {e}"
 
 
-def parse_area_spec(data: bytes, offset: int = 0) -> tuple[dict, int]:
+def parse_area_spec(data: bytes, offset: int = 0) -> tuple[dict[str, Any], int]:
     """Parse dng_area_spec from opcode data.
     
     SDK ref: dng_opcodes.h dng_area_spec (32 bytes)
@@ -1550,7 +1550,7 @@ def parse_area_spec(data: bytes, offset: int = 0) -> tuple[dict, int]:
     }, offset
 
 
-def parse_map_polynomial(data: bytes) -> dict:
+def parse_map_polynomial(data: bytes) -> dict[str, Any]:
     """Parse MapPolynomial opcode data (opcode 8).
     
     SDK ref: dng_misc_opcodes.cpp dng_opcode_MapPolynomial
@@ -1569,7 +1569,7 @@ def parse_map_polynomial(data: bytes) -> dict:
     }
 
 
-def parse_warp_rectilinear(data: bytes) -> dict:
+def parse_warp_rectilinear(data: bytes) -> dict[str, Any]:
     """Parse WarpRectilinear opcode data (opcode 1).
     
     SDK ref: dng_lens_correct.cpp dng_opcode_WarpRectilinear lines 1822-1889
@@ -1601,7 +1601,7 @@ def parse_warp_rectilinear(data: bytes) -> dict:
     }
 
 
-def parse_fix_vignette_radial(data: bytes) -> dict:
+def parse_fix_vignette_radial(data: bytes) -> dict[str, Any]:
     """Parse FixVignetteRadial opcode data (opcode 3).
     
     SDK ref: dng_lens_correct.cpp dng_opcode_FixVignetteRadial
@@ -1622,7 +1622,7 @@ def parse_fix_vignette_radial(data: bytes) -> dict:
     }
 
 
-def parse_fix_bad_pixels_constant(data: bytes) -> dict:
+def parse_fix_bad_pixels_constant(data: bytes) -> dict[str, Any]:
     """Parse FixBadPixelsConstant opcode data (opcode 4).
     
     SDK ref: dng_bad_pixels.cpp dng_opcode_FixBadPixelsConstant
@@ -1638,7 +1638,7 @@ def parse_fix_bad_pixels_constant(data: bytes) -> dict:
     }
 
 
-def parse_gain_map(data: bytes) -> dict:
+def parse_gain_map(data: bytes) -> dict[str, Any]:
     """Parse GainMap opcode data (opcode 9).
     
     SDK ref: dng_gain_map.cpp dng_opcode_GainMap, dng_gain_map::GetStream
@@ -1686,7 +1686,7 @@ def parse_gain_map(data: bytes) -> dict:
 
 def apply_opcodes(
     data: Tensor,
-    opcodes: list[dict],
+    opcodes: list[dict[str, Any]],
     use_bicubic: bool = True,
     opcode_list_name: str = "RGB"
 ) -> Tensor:
@@ -1822,7 +1822,7 @@ def apply_opcodes(
 
 def apply_opcodes_cfa(
     data: Tensor,
-    opcodes: list[dict],
+    opcodes: list[dict[str, Any]],
     opcode_list_name: str = "CFA"
 ) -> Tensor:
     """Apply parsed opcodes to CFA data.
@@ -2351,7 +2351,7 @@ def _xy_to_XYZ(x: float, y: float) -> np.ndarray:
     return np.array([x / y, 1.0, (1.0 - x - y) / y], dtype=np.float64)
 
 
-def _XYZ_to_xy(XYZ: np.ndarray) -> tuple:
+def _XYZ_to_xy(XYZ: np.ndarray) -> tuple[float, float]:
     """Convert XYZ to xy chromaticity.
     
     Port of dng_color_spec.cpp: XYZtoXY()
@@ -2363,7 +2363,7 @@ def _XYZ_to_xy(XYZ: np.ndarray) -> tuple:
 
 
 def _neutral_to_xy(neutral: np.ndarray, color_matrix: np.ndarray, 
-                   max_passes: int = 30) -> tuple:
+                   max_passes: int = 30) -> tuple[float, float]:
     """Convert camera neutral to white point xy chromaticity.
     
     Port of dng_color_spec.cpp: NeutralToXY() (lines 659-706)
@@ -2403,7 +2403,7 @@ def _neutral_to_xy(neutral: np.ndarray, color_matrix: np.ndarray,
     return last
 
 
-def _compute_camera_to_pcs(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarray:
+def _compute_camera_to_pcs(color_matrix: np.ndarray, white_xy: tuple[float, float]) -> np.ndarray:
     """Compute Camera RGB to PCS (D50 XYZ) matrix.
     
     Port of dng_color_spec.cpp: SetWhiteXY() (lines 570-609)
@@ -2441,7 +2441,7 @@ def _compute_camera_to_pcs(color_matrix: np.ndarray, white_xy: tuple) -> np.ndar
     return camera_to_pcs
 
 
-def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarray:
+def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple[float, float]) -> np.ndarray:
     """Compute camera white (what the white point looks like in camera space).
     
     Port of dng_color_spec.cpp: SetWhiteXY() (lines 546-568)
@@ -2472,7 +2472,7 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
 
 def apply_post_rendering_operations(
     rgb_input: Tensor,
-    rendering_params: dict,
+    rendering_params: dict[str, Any],
 ) -> Tensor:
     """Apply XMP post-rendering ops in ProPhoto linear space (deferred Tensor DAG).
 
@@ -2920,7 +2920,7 @@ def _render_camera_rgb(
     rgb_camera: Tensor,
     output_dtype: type,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
-    rendering_params: dict = None,
+    rendering_params: dict[str, Any] = None,
     use_xmp: bool = True,
 ) -> Tensor:
     try:
@@ -3379,7 +3379,7 @@ def _render_camera_monochrome(
     mono_camera: Tensor,
     output_dtype: type,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
-    rendering_params: dict = None,
+    rendering_params: dict[str, Any] = None,
     use_xmp: bool = True,
 ) -> Tensor:
     """Render monochrome linear data to output grayscale Tensor.
@@ -3555,7 +3555,7 @@ def _render_camera_monochrome(
 # Pipeline-Specific XMP Conversion Helpers
 # =============================================================================
 
-def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
+def supported_xmp_from_dict(props: dict[str, Any]) -> 'XmpMetadata':
     """Convert pipeline-supported dict to XmpMetadata.
     
     This handles the limited subset of XMP properties used by the rendering pipeline.
@@ -3617,7 +3617,7 @@ def supported_xmp_from_dict(props: dict) -> 'XmpMetadata':
     return XmpMetadata.from_attributes(attributes)
 
 
-def _is_tone_curve_linear(curve: list) -> bool:
+def _is_tone_curve_linear(curve: list[tuple[float, float]]) -> bool:
     """Check if a tone curve is linear (identity curve).
     
     Args:
@@ -3688,7 +3688,7 @@ SUPPORTED_XMP_PARAMS = {
     # 'Texture', 'Clarity2012', 'Dehaze', 'Vibrance', 'Saturation'
 }
 
-def supported_xmp_to_dict(source: 'XmpMetadata' | 'MetadataTags' | 'DngFile' | 'DngPage') -> dict:
+def supported_xmp_to_dict(source: 'XmpMetadata' | 'MetadataTags' | 'DngFile' | 'DngPage') -> dict[str, Any]:
     """Convert XMP metadata to pipeline-supported dict.
     
     Extracts only the properties used by the rendering pipeline.
@@ -3783,7 +3783,7 @@ def supported_xmp_to_dict(source: 'XmpMetadata' | 'MetadataTags' | 'DngFile' | '
     return result
 
 
-def add_supported_xmp_from_dict(metadata_tags: 'MetadataTags', props: dict) -> None:
+def add_supported_xmp_from_dict(metadata_tags: 'MetadataTags', props: dict[str, Any]) -> None:
     """Add pipeline-supported XMP properties to MetadataTags.
     
     Convenience helper that combines supported_xmp_from_dict() and add_xmp().

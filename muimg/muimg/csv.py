@@ -218,7 +218,7 @@ class CsvReader:
         self.data_types = data_type if isinstance(data_type, list) else [data_type]
 
         self._file: TextIO | None = None
-        self._reader: csv.DictReader | None = None
+        self._reader: csv.DictReader[str] | None = None
         self.header: list[tuple[str, Any]] | None = None
         self.row_dict: dict[str, str] | None = None
         self.fields_to_load: set[str] | None = None

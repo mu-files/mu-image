@@ -4,6 +4,7 @@
 """DNG compression utilities for tiled and stripped image data."""
 
 import numpy as np
+from typing import Any
 
 from .deps import imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
@@ -119,7 +120,7 @@ def deswizzle_cfa_data(swizzled_data: np.ndarray) -> np.ndarray:
 def compress_ifd(
     data: np.ndarray,
     compression: tifffile.COMPRESSION,
-    compression_args: dict | None,
+    compression_args: dict[str, Any] | None,
     bits_per_sample: int,
     photometric: str,
     target_byteorder: str,

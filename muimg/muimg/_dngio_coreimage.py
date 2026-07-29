@@ -8,7 +8,7 @@ import logging
 import numpy as np
 import os
 
-from typing import IO
+from typing import Any, IO
 
 # Package imports
 from .splines import CubicSpline
@@ -236,8 +236,8 @@ class CoreImageContext:
 
 
 def render_dng_coreimage(
-    dng_input: str | os.PathLike | IO[bytes],
-    raw_filter_options: dict | None = None,
+    dng_input: str | os.PathLike[str] | IO[bytes],
+    raw_filter_options: dict[str, Any] | None = None,
     use_gpu: bool = False,
     output_dtype: type = np.uint16,
     use_system_camera_profiles: bool = True,
@@ -383,10 +383,10 @@ def render_dng_coreimage(
 
 
 def decode_dng_coreimage(
-    file: str | os.PathLike | IO[bytes] | "DngFile",
+    file: str | os.PathLike[str] | IO[bytes] | "DngFile",
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
-    rendering_params: dict = None,
+    rendering_params: dict[str, Any] = None,
 ) -> "Tensor":
     """
     Decode a DNG file to a ``Tensor`` using Core Image processing.

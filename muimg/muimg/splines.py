@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 import threading
 from enum import Enum, auto
+from typing import Any
 
 
 # =============================================================================
@@ -72,7 +73,7 @@ class CubicSpline:
     Uses custom cubic spline interpolation with NumPy. Points are stored as float tuples.
     """
     
-    def __init__(self, points_or_string: str | list | None = None, bc_type: str = 'natural'):
+    def __init__(self, points_or_string: str | list[Any] | None = None, bc_type: str = 'natural'):
         """
         Initialize CubicSpline.
         
@@ -307,7 +308,7 @@ class LUT:
     Supports arbitrary length and composition operations.
     """
     
-    def __init__(self, data: np.ndarray | CubicSpline | str | list | None = None, 
+    def __init__(self, data: np.ndarray | CubicSpline | str | list[Any] | None = None, 
                  size: int = 4096,
                  convert_srgb_gamma_to_linear: bool = False):
         """Initialize LUT.
