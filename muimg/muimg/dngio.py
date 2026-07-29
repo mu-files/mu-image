@@ -29,7 +29,7 @@ from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 from .raw_render import DemosaicAlgorithm
 from .tensor import Tensor
-from .common import PerfTimer, get_active_timer, scoped_perf_timer
+from .common import get_active_timer, scoped_perf_timer
 from .tiff_metadata import (
     MetadataTags,
     Orientation,
@@ -598,17 +598,19 @@ class DngPage(tifffile.TiffPage):
     def decode_to_rgb(
         self,
         output_dtype: type = np.uint8
-    ) -> np.ndarray | None:
-        """Decode any DNG page to RGB array.
-        
+    ) -> Tensor | None:
+        """Decode any DNG page to an RGB ``Tensor``.
+
         For raw pages (CFA, LINEAR_RAW), renders with default parameters.
-        For preview pages (RGB, YCBCR), just decompresses the image data.
-        
+        For preview pages (RGB, YCBCR), decompresses then wraps as Tensor.
+
+        Call ``.compute()`` at encode/write/display edges.
+
         Args:
             output_dtype: Output data type (np.uint8 or np.uint16)
-            
+
         Returns:
-            RGB image array (H, W, 3) or None if decoding fails
+            RGB Tensor (H, W, 3) or None if decoding fails
         """
         # Raw pages - render with default parameters
         if self.is_cfa or self.is_linear_raw:
@@ -617,23 +619,23 @@ class DngPage(tifffile.TiffPage):
         # Non-raw pages - let tifffile decode
         # Note: tifffile automatically converts JPEG-compressed YCBCR to RGB
         try:
-            image = self.asarray()
+            result = Tensor(np.ascontiguousarray(self.asarray()))
         except Exception as e:
             logger.error(
                 f"Failed to decode page (photometric={self.photometric_name}): {e}"
             )
             return None
-        
+
         # Apply orientation rotation
         orientation = self.get_tag("Orientation")
         if orientation is not None:
-            image = raw_render.apply_tiff_orientation(image, orientation)
+            result = raw_render.apply_tiff_orientation(result, orientation)
         
         # Convert dtype if needed
-        if image.dtype != output_dtype:
-            image = raw_render.convert_dtype(Tensor(image), np.dtype(output_dtype).name).compute()
+        if result.meta.dtype != np.dtype(output_dtype).name:
+            result = raw_render.convert_dtype(result, np.dtype(output_dtype).name)
         
-        return image
+        return result
     
     def render_raw(
         self,
@@ -642,13 +644,15 @@ class DngPage(tifffile.TiffPage):
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict = None,
-    ) -> "np.ndarray | None":
-        """Render raw DNG page to RGB image with optional XMP-based adjustments.
+    ) -> "Tensor | None":
+        """Render raw DNG page to an RGB ``Tensor`` with optional XMP adjustments.
         
         Applies full DNG raw processing pipeline: linearization, black/white level,
         white balance, color matrix, demosaicing, and tone curve. Converts to
         output color space. Supports XMP metadata for white balance, exposure, and
         tone curve adjustments.
+
+        Returns a deferred ``Tensor``; call ``.compute()`` at product edges.
         
         For RGB/YCBCR preview pages, use decode() instead.
         
@@ -663,7 +667,7 @@ class DngPage(tifffile.TiffPage):
                 Values in rendering_params override XMP metadata.
         
         Returns:
-            Rendered RGB image as numpy array with shape (H, W, 3) and specified dtype,
+            Rendered RGB ``Tensor`` with shape (H, W, 3) and specified dtype,
             or None if rendering fails.
         
         Raises:
@@ -673,7 +677,7 @@ class DngPage(tifffile.TiffPage):
         
         Example:
             # Use XMP metadata from DNG file
-            rgb = page.render_raw()
+            rgb = page.render_raw().compute()
             
             # Override white balance
             rgb = page.render_raw(rendering_params={'temperature': 6500, 'tint': 10})
@@ -693,17 +697,12 @@ class DngPage(tifffile.TiffPage):
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
 
-        with scoped_perf_timer("render_raw_page", logger) as timer:
+        with scoped_perf_timer("render_raw_page", logger, auto_log=False) as timer:
 
             camera_data = self.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
             if camera_data is None:
                 logger.error("Failed to extract camera data from DNG")
                 return None
-            _cam = timer.start_step("camera_space")
-            try:
-                camera_data = camera_data.compute(timer=_cam)
-            finally:
-                _cam.close()
 
             # Branch based on monochrome vs color
             if self.is_linear_raw and self.samplesperpixel == 1:
@@ -963,8 +962,8 @@ class DngFile(tifffile.TiffFile):
         use_xmp: bool = True,
         rendering_params: dict = None,
         scale: float | None = None,
-    ) -> "np.ndarray | None":
-        """Render main raw DNG page to RGB image with optional scaling.
+    ) -> "Tensor | None":
+        """Render main raw DNG page to an RGB ``Tensor`` with optional scaling.
         
         When scale is provided, automatically selects the optimal SubIFD pyramid
         level to minimize processing overhead, then applies final scaling if needed.
@@ -985,7 +984,7 @@ class DngFile(tifffile.TiffFile):
                 applies final resize with INTER_AREA if needed.
         
         Returns:
-            Rendered RGB image or None if rendering fails
+            Rendered RGB ``Tensor`` or None if rendering fails
         """
         # Determine which page to use for rendering
         main_page = self.get_main_page()
@@ -1014,18 +1013,14 @@ class DngFile(tifffile.TiffFile):
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
         
-        _timer = PerfTimer("render_raw_file")
+        _timer_scope = scoped_perf_timer("render_raw_file", logger, auto_log=False)
+        _timer = _timer_scope.enter()
 
         try:
             # Get camera raw data from render page
             camera_data = render_page.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
             if camera_data is None:
                 return None
-            _cam = _timer.start_step("camera_space")
-            try:
-                camera_data = camera_data.compute(timer=_cam)
-            finally:
-                _cam.close()
 
             # Apply resize if needed (when scaling and dimensions don't match)
             scale_needed = False
@@ -1036,12 +1031,14 @@ class DngFile(tifffile.TiffFile):
                     if render_w < target_w and render_h < target_h:
                         scale_needed = True
                     else:
-                        # Downscaling: do it now before rendering
-                        _timer.start_step("pre_scale (opencv)")
-                        camera_data = cv2.resize(
-                            camera_data, (target_w, target_h), interpolation=cv2.INTER_AREA
+                        # Downscaling: materialize around OpenCV resize for this PR
+                        _pre = _timer.start_step("pre_scale (opencv)")
+                        camera_arr = camera_data.compute(timer=_pre)
+                        camera_arr = cv2.resize(
+                            camera_arr, (target_w, target_h), interpolation=cv2.INTER_AREA
                         )
-                        _timer.end_step()
+                        camera_data = Tensor(np.ascontiguousarray(camera_arr))
+                        _pre.close()
 
             # Branch based on monochrome vs color
             # use main_page for raw_ifd in case there is a PGTM
@@ -1064,7 +1061,6 @@ class DngFile(tifffile.TiffFile):
                     rendering_params=rendering_params,
                     use_xmp=use_xmp,
                 )
-            del camera_data
             
             # Post-render upscaling if needed
             if scale_needed:            
@@ -1078,22 +1074,23 @@ class DngFile(tifffile.TiffFile):
                 if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
                     final_w, final_h = final_h, final_w
 
-                _timer.start_step("post_scale (opencv)")
-                rendered_image = cv2.resize(
-                    rendered_image, (final_w, final_h), interpolation=cv2.INTER_LINEAR
+                _post = _timer.start_step("post_scale (opencv)")
+                rendered_arr = rendered_image.compute(timer=_post)
+                rendered_arr = cv2.resize(
+                    rendered_arr, (final_w, final_h), interpolation=cv2.INTER_LINEAR
                 )
-                _timer.end_step()
+                rendered_image = Tensor(np.ascontiguousarray(rendered_arr))
+                _post.close()
 
             return rendered_image
         finally:
-            _timer.close()
-            _timer.log_report(logger)
+            _timer_scope.close()
 
     def get_preview_rgb(
         self,
         output_dtype: type = np.uint8,
-    ) -> np.ndarray | None:
-        """Decode preview image from IFD0 to RGB array.
+    ) -> Tensor | None:
+        """Decode preview image from IFD0 to an RGB ``Tensor``.
         
         In most DNG files, IFD0 contains a preview image. This method verifies
         IFD0 is a preview (NewSubFileType indicates preview) before decoding.
@@ -1106,7 +1103,7 @@ class DngFile(tifffile.TiffFile):
             output_dtype: Output data type (np.uint8 or np.uint16)
             
         Returns:
-            RGB image array or None if IFD0 is not a preview or decoding fails
+            RGB ``Tensor`` or None if IFD0 is not a preview or decoding fails
         """
         ifd0 = self.ifd0
         if ifd0 is None:
@@ -2351,14 +2348,14 @@ def _write_dng_with_params(
             mono = raw_render._render_camera_monochrome(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
-                mono_camera=pyramid_images[preview_level_idx],
+                mono_camera=Tensor(np.ascontiguousarray(pyramid_images[preview_level_idx])),
                 output_dtype=np.uint8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             )
             # mono_lut returns (H, W, 1); squeeze before stacking or RGB
             # becomes (H, W, 3, 1) and tifffile rejects sample count.
-            mono = np.asarray(mono)
+            mono = mono.compute()
             if mono.ndim == 3 and mono.shape[-1] == 1:
                 mono = mono[..., 0]
             rendered_preview = np.stack([mono, mono, mono], axis=-1)
@@ -2367,11 +2364,11 @@ def _write_dng_with_params(
             rendered_preview = raw_render._render_camera_rgb(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
-                rgb_camera=pyramid_images[preview_level_idx],
+                rgb_camera=Tensor(np.ascontiguousarray(pyramid_images[preview_level_idx])),
                 output_dtype=np.uint8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
-            )
+            ).compute()
             preview_photometric = "RGB"
         timer.end_step()
         
@@ -2681,9 +2678,9 @@ def decode_dng(
     rendering_params: dict = None,
     strict: bool = True,
     scale: float = 1.0,
-) -> tuple[np.ndarray, "MetadataTags"]:
+) -> tuple[Tensor, "MetadataTags"]:
     """
-    Decode a DNG file or page to a numpy array with metadata.
+    Decode a DNG file or page to a ``Tensor`` with metadata.
     
     Renders raw pages (CFA or LINEAR_RAW) or decodes preview pages (RGB/YCBCR).
     When passed a file path/DngFile, renders the main raw page.
@@ -2715,7 +2712,7 @@ def decode_dng(
     
     Returns:
         Tuple of (image, metadata):
-            - image: RGB image array with shape (height, width, 3) and specified dtype
+            - image: RGB ``Tensor`` with shape (height, width, 3) and specified dtype
             - metadata: MetadataTags containing IFD0 tags
     """
     # Try Core Image path if requested

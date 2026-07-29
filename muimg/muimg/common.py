@@ -11,7 +11,7 @@ import time
 import weakref
 
 from enum import Enum
-from typing import Type
+from typing import Sequence, Type
 
 logger = logging.getLogger(__name__)
 
@@ -174,23 +174,65 @@ class PerfTimer:
         self._active_child = child
         return child
 
-    def add_completed_step(self, name: str, duration_s: float) -> "PerfTimer":
+    def add_completed_step(
+        self,
+        name: str,
+        duration_s: float,
+        *,
+        end_time: float | None = None,
+    ) -> "PerfTimer":
         """Append a finished child with a known duration (e.g. native op timings).
 
-        Places the interval ending at ``perf_counter()`` so siblings stay ordered
-        for gap detection. Does not become the active child.
+        Places the interval ending at ``end_time`` (default: ``perf_counter()``).
+        Does not become the active child. For several ops from one native segment,
+        use ``add_completed_steps`` so intervals are laid out end-to-end.
         """
         if self._active_child is not None and self._active_child.end_time is None:
             self._active_child.close()
 
         duration_s = max(0.0, float(duration_s))
-        end = time.perf_counter()
-        start = end - duration_s
-        child = PerfTimer(name, _parent=self, _depth=self.depth + 1, start_time=start)
+        end = time.perf_counter() if end_time is None else float(end_time)
+        child = PerfTimer(
+            name, _parent=self, _depth=self.depth + 1, start_time=end - duration_s
+        )
         child.end_time = end
         self.children.append(child)
         self._active_child = None
         return child
+
+    def add_completed_steps(
+        self,
+        steps: tuple[str, float] | Sequence[tuple[str, float]],
+    ) -> list["PerfTimer"]:
+        """Append finished children laid out end-to-end (no overlapping intervals).
+
+        ``steps`` is one ``(name, duration_s)`` or a sequence of them. Intervals are
+        placed sequentially ending at ``perf_counter()`` via repeated
+        ``add_completed_step`` calls. Used for per-op timings from one
+        ``execute_segment``.
+        """
+        if (
+            isinstance(steps, tuple)
+            and len(steps) == 2
+            and isinstance(steps[0], str)
+            and isinstance(steps[1], (int, float))
+        ):
+            step_list: list[tuple[str, float]] = [steps]  # type: ignore[list-item]
+        else:
+            step_list = list(steps)  # type: ignore[arg-type]
+
+        if not step_list:
+            return []
+
+        # Walk backwards from now so each call can reuse add_completed_step;
+        # then restore chronological order in self.children.
+        cursor = time.perf_counter()
+        for name, duration_s in reversed(step_list):
+            child = self.add_completed_step(name, duration_s, end_time=cursor)
+            cursor = child.start_time
+        n = len(step_list)
+        self.children[-n:] = self.children[-n:][::-1]
+        return self.children[-n:]
 
     def __del__(self):
         if self.end_time is None:

@@ -150,3 +150,104 @@ def demosaic_op(
         )
 
     return np.ascontiguousarray(out)
+
+
+def _orientation_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+    orientation = int(attrs["orientation"])
+    # TIFF 6 / 8 (and mirror+rotate 5 / 7) swap width and height
+    swap = orientation in (5, 6, 7, 8)
+    return TensorMeta(
+        dtype=t.meta.dtype,
+        height=t.meta.width if swap else t.meta.height,
+        width=t.meta.height if swap else t.meta.width,
+        channels=t.meta.channels,
+    )
+
+
+@graph_op(out_meta=_orientation_out_meta)
+def orientation_op(arr: np.ndarray, orientation: int) -> np.ndarray:
+    """Apply TIFF/EXIF orientation via OpenCV rotate (subset used by render)."""
+    orientation = int(orientation)
+    if orientation == 1:  # HORIZONTAL
+        return arr
+    if orientation == 6:  # ROTATE_90_CW
+        return cv2.rotate(arr, cv2.ROTATE_90_CLOCKWISE)
+    if orientation == 3:  # ROTATE_180
+        return cv2.rotate(arr, cv2.ROTATE_180)
+    if orientation == 8:  # ROTATE_270_CW
+        return cv2.rotate(arr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    logger.warning(
+        "Unsupported TIFF orientation code: %s; no rotation applied", orientation
+    )
+    return arr
+
+
+@graph_op
+def channel_luts_op(
+    arr: np.ndarray,
+    lut_r: np.ndarray,
+    lut_g: np.ndarray,
+    lut_b: np.ndarray,
+) -> np.ndarray:
+    """Apply independent 1D LUTs to R, G, B planes (float [0, 1] domain)."""
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise ValueError(f"channel_luts_op: expected HxWx3, got {arr.shape}")
+    out = np.empty_like(arr, dtype=np.float32)
+    for i, lut in enumerate((lut_r, lut_g, lut_b)):
+        lut = np.asarray(lut, dtype=np.float32).reshape(-1)
+        x = np.linspace(0.0, 1.0, len(lut), dtype=np.float32)
+        out[:, :, i] = np.interp(
+            arr[:, :, i].astype(np.float32, copy=False), x, lut
+        )
+    return out
+
+
+@graph_op
+def radial_distortion_op(
+    arr: np.ndarray,
+    k1: float,
+    k2: float,
+    k3: float,
+    scale_factor: float = 1.0,
+    center_x: float = 0.5,
+    center_y: float = 0.5,
+    focal_length_mm: float = 0.0,
+    sensor_width_mm: float = 35.6,
+) -> np.ndarray:
+    """Adobe LCP ray-space radial distortion correction (cv2.remap)."""
+    if focal_length_mm is None or float(focal_length_mm) <= 0.0:
+        raise ValueError("focal_length_mm is required for radial distortion correction")
+
+    height, width = arr.shape[:2]
+    cx = float(center_x) * width
+    cy = float(center_y) * height
+
+    x_coords, y_coords = np.meshgrid(
+        np.arange(width, dtype=np.float32),
+        np.arange(height, dtype=np.float32),
+    )
+
+    focal_length_norm = float(focal_length_mm) / float(sensor_width_mm)
+    norm_scale = max(width, height)
+    x_norm = ((x_coords - cx) / norm_scale) / focal_length_norm
+    y_norm = ((y_coords - cy) / norm_scale) / focal_length_norm
+
+    r_squared = x_norm**2 + y_norm**2
+    distortion_factor = (
+        1.0
+        + float(k1) * r_squared
+        + float(k2) * r_squared**2
+        + float(k3) * r_squared**3
+    )
+    scale = float(scale_factor)
+    x_distorted = cx + scale * (x_coords - cx) * distortion_factor
+    y_distorted = cy + scale * (y_coords - cy) * distortion_factor
+
+    return cv2.remap(
+        arr,
+        x_distorted,
+        y_distorted,
+        interpolation=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )

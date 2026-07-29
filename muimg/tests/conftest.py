@@ -300,6 +300,10 @@ def sample_as_cfa(rgb_img: np.ndarray, pattern: str = "RGGB") -> np.ndarray:
 
 def normalize_image(img: np.ndarray) -> np.ndarray:
     """Normalize image to float [0,1] range."""
+    from muimg.tensor import Tensor
+
+    if isinstance(img, Tensor):
+        img = img.compute()
     if img.dtype == np.uint8:
         return img.astype(np.float32) / 255.0
     elif img.dtype == np.uint16:
@@ -309,6 +313,12 @@ def normalize_image(img: np.ndarray) -> np.ndarray:
 
 def compute_diff_stats(img1: np.ndarray, img2: np.ndarray) -> dict:
     """Compute difference statistics between two images."""
+    from muimg.tensor import Tensor
+
+    if isinstance(img1, Tensor):
+        img1 = img1.compute()
+    if isinstance(img2, Tensor):
+        img2 = img2.compute()
     diff = np.abs(normalize_image(img1) - normalize_image(img2))
     stats = {
         "mean": np.mean(diff) * 100,

@@ -235,6 +235,41 @@ def test_add_completed_step_duration():
     root.close()
 
 
+def test_add_completed_steps_sequential_no_overlap():
+    from muimg.common import PerfTimer
+
+    root = PerfTimer("root")
+    children = root.add_completed_steps(
+        [
+            ("op_a (engine)", 0.010),
+            ("op_b (engine)", 0.020),
+            ("op_c (engine)", 0.005),
+        ]
+    )
+    assert [c.name for c in children] == [
+        "op_a (engine)",
+        "op_b (engine)",
+        "op_c (engine)",
+    ]
+    assert abs(children[0].get_elapsed_ms() - 10.0) < 1.0
+    assert abs(children[1].get_elapsed_ms() - 20.0) < 1.0
+    assert abs(children[2].get_elapsed_ms() - 5.0) < 1.0
+    # End-to-end layout: each child starts when the previous ends.
+    assert children[0].end_time == children[1].start_time
+    assert children[1].end_time == children[2].start_time
+    root.close()
+
+
+def test_add_completed_steps_single_tuple():
+    from muimg.common import PerfTimer
+
+    root = PerfTimer("root")
+    children = root.add_completed_steps(("native_op (engine)", 0.025))
+    assert len(children) == 1
+    assert abs(children[0].get_elapsed_ms() - 25.0) < 1.0
+    root.close()
+
+
 def test_compute_times_python_ops():
     from muimg.common import PerfTimer
     from muimg.engines.pyops import cast_dtype_op, crop_op
@@ -270,6 +305,7 @@ def test_compute_times_engine_ops():
     names = [c.name for c in parent.children]
     assert names == ["sub_scalar (engine)", "mul_scalar (engine)"]
     assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
+    assert parent.children[0].end_time == parent.children[1].start_time
 
 
 def test_graph_op_splits_engine_segments():

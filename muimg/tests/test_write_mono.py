@@ -171,6 +171,7 @@ def _test_write_mono(
         # Render our output
         our_rendered = dng.render_raw(output_dtype=np.uint8)
         assert our_rendered is not None, f"Failed to render {label}"
+        our_rendered = our_rendered.compute()
         
         # Compare against dng_validate rendering (if available)
         output_tiff = Path(str(output_base) + '.tif')

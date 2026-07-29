@@ -11,7 +11,14 @@ from typing import Any
 
 # Package imports
 from .engines import ops as engine_ops
-from .engines.pyops import cast_dtype_op, crop_op, demosaic_op
+from .engines.pyops import (
+    cast_dtype_op,
+    channel_luts_op,
+    crop_op,
+    demosaic_op,
+    orientation_op,
+    radial_distortion_op,
+)
 from .tensor import Tensor
 from .common import enum_display_name, get_active_timer
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
@@ -472,35 +479,21 @@ def compute_xmp_crop_bounds(
     return top, left, bottom, right
 
 
-def apply_tiff_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
-    """Apply TIFF/EXIF orientation rotation to an image.
-    
+def apply_tiff_orientation(
+    image: np.ndarray | Tensor, orientation: int
+) -> np.ndarray | Tensor:
+    """Apply TIFF/EXIF orientation rotation (emits ``orientation_op`` for Tensor).
+
     Args:
-        image: Input image array (any shape with H, W as first two dims)
+        image: Input image array or Tensor (H, W as first two dims)
         orientation: TIFF orientation code
-        
+
     Returns:
-        Rotated image array
+        Rotated image (same type as input)
     """
-    # Early return for horizontal (no rotation needed) - avoid importing cv2
     if orientation == Orientation.HORIZONTAL:
         return image
-    
-    timer = get_active_timer()
-    timer.start_step("apply_tiff_orientation (opencv)")
-    if orientation == Orientation.ROTATE_90_CW:
-        result = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    elif orientation == Orientation.ROTATE_180:
-        result = cv2.rotate(image, cv2.ROTATE_180)
-    elif orientation == Orientation.ROTATE_270_CW:
-        result = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    else:
-        logger.warning(
-            f"Unsupported TIFF orientation code: {orientation}; no rotation applied"
-        )
-        result = image
-    timer.end_step()
-    return result
+    return orientation_op(image, int(orientation))
 
 
 def demosaic(
@@ -2475,240 +2468,133 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple) -> np.ndarr
     return camera_white
 
 
-def apply_radial_distortion_correction(
-    rgb_image: np.ndarray,
-    radial_params: dict,
-    scale_factor: float = 1.0,
-    center_x: float = 0.5,
-    center_y: float = 0.5,
-    focal_length_mm: float = None,
-    sensor_width_mm: float = 35.6
-) -> np.ndarray:
-    """Apply radial distortion correction to an RGB image using Adobe LCP parameters.
-    
-    Adobe LCP uses "ray-space" normalization where coordinates are normalized by:
-        r_ray = (pixel_offset / max_dimension) / (focal_length / sensor_width)
-    
-    The sensor width is calculated from stCamera:SensorFormatFactor in XMP metadata
-    as 36mm / SensorFormatFactor. This gives the actual sensor width for the camera.
-    This ray-angle-based coordinate system makes distortion parameters lens-intrinsic
-    and focal-length-independent, allowing a single set of k1/k2/k3 values to work
-    across the entire zoom range of a lens.
-    
-    This differs from OpenCV's approach where distortion coefficients are applied
-    to normalized pixel coordinates without focal length normalization.
-    
-    For each output pixel, computes the corresponding input pixel coordinates
-    by applying the distortion formula, then uses cv2.remap with bicubic
-    interpolation to sample from the source image.
-    
-    Args:
-        rgb_image: Input image (float32, any color space)
-        radial_params: Dictionary with keys 'k1', 'k2', 'k3' (distortion coefficients in ray-space)
-        scale_factor: Additional zoom multiplier applied during correction (default 1.0)
-        center_x: Normalized X center of distortion (0.0-1.0, default 0.5)
-        center_y: Normalized Y center of distortion (0.0-1.0, default 0.5)
-        focal_length_mm: Focal length in mm for ray-space normalization (required)
-        sensor_width_mm: Sensor width in mm for ray-space normalization (default 35.6mm)
-        
-    Returns:
-        Distortion-corrected image (same shape and dtype as input)
-    """
-    
-    if focal_length_mm is None:
-        raise ValueError("focal_length_mm is required for radial distortion correction")
-
-    timer = get_active_timer()
-    timer.start_step("generate radial map")
-
-    height, width = rgb_image.shape[:2]
-    
-    # Distortion center from normalized coordinates
-    cx = center_x * width
-    cy = center_y * height
-
-    # Create meshgrid of output pixel coordinates
-    x_coords, y_coords = np.meshgrid(
-        np.arange(width, dtype=np.float32),
-        np.arange(height, dtype=np.float32)
-    )
-
-    # Convert to ray-space coordinates normalized to actual sensor width
-    # sensor_width_mm is calculated from stCamera:SensorFormatFactor as 36mm / SensorFormatFactor
-    # focal_length_norm converts actual focal length to sensor-relative ratio
-    focal_length_norm = focal_length_mm / sensor_width_mm
-    norm_scale = max(width, height)
-    x_norm = ((x_coords - cx) / norm_scale) / focal_length_norm
-    y_norm = ((y_coords - cy) / norm_scale) / focal_length_norm
-    
-    # Calculate radial distance squared
-    r_squared = x_norm**2 + y_norm**2
-    
-    # Apply radial distortion formula in ray-space
-    # r_distorted = r * (1 + k1*r^2 + k2*r^4 + k3*r^6)
-    k1 = radial_params['k1']
-    k2 = radial_params['k2']
-    k3 = radial_params['k3'] 
-    distortion_factor = (1.0 + k1 * r_squared + k2 * r_squared**2 + k3 * r_squared**3)
-    
-    # Compute source coordinates by applying distortion
-    x_distorted = cx + scale_factor * (x_coords - cx) * distortion_factor
-    y_distorted = cy + scale_factor * (y_coords - cy) * distortion_factor
-    
-    # Use cv2.remap with bicubic interpolation
-    timer.start_step("radial remap (opencv)")
-    corrected = cv2.remap(
-        rgb_image,
-        x_distorted,
-        y_distorted,
-        interpolation=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0
-    )
-    timer.end_step()
-    
-    return corrected
-
-
 def apply_post_rendering_operations(
-    rgb_input: np.ndarray,
-    rendering_params: dict
-) -> np.ndarray:
-    """Apply XMP post-rendering operations in ProPhoto linear space.
-    
+    rgb_input: Tensor,
+    rendering_params: dict,
+) -> Tensor:
+    """Apply XMP post-rendering ops in ProPhoto linear space (deferred Tensor DAG).
+
     Processing pipeline:
-    1. Apply tone curves in ProPhoto linear space (Adobe's approach)
-    2. Apply lens distortion correction
-    3. Apply crop (if HasCrop is True)
-    
-    Tone curve processing follows Adobe's approach: curves are displayed in sRGB gamma 2.2
-    space (Melissa RGB) but applied in linear ProPhoto RGB space.
-    
-    Args:
-        rgb_input: Input image in ProPhoto linear space
-        rendering_params: Dictionary containing XMP rendering parameters
-        
-    Returns:
-        Output image in ProPhoto linear space
+    1. Tone curves in ProPhoto linear space (Adobe's approach)
+    2. Lens distortion correction
+    3. Crop (if HasCrop is True)
+
+    Tone curves are displayed in sRGB gamma 2.2 (Melissa RGB) but applied in
+    linear ProPhoto RGB.
     """
-    timer = get_active_timer()
-    
-    rgb_prophoto_linear = rgb_input
-    
-    logger.debug(f"apply_post_rendering_operations called with params: {list(rendering_params.keys())}")
-    
-    # Only copy if we're going to modify
-    rgb_output = rgb_prophoto_linear
-    
-    # Step 1: Apply main curve with hue preservation (if present and no per-channel curves)
-    if 'ToneCurvePV2012' in rendering_params:
-        xmp_tone_timer = timer.start_step("xmp_tone_curve")
-        rgb_output = rgb_prophoto_linear.copy()
-        # Build curve LUT and convert from sRGB gamma to linear space
-        main_curve_lut = LUT(rendering_params['ToneCurvePV2012'], size=4096, 
-                             convert_srgb_gamma_to_linear=True)
-        
-        xmp_tone_timer.start_step("transform_color (c++)")
+    logger.debug(
+        "apply_post_rendering_operations called with params: %s",
+        list(rendering_params.keys()),
+    )
+
+    rgb_output = rgb_input
+
+    if "ToneCurvePV2012" in rendering_params:
+        main_curve_lut = LUT(
+            rendering_params["ToneCurvePV2012"],
+            size=4096,
+            convert_srgb_gamma_to_linear=True,
+        )
         rgb_output = transform_color(
-            Tensor(rgb_output),
+            rgb_output,
             input_lut=main_curve_lut,
             hue_preserving_input_lut=True,
-            dst_dtype="float32"
-        ).compute()
-        xmp_tone_timer.close()
-        logger.debug("Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)")
-    
-    # Step 2: Apply per-channel curves (if present)
-    has_per_channel = False
-    channel_timer = None
-    for channel_idx, channel_name in enumerate(['Red', 'Green', 'Blue']):
-        curve_key = f'ToneCurvePV2012{channel_name}'
-        
-        if curve_key in rendering_params:
-            if not has_per_channel:
-                channel_timer = timer.start_step("xmp_channel_curves")
-                has_per_channel = True
-            
-            if rgb_output is rgb_prophoto_linear:
-                rgb_output = rgb_prophoto_linear.copy()
-            
-            # Build per-channel curve LUT and convert from sRGB gamma to linear space
-            channel_curve_lut = LUT(rendering_params[curve_key], size=4096,
-                                    convert_srgb_gamma_to_linear=True)
-            
-            # Apply per-channel curve
-            channel_data = rgb_output[:, :, channel_idx].astype(np.float32)
-            rgb_output[:, :, channel_idx] = np.interp(
-                channel_data,
-                np.linspace(0.0, 1.0, len(channel_curve_lut.data), dtype=np.float32),
-                channel_curve_lut.data
-            )
-            logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
-    
-    if channel_timer is not None:
-        channel_timer.close()
-    
-    # Stage 2 - Apply radial distortion correction (final step after tone curves)
-    if 'crlcp:PerspectiveModel' in rendering_params:
-        timer.start_step("radial_distortion_correction")
+            dst_dtype="float32",
+        )
+        logger.debug(
+            "Applied ToneCurvePV2012 with hue preservation (in ProPhoto linear space)"
+        )
 
-        perspective_model = rendering_params['crlcp:PerspectiveModel']
+    channel_names = ("Red", "Green", "Blue")
+    channel_luts: list[np.ndarray | None] = [None, None, None]
+    has_per_channel = False
+    for channel_idx, channel_name in enumerate(channel_names):
+        curve_key = f"ToneCurvePV2012{channel_name}"
+        if curve_key in rendering_params:
+            has_per_channel = True
+            channel_luts[channel_idx] = LUT(
+                rendering_params[curve_key],
+                size=4096,
+                convert_srgb_gamma_to_linear=True,
+            ).data
+            logger.debug(f"Applied {curve_key} (in ProPhoto linear space)")
+
+    if has_per_channel:
+        identity = np.linspace(0.0, 1.0, 4096, dtype=np.float32)
+        rgb_output = channel_luts_op(
+            rgb_output,
+            lut_r=channel_luts[0] if channel_luts[0] is not None else identity,
+            lut_g=channel_luts[1] if channel_luts[1] is not None else identity,
+            lut_b=channel_luts[2] if channel_luts[2] is not None else identity,
+        )
+
+    if "crlcp:PerspectiveModel" in rendering_params:
+        perspective_model = rendering_params["crlcp:PerspectiveModel"]
         logger.debug(f"Found crlcp:PerspectiveModel: {perspective_model}")
-        
-        # Check if radial distortion parameters are present
+
         has_radial = all(
-            f'stCamera:RadialDistortParam{i}' in perspective_model 
-            for i in [1, 2, 3]
+            f"stCamera:RadialDistortParam{i}" in perspective_model for i in (1, 2, 3)
         )
         if has_radial:
             radial_params = {
-                'k1': float(perspective_model['stCamera:RadialDistortParam1']),
-                'k2': float(perspective_model['stCamera:RadialDistortParam2']),
-                'k3': float(perspective_model['stCamera:RadialDistortParam3']),
+                "k1": float(perspective_model["stCamera:RadialDistortParam1"]),
+                "k2": float(perspective_model["stCamera:RadialDistortParam2"]),
+                "k3": float(perspective_model["stCamera:RadialDistortParam3"]),
             }
-            
-            # Extract scale factor if present (default 1.0)
-            scale_factor = float(perspective_model.get('stCamera:ScaleFactor', 1.0))
-            
-            # Extract distortion center if present (defaults to 0.5, 0.5 = image center)
-            center_x = float(perspective_model.get('stCamera:ImageXCenter', 0.5))
-            center_y = float(perspective_model.get('stCamera:ImageYCenter', 0.5))
-            
-            # Extract focal length (required for ray-space normalization)
-            focal_length_mm = perspective_model.get('stCamera:FocalLength')
+            scale_factor = float(perspective_model.get("stCamera:ScaleFactor", 1.0))
+            center_x = float(perspective_model.get("stCamera:ImageXCenter", 0.5))
+            center_y = float(perspective_model.get("stCamera:ImageYCenter", 0.5))
+            focal_length_mm = perspective_model.get("stCamera:FocalLength")
             if focal_length_mm is None:
-                logger.warning("Missing stCamera:FocalLength in perspective model, skipping radial distortion correction")
+                logger.warning(
+                    "Missing stCamera:FocalLength in perspective model, "
+                    "skipping radial distortion correction"
+                )
             else:
                 focal_length_mm = float(focal_length_mm)
-                
-                # Extract sensor format factor to calculate actual sensor width
-                # SensorFormatFactor is the crop factor relative to full-frame (36mm width)
-                sensor_format_factor = perspective_model.get('stCamera:SensorFormatFactor')
+                sensor_format_factor = perspective_model.get(
+                    "stCamera:SensorFormatFactor"
+                )
                 if sensor_format_factor is not None:
                     sensor_format_factor = float(sensor_format_factor)
                     sensor_width_mm = 36.0 / sensor_format_factor
-                    logger.debug(f"Using sensor width {sensor_width_mm:.3f}mm (SensorFormatFactor={sensor_format_factor})")
+                    logger.debug(
+                        f"Using sensor width {sensor_width_mm:.3f}mm "
+                        f"(SensorFormatFactor={sensor_format_factor})"
+                    )
                 else:
-                    # Fallback to "average" 35.8mm if SensorFormatFactor not available
                     sensor_width_mm = 35.8
-                    logger.debug(f"SensorFormatFactor not found, using default sensor width {sensor_width_mm}mm")
-                
-                logger.debug(f"Radial distortion params: {radial_params}, scale_factor: {scale_factor}, center: ({center_x}, {center_y}), focal_length: {focal_length_mm}mm")
-                rgb_output = apply_radial_distortion_correction(
-                    rgb_output, radial_params, scale_factor, center_x, center_y, focal_length_mm, sensor_width_mm)
-                logger.debug("Applied radial distortion correction")
-        
-        timer.end_step()
+                    logger.debug(
+                        f"SensorFormatFactor not found, using default sensor width "
+                        f"{sensor_width_mm}mm"
+                    )
 
-    # Stage 3 - Apply XMP crop if present
-    h, w = rgb_output.shape[:2]
+                logger.debug(
+                    f"Radial distortion params: {radial_params}, "
+                    f"scale_factor: {scale_factor}, center: ({center_x}, {center_y}), "
+                    f"focal_length: {focal_length_mm}mm"
+                )
+                rgb_output = radial_distortion_op(
+                    rgb_output,
+                    k1=radial_params["k1"],
+                    k2=radial_params["k2"],
+                    k3=radial_params["k3"],
+                    scale_factor=scale_factor,
+                    center_x=center_x,
+                    center_y=center_y,
+                    focal_length_mm=focal_length_mm,
+                    sensor_width_mm=sensor_width_mm,
+                )
+                logger.debug("Applied radial distortion correction")
+
+    h, w = rgb_output.meta.height, rgb_output.meta.width
     top, left, bottom, right = compute_xmp_crop_bounds(w, h, rendering_params)
     if not (top == 0 and left == 0 and bottom == h and right == w):
         logger.debug(
             f"Applying XMP crop: top={top}, left={left}, bottom={bottom}, right={right} "
             f"(from {w}x{h})"
         )
-        rgb_output = rgb_output[top:bottom, left:right].copy()
+        rgb_output = crop_op(rgb_output, left, top, right - left, bottom - top)
 
     return rgb_output
 
@@ -3029,12 +2915,12 @@ def _render_to_camera_space(
 
 def _render_camera_rgb(
     ifd0_tags: "DngPage" | "MetadataTags",
-    rgb_camera: np.ndarray,
+    rgb_camera: Tensor,
     output_dtype: type,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict = None,
     use_xmp: bool = True,
-) -> np.ndarray:
+) -> Tensor:
     timer = get_active_timer()
 
     try:
@@ -3198,29 +3084,33 @@ def _render_camera_rgb(
         # SDK ref: dng_render.cpp lines 912-913
         # fCameraToRGB = ProPhoto.MatrixFromPCS() * CameraToPCS()
         camera_to_prophoto = XYZ_D50_TO_PROPHOTO_RGB @ camera_to_pcs
-        
-        cam2pro_timer.start_step("clip_and_transform_color (c++)")
-        rgb_prophoto = clip_and_transform_color(
-            Tensor(rgb_camera),
-            clip_max=camera_white.astype(np.float32),
-            matrix=camera_to_prophoto.astype(np.float32)).compute()
         cam2pro_timer.close()
-        del rgb_camera
-        
+
+        # =====================================================================
+        # Step 1: DoBaselineABCtoRGB
+        # SDK ref: dng_reference.cpp lines 1389-1441
+        # Clip to camera_white, apply camera_to_prophoto matrix, pin to [0,1]
+        # =====================================================================
+        # SDK ref: dng_render.cpp lines 912-913
+        # fCameraToRGB = ProPhoto.MatrixFromPCS() * CameraToPCS()
+        rgb_prophoto = clip_and_transform_color(
+            rgb_camera,
+            clip_max=camera_white.astype(np.float32),
+            matrix=camera_to_prophoto.astype(np.float32),
+        )
+
         # =====================================================================
         # Step 1.5: DoBaselineHueSatMap (ProfileHueSatMap)
         # SDK ref: dng_render.cpp lines 917-955, 1822-1837
         # Applied AFTER camera->ProPhoto, BEFORE exposure ramp
         # =====================================================================
         # Chain HueSatMap + PGTM into one engine segment when both apply.
-        rgb_t = Tensor(rgb_prophoto)
-        engine_segment = False
+        rgb_t = rgb_prophoto
 
         hue_sat_dims = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapDims")
         hue_sat_data1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData1")
 
         if hue_sat_dims is not None and hue_sat_data1 is not None:
-            hsm_timer = timer.start_step("hue_sat_map")
             hue_divs, sat_divs, val_divs = int(hue_sat_dims[0]), int(hue_sat_dims[1]), int(hue_sat_dims[2])
             hue_sat_data1 = np.asarray(hue_sat_data1, dtype=np.float32)
             hue_sat_data2 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ProfileHueSatMapData2")
@@ -3237,15 +3127,11 @@ def _render_camera_rgb(
 
             logger.debug(f"ProfileHueSatMap: {hue_divs}x{sat_divs}x{val_divs}")
 
-            hsm_timer.start_step("apply_hue_sat_map (engine)")
             rgb_t = engine_ops.apply_hue_sat_map(
                 rgb_t,
                 map_data=np.asarray(hue_sat_map, dtype=np.float32).reshape(-1),
                 hue_divs=int(hue_divs), sat_divs=int(sat_divs), val_divs=int(val_divs),
             )
-            engine_segment = True
-            hsm_timer.end_step()
-            hsm_timer.close()
 
         # =====================================================================
         # Step 1.6: DoBaselineProfileGainTableMap
@@ -3290,7 +3176,7 @@ def _render_camera_rgb(
                     is_version2=is_version2,
                     byteorder=system_byteorder,
                 )
-                pgtm_timer.start_step("apply_profile_gain_table_map (engine)")
+                pgtm_timer.close()
                 rgb_t = engine_ops.apply_profile_gain_table_map(
                     rgb_t,
                     gains=pgtm["gains"],
@@ -3305,13 +3191,12 @@ def _render_camera_rgb(
                     gamma=float(pgtm["gamma"]),
                     exposure_weight_gain=float(2.0 ** total_baseline_exposure),
                 )
-                engine_segment = True
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap ({type(e).__name__}): {e}")
-            pgtm_timer.close()
+                if pgtm_timer.end_time is None:
+                    pgtm_timer.close()
 
-        if engine_segment:
-            rgb_prophoto = rgb_t.compute()
+        rgb_prophoto = rgb_t
 
         # =====================================================================
         # Step 2: DoBaseline1DFunction (ExposureRamp)
@@ -3334,16 +3219,34 @@ def _render_camera_rgb(
                 'highlight_preserving_exposure', True
             )
 
-        # Compute exposure_ramp LUT
-        # Pass camera_space_data for adaptive exposure blending
-        timer.start_step("compute_exposure_ramp_lut")
-        exposure_ramp_lut = compute_exposure_ramp_lut(
-            exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
-            camera_space_data=rgb_prophoto
-        )
-        timer.end_step()
+        # Adaptive exposure: two-graph hist barrier.
+        # Graph1 ends at ProPhoto (+ HueSat/PGTM). Compute it for luminance hist,
+        # derive the exposure LUT, then start Graph2 from a fresh Tensor source.
+        # Do not flush inside Graph1/Graph2 — that would split fused work.
+        needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
+        if needs_adaptive_hist:
+            flush_step = timer.start_step("camera_space+prophoto")
+            try:
+                rgb_prophoto_arr = rgb_prophoto.compute(timer=flush_step)
+            finally:
+                flush_step.close()
+            timer.start_step("compute_exposure_ramp_lut")
+            exposure_ramp_lut = compute_exposure_ramp_lut(
+                exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
+                camera_space_data=rgb_prophoto_arr,
+            )
+            rgb_prophoto = Tensor(rgb_prophoto_arr)
+            timer.end_step()
+        else:
+            timer.start_step("compute_exposure_ramp_lut")
+            exposure_ramp_lut = compute_exposure_ramp_lut(
+                exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
+                camera_space_data=None,
+            )
+            timer.end_step()
         logger.debug(f"Exposure_ramp LUT: first={exposure_ramp_lut[0]:.6f}, last={exposure_ramp_lut[-1]:.6f}, "
                     f"mean={np.mean(exposure_ramp_lut):.6f}")
+
 
         # =====================================================================
         # Step 2.5: DoBaselineHueSatMap (ProfileLookTable)
@@ -3363,13 +3266,12 @@ def _render_camera_rgb(
         # If no look_table: exposure_ramp -> exposure_tone -> profile_curve (all baked into one LUT)
         # If look_table: exposure_tone -> profile_curve (exposure_ramp applied to pixels separately)
         if look_table is not None:
-            # Exposure ramp LUT + look table in one engine segment.
+            # Exposure ramp LUT + look table in one engine segment (deferred).
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
-            timer.start_step("exposure_ramp+look_table (engine)")
             lut_arr = np.asarray(exposure_ramp_lut, dtype=np.float32).reshape(-1)
             rgb_exposed = engine_ops.apply_hue_sat_map(
                 transform_color(
-                    Tensor(rgb_prophoto),
+                    rgb_prophoto,
                     input_lut=lut_arr,
                     dst_dtype="float32",
                 ),
@@ -3377,8 +3279,7 @@ def _render_camera_rgb(
                 hue_divs=int(look_hue_divs),
                 sat_divs=int(look_sat_divs),
                 val_divs=int(look_val_divs),
-            ).compute()
-            timer.end_step()
+            )
 
             # Start combined curve with identity (exposure_ramp already applied to pixels)
             combined_curve = LUT(None, size=4096)
@@ -3438,44 +3339,33 @@ def _render_camera_rgb(
         
         if has_post_rendering:
             # Post-rendering exists: apply tone curve first, then post-rendering
-            timer.start_step("tone_curve (c++)")
             rgb_toned = transform_color(
-                Tensor(rgb_exposed),
+                rgb_exposed,
                 input_lut=combined_curve,
                 hue_preserving_input_lut=True,
                 dst_dtype="float32"
-            ).compute()
-            timer.end_step()
-            del rgb_exposed
+            )
 
             # Apply post-rendering (tone curves, lens correction) in ProPhoto linear
             rgb_to_convert = apply_post_rendering_operations(rgb_toned, rendering_params)
-            del rgb_toned
 
             tone_input_lut = None  # No tone curve for final conversion
-            timing_label = "prophoto_to_srgb"
         else:
             # No post-rendering: merge tone curve + colorspace in single pass
             rgb_to_convert = rgb_exposed
-            del rgb_exposed
             tone_input_lut = combined_curve
-            timing_label = "tone_curve+srgb"
         
         # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
-        convert_timer = timer.start_step(timing_label)
         matrix = compute_colorspace_matrix(ColorSpace.PROPHOTO_LINEAR, ColorSpace.SRGB_GAMMA)
         output_lut = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=False, size=4096)
-        convert_timer.start_step("transform_color (c++)")
         result = transform_color(
-            Tensor(rgb_to_convert),
+            rgb_to_convert,
             input_lut=tone_input_lut,
             matrix=matrix,
             output_lut=output_lut,
             hue_preserving_input_lut=True if tone_input_lut else False,
             dst_dtype=np.dtype(output_dtype).name,
-        ).compute()
-        convert_timer.close()
-        del rgb_to_convert
+        )
 
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
         # SDK ref: dng_render.cpp uses DefaultFinalWidth/Height for oriented output
@@ -3496,13 +3386,13 @@ def _render_camera_rgb(
 
 def _render_camera_monochrome(
     ifd0_tags: "DngPage" | "MetadataTags",
-    mono_camera: np.ndarray,
+    mono_camera: Tensor,
     output_dtype: type,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict = None,
     use_xmp: bool = True,
-) -> np.ndarray:
-    """Render monochrome linear data to output grayscale image.
+) -> Tensor:
+    """Render monochrome linear data to output grayscale Tensor.
 
     This is a simplified rendering pipeline for monochrome images that skips
     all color-specific processing (ColorMatrix, HueSatMap, etc.) but keeps
@@ -3510,14 +3400,14 @@ def _render_camera_monochrome(
 
     Args:
         ifd0_tags: IFD0 tags source (contains rendering parameters)
-        mono_camera: Monochrome linear data (H, W, 1) float32 in [0, 1]
+        mono_camera: Monochrome linear Tensor (H, W, 1) float32 in [0, 1]
         output_dtype: Output data type (np.uint8 or np.uint16)
         raw_ifd_tags: Optional raw IFD tags (for tags that may be on raw IFD)
         rendering_params: Optional rendering parameter overrides
         use_xmp: Whether to extract rendering params from XMP
 
     Returns:
-        Grayscale image array (H, W, 1) in output_dtype range.
+        Grayscale Tensor (H, W, 1) with output_dtype meta.
     """
     timer = get_active_timer()
 
@@ -3574,16 +3464,37 @@ def _render_camera_monochrome(
                 'highlight_preserving_exposure', True
             )
 
-        # Compute exposure_ramp LUT
-        timer.start_step("compute_exposure_ramp_lut")
-        exposure_ramp_lut = compute_exposure_ramp_lut(
-            exposure,
-            shadow_scale,
-            default_black_render,
-            highlight_preserving_exposure,
-            camera_space_data=mono_camera,
-        )
-        timer.end_step()
+        # Adaptive exposure: two-graph hist barrier.
+        # Graph1 ends at camera-space mono. Compute it for luminance hist, derive
+        # the exposure LUT, then start Graph2 from a fresh Tensor source.
+        # Do not flush inside Graph1/Graph2 — that would split fused work.
+        needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
+        if needs_adaptive_hist:
+            flush_step = timer.start_step("camera_space")
+            try:
+                mono_camera_arr = mono_camera.compute(timer=flush_step)
+            finally:
+                flush_step.close()
+            timer.start_step("compute_exposure_ramp_lut")
+            exposure_ramp_lut = compute_exposure_ramp_lut(
+                exposure,
+                shadow_scale,
+                default_black_render,
+                highlight_preserving_exposure,
+                camera_space_data=mono_camera_arr,
+            )
+            mono_camera = Tensor(mono_camera_arr)
+            timer.end_step()
+        else:
+            timer.start_step("compute_exposure_ramp_lut")
+            exposure_ramp_lut = compute_exposure_ramp_lut(
+                exposure,
+                shadow_scale,
+                default_black_render,
+                highlight_preserving_exposure,
+                camera_space_data=None,
+            )
+            timer.end_step()
 
         # Build combined tone curve
         combined_curve = LUT(exposure_ramp_lut)
@@ -3622,20 +3533,16 @@ def _render_camera_monochrome(
         # =====================================================================
         # Step 4: Apply tone curve + gamma
         # =====================================================================
-        timer.start_step("tone_curve+gamma")
-
         # For monochrome: combine all LUTs and apply with optimized C++ mono_lut
         # Chain: combined_curve → gray_gamma
         gamma_lut = ColorSpaceLUT(ColorSpace.GRAY_GAMMA_2_2, inverse=False, size=4096)
         final_lut = combined_curve.compose_output(gamma_lut)
 
-        # Use optimized C++ mono_lut for single channel processing
         result = mono_lut(
-            Tensor(mono_camera),
+            mono_camera,
             lut=final_lut,
             dst_dtype=np.dtype(output_dtype).name,
-        ).compute()
-        timer.end_step()
+        )
 
         # =====================================================================
         # Step 5: Apply orientation

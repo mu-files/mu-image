@@ -1637,6 +1637,8 @@ def run_batch_to_video(
                 else:
                     logger.warning(f"Frame {index}: {msg}")
                 return (index, None)
+
+            img = img.compute()
             
             # Convert grayscale to RGB for video encoding
             if len(img.shape) == 2:

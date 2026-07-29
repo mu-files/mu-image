@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import IO, Callable, Iterable, Any
 
 # Package imports
+from .common import scoped_perf_timer
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
@@ -20,7 +21,7 @@ from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_p
 logger = logging.getLogger(__name__)
 
 def write_image(
-    image: np.ndarray,
+    image: np.ndarray | Tensor,
     output: str | Path | IO[bytes],
     output_format_stream: str = "jpg",
     metadata: MetadataTags | None = None,
@@ -31,7 +32,7 @@ def write_image(
     Helper function used by convert_imgformat and convert_dng.
     
     Args:
-        image: RGB image array with shape (height, width, 3)
+        image: RGB image array or ``Tensor`` with shape (height, width, 3)
         output: Output file path (str/Path) or stream (IO[bytes])
         output_format_stream: Output format for stream output ("jpg", "png", "tiff", etc.)
             Ignored when output is a file path (format determined by extension)
@@ -40,6 +41,14 @@ def write_image(
     Returns:
         bool: True if successful, False otherwise
     """
+    if isinstance(image, Tensor):
+        from .common import get_active_timer
+
+        active = get_active_timer()
+        image = image.compute(
+            timer=None if active.name == "__orphan__" else active
+        )
+
     # Determine output format
     if isinstance(output, (str, Path)):
         output_path = Path(output)
@@ -135,9 +144,9 @@ def write_image(
 def decode_image(
     file: str | Path | IO[bytes],
     output_dtype: type = np.uint8,
-) -> np.ndarray:
+) -> Tensor:
     """
-    Decode an image file to a numpy array.
+    Decode an image file to a ``Tensor``.
     
     Supports DNG files (with default raw processing) and standard image formats
     (JPEG, PNG, TIFF, etc.) via OpenCV.
@@ -150,7 +159,7 @@ def decode_image(
             'muimg dng convert' CLI command instead.
         
     Returns:
-        RGB image array with shape (height, width, 3) and specified dtype
+        RGB ``Tensor`` with shape (height, width, 3) and specified dtype
     """
     # Try to open as DNG - DngFile handles str, Path, and IO[bytes]
     dng_file = None
@@ -181,7 +190,7 @@ def decode_image(
             raise ValueError("Failed to decode JXL image")
         
         # JXL already returns RGB, just convert dtype if needed
-        return convert_dtype(Tensor(img), np.dtype(output_dtype).name).compute()
+        return convert_dtype(Tensor(img), np.dtype(output_dtype).name)
     
     # Check if it's a TIFF file - use tifffile to avoid OpenCV warnings about EXIF tags
     if isinstance(file, (str, Path)) and str(file).lower().endswith(('.tif', '.tiff')):
@@ -190,7 +199,7 @@ def decode_image(
             raise ValueError("Failed to decode TIFF image")
         
         # tifffile returns RGB, just convert dtype if needed
-        return convert_dtype(Tensor(img), np.dtype(output_dtype).name).compute()
+        return convert_dtype(Tensor(img), np.dtype(output_dtype).name)
     
     # Fall back to cv2 for other formats
     if isinstance(file, (str, Path)):
@@ -215,7 +224,7 @@ def decode_image(
     else:
         raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
-    return convert_dtype(Tensor(img), np.dtype(output_dtype).name).compute()
+    return convert_dtype(Tensor(img), np.dtype(output_dtype).name)
 
 def convert_imgformat(
     file: str | Path | IO[bytes],
@@ -322,19 +331,20 @@ def convert_dng(
         Core Image is not available when passing a DngPage instance.
     """
     try:
-        # Decode DNG to numpy array with metadata
-        image, metadata = decode_dng(
-            file=file,
-            output_dtype=output_dtype,
-            demosaic_algorithm=demosaic_algorithm,
-            use_coreimage_if_available=use_coreimage_if_available,
-            use_xmp=use_xmp,
-            rendering_params=rendering_params,
-            strict=strict,
-        )
-        
-        # Save using shared helper with metadata
-        return write_image(image, output, output_format_stream, metadata=metadata)
+        # Own the render timer through decode + write so lazy graph compute
+        # (including the final write_image materialization) lands in one report.
+        with scoped_perf_timer("render_raw", logger):
+            image, metadata = decode_dng(
+                file=file,
+                output_dtype=output_dtype,
+                demosaic_algorithm=demosaic_algorithm,
+                use_coreimage_if_available=use_coreimage_if_available,
+                use_xmp=use_xmp,
+                rendering_params=rendering_params,
+                strict=strict,
+            )
+
+            return write_image(image, output, output_format_stream, metadata=metadata)
                 
     except ValueError as e:
         # Handle validation errors (e.g., rendering params on preview pages)

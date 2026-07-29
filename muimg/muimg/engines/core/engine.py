@@ -114,8 +114,8 @@ class CoreEngine:
         )
         if timer is not None and timings:
             op_by_id = {n["id"]: n["op"] for n in graph_nodes}
+            steps = []
             for row in timings:
                 op = op_by_id.get(row["node_id"], f"node_{row['node_id']}")
-                timer.add_completed_step(
-                    f"{op} (engine)", row["exclusive_ns"] * 1e-9
-                )
+                steps.append((f"{op} (engine)", row["exclusive_ns"] * 1e-9))
+            timer.add_completed_steps(steps)

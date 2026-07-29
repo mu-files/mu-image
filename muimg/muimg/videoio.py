@@ -439,6 +439,8 @@ class VideoEncodePipeline(ImageSequencePipeline):
                 logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
                 self._failed_frames.add(index)
                 return (index, None)
+
+            img = img.compute()
             
             # Resize with aspect ratio preservation if resolution is set
             if self.resolution is not None:

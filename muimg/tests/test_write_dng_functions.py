@@ -500,7 +500,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
         )
         
         # Decode source page for later pixel comparison
-        source_decoded = source_page.decode_to_rgb()
+        source_decoded = source_page.decode_to_rgb().compute()
         print(f"  Decoded source: shape={source_decoded.shape}, dtype={source_decoded.dtype}")
         
         # Step 2: Write new DNG with pyramid
@@ -785,6 +785,7 @@ def test_render_raw_scaling_consistency(tmp_path):
         # Render main page and resize to 0.25
         render_pyramid_main = dng_with_pyramid.render_raw(output_dtype=np.uint8)
         assert render_pyramid_main is not None
+        render_pyramid_main = render_pyramid_main.compute()
         print(f"  Pyramid main render shape: {render_pyramid_main.shape}")
         
         # Resize to match SubIFD[2] size

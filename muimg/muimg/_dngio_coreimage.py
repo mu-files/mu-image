@@ -387,9 +387,9 @@ def decode_dng_coreimage(
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
     rendering_params: dict = None,
-) -> np.ndarray:
+) -> "Tensor":
     """
-    Decode a DNG file to a numpy array using Core Image processing.
+    Decode a DNG file to a ``Tensor`` using Core Image processing.
     
     Args:
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
@@ -399,7 +399,8 @@ def decode_dng_coreimage(
             See dngio.decode_dng() for full list of supported keys.
     
     Returns:
-        RGB image array with shape (height, width, 3) and specified dtype
+        RGB ``Tensor`` with shape (height, width, 3) and specified dtype.
+        Call ``.compute()`` at encode/write/display edges.
     """
     from pathlib import Path
     from . import dngio
@@ -493,7 +494,7 @@ def decode_dng_coreimage(
             Tensor(ci_output),
             source_colorspace,
             raw_render.ColorSpace.PROPHOTO_LINEAR
-        ).compute()
+        )
         
         # Apply all tone curves and lens corrections in ProPhoto linear
         if extracted_params:
@@ -504,15 +505,18 @@ def decode_dng_coreimage(
         else:
             rgb_output = rgb_prophoto_linear
         
-        # Convert to sRGB gamma with output dtype
+        # Convert to sRGB gamma with output dtype (deferred)
         result = raw_render.convert_colorspace(
-            Tensor(rgb_output),
+            rgb_output,
             raw_render.ColorSpace.PROPHOTO_LINEAR,
             raw_render.ColorSpace.SRGB_GAMMA,
             dst_dtype=np.dtype(output_dtype).name,
-        ).compute()
+        )
         
-        logger.debug(f"Successfully decoded DNG to array with shape {result.shape} and dtype {result.dtype}")
+        logger.debug(
+            f"Successfully decoded DNG to Tensor "
+            f"{result.meta.height}x{result.meta.width} dtype={result.meta.dtype}"
+        )
         return result
                 
     except Exception as e:

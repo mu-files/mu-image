@@ -87,6 +87,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         if generate_preview:
             decoded_u8 = dng.render_raw(output_dtype=np.uint8, strict=False)
             assert decoded_u8 is not None
+            decoded_u8 = decoded_u8.compute()
             preview = cv2.resize(
                 decoded_u8,
                 (min(decoded_u8.shape[1], 512), min(decoded_u8.shape[0], 512)),
@@ -175,6 +176,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         decoded_orig_u8 = dng.render_raw(output_dtype=np.uint8, strict=False)
         assert decoded_orig_u8 is not None
+        decoded_orig_u8 = decoded_orig_u8.compute()
 
         cfa_result = page.get_cfa()
         assert cfa_result is not None
@@ -250,6 +252,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         decoded_crop_u8 = out_dng.render_raw(output_dtype=np.uint8, strict=False)
         assert decoded_crop_u8 is not None
+        decoded_crop_u8 = decoded_crop_u8.compute()
 
         expected_crop_u8 = decoded_orig_u8[
             crop_top + aa_top : crop_top + aa_bottom,
