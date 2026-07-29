@@ -980,21 +980,19 @@ class DngFile(tifffile.TiffFile):
         Returns:
             Rendered RGB ``Tensor`` or None if rendering fails
         """
-        # Determine which page to use for rendering
         main_page = self.get_main_page()
+        if main_page is None:
+            return None
 
         if scale is None:
-            # No scaling - use main page
             render_page = main_page
-            if render_page is None:
-                return None
             target_w = target_h = None  # No resize needed
         else:
             # Find optimal page for scaling
             render_page = self._find_optimal_raw_page(scale)
             if render_page is None:
                 return None
-            
+
             # Calculate target dimensions by scaling main page pre-crop dimensions
             main_w, main_h = main_page.get_rendered_size(apply_post_render_ops=False)
             target_w = int(main_w * scale)

@@ -34,7 +34,7 @@ class SubFileType(IntEnum):
     ALT_PREVIEW_IMAGE = 65537
     
     @classmethod
-    def lookup(cls, value: int) -> "SubFileType" | None:
+    def lookup(cls, value: int) -> "SubFileType | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
@@ -80,7 +80,7 @@ class Illuminant(IntEnum):
     OTHER = (255, None)                           # lsOther - requires IlluminantData
     
     @classmethod
-    def lookup(cls, value: int) -> "Illuminant" | None:
+    def lookup(cls, value: int) -> "Illuminant | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
@@ -102,7 +102,7 @@ class Orientation(IntEnum):
     ROTATE_270_CW = 8       # Rotated 270° clockwise (90° CCW)
     
     @classmethod
-    def lookup(cls, value: int) -> "Orientation" | None:
+    def lookup(cls, value: int) -> "Orientation | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
@@ -1316,7 +1316,7 @@ class MetadataTags:
 
     def copy(self) -> Self:
         """Create a shallow copy of this MetadataTags instance."""
-        new_instance = MetadataTags()
+        new_instance = type(self)()
         new_instance._tags = dict(self._tags)
         return new_instance
 
@@ -1567,7 +1567,7 @@ class MetadataTags:
         self.extend(other)
         return self
 
-    def get_xmp(self) -> 'XmpMetadata' | None:
+    def get_xmp(self) -> "XmpMetadata | None":
         """Return XMP metadata as an `XmpMetadata` object."""
         xmp = self.get_tag("XMP")
         return xmp
@@ -1712,7 +1712,7 @@ class XmpMetadata:
             merged_attrs.update(other._attributes)
         else:
             merged_attrs.update(other)
-        return XmpMetadata.from_attributes(merged_attrs)
+        return type(self).from_attributes(merged_attrs)
     
     def _parse(self, xmp_data: str) -> Dict[str, Any]:
         """Parse all XMP attributes and sequences from the XMP metadata into a dictionary.

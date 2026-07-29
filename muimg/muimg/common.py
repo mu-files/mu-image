@@ -11,27 +11,16 @@ import time
 import weakref
 
 from enum import Enum
-from typing import Sequence, Type
+from typing import Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
 
 _thread_local = threading.local()
 
-
-class _NoopStep:
-    """Returned by ``PerfTimer.step`` when nothing is timing — ``close()`` is a no-op."""
-
-    __slots__ = ()
-    end_time: float | None = 0.0  # already "closed" for end_time checks
-
-    def close(self) -> None:
-        return None
+_EnumT = TypeVar("_EnumT", bound=Enum)
 
 
-_NOOP_STEP = _NoopStep()
-
-
-def enum_display_name(enum_class: Type[Enum], value: int, suffix: str = "") -> str:
+def enum_display_name(enum_class: type[Enum], value: int, suffix: str = "") -> str:
     """
     Get display name for an enum value.
     
@@ -54,7 +43,7 @@ def enum_display_name(enum_class: Type[Enum], value: int, suffix: str = "") -> s
         return f"Type{value}{suffix}" if suffix else f"Type{value}"
 
 
-def enum_from_value(enum_class: Type[Enum], value: int) -> Enum | None:
+def enum_from_value(enum_class: type[_EnumT], value: int) -> _EnumT | None:
     """
     Get enum member from numeric value.
     
@@ -71,7 +60,7 @@ def enum_from_value(enum_class: Type[Enum], value: int) -> Enum | None:
         return None
 
 
-def enum_from_string(enum_class: Type[Enum], value: str) -> Enum:
+def enum_from_string(enum_class: type[_EnumT], value: str) -> _EnumT:
     """
     Get enum member from string value.
     
@@ -88,11 +77,10 @@ def enum_from_string(enum_class: Type[Enum], value: str) -> Enum:
     Raises:
         KeyError: If value not found in enum
     """
-    # For str enums, we can iterate and compare values
-    for member in enum_class:
-        if member.value == value:
-            return member
-    raise KeyError(f"'{value}' is not a valid {enum_class.__name__}")
+    try:
+        return enum_class(value)
+    except ValueError as e:
+        raise KeyError(f"'{value}' is not a valid {enum_class.__name__}") from e
 
 
 def setup_logging(verbosity: int = 0) -> None:
@@ -143,8 +131,17 @@ class PerfTimer:
     ``PerfTimer.current()`` is the deepest open timer on this thread.
     """
 
+    class _NoopStep:
+        """Returned by ``step`` when nothing is timing — ``close()`` is a no-op."""
+
+        __slots__ = ()
+        end_time: float | None = 0.0  # already "closed" for end_time checks
+
+        def close(self) -> None:
+            return None
+
     #: No-op step handle (``close()`` does nothing). Use when a step is optional.
-    inactive = _NOOP_STEP
+    inactive = _NoopStep()
 
     @classmethod
     def _stack(cls) -> list["PerfTimer"]:
@@ -172,14 +169,14 @@ class PerfTimer:
         return t
 
     @classmethod
-    def step(cls, name: str) -> "PerfTimer | _NoopStep":
+    def step(cls, name: str) -> "PerfTimer | PerfTimer._NoopStep":
         """Start a host stage under the current timer.
 
         When idle, returns a no-op handle whose ``close()`` does nothing.
         """
         top = cls.current()
         if top is None:
-            return _NOOP_STEP
+            return cls.inactive
         return top.start_step(name)
 
     @classmethod

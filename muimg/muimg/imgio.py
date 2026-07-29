@@ -157,17 +157,19 @@ def decode_image(
     """
     # Try to open as DNG - DngFile handles str, Path, and IO[bytes]
     dng_file = None
-    is_dng = False
     try:
-        dng_file = DngFile(file)
-        # Check if file has DNG version tag in IFD0
-        is_dng = "DNGVersion" in dng_file.get_ifd0_tags()
+        candidate = DngFile(file)
+        if "DNGVersion" in candidate.get_ifd0_tags():
+            dng_file = candidate
     except Exception:
         pass
-    
-    if is_dng:
+
+    if dng_file is not None:
         # For advanced control with custom parameters, use 'muimg dng convert' CLI command
-        return dng_file.get_main_page().decode_to_rgb(output_dtype)
+        rgb = dng_file.render_raw(output_dtype=output_dtype)
+        if rgb is None:
+            raise ValueError("Failed to decode DNG image")
+        return rgb
     
     # Check if it's a JXL file
     if isinstance(file, (str, Path)) and str(file).lower().endswith('.jxl'):

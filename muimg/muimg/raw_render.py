@@ -54,7 +54,7 @@ class DngOpcode(IntEnum):
     WARP_RECTILINEAR2 = 14
     
     @classmethod
-    def lookup(cls, value: int) -> "DngOpcode" | None:
+    def lookup(cls, value: int) -> "DngOpcode | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
         return enum_from_value(cls, value)
