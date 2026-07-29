@@ -4,12 +4,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from ..common import PerfTimer
     from ..tensor import Tensor
 
 _default_engine: Optional["Engine"] = None
@@ -29,11 +28,11 @@ class Engine(Protocol):
         nodes: List["Tensor"],
         values: Dict[int, np.ndarray],
         outputs: List["Tensor"],
-        timer: Optional["PerfTimer"] = None,
     ) -> None:
         """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).
 
-        If ``timer`` is set, record per-op engine timings under it.
+        At engine timing OPS, record per-op ``{op} (engine)`` children under the
+        current ``graph_compute`` step via ``PerfTimer.current()``.
         """
         ...
 

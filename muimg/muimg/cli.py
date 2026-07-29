@@ -41,8 +41,15 @@ def safe_echo(message, **kwargs):
 
 
 @click.group()
-@click.option("-v", "--verbose", count=True, help="Increase verbosity")
-def cli(verbose):
+@click.option("-v", "--verbose", count=True, help="Increase log verbosity")
+@click.option(
+    "--timing",
+    type=click.Choice(["off", "segments", "ops"], case_sensitive=False),
+    default="off",
+    show_default=True,
+    help="Performance timing report detail",
+)
+def cli(verbose, timing):
     """muimg - Image processing utilities."""
     level = logging.WARNING
     if verbose == 1:
@@ -53,6 +60,11 @@ def cli(verbose):
     logging.basicConfig(
         level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
+
+    if timing != "off":
+        from .engines.timing import set_engine_timing
+
+        set_engine_timing(timing)
 
 
 @cli.command(name="convert-image")
@@ -876,7 +888,7 @@ def dng_convert(
 ):
     """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
     import numpy as np
-    import time
+    from .common import PerfTimer
     from .dngio import DngFile
     from .tiff_metadata import Orientation
     from .imgio import convert_dng
@@ -895,8 +907,9 @@ def dng_convert(
     if orientation is not None:
         params['orientation'] = orientation
     
-    # Convert DNG
-    t_start = time.perf_counter()
+    timing = click.get_current_context().find_root().params.get("timing", "off")
+    # Always time convert for the success line; --timing only controls the report detail.
+    render_timer = PerfTimer("render_raw")
     try:
         # Open DNG and select page
         with DngFile(input_file) as dng:
@@ -953,13 +966,21 @@ def dng_convert(
             else:
                 photometric = file_arg.photometric_name
             w, h = file_arg.get_rendered_size(rendering_params=params)
-            
-            elapsed_ms = (time.perf_counter() - t_start) * 1000
-            click.echo(f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file} in {elapsed_ms:.0f}ms")
+
+            render_timer.close()
+            click.echo(
+                f"Converted {ifd_name} ({photometric}, {w}x{h}) to {output_file} "
+                f"in {render_timer.get_elapsed_ms():.0f}ms"
+            )
+            if timing != "off":
+                click.echo(render_timer.get_report(), err=True)
             
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    finally:
+        if render_timer.end_time is None:
+            render_timer.close()
 
 
 def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict]]:

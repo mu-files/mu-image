@@ -29,7 +29,7 @@ from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 from .raw_render import DemosaicAlgorithm
 from .tensor import Tensor
-from .common import get_active_timer, scoped_perf_timer
+from .common import PerfTimer
 from .tiff_metadata import (
     MetadataTags,
     Orientation,
@@ -508,10 +508,9 @@ class DngPage(tifffile.TiffPage):
         if not self.is_cfa:
             return None
 
-        timer = get_active_timer()
-        timer.start_step("decode_cfa (c++)")
+        step = PerfTimer.step("decode_cfa (c++)")
         raw_cfa = self._decode_raw()
-        timer.end_step()
+        step.close()
 
         if raw_cfa is None:
             return None
@@ -519,9 +518,9 @@ class DngPage(tifffile.TiffPage):
         col_interleave = self.get_tag("ColumnInterleaveFactor")
         row_interleave = self.get_tag("RowInterleaveFactor")
         if col_interleave == 2 and row_interleave == 2:
-            timer.start_step("deswizzle_cfa")
+            step = PerfTimer.step("deswizzle_cfa")
             raw_cfa = deswizzle_cfa_data(raw_cfa)
-            timer.end_step()
+            step.close()
 
         cfa_pattern = self.get_tag("CFAPattern", str) or "RGGB"
 
@@ -537,10 +536,9 @@ class DngPage(tifffile.TiffPage):
         if not self.is_linear_raw:
             return None
 
-        timer = get_active_timer()
-        timer.start_step("decode_linear_raw (c++)")
+        step = PerfTimer.step("decode_linear_raw (c++)")
         raw_linear = self._decode_raw()
-        timer.end_step()
+        step.close()
 
         if raw_linear is None:
             return None
@@ -697,33 +695,29 @@ class DngPage(tifffile.TiffPage):
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
 
-        with scoped_perf_timer("render_raw_page", logger, auto_log=False) as timer:
+        camera_data = self.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
+        if camera_data is None:
+            logger.error("Failed to extract camera data from DNG")
+            return None
 
-            camera_data = self.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
-            if camera_data is None:
-                logger.error("Failed to extract camera data from DNG")
-                return None
-
-            # Branch based on monochrome vs color
-            if self.is_linear_raw and self.samplesperpixel == 1:
-                result = raw_render._render_camera_monochrome(
-                    ifd0_tags=self.ifd0,
-                    raw_ifd_tags=self,
-                    mono_camera=camera_data,
-                    output_dtype=output_dtype,
-                    rendering_params=rendering_params,
-                    use_xmp=use_xmp,
-                )
-            else:
-                result = raw_render._render_camera_rgb(
-                    ifd0_tags=self.ifd0,
-                    raw_ifd_tags=self,
-                    rgb_camera=camera_data,
-                    output_dtype=output_dtype,
-                    rendering_params=rendering_params,
-                    use_xmp=use_xmp,
-                )
-            return result
+        # Branch based on monochrome vs color
+        if self.is_linear_raw and self.samplesperpixel == 1:
+            return raw_render._render_camera_monochrome(
+                ifd0_tags=self.ifd0,
+                raw_ifd_tags=self,
+                mono_camera=camera_data,
+                output_dtype=output_dtype,
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
+            )
+        return raw_render._render_camera_rgb(
+            ifd0_tags=self.ifd0,
+            raw_ifd_tags=self,
+            rgb_camera=camera_data,
+            output_dtype=output_dtype,
+            rendering_params=rendering_params,
+            use_xmp=use_xmp,
+        )
 
 class DngFile(tifffile.TiffFile):
 
@@ -1013,78 +1007,72 @@ class DngFile(tifffile.TiffFile):
                 f"DNG contains unsupported tags (processing anyway): {', '.join(unsupported)}"
             )
         
-        _timer_scope = scoped_perf_timer("render_raw_file", logger, auto_log=False)
-        _timer = _timer_scope.enter()
+        # Get camera raw data from render page
+        camera_data = render_page.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
+        if camera_data is None:
+            return None
 
-        try:
-            # Get camera raw data from render page
-            camera_data = render_page.get_camera_raw(demosaic_algorithm=demosaic_algorithm)
-            if camera_data is None:
-                return None
+        # Apply resize if needed (when scaling and dimensions don't match)
+        scale_needed = False
+        if target_w is not None and target_h is not None:
+            render_w, render_h = render_page.get_rendered_size(apply_post_render_ops=False)
+            if render_w != target_w or render_h != target_h:
+                # If upscaling, defer to post-render for better performance
+                if render_w < target_w and render_h < target_h:
+                    scale_needed = True
+                else:
+                    # Downscaling: materialize around OpenCV resize for this PR
+                    pre = PerfTimer.step("pre_scale (opencv)")
+                    camera_arr = camera_data.compute()
+                    camera_arr = cv2.resize(
+                        camera_arr, (target_w, target_h), interpolation=cv2.INTER_AREA
+                    )
+                    camera_data = Tensor(np.ascontiguousarray(camera_arr))
+                    pre.close()
 
-            # Apply resize if needed (when scaling and dimensions don't match)
-            scale_needed = False
-            if target_w is not None and target_h is not None:
-                render_w, render_h = render_page.get_rendered_size(apply_post_render_ops=False)
-                if render_w != target_w or render_h != target_h:
-                    # If upscaling, defer to post-render for better performance
-                    if render_w < target_w and render_h < target_h:
-                        scale_needed = True
-                    else:
-                        # Downscaling: materialize around OpenCV resize for this PR
-                        _pre = _timer.start_step("pre_scale (opencv)")
-                        camera_arr = camera_data.compute(timer=_pre)
-                        camera_arr = cv2.resize(
-                            camera_arr, (target_w, target_h), interpolation=cv2.INTER_AREA
-                        )
-                        camera_data = Tensor(np.ascontiguousarray(camera_arr))
-                        _pre.close()
+        # Branch based on monochrome vs color
+        # use main_page for raw_ifd in case there is a PGTM
+        is_mono = main_page.is_linear_raw and main_page.samplesperpixel == 1
+        if is_mono:
+            rendered_image = raw_render._render_camera_monochrome(
+                ifd0_tags=self.ifd0,
+                raw_ifd_tags=main_page,
+                mono_camera=camera_data,
+                output_dtype=output_dtype,
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
+            )
+        else:
+            rendered_image = raw_render._render_camera_rgb(
+                ifd0_tags=self.ifd0,
+                raw_ifd_tags=main_page,
+                rgb_camera=camera_data,
+                output_dtype=output_dtype,
+                rendering_params=rendering_params,
+                use_xmp=use_xmp,
+            )
 
-            # Branch based on monochrome vs color
-            # use main_page for raw_ifd in case there is a PGTM
-            is_mono = main_page.is_linear_raw and main_page.samplesperpixel == 1
-            if is_mono:
-                rendered_image = raw_render._render_camera_monochrome(
-                    ifd0_tags=self.ifd0,
-                    raw_ifd_tags=main_page,
-                    mono_camera=camera_data,
-                    output_dtype=output_dtype,
-                    rendering_params=rendering_params,
-                    use_xmp=use_xmp,
-                )
-            else:
-                rendered_image = raw_render._render_camera_rgb(
-                    ifd0_tags=self.ifd0,
-                    raw_ifd_tags=main_page,
-                    rgb_camera=camera_data,
-                    output_dtype=output_dtype,
-                    rendering_params=rendering_params,
-                    use_xmp=use_xmp,
-                )
-            
-            # Post-render upscaling if needed
-            if scale_needed:            
-                # Check if orientation swaps dimensions (same logic as get_rendered_size)
-                orientation = self.ifd0.get_tag("Orientation")
-                if rendering_params and 'orientation' in rendering_params:
-                    orientation = rendering_params['orientation']
+        # Post-render upscaling if needed
+        if scale_needed:
+            # Check if orientation swaps dimensions (same logic as get_rendered_size)
+            orientation = self.ifd0.get_tag("Orientation")
+            if rendering_params and 'orientation' in rendering_params:
+                orientation = rendering_params['orientation']
 
-                # Swap dimensions for 90° rotations
-                final_w, final_h = target_w, target_h
-                if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
-                    final_w, final_h = final_h, final_w
+            # Swap dimensions for 90° rotations
+            final_w, final_h = target_w, target_h
+            if orientation in (Orientation.ROTATE_90_CW, Orientation.ROTATE_270_CW):
+                final_w, final_h = final_h, final_w
 
-                _post = _timer.start_step("post_scale (opencv)")
-                rendered_arr = rendered_image.compute(timer=_post)
-                rendered_arr = cv2.resize(
-                    rendered_arr, (final_w, final_h), interpolation=cv2.INTER_LINEAR
-                )
-                rendered_image = Tensor(np.ascontiguousarray(rendered_arr))
-                _post.close()
+            post = PerfTimer.step("post_scale (opencv)")
+            rendered_arr = rendered_image.compute()
+            rendered_arr = cv2.resize(
+                rendered_arr, (final_w, final_h), interpolation=cv2.INTER_LINEAR
+            )
+            rendered_image = Tensor(np.ascontiguousarray(rendered_arr))
+            post.close()
 
-            return rendered_image
-        finally:
-            _timer_scope.close()
+        return rendered_image
 
     def get_preview_rgb(
         self,
@@ -2059,8 +2047,6 @@ def _generate_pyramid(
         >>> [p.shape for p in pyramid]
         [(1000, 800, 3), (500, 400, 3), (250, 200, 3), (125, 100, 3)]
     """
-    timer = get_active_timer()
-
     def make_lanczos_kernel(a: int) -> np.ndarray:
         """Generate a Lanczos kernel for 2:1 downsampling."""
         positions = np.arange(-a + 0.5, a, 1.0)
@@ -2090,11 +2076,11 @@ def _generate_pyramid(
         if min(next_h, next_w) <= 16:
             break
         
-        timer.start_step(f"pyramid_level_{len(levels)}_filter_{filter.name}")
+        step = PerfTimer.step(f"pyramid_level_{len(levels)}_filter_{filter.name}")
         filtered = cv2.sepFilter2D(
             current, -1, kernel, kernel, anchor=anchor, borderType=cv2.BORDER_REFLECT_101)
         downsampled = filtered[::2, ::2]
-        timer.end_step()
+        step.close()
         
         levels.append(downsampled)
         current = downsampled
@@ -2159,58 +2145,53 @@ def _write_dng_with_params(
         pyramid: Pyramid generation parameters.
         num_compression_workers: Number of parallel compression workers.
     """
-    timer = get_active_timer()
-
     # Extract camera RGB (always needed if we didn't take fast return path)
     logger.info(f"Extracting camera RGB (demosaic={demosaic}, scale={scale})")
-    _extract = timer.start_step("extract_camera_rgb")
-    try:
-        cfa_pattern = None
-        if isinstance(main_spec, IfdPageSpec):
-            if main_spec.page.is_linear_raw:
-                raw_t = main_spec.page.get_linear_raw()
-            else:
-                cfa_result = main_spec.page.get_cfa()
-                if cfa_result is None:
-                    raise RuntimeError("Failed to extract CFA data")
-                raw_t, cfa_pattern = cfa_result
-            if raw_t is None:
-                raise RuntimeError("Failed to extract raw data")
-
-            photometric = main_spec.page.photometric_name
-            src_dtype = raw_t.dtype
+    extract_step = PerfTimer.step("extract_camera_rgb")
+    cfa_pattern = None
+    if isinstance(main_spec, IfdPageSpec):
+        if main_spec.page.is_linear_raw:
+            raw_t = main_spec.page.get_linear_raw()
         else:
-            raw_t = Tensor(main_spec.data)
-            photometric = main_spec.photometric
-            src_dtype = raw_t.dtype
-            if photometric == "CFA":
-                cfa_pattern = (
-                    main_spec.cfa_pattern
-                    or (main_spec.extratags.get_tag("CFAPattern")
-                        if main_spec.extratags else None)
-                    or "RGGB"
-                )
+            cfa_result = main_spec.page.get_cfa()
+            if cfa_result is None:
+                raise RuntimeError("Failed to extract CFA data")
+            raw_t, cfa_pattern = cfa_result
+        if raw_t is None:
+            raise RuntimeError("Failed to extract raw data")
 
-        camera_raw = raw_render._render_to_camera_space(
-            main_spec.extratags, raw_t, photometric, cfa_pattern, demosaic_algorithm
-        )
-        # Nest op timings under this step (not the parent root).
-        camera_raw = camera_raw.compute(timer=_extract)
-    finally:
-        _extract.close()
+        photometric = main_spec.page.photometric_name
+        src_dtype = raw_t.dtype
+    else:
+        raw_t = Tensor(main_spec.data)
+        photometric = main_spec.photometric
+        src_dtype = raw_t.dtype
+        if photometric == "CFA":
+            cfa_pattern = (
+                main_spec.cfa_pattern
+                or (main_spec.extratags.get_tag("CFAPattern")
+                    if main_spec.extratags else None)
+                or "RGGB"
+            )
+
+    camera_raw = raw_render._render_to_camera_space(
+        main_spec.extratags, raw_t, photometric, cfa_pattern, demosaic_algorithm
+    )
+    camera_raw = camera_raw.compute()
+    extract_step.close()
     
     # if we are transforming then the main_spec is always a DataSpec with the transformed data
     if ((demosaic and photometric == "CFA") or scale != 1.0):
 
         # Apply scaling if needed
         if scale != 1.0:
-            timer.start_step("apply_scaling")
+            step = PerfTimer.step("apply_scaling")
             logger.info(f"Applying scale: {scale}")
             h, w = camera_raw.shape[:2]
             new_h, new_w = int(h * scale), int(w * scale)
-            
+
             camera_raw = cv2.resize(camera_raw, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            timer.end_step()
+            step.close()
 
         if isinstance(main_spec, IfdPageSpec):
             if main_spec.transcode_encoding:
@@ -2261,11 +2242,11 @@ def _write_dng_with_params(
         num_pyramid_levels = max(num_pyramid_levels, pyramid.levels + 1)
     
     # Generate pyramid - use CATMULL_ROM for faster preview generation
-    timer.start_step("generate_pyramid")
+    step = PerfTimer.step("generate_pyramid")
     filter_type = pyramid.filter if pyramid else PyramidFilter.CATMULL_ROM
     pyramid_images = _generate_pyramid(camera_raw, num_pyramid_levels, filter=filter_type)
     logger.info(f"Generated {len(pyramid_images)} pyramid levels (including original)")
-    timer.end_step()
+    step.close()
     
     # Build pyramid level specs (levels 1+)
     pyramid_specs = []
@@ -2290,14 +2271,14 @@ def _write_dng_with_params(
     # Generate rendered preview if requested
     if not preview:
         # No preview: IFD0 = main, SubIFD0+ = pyramid
-        timer.start_step("write_dng_no_preview")
+        step = PerfTimer.step("write_dng_no_preview")
         write_dng(
             destination_file=destination_file,
             ifd0_spec=main_spec,
             subifds=pyramid_specs,
             num_compression_workers=num_compression_workers
         )
-        timer.end_step()
+        step.close()
     else:            
         logger.info(f"Rendering preview from pyramid level {preview_level_idx} ({pyramid_images[preview_level_idx].shape[:2]})")
         
@@ -2324,7 +2305,7 @@ def _write_dng_with_params(
         )
         
         # Build preview rendering params: XMP (without crop) + user overrides
-        timer.start_step("render_preview")
+        step = PerfTimer.step("render_preview")
         preview_rendering_params = {}
         
         # 1) Read XMP params and convert to dict
@@ -2370,7 +2351,7 @@ def _write_dng_with_params(
                 use_xmp=False,
             ).compute()
             preview_photometric = "RGB"
-        timer.end_step()
+        step.close()
         
         # Create preview spec for IFD0
         preview_encoding = PageEncoding(
@@ -2386,14 +2367,14 @@ def _write_dng_with_params(
         )
         
         # Write: IFD0 = preview, SubIFD0 = main, SubIFD1+ = pyramid
-        timer.start_step("write_dng_with_preview")
+        step = PerfTimer.step("write_dng_with_preview")
         write_dng(
             destination_file=destination_file,
             ifd0_spec=preview_spec,
             subifds=[main_spec] + pyramid_specs,
             num_compression_workers=num_compression_workers
         )
-        timer.end_step()
+        step.close()
     
     if isinstance(destination_file, io.BytesIO):
         logger.info("Successfully wrote DNG to stream")
@@ -2422,7 +2403,7 @@ def write_dng_from_array(
         num_compression_workers: Number of parallel compression workers (default: 1)
     """
 
-    with scoped_perf_timer("write_dng_from_array", logger) as timer:
+    with PerfTimer("write_dng_from_array", log=logger):
         # fast path - only one ifd requested and no data transformations
         if not (preview or pyramid or scale != 1.0 or (demosaic and data_spec.photometric == "CFA")):
             write_dng(
@@ -2534,7 +2515,7 @@ def write_dng_from_page(
         RuntimeError: If DNG processing fails
     """
     
-    with scoped_perf_timer("write_dng_from_page", logger) as timer:
+    with PerfTimer("write_dng_from_page", log=logger):
 
         # Ensure we have an IfdPageSpec
         source_page_spec = page if isinstance(page, IfdPageSpec) else IfdPageSpec(page=page)
@@ -2589,13 +2570,13 @@ def write_dng_from_page(
             if preview is None and not (pyramid and pyramid.levels > 0):
                 logger.info("Using fast path for main spec (no extra params given)")
 
-                timer.start_step("write_dng_fast_path")
+                step = PerfTimer.step("write_dng_fast_path")
                 write_dng(
                     destination_file=destination_file,
                     ifd0_spec=main_spec,
                     num_compression_workers=num_compression_workers
                 )
-                timer.end_step()
+                step.close()
                 if isinstance(destination_file, io.BytesIO):
                     logger.info("Successfully wrote DNG to stream")
                 else:

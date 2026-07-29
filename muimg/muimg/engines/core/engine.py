@@ -4,14 +4,13 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, TYPE_CHECKING
 
 import numpy as np
 
 from ...tensor import NUMPY_FROM_DTYPE
 
 if TYPE_CHECKING:
-    from ...common import PerfTimer
     from ...tensor import Tensor
 
 
@@ -34,8 +33,9 @@ class CoreEngine:
         nodes: List["Tensor"],
         values: Dict[int, np.ndarray],
         outputs: List["Tensor"],
-        timer: Optional["PerfTimer"] = None,
     ) -> None:
+        from ...common import PerfTimer
+        from ..timing import EngineTiming, get_engine_timing
         from . import _compute_engine
 
         unknown = sorted(
@@ -99,7 +99,9 @@ class CoreEngine:
 
         out_binds: Dict[int, np.ndarray] = {}
         for t in outputs:
-            arr = np.zeros(t.meta.shape, dtype=NUMPY_FROM_DTYPE[t.meta.dtype])
+            # empty, not zeros: kernels fully overwrite; zeros would first-touch
+            # ~full-frame pages only to discard them (several ms on R5-sized buffers).
+            arr = np.empty(t.meta.shape, dtype=NUMPY_FROM_DTYPE[t.meta.dtype])
             values[id(t)] = arr
             out_binds[id_of[id(t)]] = arr
 
@@ -109,13 +111,23 @@ class CoreEngine:
             "outputs": [id_of[id(t)] for t in outputs],
             "nodes": graph_nodes,
         }
-        timings = _compute_engine.execute_graph(
-            graph, in_binds, out_binds, timer is not None
+        # OPS detail attaches under the open graph_compute step (stack top).
+        record_ops = (
+            get_engine_timing() >= EngineTiming.OPS
+            and PerfTimer.current() is not None
         )
-        if timer is not None and timings:
+        timings = _compute_engine.execute_graph(
+            graph, in_binds, out_binds, record_ops
+        )
+        if record_ops and timings:
+            timer = PerfTimer.current()
+            assert timer is not None
             op_by_id = {n["id"]: n["op"] for n in graph_nodes}
-            steps = []
-            for row in timings:
-                op = op_by_id.get(row["node_id"], f"node_{row['node_id']}")
-                steps.append((f"{op} (engine)", row["exclusive_ns"] * 1e-9))
+            steps = [
+                (
+                    f"{op_by_id.get(row['node_id'], f'node_{row['node_id']}')} (engine)",
+                    row["exclusive_ns"] * 1e-9,
+                )
+                for row in timings
+            ]
             timer.add_completed_steps(steps)

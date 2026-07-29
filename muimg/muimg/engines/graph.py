@@ -370,14 +370,10 @@ def _segment_boundary_outputs(
     return outs
 
 
-def compute(root: Tensor, timer: PerfTimer | None = None) -> np.ndarray:
-    """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels.
+def compute(root: Tensor) -> np.ndarray:
+    """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels."""
+    from .timing import EngineTiming, get_engine_timing
 
-    If ``timer`` is provided, each python op is recorded as ``{op} (python)``
-    under it and engine ops as ``{op} (engine)`` via native per-op timings.
-    No timer is inferred from thread-local state — omit ``timer`` to skip op
-    timing. Callers own any outer named step before calling.
-    """
     tensors = _reachable_tensors(root)
     values: Dict[int, np.ndarray] = {}
 
@@ -391,20 +387,19 @@ def compute(root: Tensor, timer: PerfTimer | None = None) -> np.ndarray:
     if not op_tensors:
         return values[id(root)]
 
+    parent = PerfTimer.current()
+    level = get_engine_timing()
+    record = parent is not None and level >= EngineTiming.SEGMENTS
+
     engine = get_default_engine()
     i = 0
     while i < len(op_tensors):
         if _is_python_node(op_tensors[i]):
             node = op_tensors[i]._node
             assert node is not None
-            step = (
-                timer.start_step(f"{node.op} (python)") if timer is not None else None
-            )
-            try:
-                _run_python_node(op_tensors[i], values)
-            finally:
-                if step is not None:
-                    step.close()
+            step = parent.start_step(f"{node.op} (python)") if record else PerfTimer.inactive
+            _run_python_node(op_tensors[i], values)
+            step.close()
             i += 1
             continue
 
@@ -415,7 +410,10 @@ def compute(root: Tensor, timer: PerfTimer | None = None) -> np.ndarray:
         outs = _segment_boundary_outputs(segment, op_tensors, root)
         if not outs:
             outs = [segment[-1]]
-        engine.execute_segment(segment, values, outs, timer=timer)
+
+        seg_step = parent.start_step("graph_compute") if record else PerfTimer.inactive
+        engine.execute_segment(segment, values, outs)
+        seg_step.close()
         i = j
 
     if id(root) not in values:

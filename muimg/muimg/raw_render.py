@@ -20,7 +20,7 @@ from .engines.pyops import (
     radial_distortion_op,
 )
 from .tensor import Tensor
-from .common import enum_display_name, get_active_timer
+from .common import PerfTimer, enum_display_name
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
 from .tiff_metadata import (
@@ -2921,11 +2921,9 @@ def _render_camera_rgb(
     rendering_params: dict = None,
     use_xmp: bool = True,
 ) -> Tensor:
-    timer = get_active_timer()
-
     try:
-        setup_timer = timer.start_step("render_setup")
-        
+        setup_step = PerfTimer.step("render_setup")
+
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
         extracted_params = supported_xmp_to_dict(ifd0_tags) if use_xmp else {}
         
@@ -2949,13 +2947,13 @@ def _render_camera_rgb(
         
         # Use extracted_params for rendering (None if empty dict)
         rendering_params = extracted_params if extracted_params else None
-        setup_timer.close()
-        
+        setup_step.close()
+
         # =====================================================================
         # Setup: Compute matrices (port of dng_render_task::Start)
         # SDK ref: dng_render.cpp lines 869-1070
         # =====================================================================
-        cam2pro_timer = timer.start_step("camera_to_prophoto")
+        cam2pro_step = PerfTimer.step("camera_to_prophoto")
         
         # Get ColorMatrix1 (XYZ to Camera, 3x3)
         color_matrix1 = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "ColorMatrix1")
@@ -3076,15 +3074,8 @@ def _render_camera_rgb(
         else:
             camera_to_pcs = _compute_camera_to_pcs(color_matrix, white_xy)
         
-        # =====================================================================
-        # Step 1: DoBaselineABCtoRGB
-        # SDK ref: dng_reference.cpp lines 1389-1441
-        # Clip to camera_white, apply camera_to_prophoto matrix, pin to [0,1]
-        # =====================================================================
-        # SDK ref: dng_render.cpp lines 912-913
-        # fCameraToRGB = ProPhoto.MatrixFromPCS() * CameraToPCS()
         camera_to_prophoto = XYZ_D50_TO_PROPHOTO_RGB @ camera_to_pcs
-        cam2pro_timer.close()
+        cam2pro_step.close()
 
         # =====================================================================
         # Step 1: DoBaselineABCtoRGB
@@ -3165,7 +3156,7 @@ def _render_camera_rgb(
                 pgtm_data = raw_ifd_tags.get_tag("ProfileGainTableMap")
 
         if pgtm_data is not None:
-            pgtm_timer = timer.start_step("profile_gain_table_map")
+            pgtm_step = PerfTimer.step("profile_gain_table_map")
             try:
                 # PGTM data is already normalized to system byte order by get_page_tags()
                 # SDK ref: dng_ifd.cpp lines 2769-2772 - GetStream uses same stream as file
@@ -3176,7 +3167,7 @@ def _render_camera_rgb(
                     is_version2=is_version2,
                     byteorder=system_byteorder,
                 )
-                pgtm_timer.close()
+                pgtm_step.close()
                 rgb_t = engine_ops.apply_profile_gain_table_map(
                     rgb_t,
                     gains=pgtm["gains"],
@@ -3193,8 +3184,8 @@ def _render_camera_rgb(
                 )
             except Exception as e:
                 logger.warning(f"Failed to apply ProfileGainTableMap ({type(e).__name__}): {e}")
-                if pgtm_timer.end_time is None:
-                    pgtm_timer.close()
+                if pgtm_step.end_time is None:
+                    pgtm_step.close()
 
         rgb_prophoto = rgb_t
 
@@ -3225,25 +3216,23 @@ def _render_camera_rgb(
         # Do not flush inside Graph1/Graph2 — that would split fused work.
         needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
         if needs_adaptive_hist:
-            flush_step = timer.start_step("camera_space+prophoto")
-            try:
-                rgb_prophoto_arr = rgb_prophoto.compute(timer=flush_step)
-            finally:
-                flush_step.close()
-            timer.start_step("compute_exposure_ramp_lut")
+            flush_step = PerfTimer.step("camera_space+prophoto")
+            rgb_prophoto_arr = rgb_prophoto.compute()
+            flush_step.close()
+            lut_step = PerfTimer.step("compute_exposure_ramp_lut")
             exposure_ramp_lut = compute_exposure_ramp_lut(
                 exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
                 camera_space_data=rgb_prophoto_arr,
             )
             rgb_prophoto = Tensor(rgb_prophoto_arr)
-            timer.end_step()
+            lut_step.close()
         else:
-            timer.start_step("compute_exposure_ramp_lut")
+            lut_step = PerfTimer.step("compute_exposure_ramp_lut")
             exposure_ramp_lut = compute_exposure_ramp_lut(
                 exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
                 camera_space_data=None,
             )
-            timer.end_step()
+            lut_step.close()
         logger.debug(f"Exposure_ramp LUT: first={exposure_ramp_lut[0]:.6f}, last={exposure_ramp_lut[-1]:.6f}, "
                     f"mean={np.mean(exposure_ramp_lut):.6f}")
 
@@ -3290,7 +3279,7 @@ def _render_camera_rgb(
             # Start combined curve with exposure_ramp
             combined_curve = LUT(exposure_ramp_lut)
         
-        timer.start_step("build_combined_lut")
+        lut_step = PerfTimer.step("build_combined_lut")
         # Chain: apply exposure_tone to output
         combined_curve = combined_curve.compose_output(
             lambda y: exposure_tone(y, exposure, highlight_preserving_exposure)
@@ -3323,7 +3312,7 @@ def _render_camera_rgb(
         
         # Chain: apply profile tone curve to output (combined_curve already has exposure_ramp and exposure_tone)
         combined_curve = combined_curve.compose_output(LUT(profile_curve))
-        timer.end_step()
+        lut_step.close()
         
         # =====================================================================
         # Step 4-5: Apply tone curve + colorspace conversion (merged when no post-rendering)
@@ -3376,7 +3365,6 @@ def _render_camera_rgb(
         if orientation is not None:
             result = apply_tiff_orientation(result, orientation)
         
-        # timer.start_step("stack_unwind")
         return result
 
     except Exception as e:
@@ -3409,8 +3397,6 @@ def _render_camera_monochrome(
     Returns:
         Grayscale Tensor (H, W, 1) with output_dtype meta.
     """
-    timer = get_active_timer()
-
     try:
         # Build rendering parameters dict from XMP and overrides
         extracted_params = supported_xmp_to_dict(ifd0_tags) if use_xmp else {}
@@ -3470,12 +3456,10 @@ def _render_camera_monochrome(
         # Do not flush inside Graph1/Graph2 — that would split fused work.
         needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
         if needs_adaptive_hist:
-            flush_step = timer.start_step("camera_space")
-            try:
-                mono_camera_arr = mono_camera.compute(timer=flush_step)
-            finally:
-                flush_step.close()
-            timer.start_step("compute_exposure_ramp_lut")
+            flush_step = PerfTimer.step("camera_space")
+            mono_camera_arr = mono_camera.compute()
+            flush_step.close()
+            lut_step = PerfTimer.step("compute_exposure_ramp_lut")
             exposure_ramp_lut = compute_exposure_ramp_lut(
                 exposure,
                 shadow_scale,
@@ -3484,9 +3468,9 @@ def _render_camera_monochrome(
                 camera_space_data=mono_camera_arr,
             )
             mono_camera = Tensor(mono_camera_arr)
-            timer.end_step()
+            lut_step.close()
         else:
-            timer.start_step("compute_exposure_ramp_lut")
+            lut_step = PerfTimer.step("compute_exposure_ramp_lut")
             exposure_ramp_lut = compute_exposure_ramp_lut(
                 exposure,
                 shadow_scale,
@@ -3494,7 +3478,7 @@ def _render_camera_monochrome(
                 highlight_preserving_exposure,
                 camera_space_data=None,
             )
-            timer.end_step()
+            lut_step.close()
 
         # Build combined tone curve
         combined_curve = LUT(exposure_ramp_lut)

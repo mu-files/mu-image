@@ -116,16 +116,11 @@ class Tensor:
         value = _require_scalar(other, "mul_scalar")
         return op("mul_scalar", self, value=value)
 
-    def compute(self, timer=None) -> np.ndarray:
-        """Materialize this tensor (engine graph only).
-
-        Pass ``timer`` to record per-op timings under that node; omit it for
-        no timing. Callers that want a named bucket ``start_step`` first and
-        pass that step as ``timer``.
-        """
+    def compute(self) -> np.ndarray:
+        """Materialize this tensor (engine graph only)."""
         from .engines.graph import compute
 
-        return compute(self, timer=timer)
+        return compute(self)
 
     def __array__(self, dtype: Any = None) -> np.ndarray:
         """NumPy array protocol: getting the array materializes the graph."""

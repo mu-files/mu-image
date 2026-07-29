@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import IO, Callable, Iterable, Any
 
 # Package imports
-from .common import scoped_perf_timer
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
@@ -42,12 +41,7 @@ def write_image(
         bool: True if successful, False otherwise
     """
     if isinstance(image, Tensor):
-        from .common import get_active_timer
-
-        active = get_active_timer()
-        image = image.compute(
-            timer=None if active.name == "__orphan__" else active
-        )
+        image = image.compute()
 
     # Determine output format
     if isinstance(output, (str, Path)):
@@ -331,21 +325,18 @@ def convert_dng(
         Core Image is not available when passing a DngPage instance.
     """
     try:
-        # Own the render timer through decode + write so lazy graph compute
-        # (including the final write_image materialization) lands in one report.
-        with scoped_perf_timer("render_raw", logger):
-            image, metadata = decode_dng(
-                file=file,
-                output_dtype=output_dtype,
-                demosaic_algorithm=demosaic_algorithm,
-                use_coreimage_if_available=use_coreimage_if_available,
-                use_xmp=use_xmp,
-                rendering_params=rendering_params,
-                strict=strict,
-            )
+        image, metadata = decode_dng(
+            file=file,
+            output_dtype=output_dtype,
+            demosaic_algorithm=demosaic_algorithm,
+            use_coreimage_if_available=use_coreimage_if_available,
+            use_xmp=use_xmp,
+            rendering_params=rendering_params,
+            strict=strict,
+        )
 
-            return write_image(image, output, output_format_stream, metadata=metadata)
-                
+        return write_image(image, output, output_format_stream, metadata=metadata)
+
     except ValueError as e:
         # Handle validation errors (e.g., rendering params on preview pages)
         logger.error(f"Validation error: ({type(e).__name__}): {e}")

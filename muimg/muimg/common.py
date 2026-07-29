@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 _thread_local = threading.local()
 
 
+class _NoopStep:
+    """Returned by ``PerfTimer.step`` when nothing is timing — ``close()`` is a no-op."""
+
+    __slots__ = ()
+    end_time: float | None = 0.0  # already "closed" for end_time checks
+
+    def close(self) -> None:
+        return None
+
+
+_NOOP_STEP = _NoopStep()
+
+
 def enum_display_name(enum_class: Type[Enum], value: int, suffix: str = "") -> str:
     """
     Get display name for an enum value.
@@ -111,67 +124,158 @@ def setup_logging(verbosity: int = 0) -> None:
 
 
 class PerfTimer:
-    """Hierarchical performance timer for tracking code execution.
+    """Hierarchical wall-clock timer (optional instrumentation).
 
-    Every node in the timing tree is a PerfTimer. Root nodes (depth=-1) are
-    created directly via PerfTimer(name) and additionally manage thread-local
-    registration and report generation. Child nodes are created via
-    start_step() and share the same API.
+        timer = PerfTimer("render_raw", log=logger)
+        PerfTimer.step("decode_cfa")   # under current (timer here)
+        ...
+        setup = PerfTimer.step("render_setup")
+        ...
+        setup.close()
+        timer.close()  # logs if log= was set
 
-    Thread-safe: each root timer instance stores per-thread state in its own
-    threading.local(), isolated from all other PerfTimer instances.
-    Use naming convention "(c++)" suffix to indicate C++ processing steps.
+    ``step(name)`` starts a child under ``current()``. When nothing is timing it
+    returns a no-op handle so callers can always ``close()`` without checks.
+    Nested work (e.g. ``graph.compute``) records under the current stage via the
+    stack. An inconsistent stack yields ``broken stack``.
 
-    Usage:
-        timer = PerfTimer("my_operation")
-        step = timer.start_step("decode")
-        # ... work ...
-        step.close()                 # end this specific step
-        timer.start_step("process")  # auto-closes previous sibling
-        # ... work ...
-        timer.end_step()             # end the most recent child of timer
-        timer.log_report(logger)
-        timer.close()                # end any open child + deactivate thread-local
+    ``with PerfTimer(...)`` still works and auto-nests, but is not required.
+    ``PerfTimer.current()`` is the deepest open timer on this thread.
     """
+
+    #: No-op step handle (``close()`` does nothing). Use when a step is optional.
+    inactive = _NOOP_STEP
+
+    @classmethod
+    def _stack(cls) -> list["PerfTimer"]:
+        stack = getattr(_thread_local, "timer_stack", None)
+        if stack is None:
+            stack = []
+            _thread_local.timer_stack = stack
+        return stack
+
+    @classmethod
+    def current(cls) -> "PerfTimer | None":
+        """Deepest open PerfTimer on this thread, or None."""
+        stack = cls._stack()
+        return stack[-1] if stack else None
+
+    @classmethod
+    def root(cls) -> "PerfTimer | None":
+        """Outermost open PerfTimer on this thread, or None."""
+        stack = cls._stack()
+        if not stack:
+            return None
+        t = stack[0]
+        while t.parent is not None:
+            t = t.parent
+        return t
+
+    @classmethod
+    def step(cls, name: str) -> "PerfTimer | _NoopStep":
+        """Start a host stage under the current timer.
+
+        When idle, returns a no-op handle whose ``close()`` does nothing.
+        """
+        top = cls.current()
+        if top is None:
+            return _NOOP_STEP
+        return top.start_step(name)
+
+    @classmethod
+    def _push(cls, timer: "PerfTimer") -> None:
+        stack = cls._stack()
+        if stack and stack[-1] is timer:
+            return
+        stack.append(timer)
+
+    @classmethod
+    def _pop(cls, timer: "PerfTimer") -> None:
+        stack = cls._stack()
+        if stack and stack[-1] is timer:
+            stack.pop()
+            return
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i] is timer:
+                root = cls.root()
+                if root is not None:
+                    root._broken = True
+                del stack[i]
+                break
 
     def __init__(
         self,
         name: str,
         _parent: "PerfTimer | None" = None,
-        _depth: int = -1,
+        _depth: int | None = None,
         start_time: float | None = None,
+        *,
+        log: logging.Logger | None = None,
+        _register_root: bool = True,
     ):
         self.name = name
         self.parent = _parent
-        self.depth = _depth
         self.children: list[PerfTimer] = []
         self.start_time = start_time if start_time is not None else time.perf_counter()
         self.end_time: float | None = None
         self._active_child: PerfTimer | None = None
+        self._log = log
+        self._on_stack = False
+        self._broken = False
 
-        if self._is_root:
+        if _parent is not None:
+            self.depth = _parent.depth + 1 if _depth is None else _depth
+        elif _depth is not None:
+            self.depth = _depth
+        else:
+            self.depth = -1
+
+        if self._is_root and _register_root:
             self._local = threading.local()
-            existing_ref = getattr(_thread_local, 'active_timer_node', None)
-            existing = existing_ref() if existing_ref is not None else None
-            if existing is not None:
-                logger.warning(
-                    f"PerfTimer '{name}' activated while '{existing.name}' "
-                    f"is already active on this thread"
-                )
-            _thread_local.active_timer_node = weakref.ref(self)
+            top = PerfTimer.current()
+            if top is None:
+                _thread_local.active_timer_node = weakref.ref(self)
+                PerfTimer._push(self)
+                self._on_stack = True
+            # else: another timer is open — __enter__ will nest under it
 
     @property
     def _is_root(self) -> bool:
-        return self.depth == -1
+        return self.depth == -1 and self.parent is None
+
+    def __enter__(self) -> "PerfTimer":
+        top = PerfTimer.current()
+        if self.parent is None and top is not None and top is not self:
+            # Constructed as a root/standalone while another timer is open → nest.
+            if self._on_stack:
+                PerfTimer._pop(self)
+                self._on_stack = False
+            if top._active_child is not None and top._active_child.end_time is None:
+                top._active_child.close()
+            self.parent = top
+            self.depth = top.depth + 1
+            top.children.append(self)
+            top._active_child = self
+        if not self._on_stack:
+            PerfTimer._push(self)
+            self._on_stack = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     def start_step(self, name: str) -> "PerfTimer":
         """Start a new child step, auto-closing the previous sibling if open."""
         if self._active_child is not None and self._active_child.end_time is None:
             self._active_child.close()
 
-        child = PerfTimer(name, _parent=self, _depth=self.depth + 1)
+        child = PerfTimer(
+            name, _parent=self, _depth=self.depth + 1, _register_root=False
+        )
         self.children.append(child)
         self._active_child = child
+        PerfTimer._push(child)
+        child._on_stack = True
         return child
 
     def add_completed_step(
@@ -193,7 +297,11 @@ class PerfTimer:
         duration_s = max(0.0, float(duration_s))
         end = time.perf_counter() if end_time is None else float(end_time)
         child = PerfTimer(
-            name, _parent=self, _depth=self.depth + 1, start_time=end - duration_s
+            name,
+            _parent=self,
+            _depth=self.depth + 1,
+            start_time=end - duration_s,
+            _register_root=False,
         )
         child.end_time = end
         self.children.append(child)
@@ -202,37 +310,31 @@ class PerfTimer:
 
     def add_completed_steps(
         self,
-        steps: tuple[str, float] | Sequence[tuple[str, float]],
+        steps: Sequence[tuple[str, float]],
     ) -> list["PerfTimer"]:
         """Append finished children laid out end-to-end (no overlapping intervals).
 
-        ``steps`` is one ``(name, duration_s)`` or a sequence of them. Intervals are
-        placed sequentially ending at ``perf_counter()`` via repeated
-        ``add_completed_step`` calls. Used for per-op timings from one
-        ``execute_segment``.
+        For a single op use ``add_completed_step``. This places several durations
+        sequentially ending at ``perf_counter()`` (a bare loop of
+        ``add_completed_step`` would pin every end to ``now`` and overlap).
         """
-        if (
-            isinstance(steps, tuple)
-            and len(steps) == 2
-            and isinstance(steps[0], str)
-            and isinstance(steps[1], (int, float))
-        ):
-            step_list: list[tuple[str, float]] = [steps]  # type: ignore[list-item]
-        else:
-            step_list = list(steps)  # type: ignore[arg-type]
-
+        step_list = list(steps)
         if not step_list:
-            return []
+            raise ValueError(
+                "add_completed_steps() requires at least one (name, duration_s)"
+            )
 
-        # Walk backwards from now so each call can reuse add_completed_step;
-        # then restore chronological order in self.children.
-        cursor = time.perf_counter()
-        for name, duration_s in reversed(step_list):
-            child = self.add_completed_step(name, duration_s, end_time=cursor)
-            cursor = child.start_time
-        n = len(step_list)
-        self.children[-n:] = self.children[-n:][::-1]
-        return self.children[-n:]
+        total_s = sum(max(0.0, float(d)) for _, d in step_list)
+        cursor = time.perf_counter() - total_s
+        children: list[PerfTimer] = []
+        for name, duration_s in step_list:
+            duration_s = max(0.0, float(duration_s))
+            end = cursor + duration_s
+            children.append(
+                self.add_completed_step(name, duration_s, end_time=end)
+            )
+            cursor = end
+        return children
 
     def __del__(self):
         if self.end_time is None:
@@ -242,6 +344,7 @@ class PerfTimer:
         """End this specific node, auto-closing any open children.
 
         On root nodes, also deactivates this timer as the thread-local context.
+        If the stack was left inconsistent, the report is ``broken stack``.
         """
         if self.end_time is not None:
             logger.warning(f"close() called twice on '{self.name}'")
@@ -255,23 +358,24 @@ class PerfTimer:
         if self.parent and self.parent._active_child is self:
             self.parent._active_child = None
 
+        if self._on_stack:
+            PerfTimer._pop(self)
+            self._on_stack = False
+
         if self._is_root:
-            current_ref = getattr(_thread_local, 'active_timer_node', None)
+            stack = PerfTimer._stack()
+            if stack:
+                self._broken = True
+                stack.clear()
+            current_ref = getattr(_thread_local, "active_timer_node", None)
             current = current_ref() if current_ref is not None else None
             if current is self:
                 _thread_local.active_timer_node = None
-            else:
-                logger.warning(
-                    f"PerfTimer '{self.name}' closed but active_timer_node is "
-                    f"'{current.name if current is not None else None}' - another timer may have stomped the slot"
-                )
-
-    def end_step(self):
-        """End the most recently started child step of this node."""
-        if self._active_child is None:
-            logger.warning(f"end_step() called on '{self.name}' but no active child")
-            return
-        self._active_child.close()
+            elif current is not None:
+                self._broken = True
+                _thread_local.active_timer_node = None
+            if self._log is not None:
+                self.log_report(self._log)
 
     def get_elapsed_ms(self) -> float:
         """Return elapsed time in milliseconds, using current time if not yet ended."""
@@ -286,9 +390,13 @@ class PerfTimer:
     def get_report(self) -> str:
         """Generate a formatted hierarchical timing report for this node's subtree.
 
-        When called on the root, wall-clock time covers the full pipeline.
-        When called on a child node, wall-clock time is that node's elapsed time.
+        The report root is printed as the top row; children are indented under it.
+        Wall-clock TOTAL is this node's elapsed time.
+        Returns ``broken stack`` if the timer stack was left inconsistent.
         """
+        if self._broken:
+            return "broken stack"
+
         report_root = self
         children = report_root.children
 
@@ -301,12 +409,11 @@ class PerfTimer:
         if wall_clock_time == 0:
             return "No timing data recorded"
 
-        # Depth offset so child reports start indentation at 0
-        depth_offset = report_root.depth + 1
+        # Indent so the report root is at column 0
+        depth_offset = report_root.depth
 
         lines = []
-        lines.append(f"Rendering Performance ({report_root.name}):" if not self._is_root
-                     else "Rendering Performance:")
+        lines.append("Performance:")
 
         def get_max_width(node: PerfTimer, current_max: int = 0) -> int:
             indent = "  " * (node.depth - depth_offset)
@@ -320,7 +427,8 @@ class PerfTimer:
         lines.append(header)
         lines.append("─" * len(header))
 
-        root_depth = report_root.depth  # depth of the report root (children are root_depth+1)
+        root_depth = report_root.depth  # children are root_depth+1
+        child_indent = "  "
 
         def add_step_rows(node: PerfTimer, prev_end_time: float | None):
             # Gap detection only at the immediate children of report_root
@@ -329,7 +437,8 @@ class PerfTimer:
                 if gap_ms > 4.0:
                     gap_pct = (gap_ms / wall_clock_time * 100) if wall_clock_time > 0 else 0
                     lines.append(
-                        f"{'unallocated':<{name_width}}  {gap_ms:>9.1f}ms  {gap_pct:>5.1f}%"
+                        f"{child_indent + 'unallocated':<{name_width}}  "
+                        f"{gap_ms:>9.1f}ms  {gap_pct:>5.1f}%"
                     )
 
             indent = "  " * (node.depth - depth_offset)
@@ -339,14 +448,18 @@ class PerfTimer:
                 f"{indent + node.name:<{name_width}}  {elapsed_ms:>9.1f}ms  {pct:>5.1f}%"
             )
 
+            if node.depth == root_depth:
+                sibling_prev = node.start_time
+                for child in node.children:
+                    sibling_prev = add_step_rows(child, sibling_prev) or sibling_prev
+                return sibling_prev
+
             for child in node.children:
                 add_step_rows(child, prev_end_time)
 
             return node.end_time if node.depth == root_depth + 1 else prev_end_time
 
-        prev_end = report_root.start_time
-        for child in children:
-            prev_end = add_step_rows(child, prev_end) or prev_end
+        prev_end = add_step_rows(report_root, None)
 
         # Final gap after last step (up to when the root was closed, or now if still running)
         root_end = report_root.end_time if report_root.end_time is not None else time.perf_counter()
@@ -355,85 +468,11 @@ class PerfTimer:
             if final_gap_ms > 4.0:
                 gap_pct = (final_gap_ms / wall_clock_time * 100) if wall_clock_time > 0 else 0
                 lines.append(
-                    f"{'unallocated':<{name_width}}  {final_gap_ms:>9.1f}ms  {gap_pct:>5.1f}%"
+                    f"{child_indent + 'unallocated':<{name_width}}  "
+                    f"{final_gap_ms:>9.1f}ms  {gap_pct:>5.1f}%"
                 )
 
         lines.append("─" * len(header))
         lines.append(f"{'TOTAL':<{name_width}}  {wall_clock_time:>9.1f}ms  100.0%")
 
         return "\n".join(lines)
-
-
-def get_active_timer() -> PerfTimer:
-    """Get the currently active timer node for this thread.
-
-    Returns an orphan node if no timer is active, so callers never need to
-    check for None.
-    """
-    ref = getattr(_thread_local, 'active_timer_node', None)
-    root = ref() if ref is not None else None
-    if root is None:
-        return PerfTimer("__orphan__", _depth=0)
-    node = root
-    while node._active_child is not None and node._active_child.end_time is None:
-        node = node._active_child
-    return node
-
-
-class ScopedPerfTimer:
-    """Context manager that provides scoped performance timing.
-    
-    Uses existing active timer if available, otherwise creates new root timer.
-    Only logs report for root timers (depth == -1) unless auto_log is disabled.
-    
-    Usage:
-        with scoped_perf_timer("my_operation", logger) as timer:
-            # ... work ...
-    """
-    
-    def __init__(self, name: str, logger_instance, auto_log: bool = True):
-        self.name = name
-        self.logger = logger_instance
-        self.timer: PerfTimer | None = None
-        self.auto_log = auto_log
-        self.created_timer = False  # Track if we created this timer
-        
-    def __enter__(self) -> PerfTimer:
-        # Repeat get_active_timer logic to avoid creating orphan timer
-        ref = getattr(_thread_local, 'active_timer_node', None)
-        root = ref() if ref is not None else None
-        if root is not None:
-            # Find the active child
-            node = root
-            while node._active_child is not None and node._active_child.end_time is None:
-                node = node._active_child
-            self.timer = node
-            self.created_timer = False
-        else:
-            # No active timer, create new root timer
-            self.timer = PerfTimer(self.name)
-            self.created_timer = True
-        return self.timer
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.timer is not None:
-            # Only close timers we created
-            if self.created_timer:
-                self.timer.close()
-                # Only log if auto_log is True
-                if self.auto_log:
-                    self.timer.log_report(self.logger)
-    
-    def enter(self) -> PerfTimer:
-        """Start the timer manually (equivalent to __enter__)."""
-        return self.__enter__()
-    
-    def close(self, exc_type=None, exc_val=None, exc_tb=None):
-        """End the timer manually (equivalent to __exit__)."""
-        return self.__exit__(exc_type, exc_val, exc_tb)
-
-
-def scoped_perf_timer(name: str, logger_instance, auto_log: bool = True) -> ScopedPerfTimer:
-    """Create a ScopedPerfTimer context manager."""
-    return ScopedPerfTimer(name, logger_instance, auto_log)
-

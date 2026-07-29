@@ -174,7 +174,6 @@ class _RecordingEngine:
         nodes: List[Tensor],
         values: Dict[int, np.ndarray],
         outputs: List[Tensor],
-        timer=None,
     ) -> None:
         self.calls.append(len(nodes))
         # Produce zeros for outputs (enough to exercise the dispatch path).
@@ -260,32 +259,111 @@ def test_add_completed_steps_sequential_no_overlap():
     root.close()
 
 
-def test_add_completed_steps_single_tuple():
+def test_engine_timing_setting():
+    from muimg.engines.timing import (
+        EngineTiming,
+        engine_timing,
+        get_engine_timing,
+        set_engine_timing,
+    )
+
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.OFF)
+        assert get_engine_timing() is EngineTiming.OFF
+        set_engine_timing("SEGMENTS")
+        assert get_engine_timing() is EngineTiming.SEGMENTS
+        set_engine_timing(EngineTiming.OPS)
+        assert get_engine_timing() is EngineTiming.OPS
+    finally:
+        set_engine_timing(prev)
+
+
+def test_perftimer_context_manager_nests():
+    from muimg.common import PerfTimer
+
+    with PerfTimer("root") as root:
+        assert PerfTimer.current() is root
+        with PerfTimer("child") as child:
+            assert child.parent is root
+            assert child in root.children
+            assert PerfTimer.current() is child
+            with PerfTimer("grand") as grand:
+                assert grand.parent is child
+                assert PerfTimer.current() is grand
+            assert PerfTimer.current() is child
+        assert PerfTimer.current() is root
+    assert PerfTimer.current() is None
+    assert [c.name for c in root.children] == ["child"]
+    assert [c.name for c in root.children[0].children] == ["grand"]
+
+
+def test_perftimer_step_is_fire_and_forget():
     from muimg.common import PerfTimer
 
     root = PerfTimer("root")
-    children = root.add_completed_steps(("native_op (engine)", 0.025))
-    assert len(children) == 1
-    assert abs(children[0].get_elapsed_ms() - 25.0) < 1.0
+    a = PerfTimer.step("a")
+    assert a is not None
+    a.close()
+    b = PerfTimer.step("b")
+    assert b is not None
+    b.close()
+    assert PerfTimer.current() is root
     root.close()
+    assert [c.name for c in root.children] == ["a", "b"]
+    assert all(c.end_time is not None for c in root.children)
+
+
+def test_perftimer_step_nests_under_current_not_root():
+    from muimg.common import PerfTimer
+
+    root = PerfTimer("root")
+    bucket = root.start_step("bucket")
+    setup = PerfTimer.step("render_setup")
+    assert setup is not None
+    setup.close()
+    assert bucket.end_time is None
+    assert [c.name for c in bucket.children] == ["render_setup"]
+    bucket.close()
+    root.close()
+    assert [c.name for c in root.children] == ["bucket"]
+
+
+def test_perftimer_broken_stack_report():
+    from muimg.common import PerfTimer
+
+    root = PerfTimer("root")
+    child = root.start_step("a")
+    # Force an out-of-order pop of the root while child is still deeper on the stack.
+    PerfTimer._pop(root)
+    root._on_stack = False
+    root._broken = True
+    root.end_time = root.start_time
+    child.close()
+    assert root.get_report() == "broken stack"
+    PerfTimer._stack().clear()
 
 
 def test_compute_times_python_ops():
     from muimg.common import PerfTimer
     from muimg.engines.pyops import cast_dtype_op, crop_op
+    from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
     x = cast_dtype_op(Tensor(src), "uint16")
     x = crop_op(x, 1, 1, 3, 2)
 
-    timer = PerfTimer("test")
-    parent = timer.start_step("camera_space")
-    out = x.compute(timer=parent)
-    parent.close()
-    timer.close()
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.SEGMENTS)
+        with PerfTimer("root") as root:
+            parent = root.start_step("camera_space")
+            out = x.compute()
+            parent.close()
+    finally:
+        set_engine_timing(prev)
 
     np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
-    assert parent.name == "camera_space"
     names = [c.name for c in parent.children]
     assert names == ["cast_dtype_op (python)", "crop_op (python)"]
     assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
@@ -293,19 +371,92 @@ def test_compute_times_python_ops():
 
 def test_compute_times_engine_ops():
     from muimg.common import PerfTimer
+    from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
 
-    timer = PerfTimer("test")
-    parent = timer.start_step("camera_space")
-    out = (Tensor(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0)
-    out = (out * 2.0).compute(timer=parent)
-    parent.close()
-    timer.close()
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.OPS)
+        with PerfTimer("root") as root:
+            out = (Tensor(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0)
+            out = (out * 2.0).compute()
+    finally:
+        set_engine_timing(prev)
 
     np.testing.assert_allclose(out, [[0.0, 2.0], [4.0, 6.0]])
-    names = [c.name for c in parent.children]
+    assert [c.name for c in root.children] == ["graph_compute"]
+    ops = root.children[0].children
+    names = [c.name for c in ops]
     assert names == ["sub_scalar (engine)", "mul_scalar (engine)"]
-    assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
-    assert parent.children[0].end_time == parent.children[1].start_time
+    assert all(c.get_elapsed_ms() >= 0.0 for c in ops)
+    assert ops[0].end_time == ops[1].start_time
+
+
+def test_compute_engine_segments_no_op_children():
+    from muimg.common import PerfTimer
+    from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
+
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.SEGMENTS)
+        with PerfTimer("root") as root:
+            out = (Tensor(np.array([[1.0, 2.0]], dtype=np.float32)) * 2.0).compute()
+    finally:
+        set_engine_timing(prev)
+
+    np.testing.assert_allclose(out, [[2.0, 4.0]])
+    assert [c.name for c in root.children] == ["graph_compute"]
+    assert root.children[0].children == []
+
+
+def test_compute_engine_off_no_rows_even_with_open_timer():
+    from muimg.common import PerfTimer
+    from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
+
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.OFF)
+        with PerfTimer("root") as root:
+            (Tensor(np.array([[1.0]], dtype=np.float32)) * 2.0).compute()
+    finally:
+        set_engine_timing(prev)
+
+    assert root.children == []
+
+
+def test_compute_nests_under_current_stack_top():
+    from muimg.common import PerfTimer
+    from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
+
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.SEGMENTS)
+        with PerfTimer("root") as root:
+            fence = root.start_step("fence")
+            (Tensor(np.array([[1.0]], dtype=np.float32)) * 2.0).compute()
+            fence.close()
+    finally:
+        set_engine_timing(prev)
+
+    assert [c.name for c in fence.children] == ["graph_compute"]
+
+
+def test_compute_ops_under_graph_compute():
+    from muimg.common import PerfTimer
+    from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
+
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.OPS)
+        with PerfTimer("root") as root:
+            parent = root.start_step("camera_space")
+            out = (Tensor(np.array([[1.0, 2.0]], dtype=np.float32)) * 2.0).compute()
+            parent.close()
+    finally:
+        set_engine_timing(prev)
+
+    np.testing.assert_allclose(out, [[2.0, 4.0]])
+    assert [c.name for c in parent.children] == ["graph_compute"]
+    assert [c.name for c in parent.children[0].children] == ["mul_scalar (engine)"]
 
 
 def test_graph_op_splits_engine_segments():
