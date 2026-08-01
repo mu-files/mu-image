@@ -344,6 +344,54 @@ def test_perftimer_broken_stack_report():
     PerfTimer._stack().clear()
 
 
+def test_perftimer_missed_close_then_continue_at_parent():
+    """Worker nests via ``PerfTimer.step``; outer continues under L0 after a missed close.
+
+    Outer starts L0 (keeps the handle). A worker stacks L1/L2 with ``step()`` and
+    skips ``L2.close()``. Outer then ``L0.start_step("L1b")`` — L0 auto-closes the
+    abandoned L1 subtree (including L2) and opens L1b as the next child of L0.
+    """
+    from muimg.common import PerfTimer
+
+    try:
+        root = PerfTimer("root")
+        # Outer stage (caller keeps L0).
+        L0 = PerfTimer.step("L0")
+        assert PerfTimer.current() is L0
+
+        # Worker: only uses the stack, no parent handle.
+        L1 = PerfTimer.step("L1")
+        L2 = PerfTimer.step("L2")
+        assert PerfTimer.current() is L2
+        # Miss L2.close() (and L1.close()).
+
+        # Outer continues under L0 — not PerfTimer.step(), which would nest under L2.
+        L1b = L0.start_step("L1b")
+
+        assert L2.end_time is not None
+        assert L1.end_time is not None
+        assert PerfTimer.current() is L1b
+        assert [c.name for c in L0.children] == ["L1", "L1b"]
+        assert L1b.parent is L0
+
+        stack = PerfTimer._stack()
+        assert L2 not in stack and L1 not in stack
+        assert stack[-1] is L1b
+        assert L0 in stack and root in stack
+
+        L1b.close()
+        L0.close()
+        root.close()
+
+        assert PerfTimer.current() is None
+        assert PerfTimer._stack() == []
+        assert root.get_report() != "broken stack"
+        assert [c.name for c in L0.children] == ["L1", "L1b"]
+        assert [c.name for c in L1.children] == ["L2"]
+    finally:
+        PerfTimer._stack().clear()
+
+
 def test_compute_times_python_ops():
     from muimg.common import PerfTimer
     from muimg.engines.pyops import cast_dtype_op, crop_op
