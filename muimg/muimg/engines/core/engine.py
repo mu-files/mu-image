@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""CoreEngine — execute graph segments via libmuimg_core."""
+"""CoreEngine — Python Engine adapter that runs segments via libmuimg_core."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class CoreEngine:
-    """Native backend wrapping ``muimg.engines.core._compute_engine``."""
+    """Python adapter over ``muimg.engines.core._core_engine``."""
 
     def __init__(self) -> None:
         self._supported_ops: frozenset[str] | None = None
@@ -34,7 +34,7 @@ class CoreEngine:
     ) -> None:
         from ...common import PerfTimer
         from ..timing import EngineTiming, get_engine_timing
-        from . import _compute_engine
+        from . import _core_engine
 
         unknown = sorted(
             {
@@ -114,7 +114,7 @@ class CoreEngine:
             get_engine_timing() >= EngineTiming.OPS
             and PerfTimer.current() is not None
         )
-        timings = _compute_engine.execute_graph(
+        timings = _core_engine.execute_graph(
             graph, in_binds, out_binds, record_ops
         )
         if record_ops and timings:

@@ -117,7 +117,7 @@ def test_flush_then_engine_again():
 
 def test_apply_opcodes_single_execute():
     """Multi-opcode RGB chain runs one execute_graph."""
-    from muimg.engines.core import _compute_engine
+    from muimg.engines.core import _core_engine
     from muimg.raw_render import apply_opcodes
 
     rgb = np.full((8, 8, 3), 0.5, dtype=np.float32)
@@ -144,18 +144,18 @@ def test_apply_opcodes_single_execute():
     ]
 
     calls = {"n": 0}
-    real = _compute_engine.execute_graph
+    real = _core_engine.execute_graph
 
     def counting_execute(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    _compute_engine.execute_graph = counting_execute
+    _core_engine.execute_graph = counting_execute
     try:
         out_t = apply_opcodes(Tensor(rgb), opcodes, use_bicubic=False)
         out = out_t.compute()
     finally:
-        _compute_engine.execute_graph = real
+        _core_engine.execute_graph = real
 
     assert calls["n"] == 1
     assert out.shape == rgb.shape
@@ -391,7 +391,7 @@ def test_compute_times_engine_ops():
     assert ops[0].end_time == ops[1].start_time
 
 
-def test_compute_engine_segments_no_op_children():
+def test_core_engine_segments_no_op_children():
     from muimg.common import PerfTimer
     from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
 
@@ -408,7 +408,7 @@ def test_compute_engine_segments_no_op_children():
     assert root.children[0].children == []
 
 
-def test_compute_engine_off_no_rows_even_with_open_timer():
+def test_core_engine_off_no_rows_even_with_open_timer():
     from muimg.common import PerfTimer
     from muimg.engines.timing import EngineTiming, engine_timing, set_engine_timing
 
@@ -460,7 +460,7 @@ def test_compute_ops_under_graph_compute():
 
 
 def test_graph_op_splits_engine_segments():
-    from muimg.engines.core import _compute_engine
+    from muimg.engines.core import _core_engine
     from muimg.engines.pyops import crop_op
 
     src = np.arange(16, dtype=np.float32).reshape(4, 4)
@@ -469,17 +469,17 @@ def test_graph_op_splits_engine_segments():
     x = x * 2.0
 
     calls = {"n": 0}
-    real = _compute_engine.execute_graph
+    real = _core_engine.execute_graph
 
     def counting_execute(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    _compute_engine.execute_graph = counting_execute
+    _core_engine.execute_graph = counting_execute
     try:
         out = x.compute()
     finally:
-        _compute_engine.execute_graph = real
+        _core_engine.execute_graph = real
 
     assert calls["n"] == 2
     np.testing.assert_allclose(out, src[:2, :2] * 2.0)

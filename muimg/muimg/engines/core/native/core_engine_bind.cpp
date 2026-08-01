@@ -1,8 +1,8 @@
 /*
- * muimg.engines.core._compute_engine - Python binding for muimg_execute_graph
+ * muimg.engines.core._core_engine - Python FFI binding for libmuimg_core.
  *
- * Structured Python dict/list IR is converted to in-memory MuImgGraph
- * structs here (no binary blob).
+ * Not the native executor: marshals Python dict/list segment IR into MuImgGraph
+ * structs and calls muimg_execute_graph via dlopen of libmuimg_core.
  */
 
 #define PY_SSIZE_T_CLEAN
@@ -28,7 +28,7 @@
 #include <dlfcn.h>
 #endif
 
-#include "muimg_compute_graph.h"
+#include "muimg_core_engine.h"
 #include "py_ptr.h"
 
 //=============================================================================
@@ -143,7 +143,7 @@ static bool load_core_library() {
   if (!muimg_execute_graph_fn) {
     PyErr_SetString(PyExc_RuntimeError,
                     "Failed to load muimg_execute_graph from muimg_core "
-                    "(rebuild/copy a core binary that includes compute_graph)");
+                    "(rebuild/copy a core binary that includes core_engine)");
     core_dlclose(g_core_lib);
     g_core_lib = nullptr;
     return false;
@@ -752,7 +752,7 @@ static PyObject *py_execute_graph(PyObject * /*self*/, PyObject *args) {
   return out_list;
 }
 
-static PyMethodDef ComputeEngineMethods[] = {
+static PyMethodDef CoreEngineMethods[] = {
     {"execute_graph", py_execute_graph, METH_VARARGS,
      "execute_graph(graph, inputs, outputs, profile=False) -> None | list\n\n"
      "Run one engine segment. If profile=True, return per-op timing dicts\n"
@@ -761,17 +761,17 @@ static PyMethodDef ComputeEngineMethods[] = {
      "inputs/outputs: dict[tensor_id] -> C-contiguous ndarray\n"},
     {nullptr, nullptr, 0, nullptr}};
 
-static struct PyModuleDef compute_engine_module = {
+static struct PyModuleDef core_engine_module = {
     PyModuleDef_HEAD_INIT,
-    "_compute_engine",
+    "_core_engine",
     "Compute-graph engine binding.",
     -1,
-    ComputeEngineMethods};
+    CoreEngineMethods};
 
-PyMODINIT_FUNC PyInit__compute_engine(void) {
+PyMODINIT_FUNC PyInit__core_engine(void) {
   import_array();
   if (PyErr_Occurred()) {
     return nullptr;
   }
-  return PyModule_Create(&compute_engine_module);
+  return PyModule_Create(&core_engine_module);
 }

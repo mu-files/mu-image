@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""Graph IR: emit ops, flush barriers, and engine-agnostic compute orchestration."""
+"""muimg compute graph: OpNode / Tensor DAG, flush barriers, and orchestration.
+
+Pipeline code (e.g. ``raw_render``) builds this portable DAG. Engines execute
+engine-affinity segments of it; ``@graph_op`` kernels run in Python.
+"""
 
 from __future__ import annotations
 

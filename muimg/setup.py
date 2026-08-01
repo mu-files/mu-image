@@ -68,10 +68,10 @@ else:
     cpp_extra_args = ['-std=c++17']
 
 # CoreEngine binding (libmuimg_core via dlopen)
-compute_engine_extension = Extension(
-    'muimg.engines.core._compute_engine',
-    sources=['muimg/engines/core/native/compute_engine.cpp'],
-    include_dirs=[np.get_include(), 'muimg/engines/core/include', 'c-src'],
+core_engine_extension = Extension(
+    'muimg.engines.core._core_engine',
+    sources=['muimg/engines/core/native/core_engine_bind.cpp'],
+    include_dirs=[np.get_include(), 'muimg/engines/core/include', 'muimg/engines/core/native'],
     extra_compile_args=common_compile_args + cpp_extra_args,
     extra_link_args=common_link_args,
     language='c++',
@@ -99,7 +99,7 @@ if os.path.exists(rcd_source):
     )
 
 # Build list of extensions
-ext_modules = [compute_engine_extension, vng_extension]
+ext_modules = [core_engine_extension, vng_extension]
 if rcd_extension:
     ext_modules.append(rcd_extension)
 

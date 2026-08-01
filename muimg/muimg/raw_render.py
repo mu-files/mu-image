@@ -576,7 +576,7 @@ def demosaic(
 # DNG SDK Port (Python + C++ Extension)
 # =============================================================================
 # Everything below is a port of the Adobe DNG SDK 1.7.1 color pipeline.
-# Engine kernels via muimg.engines.ops / muimg.engines.core._compute_engine.
+# Engine kernels via muimg.engines.ops / muimg.engines.core._core_engine.
 #
 # Key SDK source files referenced:
 #   - dng_color_spec.cpp: SetWhiteXY(), NeutralToXY(), FindXYZtoCamera()

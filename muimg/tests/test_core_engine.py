@@ -1,11 +1,11 @@
-"""Python binding smoke tests for muimg.engines.core._compute_engine."""
+"""Python binding smoke tests for muimg.engines.core._core_engine."""
 
 import numpy as np
 import pytest
 
 
 def test_execute_graph_sub_mul():
-    from muimg.engines.core import _compute_engine
+    from muimg.engines.core import _core_engine
 
     h = w = 2
     graph = {
@@ -35,12 +35,12 @@ def test_execute_graph_sub_mul():
     }
     inp = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
     out = np.full((h, w), -1.0, dtype=np.float32)
-    _compute_engine.execute_graph(graph, {0: inp}, {2: out})
+    _core_engine.execute_graph(graph, {0: inp}, {2: out})
     np.testing.assert_allclose(out, [[0.0, 2.0], [4.0, 6.0]])
 
 
 def test_execute_graph_unknown_op():
-    from muimg.engines.core import _compute_engine
+    from muimg.engines.core import _core_engine
 
     graph = {
         "tensor_descs": [
@@ -62,11 +62,11 @@ def test_execute_graph_unknown_op():
     inp = np.zeros((1, 1), dtype=np.float32)
     out = np.zeros((1, 1), dtype=np.float32)
     with pytest.raises(RuntimeError, match="UNKNOWN_OP"):
-        _compute_engine.execute_graph(graph, {0: inp}, {1: out})
+        _core_engine.execute_graph(graph, {0: inp}, {1: out})
 
 
 def test_execute_graph_matrix_identity():
-    from muimg.engines.core import _compute_engine
+    from muimg.engines.core import _core_engine
 
     eye = np.eye(3, dtype=np.float32).reshape(-1)
     graph = {
@@ -88,5 +88,5 @@ def test_execute_graph_matrix_identity():
     }
     inp = np.array([[[0.25, 0.5, 0.75]]], dtype=np.float32)
     out = np.zeros_like(inp)
-    _compute_engine.execute_graph(graph, {0: inp}, {1: out})
+    _core_engine.execute_graph(graph, {0: inp}, {1: out})
     np.testing.assert_allclose(out, inp)

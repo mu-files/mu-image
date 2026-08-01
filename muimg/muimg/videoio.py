@@ -398,20 +398,24 @@ class VideoEncodePipeline(ImageSequencePipeline):
             self._container = None
         
         # Copy from temp file to final destination if needed
-        if self._temp_path is not None:
+        temp_path = self._temp_path
+        output_path = self.output_path
+        if temp_path is not None:
+            if output_path is None:
+                raise RuntimeError("output_path is required when encoding to a temporary file")
             try:
-                logger.info(f"Copying video to final destination: {self.output_path}")
-                shutil.copy2(self._temp_path, self.output_path)
-                self._temp_path.unlink()
+                logger.info(f"Copying video to final destination: {output_path}")
+                shutil.copy2(temp_path, output_path)
+                temp_path.unlink()
                 logger.info(f"Cleaned up temporary file")
             except Exception as e:
                 logger.error(f"Failed to copy video to final destination ({type(e).__name__}): {e}")
-                logger.info(f"Video remains at temporary location: {self._temp_path}")
+                logger.info(f"Video remains at temporary location: {temp_path}")
                 raise
             finally:
                 self._temp_path = None
         
-        logger.info(f"Video saved to {self.output_path}")
+        logger.info(f"Video saved to {output_path}")
     
     @property
     def failed_frames(self) -> set[int]:

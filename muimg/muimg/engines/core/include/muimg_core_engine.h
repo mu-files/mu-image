@@ -1,5 +1,9 @@
 /*
- * muimg_compute_graph - Shared library C ABI and compute-graph IR.
+ * muimg_core_engine - Core engine C ABI + segment IR for libmuimg_core.
+ *
+ * This is the native backend that executes engine-affinity segments of the
+ * muimg compute graph (Python OpNode / Tensor DAG). Segment IR types remain
+ * MuImgGraph / muimg_execute_graph.
  *
  * Public exports from the shared library:
  *   - muimg_version
@@ -9,8 +13,8 @@
  * Licensed under a modified PolyForm Small Business License
  */
 
-#ifndef MUIMG_COMPUTE_GRAPH_H
-#define MUIMG_COMPUTE_GRAPH_H
+#ifndef MUIMG_CORE_ENGINE_H
+#define MUIMG_CORE_ENGINE_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -212,4 +216,4 @@ MUIMG_API int muimg_execute_graph(const MuImgGraph *graph,
 }
 #endif
 
-#endif /* MUIMG_COMPUTE_GRAPH_H */
+#endif /* MUIMG_CORE_ENGINE_H */
