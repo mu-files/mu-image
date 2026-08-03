@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""CoreEngine — Python Engine adapter that runs segments via libmuimg_core."""
+"""CoreEngine — Python Engine adapter over the abi3 `_core_engine` extension."""
 
 from __future__ import annotations
 
