@@ -63,7 +63,7 @@ def cli(verbose, timing):
     )
 
     if timing != "off":
-        from .engines.timing import set_engine_timing
+        from .engines import set_engine_timing
 
         set_engine_timing(timing)
 

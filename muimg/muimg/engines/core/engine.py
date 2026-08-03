@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""CoreEngine — Python Engine adapter over the abi3 `_core_engine` extension."""
+"""CoreEngine — Python Engine adapter over the abi3 native extension."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class CoreEngine:
-    """Python adapter over ``muimg.engines.core._core_engine``."""
+    """Python adapter over the abi3 ``_core_engine`` extension (via ``_engine_load``)."""
 
     def __init__(self) -> None:
         self._supported_ops: frozenset[str] | None = None
@@ -33,8 +33,8 @@ class CoreEngine:
         outputs: List["Tensor"],
     ) -> None:
         from ...common import PerfTimer
-        from ..timing import EngineTiming, get_engine_timing
-        from . import _core_engine
+        from ..graph import EngineTiming, get_engine_timing
+        from . import _engine_load
 
         unknown = sorted(
             {
@@ -114,7 +114,7 @@ class CoreEngine:
             get_engine_timing() >= EngineTiming.OPS
             and PerfTimer.current() is not None
         )
-        timings = _core_engine.execute_graph(
+        timings = _engine_load.execute_graph(
             graph, in_binds, out_binds, record_ops
         )
         if record_ops and timings:

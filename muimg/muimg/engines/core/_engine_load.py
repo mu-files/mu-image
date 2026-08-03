@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""Load the platform-tagged abi3 CoreEngine extension from _binaries/.
+"""Load the platform-tagged abi3 ``_core_engine`` extension from ``_binaries/``.
 
 Built in private mu-image-engine (Rust/PyO3 + linked C++) and synced via
 copy_to_public.sh. One binary per platform (abi3, Python >= 3.12).
+
+This module is the Python loader only; the extension filename / PyInit symbol
+remain ``_core_engine``.
 """
 
 from __future__ import annotations
