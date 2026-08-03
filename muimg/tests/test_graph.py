@@ -198,16 +198,16 @@ def test_set_default_engine_stub():
 
 
 def test_core_binaries_path():
-    """CoreEngine package ships _binaries next to the Python package."""
+    """CoreEngine package ships platform-tagged abi3 extensions in _binaries/."""
     import muimg.engines.core as core_pkg
     from pathlib import Path
 
     binaries = Path(core_pkg.__file__).resolve().parent / "_binaries"
     assert binaries.is_dir()
-    libs = list(binaries.glob("libmuimg_core.*")) + list(
-        binaries.glob("muimg_core.*")
+    libs = list(binaries.glob("_core_engine.*.abi3.so")) + list(
+        binaries.glob("_core_engine.*.abi3.pyd")
     )
-    assert libs, f"no core libs under {binaries}"
+    assert libs, f"no _core_engine abi3 binaries under {binaries}"
 
 
 def test_graph_op_crop_cast():

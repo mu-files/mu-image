@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260731.1926"
+version = "0.1.20260802.1852"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -42,7 +42,7 @@ dependencies = [
     "numpy",                            # 5.1 MB
     "opencv-python-headless",           # 46 MB
     "setproctitle",                     # 13 KB
-    "tifffile>=2026.6.1",               # 264 KB
+    "tifffile>=2026.6.1",               # 265 KB
 ]
 
 [project.optional-dependencies]
@@ -74,7 +74,7 @@ packages = [
     "muimg.engines.tools",
     "muimg.engines.core",
 ]
-# Host-only core binary selection is in setup.py (package_data).
+# Host-only abi3 CoreEngine extension selection is in setup.py (package_data).
 # MANIFEST.in still ships all engines/core/_binaries/* in the sdist.
 
 [tool.setuptools.package-data]

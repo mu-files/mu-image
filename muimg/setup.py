@@ -9,75 +9,60 @@ import sys
 
 
 def host_core_binaries():
-    """Ship only the host libmuimg_core in wheels; sdist keeps all via MANIFEST.in."""
+    """Ship only the host abi3 CoreEngine extension in wheels; sdist keeps all via MANIFEST.in."""
     system = platform.system()
     machine = platform.machine().lower()
     if system == "Windows":
-        name = "muimg_core.windows-amd64.dll"
+        name = "_core_engine.windows-amd64.abi3.pyd"
     elif system == "Darwin":
         if machine in ("arm64", "aarch64"):
-            name = "libmuimg_core.macos-arm64.dylib"
+            name = "_core_engine.macos-arm64.abi3.so"
         else:
-            name = "libmuimg_core.macos-x86_64.dylib"
+            name = "_core_engine.macos-x86_64.abi3.so"
     else:
         if machine in ("arm64", "aarch64"):
-            name = "libmuimg_core.linux-aarch64.so"
+            name = "_core_engine.linux-aarch64.abi3.so"
         else:
-            name = "libmuimg_core.linux-x86_64.so"
+            name = "_core_engine.linux-x86_64.abi3.so"
     return [f"_binaries/{name}"]
 
+
 if sys.platform == 'win32':
-    # MSVC flags for Windows
     common_compile_args = [
-        '/O2',                # Maximum optimization
-        '/fp:fast',           # Fast math operations
-        '/GL',                # Whole program optimization (LTO)
+        '/O2',
+        '/fp:fast',
+        '/GL',
     ]
     common_link_args = [
-        '/LTCG',              # Link-time code generation (LTO)
+        '/LTCG',
     ]
-    cpp_extra_args = ['/std:c++17']
 else:
-    # GCC/Clang flags for macOS and Linux
-    # Skip -march=native in CI / cibuildwheel (non-portable CPU flags break wheels)
     is_ci = (
         os.environ.get('CI') == 'true'
         or os.environ.get('GITHUB_ACTIONS') == 'true'
         or os.environ.get('CIBUILDWHEEL') == '1'
     )
-    
+
     common_compile_args = [
-        '-O3',                    # Maximum optimization
-        '-ffast-math',            # Fast math operations
-        '-funroll-loops',         # Loop unrolling
-        '-flto',                  # Link-time optimization
-        '-fomit-frame-pointer',   # Don't keep frame pointer (faster)
-        '-fno-strict-aliasing',   # Allow pointer aliasing optimizations
+        '-O3',
+        '-ffast-math',
+        '-funroll-loops',
+        '-flto',
+        '-fomit-frame-pointer',
+        '-fno-strict-aliasing',
     ]
-    
-    # Only use native CPU optimizations when not in CI
+
     if not is_ci:
         common_compile_args.extend([
-            '-march=native',      # Use native CPU instructions (ARM on M1/M2/M3)
-            '-mtune=native',      # Optimize for specific CPU
+            '-march=native',
+            '-mtune=native',
         ])
-    
+
     common_link_args = [
-        '-flto',                  # Link-time optimization
+        '-flto',
     ]
-    cpp_extra_args = ['-std=c++17']
 
-# CoreEngine binding (libmuimg_core via dlopen)
-core_engine_extension = Extension(
-    'muimg.engines.core._core_engine',
-    sources=['muimg/engines/core/native/core_engine_bind.cpp'],
-    include_dirs=[np.get_include(), 'muimg/engines/core/include', 'muimg/engines/core/native'],
-    extra_compile_args=common_compile_args + cpp_extra_args,
-    extra_link_args=common_link_args,
-    language='c++',
-)
-
-# VNG demosaic extension
+# VNG demosaic extension (stays in public; LGPL/CDDL)
 vng_extension = Extension(
     'muimg._vng',
     sources=['c-src/demosaic/vng.c'],
@@ -98,8 +83,7 @@ if os.path.exists(rcd_source):
         extra_link_args=common_link_args,
     )
 
-# Build list of extensions
-ext_modules = [core_engine_extension, vng_extension]
+ext_modules = [vng_extension]
 if rcd_extension:
     ext_modules.append(rcd_extension)
 
