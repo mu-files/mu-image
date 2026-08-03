@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""muimg compute graph: OpNode / Tensor DAG, flush barriers, and orchestration.
+"""muimg compute graph: OpNode / Tensor DAG, engine protocol, and orchestration.
 
 Pipeline code (e.g. ``raw_render``) builds this portable DAG. Engines execute
 engine-affinity segments of it; ``@graph_op`` kernels run in Python.
@@ -11,16 +11,95 @@ from __future__ import annotations
 import functools
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from enum import IntEnum
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 
 from ..common import PerfTimer
 from ..tensor import ElementType, Tensor, TensorMeta, meta_from_array
-from .base import get_default_engine
 
 OutMetaFn = Callable[[Tensor, Dict[str, Any]], Any]
 GraphOutMetaFn = Callable[[Tensor, Dict[str, Any]], TensorMeta]
+
+# ---------------------------------------------------------------------------
+# Engine timing policy
+# ---------------------------------------------------------------------------
+
+
+class EngineTiming(IntEnum):
+    """How much detail ``graph.compute`` / execute_segment should record."""
+
+    OFF = 0
+    SEGMENTS = 1  # one row per python op or engine execute_segment
+    OPS = 2  # + per-op rows inside an engine segment
+
+
+engine_timing: EngineTiming = EngineTiming.OFF
+
+
+def get_engine_timing() -> EngineTiming:
+    return engine_timing
+
+
+def set_engine_timing(level: EngineTiming | int | str) -> None:
+    """Set engine compute timing detail."""
+    global engine_timing
+    if isinstance(level, EngineTiming):
+        engine_timing = level
+    elif isinstance(level, int):
+        engine_timing = EngineTiming(level)
+    else:
+        engine_timing = EngineTiming[str(level).strip().upper()]
+
+
+# ---------------------------------------------------------------------------
+# Engine protocol + default registry
+# ---------------------------------------------------------------------------
+
+_default_engine: Optional["Engine"] = None
+
+
+@runtime_checkable
+class Engine(Protocol):
+    """Backend that executes contiguous engine-affinity graph segments."""
+
+    @property
+    def supported_ops(self) -> frozenset[str]:
+        """Op names this engine can execute."""
+        ...
+
+    def execute_segment(
+        self,
+        nodes: List[Tensor],
+        values: dict[int, np.ndarray],
+        outputs: List[Tensor],
+    ) -> None:
+        """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).
+
+        At engine timing OPS, record per-op ``{op} (engine)`` children under the
+        current ``graph_compute`` step via ``PerfTimer.current()``.
+        """
+        ...
+
+
+def get_default_engine() -> Engine:
+    global _default_engine
+    if _default_engine is None:
+        from .core.engine import CoreEngine
+
+        _default_engine = CoreEngine()
+    return _default_engine
+
+
+def set_default_engine(engine: Engine) -> None:
+    global _default_engine
+    _default_engine = engine
+
+
+# ---------------------------------------------------------------------------
+# Op catalog types + graph_op
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -376,8 +455,6 @@ def _segment_boundary_outputs(
 
 def compute(root: Tensor) -> np.ndarray:
     """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels."""
-    from .timing import EngineTiming, get_engine_timing
-
     tensors = _reachable_tensors(root)
     values: Dict[int, np.ndarray] = {}
 
