@@ -23,7 +23,7 @@ def test_catalog_engine_ops_io():
     assert engine_ops.bilinear_demosaic._in_channels == 1
     x = Tensor(np.zeros((2, 2), dtype=np.float32))
     assert engine_ops.bilinear_demosaic.infer_out_meta(x, {}).channels == 3
-    assert callable(engine_ops.matrix)
+    assert callable(engine_ops.matrix_3x3)
     assert callable(engine_ops.lut)
     assert callable(flush)
 
@@ -37,10 +37,10 @@ def test_sub_mul_chain():
     np.testing.assert_allclose(out, [[0.0, 2.0], [4.0, 6.0]])
 
 
-def test_matrix_identity():
+def test_matrix_3x3_identity():
     eye = np.eye(3, dtype=np.float32)
     inp = np.array([[[0.25, 0.5, 0.75]]], dtype=np.float32)
-    out = engine_ops.matrix(Tensor(inp), matrix=eye).compute()
+    out = engine_ops.matrix_3x3(Tensor(inp), matrix=eye).compute()
     np.testing.assert_allclose(out, inp)
 
 
@@ -66,7 +66,7 @@ def test_op_rejects_bad_channels():
 def test_op_rejects_unknown_attr():
     x = Tensor(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="unknown attrs"):
-        engine_ops.matrix(x, matrix=np.eye(3, dtype=np.float32), extra=1)
+        engine_ops.matrix_3x3(x, matrix=np.eye(3, dtype=np.float32), extra=1)
 
 
 def test_rejects_tensor_tensor_sub():
@@ -103,7 +103,7 @@ def test_flush_then_engine_again():
     x = x - 0.0
     x = x * 1.0
     x = demosaic(x, "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
-    x = engine_ops.matrix(x, matrix=eye)
+    x = engine_ops.matrix_3x3(x, matrix=eye)
     x = engine_ops.lut(x, lut=lut)
     out = x.compute()
 

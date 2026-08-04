@@ -47,7 +47,7 @@ ops:
         type: string
         count: 1
 
-  - name: matrix
+  - name: matrix_3x3
     inputs:
       - channels: 3
     outputs:

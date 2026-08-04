@@ -49,8 +49,8 @@ bilinear_demosaic = EngineOp(
 ]''')),
 )
 
-matrix = EngineOp(
-    meta=OpMeta(name='matrix'),
+matrix_3x3 = EngineOp(
+    meta=OpMeta(name='matrix_3x3'),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=3,
@@ -718,7 +718,7 @@ OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
     'bilinear_demosaic': bilinear_demosaic,
-    'matrix': matrix,
+    'matrix_3x3': matrix_3x3,
     'lut': lut,
     'convert_dtype': convert_dtype,
     'mono_lut': mono_lut,
