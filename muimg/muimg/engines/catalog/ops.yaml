@@ -12,7 +12,12 @@
 #   channels: <int> | any | same
 #     - inputs: int or any
 #     - outputs: int or same (same = copy input 0)
-#   dtype/height/width match input 0 unless outputs.dtype is set.
+#   dtype matches input 0 unless outputs.dtype is set.
+#   height/width/origin match input 0 unless outputs.geometry is set.
+#   geometry: <policy> — named emit-meta policy (not attr inspection).
+#     Currently only "crop", which codegen wires to graph._out_meta_crop
+#     (reads attrs x,y,w,h as col/row; sets H/W; origin += (y,x) as (row,col),
+#      unless optional reset_origin is true → origin (0,0)).
 
 version: 1
 
@@ -36,6 +41,31 @@ ops:
       - key: value
         type: f32
         count: 1
+
+  # ROI crop: emit meta via geometry: crop (_out_meta_crop); native span execute.
+  - name: crop
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: crop
+    attrs:
+      - key: x
+        type: i32
+        count: 1
+      - key: y
+        type: i32
+        count: 1
+      - key: w
+        type: i32
+        count: 1
+      - key: h
+        type: i32
+        count: 1
+      - key: reset_origin
+        type: bool
+        count: 1
+        optional: true
 
   - name: bilinear_demosaic
     inputs:

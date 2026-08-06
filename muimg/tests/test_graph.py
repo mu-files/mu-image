@@ -19,6 +19,7 @@ from muimg.tensor import Tensor
 def test_catalog_engine_ops_io():
     """engines.ops carries EngineOp callables + OPS_BY_NAME."""
     assert "sub_scalar" in OPS_BY_NAME
+    assert "crop" in OPS_BY_NAME
     assert isinstance(engine_ops.bilinear_demosaic, EngineOp)
     assert engine_ops.bilinear_demosaic._in_channels == 1
     x = Tensor(np.zeros((2, 2), dtype=np.float32))
@@ -26,6 +27,111 @@ def test_catalog_engine_ops_io():
     assert callable(engine_ops.matrix_3x3)
     assert callable(engine_ops.lut)
     assert callable(flush)
+    assert "crop" in get_default_engine().supported_ops
+
+
+def test_tensor_meta_origin_default():
+    x = Tensor(np.zeros((4, 6), dtype=np.float32))
+    assert x.meta.origin == (0, 0)
+    y = x - 1.0
+    assert y.meta.origin == (0, 0)
+    assert y.meta.height == 4 and y.meta.width == 6
+
+
+def test_tensor_origin_kwarg():
+    src = Tensor(np.zeros((4, 6), dtype=np.float32), origin=(-3, -5))
+    assert src.meta.origin == (-3, -5)
+
+
+def test_crop_emit_meta_updates_origin_and_size():
+    """Default crop accumulates origin; reset_origin re-zeros world."""
+    base = Tensor(np.arange(5 * 7, dtype=np.float32).reshape(5, 7))
+    cat = engine_ops.crop(base, x=1, y=2, w=3, h=2)
+    assert cat.meta.height == 2 and cat.meta.width == 3
+    assert cat.meta.origin == (2, 1)
+    assert cat._node is not None and cat._node.op == "crop"
+    assert cat._node.fn is None
+
+    cat2 = engine_ops.crop(cat, x=1, y=0, w=2, h=1)
+    assert cat2.meta.origin == (2, 2)
+
+    reset = engine_ops.crop(base, x=1, y=2, w=3, h=2, reset_origin=True)
+    assert reset.meta.origin == (0, 0)
+
+    out = cat.compute()
+    assert out.shape == (2, 3)
+    np.testing.assert_array_equal(out, np.asarray(base)[2:4, 1:4])
+
+
+def test_crop_emit_rejects_oob():
+    x = Tensor(np.zeros((4, 4), dtype=np.float32))
+    with pytest.raises(ValueError, match="out of bounds"):
+        engine_ops.crop(x, x=1, y=1, w=4, h=2)
+
+
+def test_span_crop_span_one_execute_graph(monkeypatch):
+    """Native crop stays in one CoreEngine segment (C4c2)."""
+    from muimg.engines.core import _engine_load
+
+    calls: List[dict] = []
+    real = _engine_load.execute_graph
+
+    def wrap(graph, in_binds, out_binds, record_ops=False):
+        calls.append(graph)
+        return real(graph, in_binds, out_binds, record_ops)
+
+    monkeypatch.setattr(_engine_load, "execute_graph", wrap)
+
+    inp = np.array(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32
+    )
+    x = Tensor(inp) - 1.0
+    x = engine_ops.crop(x, x=1, y=1, w=2, h=2)
+    x = x * 2.0
+    out = x.compute()
+
+    assert len(calls) == 1
+    ops = [n["op"] for n in calls[0]["nodes"]]
+    assert ops == ["sub_scalar", "crop", "mul_scalar"]
+    np.testing.assert_allclose(out, [[8.0, 10.0], [14.0, 16.0]])
+
+
+def test_crop_sub_crop_sub_ramp(monkeypatch):
+    """input → crop → sub → crop → sub in one segment; known ramp pixels."""
+    from muimg.engines.core import _engine_load
+
+    calls: List[dict] = []
+    real = _engine_load.execute_graph
+
+    def wrap(graph, in_binds, out_binds, record_ops=False):
+        calls.append(graph)
+        return real(graph, in_binds, out_binds, record_ops)
+
+    monkeypatch.setattr(_engine_load, "execute_graph", wrap)
+
+    # Unique per-pixel ramp: value = 10*row + col (easy hand checks).
+    rows = np.arange(8, dtype=np.float32)[:, None]
+    cols = np.arange(8, dtype=np.float32)[None, :]
+    inp = 10.0 * rows + cols
+
+    x = Tensor(inp)
+    x = engine_ops.crop(x, x=1, y=1, w=6, h=6)  # → inp[1:7, 1:7]
+    x = x - 1.0
+    x = engine_ops.crop(x, x=1, y=1, w=4, h=4)  # → inp[2:6, 2:6] after first crop
+    x = x - 2.0
+    out = x.compute()
+
+    assert len(calls) == 1
+    ops = [n["op"] for n in calls[0]["nodes"]]
+    assert ops == ["crop", "sub_scalar", "crop", "sub_scalar"]
+
+    expected = inp[2:6, 2:6] - 3.0
+    np.testing.assert_allclose(out, expected)
+    # Spot-check corners against the ramp formula.
+    assert out[0, 0] == pytest.approx(10.0 * 2 + 2 - 3.0)  # 19
+    assert out[0, 3] == pytest.approx(10.0 * 2 + 5 - 3.0)  # 22
+    assert out[3, 0] == pytest.approx(10.0 * 5 + 2 - 3.0)  # 49
+    assert out[3, 3] == pytest.approx(10.0 * 5 + 5 - 3.0)  # 52
 
 
 def test_sub_mul_chain():
@@ -210,15 +316,13 @@ def test_core_binaries_path():
     assert libs, f"no _core_engine abi3 binaries under {binaries}"
 
 
-def test_graph_op_crop_cast():
-    from muimg.engines.pyops import cast_dtype_op, crop_op
+def test_graph_op_cast_then_native_crop():
+    from muimg.engines.pyops import cast_dtype_op
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    np.testing.assert_array_equal(crop_op(src, 1, 1, 3, 2), src[1:3, 1:4])
-
     x = cast_dtype_op(Tensor(src), "uint16")
-    x = crop_op(x, 1, 1, 3, 2)
-    assert x._node is not None and x._node.fn is not None
+    x = engine_ops.crop(x, x=1, y=1, w=3, h=2)
+    assert x._node is not None and x._node.op == "crop" and x._node.fn is None
     out = x.compute()
     np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
 
@@ -394,12 +498,12 @@ def test_perftimer_missed_close_then_continue_at_parent():
 
 def test_compute_times_python_ops():
     from muimg.common import PerfTimer
-    from muimg.engines.pyops import cast_dtype_op, crop_op
+    from muimg.engines.pyops import cast_dtype_op
     from muimg.engines.graph import EngineTiming, engine_timing, set_engine_timing
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
     x = cast_dtype_op(Tensor(src), "uint16")
-    x = crop_op(x, 1, 1, 3, 2)
+    x = cast_dtype_op(x, "float32")
 
     prev = engine_timing
     try:
@@ -411,9 +515,9 @@ def test_compute_times_python_ops():
     finally:
         set_engine_timing(prev)
 
-    np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
+    np.testing.assert_allclose(out, src.astype(np.float32))
     names = [c.name for c in parent.children]
-    assert names == ["cast_dtype_op (python)", "crop_op (python)"]
+    assert names == ["cast_dtype_op (python)", "cast_dtype_op (python)"]
     assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
 
 
@@ -509,11 +613,11 @@ def test_compute_ops_under_graph_compute():
 
 def test_graph_op_splits_engine_segments():
     from muimg.engines.core import _engine_load
-    from muimg.engines.pyops import crop_op
+    from muimg.engines.pyops import cast_dtype_op
 
     src = np.arange(16, dtype=np.float32).reshape(4, 4)
     x = Tensor(src) - 0.0
-    x = crop_op(x, 0, 0, 2, 2)
+    x = cast_dtype_op(x, "float32")  # python fence between engine segments
     x = x * 2.0
 
     calls = {"n": 0}
@@ -530,7 +634,7 @@ def test_graph_op_splits_engine_segments():
         _engine_load.execute_graph = real
 
     assert calls["n"] == 2
-    np.testing.assert_allclose(out, src[:2, :2] * 2.0)
+    np.testing.assert_allclose(out, src * 2.0)
 
 
 def test_demosaic_op_lazy():

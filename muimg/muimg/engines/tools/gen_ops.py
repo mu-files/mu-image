@@ -158,6 +158,15 @@ def _out_channels_expr(out_spec: dict[str, Any]) -> str:
     return f"graph._out_channels_const({int(ch)})"
 
 
+def _infer_meta_expr(out_spec: dict[str, Any]) -> str:
+    geom = out_spec.get("geometry")
+    if geom is None:
+        return "None"
+    if geom == "crop":
+        return "graph._out_meta_crop"
+    raise ValueError(f"unsupported outputs.geometry: {geom!r}")
+
+
 def _in_channels_expr(inputs: list[dict[str, Any]]) -> str:
     if not inputs:
         raise ValueError("op requires at least one input")
@@ -202,6 +211,7 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
         lines.append(
             f"    _attr_specs=tuple(json.loads(r'''{attrs_json}''')),"
         )
+        lines.append(f"    _infer_meta={_infer_meta_expr(out_spec)},")
         lines.append(")")
         lines.append("")
 
@@ -232,6 +242,11 @@ def validate_ops(ops: list[dict[str, Any]]) -> None:
             raise ValueError(
                 f"op {op['name']!r}: only single-input/single-output ops "
                 "are supported"
+            )
+        geom = (op["outputs"][0] or {}).get("geometry")
+        if geom is not None and geom != "crop":
+            raise ValueError(
+                f"op {op['name']!r}: unsupported outputs.geometry {geom!r}"
             )
 
 

@@ -14,7 +14,6 @@ from .engines import ops as engine_ops
 from .engines.pyops import (
     cast_dtype_op,
     channel_luts_op,
-    crop_op,
     demosaic_op,
     orientation_op,
     radial_distortion_op,
@@ -2601,7 +2600,9 @@ def apply_post_rendering_operations(
             f"Applying XMP crop: top={top}, left={left}, bottom={bottom}, right={right} "
             f"(from {w}x{h})"
         )
-        rgb_output = crop_op(rgb_output, left, top, right - left, bottom - top)
+        rgb_output = engine_ops.crop(
+            rgb_output, x=left, y=top, w=right - left, h=bottom - top
+        )
 
     return rgb_output
 
@@ -2768,12 +2769,13 @@ def _linearize(
     active_area = tags.get_tag("ActiveArea")
     if active_area is not None:
         aa_top, aa_left, aa_bottom, aa_right = active_area
-        x = crop_op(
+        x = engine_ops.crop(
             x,
-            int(aa_left),
-            int(aa_top),
-            int(aa_right) - int(aa_left),
-            int(aa_bottom) - int(aa_top),
+            x=int(aa_left),
+            y=int(aa_top),
+            w=int(aa_right) - int(aa_left),
+            h=int(aa_bottom) - int(aa_top),
+            reset_origin=True,
         )
 
     # Fast path: trivial normalization (black=0, white=default, no
@@ -2915,7 +2917,14 @@ def _render_to_camera_space(
         crop_y = int(crop_origin[1])
         crop_w = int(crop_size[0])
         crop_h = int(crop_size[1])
-        rgb_camera = crop_op(rgb_camera, crop_x, crop_y, crop_w, crop_h)
+        rgb_camera = engine_ops.crop(
+            rgb_camera,
+            x=crop_x,
+            y=crop_y,
+            w=crop_w,
+            h=crop_h,
+            reset_origin=True,
+        )
 
     return rgb_camera
 

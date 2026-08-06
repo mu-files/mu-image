@@ -19,6 +19,7 @@ sub_scalar = EngineOp(
     "type": "f32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 mul_scalar = EngineOp(
@@ -33,6 +34,43 @@ mul_scalar = EngineOp(
     "type": "f32"
   }
 ]''')),
+    _infer_meta=None,
+)
+
+crop = EngineOp(
+    meta=OpMeta(name='crop'),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "x",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "y",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "w",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "h",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "reset_origin",
+    "optional": true,
+    "type": "bool"
+  }
+]''')),
+    _infer_meta=graph._out_meta_crop,
 )
 
 bilinear_demosaic = EngineOp(
@@ -47,6 +85,7 @@ bilinear_demosaic = EngineOp(
     "type": "string"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 matrix_3x3 = EngineOp(
@@ -61,6 +100,7 @@ matrix_3x3 = EngineOp(
     "type": "f32_array"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 lut = EngineOp(
@@ -75,6 +115,7 @@ lut = EngineOp(
     "type": "f32_array"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 convert_dtype = EngineOp(
@@ -104,6 +145,7 @@ convert_dtype = EngineOp(
     "type": "f32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 mono_lut = EngineOp(
@@ -133,6 +175,7 @@ mono_lut = EngineOp(
     "type": "string"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 transform_color = EngineOp(
@@ -180,6 +223,7 @@ transform_color = EngineOp(
     "type": "bool"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 clip_and_transform_color = EngineOp(
@@ -199,6 +243,7 @@ clip_and_transform_color = EngineOp(
     "type": "f32_array"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 normalize_raw = EngineOp(
@@ -251,6 +296,7 @@ normalize_raw = EngineOp(
     "type": "i32_array"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 apply_hue_sat_map = EngineOp(
@@ -280,6 +326,7 @@ apply_hue_sat_map = EngineOp(
     "type": "i32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 apply_exposure_ramp = EngineOp(
@@ -309,6 +356,7 @@ apply_exposure_ramp = EngineOp(
     "type": "bool"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 apply_profile_gain_table_map = EngineOp(
@@ -373,6 +421,7 @@ apply_profile_gain_table_map = EngineOp(
     "type": "f32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 fix_vignette = EngineOp(
@@ -397,6 +446,7 @@ fix_vignette = EngineOp(
     "type": "f64"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 warp_rectilinear = EngineOp(
@@ -442,6 +492,7 @@ warp_rectilinear = EngineOp(
     "type": "bool"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 apply_gain_map = EngineOp(
@@ -531,6 +582,7 @@ apply_gain_map = EngineOp(
     "type": "f64"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 apply_gain_map_cfa = EngineOp(
@@ -610,6 +662,7 @@ apply_gain_map_cfa = EngineOp(
     "type": "f64"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 apply_flat_gain_map = EngineOp(
@@ -634,6 +687,7 @@ apply_flat_gain_map = EngineOp(
     "type": "i32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 map_polynomial = EngineOp(
@@ -693,6 +747,7 @@ map_polynomial = EngineOp(
     "type": "i32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 fix_bad_pixels_constant = EngineOp(
@@ -712,11 +767,13 @@ fix_bad_pixels_constant = EngineOp(
     "type": "i32"
   }
 ]''')),
+    _infer_meta=None,
 )
 
 OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
+    'crop': crop,
     'bilinear_demosaic': bilinear_demosaic,
     'matrix_3x3': matrix_3x3,
     'lut': lut,

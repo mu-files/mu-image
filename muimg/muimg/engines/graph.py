@@ -121,16 +121,21 @@ class EngineOp:
     _out_channels: OutMetaFn
     _in_channels: Optional[int]  # None = any
     _attr_specs: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
+    # When set (e.g. geometry: crop), replaces dtype/channels/H×W/origin composition.
+    _infer_meta: Optional[GraphOutMetaFn] = None
 
     def __call__(self, x: Tensor, /, **attrs: Any) -> Tensor:
         return emit(self, x, **attrs)
 
     def infer_out_meta(self, x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+        if self._infer_meta is not None:
+            return self._infer_meta(x, attrs)
         return TensorMeta(
             dtype=self._out_dtype(x, attrs),
             height=x.meta.height,
             width=x.meta.width,
             channels=self._out_channels(x, attrs),
+            origin=x.meta.origin,
         )
 
     def __repr__(self) -> str:
@@ -175,6 +180,36 @@ def _out_channels_const(n: int) -> OutMetaFn:
     return _fn
 
 
+def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+    """Geometry policy ``crop``: H/W from attrs; update or reset world origin.
+
+    Crop attrs ``x``/``y`` are column/row offsets into the current buffer.
+    Default: ``origin' = origin + (y, x)`` with origin stored as ``(row, col)``.
+    If ``reset_origin`` is true (ActiveArea / DefaultCrop), ``origin' = (0, 0)``.
+    """
+    col, row = int(attrs["x"]), int(attrs["y"])
+    w, h = int(attrs["w"]), int(attrs["h"])
+    if col < 0 or row < 0 or w < 1 or h < 1:
+        raise ValueError(f"crop: invalid box x={col} y={row} w={w} h={h}")
+    if row + h > x.meta.height or col + w > x.meta.width:
+        raise ValueError(
+            f"crop: box x={col} y={row} w={w} h={h} out of bounds for "
+            f"{x.meta.height}x{x.meta.width}"
+        )
+    if attrs.get("reset_origin"):
+        origin = (0, 0)
+    else:
+        base_row, base_col = x.meta.origin
+        origin = (base_row + row, base_col + col)
+    return TensorMeta(
+        dtype=x.meta.dtype,
+        height=h,
+        width=w,
+        channels=x.meta.channels,
+        origin=origin,
+    )
+
+
 @dataclass
 class OpNode:
     """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""
@@ -201,8 +236,8 @@ def graph_op(
             return arr * scale
 
         @graph_op(out_meta=my_infer)
-        def crop_op(arr, x, y, w, h):
-            return arr[y:y+h, x:x+w]
+        def scale_op(arr, *, factor):
+            return arr * factor
     """
 
     def decorate(f: Callable[..., np.ndarray]) -> Callable[..., Any]:
