@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 
@@ -76,6 +76,8 @@ class TensorMeta:
     height: int
     width: int
     channels: int
+    # World coordinate of buffer top-left as (row, col). Default (0, 0).
+    origin: Tuple[int, int] = (0, 0)
 
     @property
     def shape(self) -> Tuple[int, ...]:
@@ -99,6 +101,7 @@ def meta_from_array(arr: np.ndarray) -> TensorMeta:
         height=h,
         width=w,
         channels=channels,
+        origin=(0, 0),
     )
 
 
@@ -120,6 +123,7 @@ class Tensor:
         self,
         data: Optional[np.ndarray] = None,
         *,
+        origin: Optional[Tuple[int, int]] = None,
         _meta: Optional[TensorMeta] = None,
         _node: Optional["OpNode"] = None,
     ):
@@ -127,10 +131,15 @@ class Tensor:
             if _node is not None:
                 raise ValueError("source Tensor cannot also have an op node")
             arr = np.asarray(data)
-            self._meta = meta_from_array(arr)
+            meta = meta_from_array(arr)
+            if origin is not None:
+                meta = replace(meta, origin=(int(origin[0]), int(origin[1])))
+            self._meta = meta
             self._data = arr
             self._node = None
         elif _meta is not None and _node is not None:
+            if origin is not None:
+                raise ValueError("origin= is only valid for source Tensors")
             self._meta = _meta
             self._data = None
             self._node = _node

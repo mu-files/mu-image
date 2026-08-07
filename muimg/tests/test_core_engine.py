@@ -65,7 +65,7 @@ def test_execute_graph_unknown_op():
         _engine_load.execute_graph(graph, {0: inp}, {1: out})
 
 
-def test_execute_graph_matrix_identity():
+def test_execute_graph_matrix_3x3_identity():
     from muimg.engines.core import _engine_load
 
     eye = np.eye(3, dtype=np.float32).reshape(-1)
@@ -79,7 +79,7 @@ def test_execute_graph_matrix_identity():
         "nodes": [
             {
                 "id": 0,
-                "op": "matrix",
+                "op": "matrix_3x3",
                 "inputs": [0],
                 "outputs": [1],
                 "attrs": {"matrix": eye},

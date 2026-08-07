@@ -19,33 +19,6 @@ from .graph import graph_op
 logger = logging.getLogger(__name__)
 
 
-def _crop_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    x, y, w, h = int(attrs["x"]), int(attrs["y"]), int(attrs["w"]), int(attrs["h"])
-    if x < 0 or y < 0 or w < 1 or h < 1:
-        raise ValueError(f"crop_op: invalid box x={x} y={y} w={w} h={h}")
-    if y + h > t.meta.height or x + w > t.meta.width:
-        raise ValueError(
-            f"crop_op: box x={x} y={y} w={w} h={h} out of bounds for "
-            f"{t.meta.height}x{t.meta.width}"
-        )
-    return TensorMeta(
-        dtype=t.meta.dtype,
-        height=h,
-        width=w,
-        channels=t.meta.channels,
-    )
-
-
-@graph_op(out_meta=_crop_out_meta)
-def crop_op(arr: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
-    """Packed ROI at origin ``(x, y)`` with size ``(w, h)``."""
-    x, y, w, h = int(x), int(y), int(w), int(h)
-    out = np.ascontiguousarray(arr[y : y + h, x : x + w, ...])
-    if out.size == 0:
-        raise ValueError(f"crop_op: empty result x={x} y={y} w={w} h={h}")
-    return out
-
-
 def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     dest = ElementType.coerce(attrs["dst_dtype"])
     return TensorMeta(
@@ -53,6 +26,7 @@ def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         height=t.meta.height,
         width=t.meta.width,
         channels=t.meta.channels,
+        origin=t.meta.origin,
     )
 
 
@@ -79,6 +53,7 @@ def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         height=t.meta.height,
         width=t.meta.width,
         channels=3,
+        origin=t.meta.origin,
     )
 
 
@@ -157,6 +132,7 @@ def _orientation_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         height=t.meta.width if swap else t.meta.height,
         width=t.meta.height if swap else t.meta.width,
         channels=t.meta.channels,
+        origin=t.meta.origin,
     )
 
 
