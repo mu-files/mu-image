@@ -329,36 +329,6 @@ apply_hue_sat_map = EngineOp(
     _infer_meta=None,
 )
 
-apply_exposure_ramp = EngineOp(
-    meta=OpMeta(name='apply_exposure_ramp'),
-    _out_dtype=graph._out_dtype_const('float32'),
-    _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
-    _attr_specs=tuple(json.loads(r'''[
-  {
-    "count": 1,
-    "key": "white",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "black",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "min_black",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "support_overrange",
-    "type": "bool"
-  }
-]''')),
-    _infer_meta=None,
-)
-
 apply_profile_gain_table_map = EngineOp(
     meta=OpMeta(name='apply_profile_gain_table_map'),
     _out_dtype=graph._out_dtype_const('float32'),
@@ -783,7 +753,6 @@ OPS_BY_NAME = {
     'clip_and_transform_color': clip_and_transform_color,
     'normalize_raw': normalize_raw,
     'apply_hue_sat_map': apply_hue_sat_map,
-    'apply_exposure_ramp': apply_exposure_ramp,
     'apply_profile_gain_table_map': apply_profile_gain_table_map,
     'fix_vignette': fix_vignette,
     'warp_rectilinear': warp_rectilinear,

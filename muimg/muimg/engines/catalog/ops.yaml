@@ -241,26 +241,6 @@ ops:
         type: i32
         count: 1
 
-  - name: apply_exposure_ramp
-    inputs:
-      - channels: 3
-    outputs:
-      - channels: 3
-        dtype: float32
-    attrs:
-      - key: white
-        type: f64
-        count: 1
-      - key: black
-        type: f64
-        count: 1
-      - key: min_black
-        type: f64
-        count: 1
-      - key: support_overrange
-        type: bool
-        count: 1
-
   - name: apply_profile_gain_table_map
     inputs:
       - channels: 3
