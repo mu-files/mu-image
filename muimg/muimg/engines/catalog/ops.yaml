@@ -240,6 +240,15 @@ ops:
       - key: val_divs
         type: i32
         count: 1
+      # Engine-specific options: JSON object keyed by engine name; engines
+      # ignore namespaces they don't own and strictly validate their own.
+      # CoreEngine (2D maps only): {"core": {"chroma_lut": false}} forces the
+      # bit-faithful DNG bilinear path instead of the default (approximate,
+      # ~1.4x faster) chroma-face LUT.
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
 
   - name: apply_profile_gain_table_map
     inputs:

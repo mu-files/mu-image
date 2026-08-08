@@ -324,6 +324,12 @@ apply_hue_sat_map = EngineOp(
     "count": 1,
     "key": "val_divs",
     "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
   }
 ]''')),
     _infer_meta=None,
