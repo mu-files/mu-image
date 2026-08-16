@@ -221,7 +221,45 @@ ops:
         count: 0
         optional: true
 
+  # DNG HueSatMap with a single value plane (ProfileHueSatMapDims value
+  # divisions == 1). The table is indexed by hue and saturation only, so the
+  # op is invariant to scaling the input RGB: scale the input by k and the
+  # output scales by k, up to the output clamp at 1.0. map_data is the raw
+  # DNG table, hue-major within a plane: [hue][sat][3] of
+  # (hue_shift_deg, sat_scale, val_scale).
   - name: apply_hue_sat_map
+    inputs:
+      - channels: 3
+    outputs:
+      - channels: 3
+        dtype: float32
+    attrs:
+      - key: map_data
+        type: f32_array
+        count: 0
+      - key: hue_divs
+        type: i32
+        count: 1
+      - key: sat_divs
+        type: i32
+        count: 1
+      # Engine-specific options: JSON object keyed by engine name; engines
+      # ignore namespaces they don't own and strictly validate their own.
+      # CoreEngine: {"core": {"chroma_lut": false}} forces the bit-faithful
+      # DNG bilinear path instead of the default (approximate, ~1.4x faster)
+      # chroma-face LUT.
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
+
+  # DNG HueSatMap / LookTable with two or more value planes: the table is
+  # indexed by hue, saturation and value, so unlike apply_hue_sat_map the op
+  # is not invariant to scaling the input RGB. map_data is the raw DNG table,
+  # value-major: [val][hue][sat][3] of (hue_shift_deg, sat_scale, val_scale)
+  # — note value is the outermost axis in the data even though it is the
+  # third entry of the DNG dims tag.
+  - name: apply_hue_sat_val_map
     inputs:
       - channels: 3
     outputs:
@@ -240,6 +278,13 @@ ops:
       - key: val_divs
         type: i32
         count: 1
+      # CoreEngine: {"core": {"prism_lut": false}} forces the bit-faithful DNG
+      # trilinear path instead of the default (approximate, ~1.5x faster)
+      # chroma-face-plus-value prism LUT.
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
 
   - name: apply_profile_gain_table_map
     inputs:
