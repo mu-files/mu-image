@@ -322,6 +322,37 @@ apply_hue_sat_map = EngineOp(
   },
   {
     "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
+  }
+]''')),
+    _infer_meta=None,
+)
+
+apply_hue_sat_val_map = EngineOp(
+    meta=OpMeta(name='apply_hue_sat_val_map'),
+    _out_dtype=graph._out_dtype_const('float32'),
+    _out_channels=graph._out_channels_const(3),
+    _in_channels=3,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "map_data",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "hue_divs",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "sat_divs",
+    "type": "i32"
+  },
+  {
+    "count": 1,
     "key": "val_divs",
     "type": "i32"
   },
@@ -759,6 +790,7 @@ OPS_BY_NAME = {
     'clip_and_transform_color': clip_and_transform_color,
     'normalize_raw': normalize_raw,
     'apply_hue_sat_map': apply_hue_sat_map,
+    'apply_hue_sat_val_map': apply_hue_sat_val_map,
     'apply_profile_gain_table_map': apply_profile_gain_table_map,
     'fix_vignette': fix_vignette,
     'warp_rectilinear': warp_rectilinear,

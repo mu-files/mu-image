@@ -3134,11 +3134,22 @@ def _render_camera_rgb(
 
             logger.debug(f"ProfileHueSatMap: {hue_divs}x{sat_divs}x{val_divs}")
 
-            rgb_t = engine_ops.apply_hue_sat_map(
-                rgb_t,
-                map_data=np.asarray(hue_sat_map, dtype=np.float32).reshape(-1),
-                hue_divs=int(hue_divs), sat_divs=int(sat_divs), val_divs=int(val_divs),
-            )
+            # DNG writes a single value plane as dims[2] == 1, some files as 0;
+            # either way the map is indexed by hue and saturation only.
+            map_flat = np.asarray(hue_sat_map, dtype=np.float32).reshape(-1)
+            if val_divs < 2:
+                rgb_t = engine_ops.apply_hue_sat_map(
+                    rgb_t,
+                    map_data=map_flat,
+                    hue_divs=int(hue_divs), sat_divs=int(sat_divs),
+                )
+            else:
+                rgb_t = engine_ops.apply_hue_sat_val_map(
+                    rgb_t,
+                    map_data=map_flat,
+                    hue_divs=int(hue_divs), sat_divs=int(sat_divs),
+                    val_divs=int(val_divs),
+                )
 
         # =====================================================================
         # Step 1.6: DoBaselineProfileGainTableMap
@@ -3274,17 +3285,27 @@ def _render_camera_rgb(
             # Exposure ramp LUT + look table in one engine segment (deferred).
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             lut_arr = np.asarray(exposure_ramp_lut, dtype=np.float32).reshape(-1)
-            rgb_exposed = engine_ops.apply_hue_sat_map(
-                transform_color(
-                    rgb_prophoto,
-                    input_lut=lut_arr,
-                    dst_dtype="float32",
-                ),
-                map_data=np.asarray(look_table, dtype=np.float32).reshape(-1),
-                hue_divs=int(look_hue_divs),
-                sat_divs=int(look_sat_divs),
-                val_divs=int(look_val_divs),
+            rgb_ramped = transform_color(
+                rgb_prophoto,
+                input_lut=lut_arr,
+                dst_dtype="float32",
             )
+            look_flat = np.asarray(look_table, dtype=np.float32).reshape(-1)
+            if look_val_divs < 2:
+                rgb_exposed = engine_ops.apply_hue_sat_map(
+                    rgb_ramped,
+                    map_data=look_flat,
+                    hue_divs=int(look_hue_divs),
+                    sat_divs=int(look_sat_divs),
+                )
+            else:
+                rgb_exposed = engine_ops.apply_hue_sat_val_map(
+                    rgb_ramped,
+                    map_data=look_flat,
+                    hue_divs=int(look_hue_divs),
+                    sat_divs=int(look_sat_divs),
+                    val_divs=int(look_val_divs),
+                )
 
             # Start combined curve with identity (exposure_ramp already applied to pixels)
             combined_curve = LUT(None, size=4096)
