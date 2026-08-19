@@ -210,6 +210,25 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     )
 
 
+# TIFF 5–8 include a 90° (H×W swap). 1–4 keep size.
+_ORIENTATION_SWAP_HW = frozenset({5, 6, 7, 8})
+
+
+def _out_meta_orientation(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+    """Geometry policy ``orientation``: swap H×W for TIFF codes 5–8."""
+    code = int(attrs["orientation"])
+    if code < 1 or code > 8:
+        raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
+    swap = code in _ORIENTATION_SWAP_HW
+    return TensorMeta(
+        dtype=x.meta.dtype,
+        height=x.meta.width if swap else x.meta.height,
+        width=x.meta.height if swap else x.meta.width,
+        channels=x.meta.channels,
+        origin=x.meta.origin,
+    )
+
+
 @dataclass
 class OpNode:
     """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""

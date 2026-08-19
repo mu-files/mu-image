@@ -159,12 +159,13 @@ def _out_channels_expr(out_spec: dict[str, Any]) -> str:
 
 
 def _infer_meta_expr(out_spec: dict[str, Any]) -> str:
+    """`geometry: foo` → `graph._out_meta_foo` (policy lives in graph.py)."""
     geom = out_spec.get("geometry")
     if geom is None:
         return "None"
-    if geom == "crop":
-        return "graph._out_meta_crop"
-    raise ValueError(f"unsupported outputs.geometry: {geom!r}")
+    if not isinstance(geom, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", geom):
+        raise ValueError(f"outputs.geometry must be a Python identifier, got {geom!r}")
+    return f"graph._out_meta_{geom}"
 
 
 def _in_channels_expr(inputs: list[dict[str, Any]]) -> str:
@@ -244,10 +245,8 @@ def validate_ops(ops: list[dict[str, Any]]) -> None:
                 "are supported"
             )
         geom = (op["outputs"][0] or {}).get("geometry")
-        if geom is not None and geom != "crop":
-            raise ValueError(
-                f"op {op['name']!r}: unsupported outputs.geometry {geom!r}"
-            )
+        if geom is not None:
+            _infer_meta_expr({"geometry": geom})
 
 
 def main() -> int:

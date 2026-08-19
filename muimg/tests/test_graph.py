@@ -20,6 +20,7 @@ def test_catalog_engine_ops_io():
     """engines.ops carries EngineOp callables + OPS_BY_NAME."""
     assert "sub_scalar" in OPS_BY_NAME
     assert "crop" in OPS_BY_NAME
+    assert "orientation" in OPS_BY_NAME
     assert isinstance(engine_ops.bilinear_demosaic, EngineOp)
     assert engine_ops.bilinear_demosaic._in_channels == 1
     x = Tensor(np.zeros((2, 2), dtype=np.float32))
@@ -61,6 +62,22 @@ def test_crop_emit_meta_updates_origin_and_size():
     out = cat.compute()
     assert out.shape == (2, 3)
     np.testing.assert_array_equal(out, np.asarray(base)[2:4, 1:4])
+
+
+def test_orientation_emit_meta_swaps_hw():
+    """TIFF 5–8 swap H×W; 1–4 keep size; origin unchanged."""
+    base = Tensor(np.zeros((4, 6, 3), dtype=np.float32))
+    same = engine_ops.orientation(base, orientation=3)
+    assert same.meta.height == 4 and same.meta.width == 6
+    assert same.meta.origin == (0, 0)
+    assert same._node is not None and same._node.op == "orientation"
+
+    rot = engine_ops.orientation(base, orientation=6)
+    assert rot.meta.height == 6 and rot.meta.width == 4
+    assert rot.meta.origin == (0, 0)
+
+    with pytest.raises(ValueError, match="invalid TIFF code"):
+        engine_ops.orientation(base, orientation=0)
 
 
 def test_crop_emit_rejects_oob():

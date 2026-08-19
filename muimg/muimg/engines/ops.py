@@ -73,6 +73,21 @@ crop = EngineOp(
     _infer_meta=graph._out_meta_crop,
 )
 
+orientation = EngineOp(
+    meta=OpMeta(name='orientation'),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "orientation",
+    "type": "i32"
+  }
+]''')),
+    _infer_meta=graph._out_meta_orientation,
+)
+
 bilinear_demosaic = EngineOp(
     meta=OpMeta(name='bilinear_demosaic'),
     _out_dtype=graph._out_dtype_same,
@@ -781,6 +796,7 @@ OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
     'crop': crop,
+    'orientation': orientation,
     'bilinear_demosaic': bilinear_demosaic,
     'matrix_3x3': matrix_3x3,
     'lut': lut,
