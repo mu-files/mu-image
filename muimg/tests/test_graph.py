@@ -80,6 +80,96 @@ def test_orientation_emit_meta_swaps_hw():
         engine_ops.orientation(base, orientation=0)
 
 
+def _tiff_orientation_numpy(arr: np.ndarray, code: int) -> np.ndarray:
+    """Reference for TIFF 1–8, matching ``Orientation`` enum names."""
+    if code == 1:
+        return arr
+    if code == 2:  # MIRROR_HORIZONTAL
+        return arr[:, ::-1]
+    if code == 3:  # ROTATE_180
+        return np.rot90(arr, 2)
+    if code == 4:  # MIRROR_VERTICAL
+        return arr[::-1]
+    if code == 5:  # MIRROR_HORIZONTAL then ROTATE_270_CW
+        return np.rot90(arr[:, ::-1], 1)
+    if code == 6:  # ROTATE_90_CW
+        return np.rot90(arr, -1)
+    if code == 7:  # MIRROR_HORIZONTAL then ROTATE_90_CW
+        return np.rot90(arr[:, ::-1], -1)
+    if code == 8:  # ROTATE_270_CW
+        return np.rot90(arr, 1)
+    raise ValueError(code)
+
+
+def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
+    """engine_ops.orientation is issued natively (not orientation_op) for 1–8."""
+    from muimg.engines.core import _engine_load
+
+    calls: List[dict] = []
+    real = _engine_load.execute_graph
+
+    def wrap(graph, in_binds, out_binds, record_ops=False):
+        calls.append(graph)
+        return real(graph, in_binds, out_binds, record_ops)
+
+    monkeypatch.setattr(_engine_load, "execute_graph", wrap)
+
+    # Remainder-sized vs 256 so dest tiles are not a full-grid multiple.
+    src_u8 = np.arange(5 * 7 * 3, dtype=np.uint8).reshape(5, 7, 3)
+    src_f32 = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    for src in (src_u8, src_f32):
+        for code in range(1, 9):
+            calls.clear()
+            out = engine_ops.orientation(Tensor(src), orientation=code).compute()
+            assert len(calls) == 1
+            assert [n["op"] for n in calls[0]["nodes"]] == ["orientation"]
+            expect = np.ascontiguousarray(_tiff_orientation_numpy(src, code))
+            np.testing.assert_array_equal(out, expect)
+
+
+# TIFF 1–8 inverses: 6↔8, the rest are involutions.
+_ORIENTATION_INVERSE = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 8, 7: 7, 8: 6}
+
+
+def test_engine_orientation_span_sandwich(monkeypatch):
+    """sub → orient(code) → mul → orient(inverse) is one native segment.
+
+    Scalar mul commutes with the pixel permute, so the pair is a spatial
+    no-op and the result matches sub → mul.
+    """
+    from muimg.engines.core import _engine_load
+
+    calls: List[dict] = []
+    real = _engine_load.execute_graph
+
+    def wrap(graph, in_binds, out_binds, record_ops=False):
+        calls.append(graph)
+        return real(graph, in_binds, out_binds, record_ops)
+
+    monkeypatch.setattr(_engine_load, "execute_graph", wrap)
+
+    src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    expect = (src - 1.0) * 2.0
+    for code in range(1, 9):
+        inv = _ORIENTATION_INVERSE[code]
+        calls.clear()
+        x = Tensor(src) - 1.0
+        x = engine_ops.orientation(x, orientation=code)
+        x = x * 2.0
+        x = engine_ops.orientation(x, orientation=inv)
+        out = x.compute()
+
+        assert len(calls) == 1, f"code {code}"
+        assert [n["op"] for n in calls[0]["nodes"]] == [
+            "sub_scalar",
+            "orientation",
+            "mul_scalar",
+            "orientation",
+        ], f"code {code}"
+        np.testing.assert_allclose(out, expect, err_msg=f"code {code}")
+        assert out.shape == src.shape, f"code {code}"
+
+
 def test_crop_emit_rejects_oob():
     x = Tensor(np.zeros((4, 4), dtype=np.float32))
     with pytest.raises(ValueError, match="out of bounds"):
