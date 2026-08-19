@@ -7,7 +7,6 @@ Decorated with ``@graph_op`` — not in ``ops.yaml``.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict
 
 import numpy as np
@@ -15,8 +14,6 @@ import numpy as np
 from ..deps import cv2_proxy as cv2
 from ..tensor import ElementType, Tensor, TensorMeta
 from .graph import graph_op
-
-logger = logging.getLogger(__name__)
 
 
 def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
@@ -121,37 +118,6 @@ def demosaic_op(
         )
 
     return np.ascontiguousarray(out)
-
-
-def _orientation_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    orientation = int(attrs["orientation"])
-    # TIFF 6 / 8 (and mirror+rotate 5 / 7) swap width and height
-    swap = orientation in (5, 6, 7, 8)
-    return TensorMeta(
-        dtype=t.meta.dtype,
-        height=t.meta.width if swap else t.meta.height,
-        width=t.meta.height if swap else t.meta.width,
-        channels=t.meta.channels,
-        origin=t.meta.origin,
-    )
-
-
-@graph_op(out_meta=_orientation_out_meta)
-def orientation_op(arr: np.ndarray, orientation: int) -> np.ndarray:
-    """Apply TIFF/EXIF orientation via OpenCV rotate (subset used by render)."""
-    orientation = int(orientation)
-    if orientation == 1:  # HORIZONTAL
-        return arr
-    if orientation == 6:  # ROTATE_90_CW
-        return cv2.rotate(arr, cv2.ROTATE_90_CLOCKWISE)
-    if orientation == 3:  # ROTATE_180
-        return cv2.rotate(arr, cv2.ROTATE_180)
-    if orientation == 8:  # ROTATE_270_CW
-        return cv2.rotate(arr, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    logger.warning(
-        "Unsupported TIFF orientation code: %s; no rotation applied", orientation
-    )
-    return arr
 
 
 @graph_op

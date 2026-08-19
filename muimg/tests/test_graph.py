@@ -12,7 +12,7 @@ from muimg.engines import get_default_engine, set_default_engine
 from muimg.engines.core import CoreEngine
 from muimg.engines.graph import EngineOp, flush
 from muimg.engines.ops import OPS_BY_NAME
-from muimg.raw_render import DemosaicAlgorithm, demosaic
+from muimg.raw_render import DemosaicAlgorithm, apply_tiff_orientation, demosaic
 from muimg.tensor import Tensor
 
 
@@ -102,7 +102,7 @@ def _tiff_orientation_numpy(arr: np.ndarray, code: int) -> np.ndarray:
 
 
 def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
-    """engine_ops.orientation is issued natively (not orientation_op) for 1–8."""
+    """engine_ops.orientation is issued natively for TIFF 1–8."""
     from muimg.engines.core import _engine_load
 
     calls: List[dict] = []
@@ -168,6 +168,19 @@ def test_engine_orientation_span_sandwich(monkeypatch):
         ], f"code {code}"
         np.testing.assert_allclose(out, expect, err_msg=f"code {code}")
         assert out.shape == src.shape, f"code {code}"
+
+
+def test_apply_tiff_orientation_uses_engine_for_flips():
+    """Render helper emits engine_ops.orientation; codes 2/4 flip (not no-ops)."""
+    src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    t = Tensor(src)
+    assert apply_tiff_orientation(t, 1) is t
+
+    for code in (2, 4):
+        out_t = apply_tiff_orientation(Tensor(src), code)
+        assert out_t._node is not None and out_t._node.op == "orientation"
+        expect = np.ascontiguousarray(_tiff_orientation_numpy(src, code))
+        np.testing.assert_array_equal(out_t.compute(), expect)
 
 
 def test_crop_emit_rejects_oob():

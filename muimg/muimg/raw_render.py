@@ -15,7 +15,6 @@ from .engines.pyops import (
     cast_dtype_op,
     channel_luts_op,
     demosaic_op,
-    orientation_op,
     radial_distortion_op,
 )
 from .tensor import ElementType, Tensor
@@ -485,21 +484,11 @@ def compute_xmp_crop_bounds(
     return top, left, bottom, right
 
 
-def apply_tiff_orientation(
-    image: np.ndarray | Tensor, orientation: int
-) -> np.ndarray | Tensor:
-    """Apply TIFF/EXIF orientation rotation (emits ``orientation_op`` for Tensor).
-
-    Args:
-        image: Input image array or Tensor (H, W as first two dims)
-        orientation: TIFF orientation code
-
-    Returns:
-        Rotated image (same type as input)
-    """
-    if orientation == Orientation.HORIZONTAL:
+def apply_tiff_orientation(image: Tensor, orientation: int) -> Tensor:
+    """Apply TIFF/EXIF orientation. Code 1 is a no-op; 2–8 emit the engine op."""
+    if int(orientation) == Orientation.HORIZONTAL:
         return image
-    return orientation_op(image, int(orientation))
+    return engine_ops.orientation(image, orientation=int(orientation))
 
 
 def demosaic(
