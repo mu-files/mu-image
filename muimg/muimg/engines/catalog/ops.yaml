@@ -87,6 +87,22 @@ ops:
         type: string
         count: 1
 
+  # Hamilton–Adams by default (halo 3, G ring). fast=true is OpenCV EA:
+  # axis-pick green + bilinear chroma, halo 1, single pass. RGB clamped to [0, 1].
+  - name: ea_demosaic
+    inputs:
+      - channels: 1
+    outputs:
+      - channels: 3
+    attrs:
+      - key: cfa_pattern
+        type: string
+        count: 1
+      - key: fast
+        type: bool
+        count: 1
+        optional: true
+
   - name: matrix_3x3
     inputs:
       - channels: 3
