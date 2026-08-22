@@ -24,7 +24,7 @@ The repository contains two packages:
 
 ### Advanced RAW Rendering Pipeline (`muimg`)
 
-- **Demosaicing**: Multiple algorithms — `DNGSDK_BILINEAR`, `VNG`, `RCD`, and `OPENCV_EA`.
+- **Demosaicing**: Multiple algorithms — `DNGSDK_BILINEAR`, `VNG`, `RCD`, `EA`, `EA_FAST`, and `OPENCV_EA`.
 - **Opcode & color correction**: Full DNG rendering pipeline including linearization, opcodes, color correction matrices, and custom tone curves.
 - **Native OS acceleration**: On macOS, choose between the built-in pipeline renderer and the hardware-accelerated Apple Core Image renderer.
 - **XMP metadata**: Some support for embedded XMP. Automatically applies `Temperature`, `Tint`, `Exposure`, custom curves, and radial distortion corrections as configured in your RAW editor.

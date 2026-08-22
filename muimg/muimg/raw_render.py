@@ -67,8 +67,9 @@ class DemosaicAlgorithm(StrEnum):
     """Demosaic algorithm selectors."""
     VNG = "VNG"
     RCD = "RCD"
+    EA = "EA"
+    EA_FAST = "EA_FAST"
     OPENCV_EA = "OPENCV_EA"
-    OPENCV_EDGE = "OPENCV_EDGE"
     DNGSDK_BILINEAR = "DNGSDK_BILINEAR"
     
     @classmethod
@@ -494,7 +495,7 @@ def apply_tiff_orientation(image: Tensor, orientation: int) -> Tensor:
 def demosaic(
     image_data: Tensor,
     cfa_pattern: str,
-    algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+    algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     clip_max: float | None = None,
     dst_dtype: str | None = None,
 ) -> Tensor:
@@ -507,7 +508,9 @@ def demosaic(
     Args:
         image_data: CFA Tensor (uint8, uint16, float16, float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
-        algorithm: Demosaic algorithm selector
+        algorithm: Demosaic algorithm selector (``EA`` is Hamilton–Adams;
+            ``EA_FAST`` is the single-pass axis-pick path;
+            ``OPENCV_EA`` is OpenCV's edge-aware demosaic, kept for quality comparison)
         clip_max: Optional max value to clip output to (e.g., 1.0 for float32)
         dst_dtype: Optional destination dtype name. If None, matches input dtype.
 
@@ -541,6 +544,13 @@ def demosaic(
     if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
         x = convert_dtype(t, "float32")
         rgb = engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
+        return convert_dtype(rgb, out_dtype, clip_max=clip_max)
+
+    if algorithm in (DemosaicAlgorithm.EA, DemosaicAlgorithm.EA_FAST):
+        x = convert_dtype(t, "float32")
+        rgb = engine_ops.ea_demosaic(
+            x, cfa_pattern=cfa_pattern, fast=algorithm == DemosaicAlgorithm.EA_FAST
+        )
         return convert_dtype(rgb, out_dtype, clip_max=clip_max)
 
     # Working dtype required by each python kernel
@@ -2861,10 +2871,15 @@ def _render_to_camera_space(
     normalized = _linearize(tags, x, photometric)
 
     if photometric == "CFA":
-        # Bilinear averages into [0,1] — no clip; others clip to 1.0
+        # Bilinear and HA write [0, 1]. VNG/RCD still clip in convert_dtype.
         clip = (
             None
-            if demosaic_algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR
+            if demosaic_algorithm
+            in (
+                DemosaicAlgorithm.DNGSDK_BILINEAR,
+                DemosaicAlgorithm.EA,
+                DemosaicAlgorithm.EA_FAST,
+            )
             else 1.0
         )
         rgb_camera = demosaic(

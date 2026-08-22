@@ -12,7 +12,7 @@ Python library for reading, writing, and rendering Adobe DNG (Digital Negative) 
 
 - **DNG Read/Write**: Full support for reading, writing, and modifying Adobe DNG (Digital Negative) files.
 - **RAW Rendering Pipeline**: Complete implementation of DNG rendering pipeline (linearization, demosaicing, opcodes, color correction, tone curves). On macOS can opt between built-in renderer and Core Image renderer.
-- **Multiple Demosaicing Algorithms**: DNGSDK_BILINEAR, VNG, RCD (optional), OPENCV_EA
+- **Multiple Demosaicing Algorithms**: DNGSDK_BILINEAR, VNG, RCD (optional), EA, EA_FAST, OPENCV_EA
 - **XMP Support**: Renderer supports Temperature, Tint, Exposure, Curves, and radial distortion from XMP metadata.
 - **Metadata Handling**: User-friendly TIFF/EXIF/XMP tag handling with automatic type conversion
 - **Compression**: Uncompressed, JPEG, JPEG XL support with multi-core parallel compression for tiled formats
@@ -381,7 +381,9 @@ See [docs/dng_render_pipeline.md](docs/dng_render_pipeline.md) for detailed impl
 **Demosaicing Algorithms**: muimg includes several demosaicing algorithms with different quality/speed tradeoffs:
 - **DNGSDK_BILINEAR**: Good quality, fast (default for most operations)
 - **VNG**: High quality, slower
-- **OPENCV_EA**: Fastest, lower quality
+- **EA**: Hamilton–Adams (default for convert / camera RGB)
+- **EA_FAST**: Single-pass axis-pick green + bilinear chroma; faster, lower quality
+- **OPENCV_EA**: OpenCV edge-aware demosaic (comparison / visualization only)
 - **RCD** (optional, GPL-licensed): High quality, slower
 
 The RCD (Ratio Corrected Demosaicing) algorithm is disabled by default because it's licensed under **GPL v3**, which is separate from muimg's BSD-3-Clause license. To enable RCD:

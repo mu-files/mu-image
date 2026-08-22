@@ -546,7 +546,7 @@ class DngPage(tifffile.TiffPage):
 
     def get_camera_raw(
         self,
-        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA
         ) -> Tensor | None:
         """Extract the camera-space intermediate from a raw page for the rendering pipeline.
 
@@ -638,7 +638,7 @@ class DngPage(tifffile.TiffPage):
     def render_raw(
         self,
         output_dtype: type = np.uint16,
-        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict[str, Any] = None,
@@ -931,7 +931,7 @@ class DngFile(tifffile.TiffFile):
 
     def get_camera_raw(
         self,
-        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     ) -> Tensor | None:
         """Extract camera-space data from main raw page.
 
@@ -951,7 +951,7 @@ class DngFile(tifffile.TiffFile):
     def render_raw(
         self,
         output_dtype: type = np.uint16,
-        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+        demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
         strict: bool = True,
         use_xmp: bool = True,
         rendering_params: dict[str, Any] = None,
@@ -2504,7 +2504,7 @@ def write_dng_from_page(
         page: Source page (IfdPageSpec or DngPage)
         scale: Scale factor for image (default: 1.0)
         demosaic: If True, convert CFA to LINEAR_RAW
-        demosaic_algorithm: Demosaic algorithm to use (default: OPENCV_EA)
+        demosaic_algorithm: Demosaic algorithm to use (default: DNGSDK_BILINEAR)
         preview: PreviewParams for preview generation (None = no preview)
         pyramid: PyramidParams for pyramid generation (None = no pyramid)
         copy_ifd0_tags: Copy IFD0 tags from source (default: True)
@@ -2603,7 +2603,7 @@ def create_dng_from_page(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     preview: PreviewParams | None = None,
     pyramid: PyramidParams | None = None,
     copy_ifd0_tags: bool = True,
@@ -2619,7 +2619,7 @@ def create_dng_from_page(
         page: Source page (IfdPageSpec or DngPage)
         scale: Scale factor for image (default: 1.0)
         demosaic: If True, convert CFA to LINEAR_RAW
-        demosaic_algorithm: Demosaic algorithm to use (default: OPENCV_EA)
+        demosaic_algorithm: Demosaic algorithm to use (default: EA)
         preview: Optional preview generation parameters
         pyramid: Optional pyramid level generation parameters
         copy_ifd0_tags: Copy IFD0 tags from source (default: True)
@@ -2655,7 +2655,7 @@ def create_dng_from_page(
 def decode_dng(
     file: str | Path | IO[bytes] | DngFile | DngPage,
     output_dtype: type = np.uint16,
-    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.OPENCV_EA,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
     rendering_params: dict[str, Any] = None,

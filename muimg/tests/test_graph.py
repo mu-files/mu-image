@@ -283,6 +283,82 @@ def test_bilinear_demosaic_rggb():
     np.testing.assert_allclose(out[0, 0, 0], 0.2)
 
 
+def test_ea_demosaic_rggb():
+    cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
+    out = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    assert out.shape == (2, 2, 3)
+    np.testing.assert_allclose(
+        out,
+        [
+            [[0.2, 0.5, 0.8], [0.1, 0.4, 0.7]],
+            [[0.3, 0.6, 0.9], [0.2, 0.5, 0.8]],
+        ],
+    )
+
+
+def test_ea_demosaic_then_crop_matches_slice():
+    """Fused EA + DefaultCrop (nonzero origin) must match a sliced full frame.
+
+    Tile last-compute used to address the cropped dest with CFA coordinates
+    and overwrite past the buffer (R5 create_dng_from_page / render path).
+    """
+    rng = np.random.default_rng(0)
+    cfa = rng.random((17, 19), dtype=np.float32)
+    full = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    fused = engine_ops.crop(
+        engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB"),
+        x=3,
+        y=2,
+        w=11,
+        h=13,
+        reset_origin=True,
+    ).compute()
+    np.testing.assert_array_equal(fused, full[2:15, 3:14])
+
+
+def test_ea_demosaic_fast_differs_from_ha():
+    cfa = np.full((5, 5), 0.5, dtype=np.float32)
+    cfa[1, 2] = 0.1
+    cfa[3, 2] = 0.9
+    cfa[2, 1] = 0.2
+    cfa[2, 3] = 0.2
+    cfa[2, 0] = 0.0
+    cfa[2, 4] = 0.0
+    ha = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    fast = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB", fast=True).compute()
+    wrap = demosaic(
+        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST
+    ).compute()
+    np.testing.assert_allclose(fast[2, 2, 1], 0.2, atol=1e-6)
+    np.testing.assert_allclose(ha[2, 2, 1], 0.5, atol=1e-6)
+    np.testing.assert_array_equal(fast, wrap)
+
+
+def test_ea_demosaic_fast_timing_label():
+    from muimg.common import PerfTimer
+    from muimg.engines.graph import EngineTiming, engine_timing, set_engine_timing
+
+    cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
+    prev = engine_timing
+    try:
+        set_engine_timing(EngineTiming.OPS)
+        with PerfTimer("root") as ha_root:
+            engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+        with PerfTimer("root") as fast_root:
+            engine_ops.ea_demosaic(
+                Tensor(cfa), cfa_pattern="RGGB", fast=True
+            ).compute()
+    finally:
+        set_engine_timing(prev)
+
+    assert [c.name for c in ha_root.children[0].children] == [
+        "ea_demosaic (engine)"
+    ]
+    assert [c.name for c in fast_root.children[0].children] == [
+        "ea_fast_demosaic (engine)"
+    ]
+
+
 def test_op_rejects_bad_channels():
     rgb = Tensor(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="expected 1 channel"):
@@ -306,10 +382,10 @@ def test_demosaic_tensor_lazy():
     """demosaic(Tensor) returns a lazy Tensor; compute materializes RGB."""
     rng = np.random.default_rng(0)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out_t = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
+    out_t = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA)
     assert out_t._node is not None
     out = out_t.compute()
-    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA).compute()
+    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA).compute()
     assert out.shape == (16, 16, 3)
     np.testing.assert_array_equal(out, ref)
 
@@ -328,14 +404,16 @@ def test_flush_then_engine_again():
     x = Tensor(cfa)
     x = x - 0.0
     x = x * 1.0
-    x = demosaic(x, "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA)
+    x = demosaic(x, "RGGB", algorithm=DemosaicAlgorithm.EA)
     x = engine_ops.matrix_3x3(x, matrix=eye)
     x = engine_ops.lut(x, lut=lut)
     out = x.compute()
 
     ref = demosaic(
-        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA, dst_dtype="float32"
-    ).compute()
+        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA, dst_dtype="float32"
+    )
+    ref = engine_ops.matrix_3x3(ref, matrix=eye)
+    ref = engine_ops.lut(ref, lut=lut).compute()
     assert out.shape == (16, 16, 3)
     assert out.dtype == np.float32
     np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
@@ -762,6 +840,12 @@ def test_demosaic_op_lazy():
 
     rng = np.random.default_rng(4)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out = demosaic_op(Tensor(cfa), "RGGB", "OPENCV_EA").compute()
-    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA).compute()
+    out = demosaic_op(Tensor(cfa), "RGGB", "VNG").compute()
+    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.VNG).compute()
     np.testing.assert_array_equal(out, ref)
+
+    out_ea = demosaic_op(Tensor(cfa), "RGGB", "OPENCV_EA").compute()
+    ref_ea = demosaic(
+        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA
+    ).compute()
+    np.testing.assert_array_equal(out_ea, ref_ea)

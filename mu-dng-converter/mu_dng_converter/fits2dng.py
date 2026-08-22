@@ -846,7 +846,7 @@ def main():
     parser.add_argument(
         "--demosaic-algorithm",
         default="DNGSDK_BILINEAR",
-        choices=["DNGSDK_BILINEAR", "OPENCV_EA", "VNG", "RCD"],
+        choices=["DNGSDK_BILINEAR", "EA", "EA_FAST", "OPENCV_EA", "VNG", "RCD"],
         help="Demosaic algorithm (default: DNGSDK_BILINEAR)",
     )
     parser.add_argument(

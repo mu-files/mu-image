@@ -30,7 +30,12 @@ def is_rcd_available():
 
 def get_available_algorithms():
     """Get list of available demosaic algorithms, excluding RCD if not available."""
-    algorithms = [DemosaicAlgorithm.VNG, DemosaicAlgorithm.OPENCV_EA]
+    algorithms = [
+        DemosaicAlgorithm.VNG,
+        DemosaicAlgorithm.EA,
+        DemosaicAlgorithm.EA_FAST,
+        DemosaicAlgorithm.OPENCV_EA,
+    ]
     if is_rcd_available():
         algorithms.append(DemosaicAlgorithm.RCD)
     return algorithms
@@ -142,8 +147,9 @@ def test_demosaic_float32_consistency(cfa_data):
         # Check shape
         assert result.shape == reference.shape, f"{algorithm} shape mismatch"
         
-        # Check values are in valid range (0-1 for normalized float)
-        assert result.min() >= 0.0 and result.max() <= 1.0, f"{algorithm} values out of range"
+        assert result.min() >= 0.0 and result.max() <= 1.0, (
+            f"{algorithm} values out of range"
+        )
         
         # Check not all zeros
         assert not np.all(result == 0), f"{algorithm} produced all zeros"
@@ -272,9 +278,13 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
                 # Compare results - allow small differences at edges due to interpolation
                 diff = np.abs(cropped_rgb.astype(np.int32) - expected_rgb.astype(np.int32))
                 
-                # Exclude 2-pixel border where edge effects may occur
-                if diff.shape[0] > 4 and diff.shape[1] > 4:
-                    diff_interior = diff[2:-2, 2:-2]
+                # HA needs ±3 (G at dest±1 uses Bayer ±2 from those sites).
+                border = 3 if DemosaicAlgorithm.EA in (
+                    ref_algorithm,
+                    test_algorithm,
+                ) else 2
+                if diff.shape[0] > 2 * border and diff.shape[1] > 2 * border:
+                    diff_interior = diff[border:-border, border:-border]
                     max_interior_diff = diff_interior.max()
                     mean_interior_diff = diff_interior.mean()
                     

@@ -37,7 +37,7 @@ def cast_dtype_op(arr: np.ndarray, dst_dtype: str | ElementType) -> np.ndarray:
 def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     if t.meta.channels != 1:
         raise ValueError("demosaic_op input must be mono / CFA (1 channel)")
-    algorithm = attrs.get("algorithm", "OPENCV_EA")
+    algorithm = attrs.get("algorithm", "VNG")
     # Working dtype is the algorithm's native output (= input after wrapper pre-convert)
     if algorithm == "RCD":
         dtype = ElementType.FLOAT32
@@ -58,17 +58,24 @@ def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
 def demosaic_op(
     arr: np.ndarray,
     cfa_pattern: str,
-    algorithm: str = "OPENCV_EA",
+    algorithm: str = "VNG",
 ) -> np.ndarray:
     """Non-bilinear demosaic kernel (ndarray in/out).
 
     Caller (``raw_render.demosaic``) emits pre/post ``convert_dtype`` neighbors.
     For bilinear use ``engines.ops.bilinear_demosaic``.
+    For Hamilton–Adams (``EA`` / ``EA_FAST``) use ``engines.ops.ea_demosaic``.
+    ``OPENCV_EA`` stays here for quality comparison against the native EA path.
     """
     if algorithm == "DNGSDK_BILINEAR":
         raise ValueError(
             "demosaic_op does not run DNGSDK_BILINEAR; "
             "use engines.ops.bilinear_demosaic"
+        )
+    if algorithm in ("EA", "EA_FAST"):
+        raise ValueError(
+            "demosaic_op does not run EA / EA_FAST; "
+            "use engines.ops.ea_demosaic"
         )
 
     if arr.ndim == 3 and arr.shape[2] == 1:
@@ -83,7 +90,7 @@ def demosaic_op(
             raise ImportError(
                 "RCD demosaicing is not available. RCD is GPL-licensed and must be "
                 "enabled separately. See README.md for instructions to enable RCD, "
-                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR)."
+                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR, EA, EA_FAST)."
             ) from e
         if arr.dtype != np.float32:
             raise ValueError(f"RCD kernel requires float32 CFA, got {arr.dtype}")

@@ -463,7 +463,7 @@ def test_raw_stage(tmp_path):
             
             # 2. Get data via API
             if stage == "camera-rgb":
-                api_t = page.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA)
+                api_t = page.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.EA)
                 assert api_t is not None, f"API returned None for {stage}"
             else:
                 cfa_result = page.get_cfa()

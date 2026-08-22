@@ -103,6 +103,27 @@ bilinear_demosaic = EngineOp(
     _infer_meta=None,
 )
 
+ea_demosaic = EngineOp(
+    meta=OpMeta(name='ea_demosaic'),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_const(3),
+    _in_channels=1,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "cfa_pattern",
+    "type": "string"
+  },
+  {
+    "count": 1,
+    "key": "fast",
+    "optional": true,
+    "type": "bool"
+  }
+]''')),
+    _infer_meta=None,
+)
+
 matrix_3x3 = EngineOp(
     meta=OpMeta(name='matrix_3x3'),
     _out_dtype=graph._out_dtype_same,
@@ -798,6 +819,7 @@ OPS_BY_NAME = {
     'crop': crop,
     'orientation': orientation,
     'bilinear_demosaic': bilinear_demosaic,
+    'ea_demosaic': ea_demosaic,
     'matrix_3x3': matrix_3x3,
     'lut': lut,
     'convert_dtype': convert_dtype,

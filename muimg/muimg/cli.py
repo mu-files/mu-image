@@ -569,7 +569,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 @click.argument("output_file", type=click.Path())
 @click.argument("stage", type=click.Choice(["raw", "camera-rgb"]))
 @click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
-@click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (OPENCV_EA, VNG, RCD, AHD)")
+@click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (EA, EA_FAST, OPENCV_EA, VNG, RCD, DNGSDK_BILINEAR)")
 def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     """Extract raw image data at a specific pipeline stage.
     
@@ -582,7 +582,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     Examples:
       muimg dng raw-stage input.dng output.tif raw
       muimg dng raw-stage input.dng output.tif camera-rgb --ifd subifd2
-      muimg dng raw-stage input.dng output.tif raw --demosaic OPENCV_EA
+      muimg dng raw-stage input.dng output.tif raw --demosaic EA
     """
     import numpy as np
     from .dngio import DngFile
@@ -622,7 +622,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 if demosaic is not None:
                     algorithm = DemosaicAlgorithm.lookup(demosaic)
                 else:
-                    algorithm = DemosaicAlgorithm.OPENCV_EA
+                    algorithm = DemosaicAlgorithm.EA
                 t = page.get_camera_raw(demosaic_algorithm=algorithm)
             else:
                 # raw: decoded sensor data
@@ -686,7 +686,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     "--demosaic-algorithm",
     type=str,
     default="DNGSDK_BILINEAR",
-    help="Demosaic algorithm (DNGSDK_BILINEAR, OPENCV_EA, VNG, RCD)",
+    help="Demosaic algorithm (DNGSDK_BILINEAR, EA, EA_FAST, OPENCV_EA, VNG, RCD)",
 )
 @click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
 @click.option(
@@ -885,8 +885,24 @@ def dng_copy(
 @click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
 @click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
+@click.option(
+    "--demosaic-algorithm",
+    type=str,
+    default="EA",
+    help="Demosaic algorithm (EA, EA_FAST, OPENCV_EA, DNGSDK_BILINEAR, VNG, RCD)",
+)
 def dng_convert(
-    input_file, output_file, ifd, temperature, tint, exposure, orientation, bit_depth, no_xmp, use_coreimage
+    input_file,
+    output_file,
+    ifd,
+    temperature,
+    tint,
+    exposure,
+    orientation,
+    bit_depth,
+    no_xmp,
+    use_coreimage,
+    demosaic_algorithm,
 ):
     """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
     import numpy as np
@@ -949,7 +965,7 @@ def dng_convert(
                     file=file_arg,
                     output=output_file,
                     output_dtype=output_dtype,
-                    demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                    demosaic_algorithm=DemosaicAlgorithm.lookup(demosaic_algorithm),
                     strict=False,
                     use_xmp=not no_xmp,
                     rendering_params=params,
@@ -1416,7 +1432,7 @@ def run_batch_convert(
             img, metadata = decode_dng(
                 file=dng_file,
                 output_dtype=output_dtype,
-                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                demosaic_algorithm=DemosaicAlgorithm.EA,
                 use_coreimage_if_available=use_coreimage,
                 use_xmp=use_xmp,
                 rendering_params=params,
@@ -1645,7 +1661,7 @@ def run_batch_to_video(
             img, _ = decode_dng(
                 file=dng_file,
                 output_dtype=output_dtype,
-                demosaic_algorithm=DemosaicAlgorithm.OPENCV_EA,
+                demosaic_algorithm=DemosaicAlgorithm.EA,
                 use_coreimage_if_available=use_coreimage,
                 use_xmp=use_xmp,
                 rendering_params=params,
