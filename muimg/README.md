@@ -410,8 +410,6 @@ This document provides:
 
 This software is released under the **BSD 3-Clause License**. See [LICENSE](LICENSE) for full terms.
 
-AI/crawler preferences for documentation and examples are described in [llms.txt](../llms.txt) and [robots.txt](../robots.txt). Those files are project guidance for crawlers and agents, not additional license terms.
-
 ### Third-Party Components
 
 - **Adobe DNG SDK**: Adobe DNG SDK License (permissive, royalty-free)

@@ -21,7 +21,6 @@ My software focuses heavily on **RAW image infrastructure, time-lapse compilatio
 ## Licensing & Usage Terms
 
 - **License**: [BSD 3-Clause](https://opensource.org/licenses/BSD-3-Clause). See each repository's `LICENSE` file for the full text.
-- **AI/crawler preferences**: The intent of [`llms.txt`](https://github.com/mu-files/mu-image/blob/main/llms.txt) and [`robots.txt`](https://github.com/mu-files/mu-image/blob/main/robots.txt) is that the core `muimg` package (`muimg/muimg/` and `muimg/c-src/`) **NOT** be used for LLM or ML training. Documentation, tests, and examples may be used for learning the API.
 
 ---
 
