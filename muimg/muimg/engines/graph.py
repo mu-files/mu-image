@@ -355,6 +355,11 @@ def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
     if typ == "string":
         if not isinstance(value, str):
             raise TypeError(f"attr {key!r} must be a str")
+        allowed = spec.get("values")
+        if allowed is not None and value not in allowed:
+            raise ValueError(
+                f"attr {key!r} must be one of {list(allowed)}, got {value!r}"
+            )
         return value
     if typ == "f32_array":
         size = count if count else None

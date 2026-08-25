@@ -2768,6 +2768,8 @@ def _linearize(
     active_area = tags.get_tag("ActiveArea")
     if active_area is not None:
         aa_top, aa_left, aa_bottom, aa_right = active_area
+        # Pixels outside the ActiveArea are garbage: halo requests past the
+        # box must be padded rather than read from the parent buffer.
         x = engine_ops.crop(
             x,
             x=int(aa_left),
@@ -2775,6 +2777,7 @@ def _linearize(
             w=int(aa_right) - int(aa_left),
             h=int(aa_bottom) - int(aa_top),
             reset_origin=True,
+            oob_valid=False,
         )
 
     # Fast path: trivial normalization (black=0, white=default, no

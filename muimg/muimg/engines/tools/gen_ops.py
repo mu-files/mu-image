@@ -104,7 +104,9 @@ def load_ops_yaml(path: Path) -> dict[str, Any]:
             rest = content[2:].strip()
             i += 1
             if ":" not in rest:
-                raise ValueError(f"line {lineno}: unsupported list item")
+                # Plain scalar list item (e.g. an attr `values` entry).
+                result.append(_parse_scalar(rest))
+                continue
             k, _, v = rest.partition(":")
             k = k.strip()
             v = v.strip()
@@ -177,6 +179,39 @@ def _in_channels_expr(inputs: list[dict[str, Any]]) -> str:
     if ch == "any":
         return "None"
     return str(int(ch))
+
+
+def resolve_attr_enums(doc: dict[str, Any]) -> None:
+    """Inline `enum: <name>` attr references from the top-level `enums:` map.
+
+    The emitted attr spec carries the concrete `values` list so runtime
+    validation (graph._coerce_attr) needs no catalog lookup.
+    """
+    enums = doc.get("enums") or {}
+    for name, vals in enums.items():
+        if not isinstance(vals, list) or not all(isinstance(v, str) for v in vals):
+            raise ValueError(f"enums.{name}: must be a list of strings")
+    for op in doc["ops"]:
+        for a in op.get("attrs") or []:
+            ref = a.pop("enum", None)
+            if ref is None:
+                continue
+            if a.get("type") != "string":
+                raise ValueError(
+                    f"op {op['name']!r} attr {a.get('key')!r}: "
+                    "enum requires type: string"
+                )
+            if "values" in a:
+                raise ValueError(
+                    f"op {op['name']!r} attr {a.get('key')!r}: "
+                    "enum and values are mutually exclusive"
+                )
+            if ref not in enums:
+                raise ValueError(
+                    f"op {op['name']!r} attr {a.get('key')!r}: "
+                    f"unknown enum {ref!r} (defined: {sorted(enums)})"
+                )
+            a["values"] = list(enums[ref])
 
 
 def gen_ops_py(doc: dict[str, Any]) -> str:
@@ -256,6 +291,7 @@ def main() -> int:
     try:
         doc = load_ops_yaml(YAML_PATH)
         validate_ops(doc.get("ops") or [])
+        resolve_attr_enums(doc)
         text = gen_ops_py(doc)
     except ValueError as e:
         print(str(e), file=sys.stderr)

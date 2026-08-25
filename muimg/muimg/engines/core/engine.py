@@ -65,6 +65,7 @@ class CoreEngine:
         tensor_descs = []
         for t in all_tensors:
             m = t.meta
+            origin_row, origin_col = m.origin
             tensor_descs.append(
                 {
                     "id": id_of[id(t)],
@@ -72,6 +73,8 @@ class CoreEngine:
                     "height": m.height,
                     "width": m.width,
                     "channels": m.channels,
+                    "origin_y": int(origin_row),
+                    "origin_x": int(origin_col),
                 }
             )
 

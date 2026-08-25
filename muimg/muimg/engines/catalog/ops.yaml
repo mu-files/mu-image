@@ -19,6 +19,14 @@
 
 version: 1
 
+# Shared attr value sets. A string attr references one with `enum: <name>`;
+# gen_ops inlines the values into the generated attr spec for validation.
+enums:
+  pad_mode:
+    - mirror
+    - extend
+    - zero
+
 ops:
   - name: sub_scalar
     inputs:
@@ -61,6 +69,19 @@ ops:
         type: i32
         count: 1
       - key: reset_origin
+        type: bool
+        count: 1
+        optional: true
+      # Fill rule for out-of-bounds src once engine padding lands.
+      # Default extend.
+      - key: pad
+        type: string
+        count: 1
+        optional: true
+        enum: pad_mode
+      # False (ActiveArea): pixels outside the crop box are invalid; halo
+      # requests past the box must be padded, never read from the parent.
+      - key: oob_valid
         type: bool
         count: 1
         optional: true

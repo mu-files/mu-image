@@ -68,6 +68,23 @@ crop = EngineOp(
     "key": "reset_origin",
     "optional": true,
     "type": "bool"
+  },
+  {
+    "count": 1,
+    "key": "pad",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "mirror",
+      "extend",
+      "zero"
+    ]
+  },
+  {
+    "count": 1,
+    "key": "oob_valid",
+    "optional": true,
+    "type": "bool"
   }
 ]''')),
     _infer_meta=graph._out_meta_crop,

@@ -7,6 +7,7 @@ import pytest
 from pathlib import Path
 import tifffile
 
+import muimg.engines.ops as engine_ops
 from muimg.dngio import DngFile
 from muimg.tensor import Tensor
 from muimg.raw_render import demosaic, convert_dtype, DemosaicAlgorithm
@@ -328,3 +329,32 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
                         # Mean difference should be < 96 (out of 65535, ~0.15%)
                         assert mean_interior_diff < 96, \
                             f"{ref_algorithm}->{test_algorithm} {pattern_name}: cross-algorithm mean diff {mean_interior_diff:.2f} > 100"
+
+
+@pytest.mark.parametrize(
+    "algorithm",
+    [DemosaicAlgorithm.DNGSDK_BILINEAR, DemosaicAlgorithm.EA],
+)
+@pytest.mark.parametrize("cx,cy", [(1, 0), (0, 1), (3, 2)])
+def test_demosaic_then_crop_matches_post_process_slice(algorithm, cx, cy):
+    """Fused demosaic → crop equals full-frame demosaic then a numpy crop.
+
+    Trailing crop dest is crop-buffer space; demosaic phase must stay on
+    CFA/demosaic-tensor coordinates (odd origins included).
+    """
+    rng = np.random.default_rng(0)
+    cfa = rng.random((17, 19), dtype=np.float32)
+    full = demosaic(
+        Tensor(cfa), "RGGB", algorithm=algorithm, dst_dtype="float32"
+    ).compute()
+    cw, ch = 11, 13
+    post = full[cy : cy + ch, cx : cx + cw]
+    fused = engine_ops.crop(
+        demosaic(Tensor(cfa), "RGGB", algorithm=algorithm, dst_dtype="float32"),
+        x=cx,
+        y=cy,
+        w=cw,
+        h=ch,
+        reset_origin=True,
+    ).compute()
+    np.testing.assert_array_equal(fused, post)
