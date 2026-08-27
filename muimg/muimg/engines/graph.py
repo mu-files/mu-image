@@ -189,11 +189,13 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     """
     col, row = int(attrs["x"]), int(attrs["y"])
     w, h = int(attrs["w"]), int(attrs["h"])
-    if col < 0 or row < 0 or w < 1 or h < 1:
+    if w < 1 or h < 1:
         raise ValueError(f"crop: invalid box x={col} y={row} w={w} h={h}")
-    if row + h > x.meta.height or col + w > x.meta.width:
+    # The window may reach out of bounds (the engine fills those samples
+    # with the crop's pad mode) but must still overlap the input.
+    if col + w <= 0 or row + h <= 0 or col >= x.meta.width or row >= x.meta.height:
         raise ValueError(
-            f"crop: box x={col} y={row} w={w} h={h} out of bounds for "
+            f"crop: box x={col} y={row} w={w} h={h} does not overlap "
             f"{x.meta.height}x{x.meta.width}"
         )
     if attrs.get("reset_origin"):

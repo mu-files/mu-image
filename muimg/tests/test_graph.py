@@ -183,10 +183,20 @@ def test_apply_tiff_orientation_uses_engine_for_flips():
         np.testing.assert_array_equal(out_t.compute(), expect)
 
 
-def test_crop_emit_rejects_oob():
+def test_crop_emit_allows_oob_window_rejects_disjoint():
     x = Tensor(np.zeros((4, 4), dtype=np.float32))
-    with pytest.raises(ValueError, match="out of bounds"):
-        engine_ops.crop(x, x=1, y=1, w=4, h=2)
+    # An OOB window is allowed (the engine fills the out-of-bounds part
+    # with the crop's pad mode) ...
+    t = engine_ops.crop(x, x=1, y=1, w=4, h=2)
+    assert t._node is not None and t._node.op == "crop"
+    assert t.meta.height == 2 and t.meta.width == 4
+    t = engine_ops.crop(x, x=-2, y=-1, w=3, h=3)
+    assert t.meta.height == 3 and t.meta.width == 3
+    # ... but the window must still overlap the input.
+    with pytest.raises(ValueError, match="does not overlap"):
+        engine_ops.crop(x, x=4, y=0, w=2, h=2)
+    with pytest.raises(ValueError, match="does not overlap"):
+        engine_ops.crop(x, x=0, y=-3, w=2, h=3)
 
 
 def test_span_crop_span_one_execute_graph(monkeypatch):
