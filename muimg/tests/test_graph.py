@@ -324,7 +324,9 @@ def test_ea_demosaic_then_crop_matches_slice():
         h=13,
         reset_origin=True,
     ).compute()
-    np.testing.assert_array_equal(fused, full[2:15, 3:14])
+    # Fused EA vs a sliced full frame can differ by 1 ULP on some
+    # platforms (reduction order).
+    np.testing.assert_array_max_ulp(fused, full[2:15, 3:14], maxulp=1)
 
 
 def test_ea_demosaic_fast_differs_from_ha():
