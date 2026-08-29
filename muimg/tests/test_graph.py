@@ -47,16 +47,16 @@ def test_tensor_origin_kwarg():
 def test_crop_emit_meta_updates_origin_and_size():
     """Default crop accumulates origin; reset_origin re-zeros world."""
     base = Tensor(np.arange(5 * 7, dtype=np.float32).reshape(5, 7))
-    cat = engine_ops.crop(base, x=1, y=2, w=3, h=2)
+    cat = engine_ops.crop(base, left=1, top=2, width=3, height=2)
     assert cat.meta.height == 2 and cat.meta.width == 3
     assert cat.meta.origin == (2, 1)
     assert cat._node is not None and cat._node.op == "crop"
     assert cat._node.fn is None
 
-    cat2 = engine_ops.crop(cat, x=1, y=0, w=2, h=1)
+    cat2 = engine_ops.crop(cat, left=1, top=0, width=2, height=1)
     assert cat2.meta.origin == (2, 2)
 
-    reset = engine_ops.crop(base, x=1, y=2, w=3, h=2, reset_origin=True)
+    reset = engine_ops.crop(base, left=1, top=2, width=3, height=2, reset_origin=True)
     assert reset.meta.origin == (0, 0)
 
     out = cat.compute()
@@ -187,16 +187,16 @@ def test_crop_emit_allows_oob_window_rejects_disjoint():
     x = Tensor(np.zeros((4, 4), dtype=np.float32))
     # An OOB window is allowed (the engine fills the out-of-bounds part
     # with the crop's pad mode) ...
-    t = engine_ops.crop(x, x=1, y=1, w=4, h=2)
+    t = engine_ops.crop(x, left=1, top=1, width=4, height=2)
     assert t._node is not None and t._node.op == "crop"
     assert t.meta.height == 2 and t.meta.width == 4
-    t = engine_ops.crop(x, x=-2, y=-1, w=3, h=3)
+    t = engine_ops.crop(x, left=-2, top=-1, width=3, height=3)
     assert t.meta.height == 3 and t.meta.width == 3
     # ... but the window must still overlap the input.
     with pytest.raises(ValueError, match="does not overlap"):
-        engine_ops.crop(x, x=4, y=0, w=2, h=2)
+        engine_ops.crop(x, left=4, top=0, width=2, height=2)
     with pytest.raises(ValueError, match="does not overlap"):
-        engine_ops.crop(x, x=0, y=-3, w=2, h=3)
+        engine_ops.crop(x, left=0, top=-3, width=2, height=3)
 
 
 def test_span_crop_span_one_execute_graph(monkeypatch):
@@ -216,7 +216,7 @@ def test_span_crop_span_one_execute_graph(monkeypatch):
         [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32
     )
     x = Tensor(inp) - 1.0
-    x = engine_ops.crop(x, x=1, y=1, w=2, h=2)
+    x = engine_ops.crop(x, left=1, top=1, width=2, height=2)
     x = x * 2.0
     out = x.compute()
 
@@ -245,9 +245,9 @@ def test_crop_sub_crop_sub_ramp(monkeypatch):
     inp = 10.0 * rows + cols
 
     x = Tensor(inp)
-    x = engine_ops.crop(x, x=1, y=1, w=6, h=6)  # → inp[1:7, 1:7]
+    x = engine_ops.crop(x, left=1, top=1, width=6, height=6)  # → inp[1:7, 1:7]
     x = x - 1.0
-    x = engine_ops.crop(x, x=1, y=1, w=4, h=4)  # → inp[2:6, 2:6] after first crop
+    x = engine_ops.crop(x, left=1, top=1, width=4, height=4)  # → inp[2:6, 2:6] after first crop
     x = x - 2.0
     out = x.compute()
 
@@ -318,10 +318,10 @@ def test_ea_demosaic_then_crop_matches_slice():
     full = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
     fused = engine_ops.crop(
         engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB"),
-        x=3,
-        y=2,
-        w=11,
-        h=13,
+        left=3,
+        top=2,
+        width=11,
+        height=13,
         reset_origin=True,
     ).compute()
     # Fused EA vs a sliced full frame can differ by 1 ULP on some
@@ -532,7 +532,7 @@ def test_graph_op_cast_then_native_crop():
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
     x = cast_dtype_op(Tensor(src), "uint16")
-    x = engine_ops.crop(x, x=1, y=1, w=3, h=2)
+    x = engine_ops.crop(x, left=1, top=1, width=3, height=2)
     assert x._node is not None and x._node.op == "crop" and x._node.fn is None
     out = x.compute()
     np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])

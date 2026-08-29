@@ -2600,7 +2600,7 @@ def apply_post_rendering_operations(
             f"(from {w}x{h})"
         )
         rgb_output = engine_ops.crop(
-            rgb_output, x=left, y=top, w=right - left, h=bottom - top
+            rgb_output, left=left, top=top, width=right - left, height=bottom - top
         )
 
     return rgb_output
@@ -2772,10 +2772,10 @@ def _linearize(
         # box must be padded rather than read from the parent buffer.
         x = engine_ops.crop(
             x,
-            x=int(aa_left),
-            y=int(aa_top),
-            w=int(aa_right) - int(aa_left),
-            h=int(aa_bottom) - int(aa_top),
+            left=int(aa_left),
+            top=int(aa_top),
+            width=int(aa_right) - int(aa_left),
+            height=int(aa_bottom) - int(aa_top),
             reset_origin=True,
             oob_valid=False,
         )
@@ -2920,16 +2920,16 @@ def _render_to_camera_space(
     crop_size = tags.get_tag("DefaultCropSize")
 
     if crop_origin is not None and crop_size is not None:
-        crop_x = int(crop_origin[0])
-        crop_y = int(crop_origin[1])
-        crop_w = int(crop_size[0])
-        crop_h = int(crop_size[1])
+        crop_left = int(crop_origin[0])
+        crop_top = int(crop_origin[1])
+        crop_width = int(crop_size[0])
+        crop_height = int(crop_size[1])
         rgb_camera = engine_ops.crop(
             rgb_camera,
-            x=crop_x,
-            y=crop_y,
-            w=crop_w,
-            h=crop_h,
+            left=crop_left,
+            top=crop_top,
+            width=crop_width,
+            height=crop_height,
             reset_origin=True,
         )
 

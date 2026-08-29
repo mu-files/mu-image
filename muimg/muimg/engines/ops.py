@@ -45,22 +45,22 @@ crop = EngineOp(
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
-    "key": "x",
+    "key": "top",
     "type": "i32"
   },
   {
     "count": 1,
-    "key": "y",
+    "key": "left",
     "type": "i32"
   },
   {
     "count": 1,
-    "key": "w",
+    "key": "width",
     "type": "i32"
   },
   {
     "count": 1,
-    "key": "h",
+    "key": "height",
     "type": "i32"
   },
   {
@@ -100,6 +100,17 @@ orientation = EngineOp(
     "count": 1,
     "key": "orientation",
     "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "pad",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "mirror",
+      "extend",
+      "zero"
+    ]
   }
 ]''')),
     _infer_meta=graph._out_meta_orientation,

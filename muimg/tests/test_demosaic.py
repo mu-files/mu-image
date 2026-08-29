@@ -351,10 +351,10 @@ def test_demosaic_then_crop_matches_post_process_slice(algorithm, cx, cy):
     post = full[cy : cy + ch, cx : cx + cw]
     fused = engine_ops.crop(
         demosaic(Tensor(cfa), "RGGB", algorithm=algorithm, dst_dtype="float32"),
-        x=cx,
-        y=cy,
-        w=cw,
-        h=ch,
+        left=cx,
+        top=cy,
+        width=cw,
+        height=ch,
         reset_origin=True,
     ).compute()
     # Fused EA vs a sliced full frame can differ by 1 ULP on some

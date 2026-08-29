@@ -56,16 +56,16 @@ ops:
       - channels: same
         geometry: crop
     attrs:
-      - key: x
+      - key: top
         type: i32
         count: 1
-      - key: y
+      - key: left
         type: i32
         count: 1
-      - key: w
+      - key: width
         type: i32
         count: 1
-      - key: h
+      - key: height
         type: i32
         count: 1
       - key: reset_origin
@@ -97,6 +97,12 @@ ops:
       - key: orientation
         type: i32
         count: 1
+      # Fill rule for dest that maps past the previous dest. Default extend.
+      - key: pad
+        type: string
+        count: 1
+        optional: true
+        enum: pad_mode
 
   - name: bilinear_demosaic
     inputs:

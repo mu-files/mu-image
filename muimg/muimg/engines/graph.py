@@ -183,30 +183,37 @@ def _out_channels_const(n: int) -> OutMetaFn:
 def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     """Geometry policy ``crop``: H/W from attrs; update or reset world origin.
 
-    Crop attrs ``x``/``y`` are column/row offsets into the current buffer.
-    Default: ``origin' = origin + (y, x)`` with origin stored as ``(row, col)``.
+    Crop attrs ``left``/``top`` are column/row offsets into the current buffer.
+    Default: ``origin' = origin + (top, left)`` with origin stored as ``(row, col)``.
     If ``reset_origin`` is true (ActiveArea / DefaultCrop), ``origin' = (0, 0)``.
     """
-    col, row = int(attrs["x"]), int(attrs["y"])
-    w, h = int(attrs["w"]), int(attrs["h"])
-    if w < 1 or h < 1:
-        raise ValueError(f"crop: invalid box x={col} y={row} w={w} h={h}")
+    left, top = int(attrs["left"]), int(attrs["top"])
+    width, height = int(attrs["width"]), int(attrs["height"])
+    if width < 1 or height < 1:
+        raise ValueError(
+            f"crop: invalid box top={top} left={left} width={width} height={height}"
+        )
     # The window may reach out of bounds (the engine fills those samples
     # with the crop's pad mode) but must still overlap the input.
-    if col + w <= 0 or row + h <= 0 or col >= x.meta.width or row >= x.meta.height:
+    if (
+        left + width <= 0
+        or top + height <= 0
+        or left >= x.meta.width
+        or top >= x.meta.height
+    ):
         raise ValueError(
-            f"crop: box x={col} y={row} w={w} h={h} does not overlap "
-            f"{x.meta.height}x{x.meta.width}"
+            f"crop: box top={top} left={left} width={width} height={height} "
+            f"does not overlap {x.meta.height}x{x.meta.width}"
         )
     if attrs.get("reset_origin"):
         origin = (0, 0)
     else:
         base_row, base_col = x.meta.origin
-        origin = (base_row + row, base_col + col)
+        origin = (base_row + top, base_col + left)
     return TensorMeta(
         dtype=x.meta.dtype,
-        height=h,
-        width=w,
+        height=height,
+        width=width,
         channels=x.meta.channels,
         origin=origin,
     )
