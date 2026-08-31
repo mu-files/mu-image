@@ -60,11 +60,16 @@ def _rot90_cw(a: np.ndarray) -> np.ndarray:
 
 
 def test_crop_rotate_crop_oob_valid():
-    """``crop → orientation(ROTATE_90_CW) → crop``. Second crop is ``(0, w/4, 2w, w/2)``.
+    """``crop → orientation(ROTATE_90_CW) → crop``.
 
-    ``oob_valid`` on the first crop: middle of ``ROTATE_90_CW`` on the
-    source vs that same middle with only the first crop's square, ``pad``
-    ``zero`` on the sides.
+    Second crop is ``left=-6``, ``width=2w`` (wider than the rotated square).
+
+    ``oob_valid=true``: first crop returns the full rect. Orientation
+    rotates that rect. The second crop is a strip of the rotated source.
+
+    ``oob_valid=false``: first crop returns the square. Orientation
+    rotates that square. The second crop puts it at columns ``6:6+side``
+    and pads with zero.
     """
     w = 8
     h = 2 * w
@@ -83,9 +88,7 @@ def test_crop_rotate_crop_oob_valid():
             oob_valid=oob_valid,
             pad="zero",
         )
-        t = engine_ops.orientation(
-            t, orientation=Orientation.ROTATE_90_CW, pad="zero"
-        )
+        t = engine_ops.orientation(t, orientation=Orientation.ROTATE_90_CW)
         t = engine_ops.crop(
             t, left=-6, top=0, width=2 * w, height=side, pad="zero"
         )

@@ -100,17 +100,6 @@ orientation = EngineOp(
     "count": 1,
     "key": "orientation",
     "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "pad",
-    "optional": true,
-    "type": "string",
-    "values": [
-      "mirror",
-      "extend",
-      "zero"
-    ]
   }
 ]''')),
     _infer_meta=graph._out_meta_orientation,

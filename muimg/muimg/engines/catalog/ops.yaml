@@ -86,7 +86,7 @@ ops:
         count: 1
         optional: true
 
-  # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation; native tile execute.
+  # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation.
   - name: orientation
     inputs:
       - channels: any
@@ -97,12 +97,6 @@ ops:
       - key: orientation
         type: i32
         count: 1
-      # Fill rule for dest that maps past the previous dest. Default extend.
-      - key: pad
-        type: string
-        count: 1
-        optional: true
-        enum: pad_mode
 
   - name: bilinear_demosaic
     inputs:
