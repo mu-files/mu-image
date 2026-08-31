@@ -154,12 +154,10 @@ def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int]:
     if isinstance(key, slice):
         return _window_from_slices(meta, key, slice(None))
     if not isinstance(key, tuple):
-        raise TypeError(
-            "expected left, top, width, height or a spatial slice key"
-        )
+        raise TypeError("region must be a spatial slice or a tuple of slices")
     if any(not isinstance(item, slice) for item in key):
         raise TypeError(
-            "spatial slice key must be slice objects; integer axes, "
+            "region must be slice objects; integer axes, "
             "masks, and newaxis are not supported"
         )
     if len(key) == 1:
@@ -173,29 +171,22 @@ def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int]:
 
 def _window(
     meta: TensorMeta,
-    left: Any,
-    top: Any = None,
-    width: Any = None,
-    height: Any = None,
+    region: slice | tuple[Any, ...] | None,
+    left: int | None,
+    top: int | None,
+    width: int | None,
+    height: int | None,
 ) -> Tuple[int, int, int, int]:
-    """Normalize rect or NumPy spatial-slice args to (left, top, width, height)."""
-    if isinstance(left, slice) and isinstance(top, slice):
-        if width is not None or height is not None:
-            raise TypeError("cannot mix a slice key with left, top, width, height")
-        return _window_from_slices(meta, left, top)
-    if top is None and width is None and height is None:
-        return _window_from_key(meta, left)
-    if isinstance(left, slice) or any(
-        isinstance(v, slice) for v in (top, width, height)
-    ):
-        raise TypeError("cannot mix a slice key with left, top, width, height")
-    if top is None or width is None or height is None:
-        raise TypeError("rect form requires left, top, width, and height")
-    left_i = int(left)
-    top_i = int(top)
-    width_i = int(width)
-    height_i = int(height)
-    return left_i, top_i, width_i, height_i
+    """Normalize a slice region or a keyword rect to (left, top, width, height)."""
+    rect = (left, top, width, height)
+    has_rect = any(v is not None for v in rect)
+    if region is not None:
+        if has_rect:
+            raise TypeError("cannot mix a slice region with left, top, width, height")
+        return _window_from_key(meta, region)
+    if any(v is None for v in rect):
+        raise TypeError("view requires a slice region or left, top, width, and height")
+    return int(left), int(top), int(width), int(height)
 
 
 def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
@@ -288,43 +279,56 @@ class Tensor:
 
     def view(
         self,
-        left: int | slice | tuple[Any, ...],
-        top: int | slice | None = None,
+        region: slice | tuple[Any, ...] | None = None,
+        *,
+        left: int | None = None,
+        top: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        *,
         oob_valid: bool = True,
         reset_origin: bool = False,
     ) -> "Tensor":
-        """Window into this tensor. ``oob_valid`` true keeps the parent canvas."""
+        """Window into this tensor.
+
+        ``oob_valid`` true keeps the parent canvas available for downstream peeking.
+        """
         from .engines import ops as engine_ops
 
+        # _window resolves the geometry and checks for mutual exclusivity errors
         left_i, top_i, width_i, height_i = _window(
-            self._meta, left, top, width, height
+            self._meta, region, left, top, width, height
         )
+
         attrs: dict[str, Any] = {
             "left": left_i,
             "top": top_i,
             "width": width_i,
             "height": height_i,
             "oob_valid": oob_valid,
+            "reset_origin": reset_origin,
         }
-        if reset_origin:
-            attrs["reset_origin"] = True
+
         return engine_ops.view(self, **attrs)
 
     def crop(
         self,
-        left: int | slice | tuple[Any, ...],
-        top: int | slice | None = None,
+        region: slice | tuple[Any, ...] | None = None,
+        *,
+        left: int | None = None,
+        top: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        *,
         reset_origin: bool = False,
     ) -> "Tensor":
         """Hard window: same as ``view(..., oob_valid=False)``."""
         return self.view(
-            left, top, width, height, oob_valid=False, reset_origin=reset_origin
+            region,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            oob_valid=False,
+            reset_origin=reset_origin,
         )
 
     def __getitem__(self, key: Any) -> "Tensor":

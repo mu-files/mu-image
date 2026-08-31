@@ -112,9 +112,8 @@ def test_slice_form_matches_rect_pixels():
     rect = t.view(left=1, top=2, width=3, height=2)
     via_s = t.view(np.s_[2:4, 1:4])
     via_tuple = t.view((slice(2, 4), slice(1, 4)))
-    via_two = t.view(slice(2, 4), slice(1, 4))
     want = src[2:4, 1:4]
-    for got in (rect, via_s, via_tuple, via_two):
+    for got in (rect, via_s, via_tuple):
         np.testing.assert_array_equal(got.compute(), want)
     assert via_s.meta.canvas == rect.meta.canvas
 
@@ -150,7 +149,9 @@ def test_slice_rejects_step_and_mixed_args():
     with pytest.raises(ValueError, match="step"):
         t.view(np.s_[::2, :])
     with pytest.raises(TypeError, match="mix"):
-        t.view(slice(1, 3), 0, 2, 2)
+        t.view(np.s_[1:3, :], left=0)
+    with pytest.raises(TypeError, match="slice region or left"):
+        t.view(left=1, top=1)
     with pytest.raises(TypeError, match="slice objects"):
         t.view(((2, 4), (1, 5)))
     rgb = Tensor(np.zeros((4, 6, 3), dtype=np.float32))
