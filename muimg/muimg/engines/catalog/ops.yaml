@@ -48,13 +48,13 @@ ops:
         type: f32
         count: 1
 
-  # ROI crop: emit meta via geometry: crop (_out_meta_crop); native span execute.
-  - name: crop
+  # ROI view: emit meta via geometry: view (_out_meta_view); native span execute.
+  - name: view
     inputs:
       - channels: any
     outputs:
       - channels: same
-        geometry: crop
+        geometry: view
     attrs:
       - key: top
         type: i32
@@ -72,8 +72,8 @@ ops:
         type: bool
         count: 1
         optional: true
-      # False (ActiveArea): dest is clipped to the crop window. True: dest
-      # may sit past the crop window.
+      # False (ActiveArea): dest is clipped to the view window. True: dest
+      # may sit past the view window.
       - key: oob_valid
         type: bool
         count: 1
