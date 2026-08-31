@@ -75,6 +75,10 @@ class CoreEngine:
                     "channels": m.channels,
                     "origin_y": int(origin_row),
                     "origin_x": int(origin_col),
+                    "canvas_x0": int(m.canvas[0]),
+                    "canvas_y0": int(m.canvas[1]),
+                    "canvas_width": int(m.canvas[2]),
+                    "canvas_height": int(m.canvas[3]),
                 }
             )
 

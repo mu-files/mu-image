@@ -18,13 +18,7 @@ from .graph import graph_op
 
 def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     dest = ElementType.coerce(attrs["dst_dtype"])
-    return TensorMeta(
-        dtype=dest,
-        height=t.meta.height,
-        width=t.meta.width,
-        channels=t.meta.channels,
-        origin=t.meta.origin,
-    )
+    return t.meta.copy(dtype=dest)
 
 
 @graph_op(out_meta=_cast_dtype_out_meta)
@@ -45,13 +39,7 @@ def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         dtype = ElementType.UINT16
     else:
         dtype = t.meta.dtype
-    return TensorMeta(
-        dtype=dtype,
-        height=t.meta.height,
-        width=t.meta.width,
-        channels=3,
-        origin=t.meta.origin,
-    )
+    return t.meta.copy(dtype=dtype, channels=3)
 
 
 @graph_op(out_meta=_demosaic_out_meta)

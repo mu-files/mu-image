@@ -72,15 +72,8 @@ ops:
         type: bool
         count: 1
         optional: true
-      # Fill rule for out-of-bounds src once engine padding lands.
-      # Default extend.
-      - key: pad
-        type: string
-        count: 1
-        optional: true
-        enum: pad_mode
-      # False (ActiveArea): pixels outside the crop box are invalid; halo
-      # requests past the box must be padded, never read from the parent.
+      # False (ActiveArea): dest is clipped to the crop window. True: dest
+      # may sit past the crop window.
       - key: oob_valid
         type: bool
         count: 1

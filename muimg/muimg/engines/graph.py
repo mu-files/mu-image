@@ -130,12 +130,9 @@ class EngineOp:
     def infer_out_meta(self, x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         if self._infer_meta is not None:
             return self._infer_meta(x, attrs)
-        return TensorMeta(
+        return x.meta.copy(
             dtype=self._out_dtype(x, attrs),
-            height=x.meta.height,
-            width=x.meta.width,
             channels=self._out_channels(x, attrs),
-            origin=x.meta.origin,
         )
 
     def __repr__(self) -> str:
@@ -184,8 +181,11 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     """Geometry policy ``crop``: H/W from attrs; update or reset world origin.
 
     Crop attrs ``left``/``top`` are column/row offsets into the current buffer.
+    The crop window must sit inside the input canvas.
     Default: ``origin' = origin + (top, left)`` with origin stored as ``(row, col)``.
     If ``reset_origin`` is true (ActiveArea / DefaultCrop), ``origin' = (0, 0)``.
+    ``oob_valid`` true: output canvas is the parent canvas shifted by
+    ``(-left, -top)``. ``oob_valid`` false: canvas is ``(0, 0, width, height)``.
     """
     left, top = int(attrs["left"]), int(attrs["top"])
     width, height = int(attrs["width"]), int(attrs["height"])
@@ -193,29 +193,31 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         raise ValueError(
             f"crop: invalid box top={top} left={left} width={width} height={height}"
         )
-    # The window may reach out of bounds (the engine fills those samples
-    # with the crop's pad mode) but must still overlap the input.
+    cx, cy, cw, ch = x.meta.canvas
     if (
-        left + width <= 0
-        or top + height <= 0
-        or left >= x.meta.width
-        or top >= x.meta.height
+        left < cx
+        or top < cy
+        or left + width > cx + cw
+        or top + height > cy + ch
     ):
         raise ValueError(
             f"crop: box top={top} left={left} width={width} height={height} "
-            f"does not overlap {x.meta.height}x{x.meta.width}"
+            f"is outside canvas {(cx, cy, cw, ch)}"
         )
     if attrs.get("reset_origin"):
         origin = (0, 0)
     else:
         base_row, base_col = x.meta.origin
         origin = (base_row + top, base_col + left)
-    return TensorMeta(
-        dtype=x.meta.dtype,
+    if attrs.get("oob_valid", True):
+        canvas = (cx - left, cy - top, cw, ch)
+    else:
+        canvas = (0, 0, width, height)
+    return x.meta.copy(
         height=height,
         width=width,
-        channels=x.meta.channels,
         origin=origin,
+        canvas=canvas,
     )
 
 
@@ -223,18 +225,72 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
 _ORIENTATION_SWAP_HW = frozenset({5, 6, 7, 8})
 
 
+def _dest_to_src(
+    code: int, dx: int, dy: int, src_w: int, src_h: int
+) -> Tuple[int, int]:
+    if code == 1:
+        return (dx, dy)
+    if code == 2:
+        return (src_w - 1 - dx, dy)
+    if code == 3:
+        return (src_w - 1 - dx, src_h - 1 - dy)
+    if code == 4:
+        return (dx, src_h - 1 - dy)
+    if code == 5:
+        return (dy, dx)
+    if code == 6:
+        return (dy, src_h - 1 - dx)
+    if code == 7:
+        return (src_w - 1 - dy, src_h - 1 - dx)
+    if code == 8:
+        return (src_w - 1 - dy, dx)
+    raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
+
+
+def _invert_orientation(code: int) -> int:
+    if code == 6:
+        return 8
+    if code == 8:
+        return 6
+    return code
+
+
+def _map_rect_through_orientation(
+    code: int, rect: Tuple[int, int, int, int], dest_w: int, dest_h: int
+) -> Tuple[int, int, int, int]:
+    inv = _invert_orientation(code)
+    x0, y0, w, h = rect
+    x1 = x0 + w - 1
+    y1 = y0 + h - 1
+    corners = (
+        _dest_to_src(inv, x0, y0, dest_w, dest_h),
+        _dest_to_src(inv, x1, y0, dest_w, dest_h),
+        _dest_to_src(inv, x0, y1, dest_w, dest_h),
+        _dest_to_src(inv, x1, y1, dest_w, dest_h),
+    )
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+
+
 def _out_meta_orientation(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    """Geometry policy ``orientation``: swap H×W for TIFF codes 5–8."""
+    """Geometry policy ``orientation``: swap H×W for TIFF codes 5–8.
+
+    Canvas is remapped the same way dest is: four corners and the inverse
+    TIFF code.
+    """
     code = int(attrs["orientation"])
     if code < 1 or code > 8:
         raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
     swap = code in _ORIENTATION_SWAP_HW
-    return TensorMeta(
-        dtype=x.meta.dtype,
-        height=x.meta.width if swap else x.meta.height,
-        width=x.meta.height if swap else x.meta.width,
-        channels=x.meta.channels,
-        origin=x.meta.origin,
+    height = x.meta.width if swap else x.meta.height
+    width = x.meta.height if swap else x.meta.width
+    return x.meta.copy(
+        height=height,
+        width=width,
+        canvas=_map_rect_through_orientation(code, x.meta.canvas, width, height),
     )
 
 

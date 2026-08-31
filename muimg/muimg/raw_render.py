@@ -2599,8 +2599,8 @@ def apply_post_rendering_operations(
             f"Applying XMP crop: top={top}, left={left}, bottom={bottom}, right={right} "
             f"(from {w}x{h})"
         )
-        rgb_output = engine_ops.crop(
-            rgb_output, left=left, top=top, width=right - left, height=bottom - top
+        rgb_output = rgb_output.crop(
+            left=left, top=top, width=right - left, height=bottom - top
         )
 
     return rgb_output
@@ -2770,8 +2770,7 @@ def _linearize(
         aa_top, aa_left, aa_bottom, aa_right = active_area
         # Pixels outside the ActiveArea are garbage: halo requests past the
         # box must be padded rather than read from the parent buffer.
-        x = engine_ops.crop(
-            x,
+        x = x.crop(
             left=int(aa_left),
             top=int(aa_top),
             width=int(aa_right) - int(aa_left),
@@ -2924,8 +2923,7 @@ def _render_to_camera_space(
         crop_top = int(crop_origin[1])
         crop_width = int(crop_size[0])
         crop_height = int(crop_size[1])
-        rgb_camera = engine_ops.crop(
-            rgb_camera,
+        rgb_camera = rgb_camera.crop(
             left=crop_left,
             top=crop_top,
             width=crop_width,

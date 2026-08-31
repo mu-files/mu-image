@@ -71,17 +71,6 @@ crop = EngineOp(
   },
   {
     "count": 1,
-    "key": "pad",
-    "optional": true,
-    "type": "string",
-    "values": [
-      "mirror",
-      "extend",
-      "zero"
-    ]
-  },
-  {
-    "count": 1,
     "key": "oob_valid",
     "optional": true,
     "type": "bool"

@@ -78,12 +78,17 @@ class TensorMeta:
     channels: int
     # World coordinate of buffer top-left as (row, col). Default (0, 0).
     origin: Tuple[int, int] = (0, 0)
+    # Rect on this tensor: (x0, y0, width, height). A later crop may use it.
+    canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
 
     @property
     def shape(self) -> Tuple[int, ...]:
         if self.channels == 1:
             return (self.height, self.width)
         return (self.height, self.width, self.channels)
+
+    def copy(self, **changes: Any) -> "TensorMeta":
+        return replace(self, **changes)
 
 
 def meta_from_array(arr: np.ndarray) -> TensorMeta:
@@ -102,6 +107,7 @@ def meta_from_array(arr: np.ndarray) -> TensorMeta:
         width=w,
         channels=channels,
         origin=(0, 0),
+        canvas=(0, 0, w, h),
     )
 
 
@@ -133,7 +139,12 @@ class Tensor:
             arr = np.asarray(data)
             meta = meta_from_array(arr)
             if origin is not None:
-                meta = replace(meta, origin=(int(origin[0]), int(origin[1])))
+                row, col = int(origin[0]), int(origin[1])
+                meta = replace(
+                    meta,
+                    origin=(row, col),
+                    canvas=(col, row, meta.width, meta.height),
+                )
             self._meta = meta
             self._data = arr
             self._node = None
@@ -169,6 +180,29 @@ class Tensor:
 
         value = _require_scalar(other, "mul_scalar")
         return op("mul_scalar", self, value=value)
+
+    def crop(
+        self,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+        *,
+        oob_valid: bool = True,
+        reset_origin: bool = False,
+    ) -> "Tensor":
+        from .engines import ops as engine_ops
+
+        attrs: dict[str, Any] = {
+            "left": left,
+            "top": top,
+            "width": width,
+            "height": height,
+            "oob_valid": oob_valid,
+        }
+        if reset_origin:
+            attrs["reset_origin"] = True
+        return engine_ops.crop(self, **attrs)
 
     def compute(self) -> np.ndarray:
         """Materialize this tensor (engine graph only)."""
