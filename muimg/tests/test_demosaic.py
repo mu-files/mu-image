@@ -351,7 +351,7 @@ def test_demosaic_then_crop_matches_post_process_slice(algorithm, cx, cy):
     post = full[cy : cy + ch, cx : cx + cw]
     fused = demosaic(
         Tensor(cfa), "RGGB", algorithm=algorithm, dst_dtype="float32"
-    ).crop(
+    ).view(
         left=cx,
         top=cy,
         width=cw,

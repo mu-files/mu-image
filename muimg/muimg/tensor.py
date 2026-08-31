@@ -78,7 +78,7 @@ class TensorMeta:
     channels: int
     # World coordinate of buffer top-left as (row, col). Default (0, 0).
     origin: Tuple[int, int] = (0, 0)
-    # Rect on this tensor: (x0, y0, width, height). A later crop may use it.
+    # Rect on this tensor: (x0, y0, width, height). A later view or crop may use it.
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
 
     @property
@@ -118,6 +118,84 @@ def _require_scalar(value: Any, op: str) -> float:
         return float(value)
     except (TypeError, ValueError) as e:
         raise TypeError(f"{op}: RHS must be a scalar") from e
+
+
+def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int]:
+    """Return (start, size) for a 1-d slice on an axis of ``length``."""
+    if slc.step not in (None, 1):
+        raise ValueError(f"{name}: slice step must be 1, got {slc.step}")
+    start, stop, step = slc.indices(length)
+    if step != 1:
+        raise ValueError(f"{name}: slice step must be 1, got {step}")
+    return start, stop - start
+
+
+def _full_channel_slice(slc: slice, channels: int) -> bool:
+    if slc.step not in (None, 1):
+        return False
+    start, stop, step = slc.indices(channels)
+    return start == 0 and stop == channels and step == 1
+
+
+def _window_from_slices(
+    meta: TensorMeta, rows: slice, cols: slice, channels: Optional[slice] = None
+) -> Tuple[int, int, int, int]:
+    if channels is not None:
+        if meta.channels == 1:
+            raise IndexError("too many indices for a (H, W) tensor")
+        if not _full_channel_slice(channels, meta.channels):
+            raise ValueError("channel subsets are not supported")
+    top, height = _slice_span(rows, meta.height, "rows")
+    left, width = _slice_span(cols, meta.width, "cols")
+    return left, top, width, height
+
+
+def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int]:
+    if isinstance(key, slice):
+        return _window_from_slices(meta, key, slice(None))
+    if not isinstance(key, tuple):
+        raise TypeError(
+            "expected left, top, width, height or a spatial slice key"
+        )
+    if any(not isinstance(item, slice) for item in key):
+        raise TypeError(
+            "spatial slice key must be slice objects; integer axes, "
+            "masks, and newaxis are not supported"
+        )
+    if len(key) == 1:
+        return _window_from_slices(meta, key[0], slice(None))
+    if len(key) == 2:
+        return _window_from_slices(meta, key[0], key[1])
+    if len(key) == 3:
+        return _window_from_slices(meta, key[0], key[1], key[2])
+    raise IndexError(f"too many indices for a tensor: {len(key)}")
+
+
+def _window(
+    meta: TensorMeta,
+    left: Any,
+    top: Any = None,
+    width: Any = None,
+    height: Any = None,
+) -> Tuple[int, int, int, int]:
+    """Normalize rect or NumPy spatial-slice args to (left, top, width, height)."""
+    if isinstance(left, slice) and isinstance(top, slice):
+        if width is not None or height is not None:
+            raise TypeError("cannot mix a slice key with left, top, width, height")
+        return _window_from_slices(meta, left, top)
+    if top is None and width is None and height is None:
+        return _window_from_key(meta, left)
+    if isinstance(left, slice) or any(
+        isinstance(v, slice) for v in (top, width, height)
+    ):
+        raise TypeError("cannot mix a slice key with left, top, width, height")
+    if top is None or width is None or height is None:
+        raise TypeError("rect form requires left, top, width, and height")
+    left_i = int(left)
+    top_i = int(top)
+    width_i = int(width)
+    height_i = int(height)
+    return left_i, top_i, width_i, height_i
 
 
 class Tensor:
@@ -181,28 +259,50 @@ class Tensor:
         value = _require_scalar(other, "mul_scalar")
         return op("mul_scalar", self, value=value)
 
-    def crop(
+    def view(
         self,
-        left: int,
-        top: int,
-        width: int,
-        height: int,
+        left: int | slice | tuple[Any, ...],
+        top: int | slice | None = None,
+        width: int | None = None,
+        height: int | None = None,
         *,
         oob_valid: bool = True,
         reset_origin: bool = False,
     ) -> "Tensor":
+        """Window into this tensor. ``oob_valid`` true keeps the parent canvas."""
         from .engines import ops as engine_ops
 
+        left_i, top_i, width_i, height_i = _window(
+            self._meta, left, top, width, height
+        )
         attrs: dict[str, Any] = {
-            "left": left,
-            "top": top,
-            "width": width,
-            "height": height,
+            "left": left_i,
+            "top": top_i,
+            "width": width_i,
+            "height": height_i,
             "oob_valid": oob_valid,
         }
         if reset_origin:
             attrs["reset_origin"] = True
-        return engine_ops.crop(self, **attrs)
+        return engine_ops.view(self, **attrs)
+
+    def crop(
+        self,
+        left: int | slice | tuple[Any, ...],
+        top: int | slice | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        *,
+        reset_origin: bool = False,
+    ) -> "Tensor":
+        """Hard window: same as ``view(..., oob_valid=False)``."""
+        return self.view(
+            left, top, width, height, oob_valid=False, reset_origin=reset_origin
+        )
+
+    def __getitem__(self, key: Any) -> "Tensor":
+        """NumPy spatial slice: a hard crop of this tensor."""
+        return self.crop(key)
 
     def compute(self) -> np.ndarray:
         """Materialize this tensor (engine graph only)."""

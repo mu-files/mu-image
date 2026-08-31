@@ -121,7 +121,7 @@ class EngineOp:
     _out_channels: OutMetaFn
     _in_channels: Optional[int]  # None = any
     _attr_specs: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
-    # When set (e.g. geometry: crop), replaces dtype/channels/H×W/origin composition.
+    # When set (e.g. geometry: view), replaces dtype/channels/H×W/origin composition.
     _infer_meta: Optional[GraphOutMetaFn] = None
 
     def __call__(self, x: Tensor, /, **attrs: Any) -> Tensor:
@@ -177,11 +177,11 @@ def _out_channels_const(n: int) -> OutMetaFn:
     return _fn
 
 
-def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    """Geometry policy ``crop``: H/W from attrs; update or reset world origin.
+def _out_meta_view(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+    """Geometry policy ``view``: H/W from attrs; update or reset world origin.
 
-    Crop attrs ``left``/``top`` are column/row offsets into the current buffer.
-    The crop window must sit inside the input canvas.
+    View attrs ``left``/``top`` are column/row offsets into the current buffer.
+    The window must sit inside the input canvas.
     Default: ``origin' = origin + (top, left)`` with origin stored as ``(row, col)``.
     If ``reset_origin`` is true (ActiveArea / DefaultCrop), ``origin' = (0, 0)``.
     ``oob_valid`` true: output canvas is the parent canvas shifted by
@@ -191,7 +191,7 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     width, height = int(attrs["width"]), int(attrs["height"])
     if width < 1 or height < 1:
         raise ValueError(
-            f"crop: invalid box top={top} left={left} width={width} height={height}"
+            f"view: invalid box top={top} left={left} width={width} height={height}"
         )
     cx, cy, cw, ch = x.meta.canvas
     if (
@@ -201,7 +201,7 @@ def _out_meta_crop(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
         or top + height > cy + ch
     ):
         raise ValueError(
-            f"crop: box top={top} left={left} width={width} height={height} "
+            f"view: box top={top} left={left} width={width} height={height} "
             f"is outside canvas {(cx, cy, cw, ch)}"
         )
     if attrs.get("reset_origin"):

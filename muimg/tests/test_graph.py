@@ -19,7 +19,7 @@ from muimg.tensor import Tensor
 def test_catalog_engine_ops_io():
     """engines.ops carries EngineOp callables + OPS_BY_NAME."""
     assert "sub_scalar" in OPS_BY_NAME
-    assert "crop" in OPS_BY_NAME
+    assert "view" in OPS_BY_NAME
     assert "orientation" in OPS_BY_NAME
     assert isinstance(engine_ops.bilinear_demosaic, EngineOp)
     assert engine_ops.bilinear_demosaic._in_channels == 1
@@ -28,7 +28,7 @@ def test_catalog_engine_ops_io():
     assert callable(engine_ops.matrix_3x3)
     assert callable(engine_ops.lut)
     assert callable(flush)
-    assert "crop" in get_default_engine().supported_ops
+    assert "view" in get_default_engine().supported_ops
 
 
 def test_tensor_meta_origin_default():
@@ -47,20 +47,20 @@ def test_tensor_origin_kwarg():
     assert src.meta.canvas == (-5, -3, 6, 4)
 
 
-def test_crop_emit_meta_updates_origin_and_size():
-    """Default crop accumulates origin; reset_origin re-zeros world."""
+def test_view_emit_meta_updates_origin_and_size():
+    """Default view accumulates origin; reset_origin re-zeros world."""
     base = Tensor(np.arange(5 * 7, dtype=np.float32).reshape(5, 7))
-    cat = base.crop(left=1, top=2, width=3, height=2)
+    cat = base.view(left=1, top=2, width=3, height=2)
     assert cat.meta.height == 2 and cat.meta.width == 3
     assert cat.meta.origin == (2, 1)
     assert cat.meta.canvas == (-1, -2, 7, 5)
-    assert cat._node is not None and cat._node.op == "crop"
+    assert cat._node is not None and cat._node.op == "view"
     assert cat._node.fn is None
 
-    cat2 = cat.crop(left=1, top=0, width=2, height=1)
+    cat2 = cat.view(left=1, top=0, width=2, height=1)
     assert cat2.meta.origin == (2, 2)
 
-    reset = base.crop(left=1, top=2, width=3, height=2, reset_origin=True)
+    reset = base.view(left=1, top=2, width=3, height=2, reset_origin=True)
     assert reset.meta.origin == (0, 0)
 
     out = cat.compute()
@@ -189,13 +189,13 @@ def test_apply_tiff_orientation_uses_engine_for_flips():
 
 def test_crop_emit_rejects_window_outside_canvas():
     x = Tensor(np.zeros((4, 4), dtype=np.float32))
-    t = x.crop(left=1, top=1, width=2, height=2)
-    assert t._node is not None and t._node.op == "crop"
+    t = x.view(left=1, top=1, width=2, height=2)
+    assert t._node is not None and t._node.op == "view"
     assert t.meta.height == 2 and t.meta.width == 2
     with pytest.raises(ValueError, match="outside canvas"):
-        x.crop(left=1, top=1, width=4, height=2)
+        x.view(left=1, top=1, width=4, height=2)
     with pytest.raises(ValueError, match="outside canvas"):
-        x.crop(left=-2, top=-1, width=3, height=3)
+        x.view(left=-2, top=-1, width=3, height=3)
     with pytest.raises(ValueError, match="outside canvas"):
         x.crop(left=4, top=0, width=2, height=2)
     with pytest.raises(ValueError, match="outside canvas"):
@@ -219,13 +219,13 @@ def test_span_crop_span_one_execute_graph(monkeypatch):
         [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32
     )
     x = Tensor(inp) - 1.0
-    x = x.crop(left=1, top=1, width=2, height=2)
+    x = x.view(left=1, top=1, width=2, height=2)
     x = x * 2.0
     out = x.compute()
 
     assert len(calls) == 1
     ops = [n["op"] for n in calls[0]["nodes"]]
-    assert ops == ["sub_scalar", "crop", "mul_scalar"]
+    assert ops == ["sub_scalar", "view", "mul_scalar"]
     np.testing.assert_allclose(out, [[8.0, 10.0], [14.0, 16.0]])
 
 
@@ -248,15 +248,15 @@ def test_crop_sub_crop_sub_ramp(monkeypatch):
     inp = 10.0 * rows + cols
 
     x = Tensor(inp)
-    x = x.crop(left=1, top=1, width=6, height=6)  # → inp[1:7, 1:7]
+    x = x.view(left=1, top=1, width=6, height=6)  # → inp[1:7, 1:7]
     x = x - 1.0
-    x = x.crop(left=1, top=1, width=4, height=4)  # → inp[2:6, 2:6] after first crop
+    x = x.view(left=1, top=1, width=4, height=4)  # → inp[2:6, 2:6] after first crop
     x = x - 2.0
     out = x.compute()
 
     assert len(calls) == 1
     ops = [n["op"] for n in calls[0]["nodes"]]
-    assert ops == ["crop", "sub_scalar", "crop", "sub_scalar"]
+    assert ops == ["view", "sub_scalar", "view", "sub_scalar"]
 
     expected = inp[2:6, 2:6] - 3.0
     np.testing.assert_allclose(out, expected)
@@ -319,7 +319,7 @@ def test_ea_demosaic_then_crop_matches_slice():
     rng = np.random.default_rng(0)
     cfa = rng.random((17, 19), dtype=np.float32)
     full = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
-    fused = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").crop(
+    fused = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").view(
         left=3,
         top=2,
         width=11,
@@ -534,8 +534,8 @@ def test_graph_op_cast_then_native_crop():
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
     x = cast_dtype_op(Tensor(src), "uint16")
-    x = x.crop(left=1, top=1, width=3, height=2)
-    assert x._node is not None and x._node.op == "crop" and x._node.fn is None
+    x = x.view(left=1, top=1, width=3, height=2)
+    assert x._node is not None and x._node.op == "view" and x._node.fn is None
     out = x.compute()
     np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
 

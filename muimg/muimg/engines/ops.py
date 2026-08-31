@@ -37,8 +37,8 @@ mul_scalar = EngineOp(
     _infer_meta=None,
 )
 
-crop = EngineOp(
-    meta=OpMeta(name='crop'),
+view = EngineOp(
+    meta=OpMeta(name='view'),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -76,7 +76,7 @@ crop = EngineOp(
     "type": "bool"
   }
 ]''')),
-    _infer_meta=graph._out_meta_crop,
+    _infer_meta=graph._out_meta_view,
 )
 
 orientation = EngineOp(
@@ -822,7 +822,7 @@ fix_bad_pixels_constant = EngineOp(
 OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
-    'crop': crop,
+    'view': view,
     'orientation': orientation,
     'bilinear_demosaic': bilinear_demosaic,
     'ea_demosaic': ea_demosaic,
