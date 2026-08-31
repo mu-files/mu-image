@@ -485,13 +485,6 @@ def compute_xmp_crop_bounds(
     return top, left, bottom, right
 
 
-def apply_tiff_orientation(image: Tensor, orientation: int) -> Tensor:
-    """Apply TIFF/EXIF orientation. Code 1 is a no-op; 2–8 emit the engine op."""
-    if int(orientation) == Orientation.HORIZONTAL:
-        return image
-    return engine_ops.orientation(image, orientation=int(orientation))
-
-
 def demosaic(
     image_data: Tensor,
     cfa_pattern: str,
@@ -3410,7 +3403,7 @@ def _render_camera_rgb(
         if orientation is None:
             orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
         if orientation is not None:
-            result = apply_tiff_orientation(result, orientation)
+            result = engine_ops.orientation(result, orientation=int(orientation))
         
         return result
 
@@ -3584,7 +3577,7 @@ def _render_camera_monochrome(
         if orientation is None:
             orientation = _get_ifd0_tag(ifd0_tags, raw_ifd_tags, "Orientation")
         if orientation is not None:
-            result = apply_tiff_orientation(result, orientation)
+            result = engine_ops.orientation(result, orientation=int(orientation))
 
         return result
 

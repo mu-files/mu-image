@@ -198,6 +198,33 @@ def _window(
     return left_i, top_i, width_i, height_i
 
 
+def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
+    """Rotate in the spatial plane. Same arguments as ``numpy.rot90``."""
+    from .engines import ops as engine_ops
+
+    if tuple(axes) != (0, 1):
+        raise ValueError("Tensor only supports rot90 in the spatial plane (axes=(0, 1)).")
+    turns = int(k) % 4
+    if turns == 0:
+        return m
+    # k=1 is 90° CCW (TIFF 8); k=2 is 180 (3); k=3 is 90° CW (6).
+    return engine_ops.orientation(m, orientation={1: 8, 2: 3, 3: 6}[turns])
+
+
+def fliplr(m: "Tensor") -> "Tensor":
+    """Flip left–right. Same as ``numpy.fliplr``."""
+    from .engines import ops as engine_ops
+
+    return engine_ops.orientation(m, orientation=2)
+
+
+def flipud(m: "Tensor") -> "Tensor":
+    """Flip up–down. Same as ``numpy.flipud``."""
+    from .engines import ops as engine_ops
+
+    return engine_ops.orientation(m, orientation=4)
+
+
 class Tensor:
     """Lazy tensor handle: either a concrete source buffer or an engine op result."""
 
@@ -303,6 +330,24 @@ class Tensor:
     def __getitem__(self, key: Any) -> "Tensor":
         """NumPy spatial slice: a hard crop of this tensor."""
         return self.crop(key)
+
+    def transpose(self, *axes: Any) -> "Tensor":
+        """Transpose the 2D spatial dimensions of the tensor.
+
+        Accepts optional axes to match NumPy, but enforces 2D spatial remapping.
+        """
+        if len(axes) == 1 and not isinstance(axes[0], (int, np.integer)):
+            axes = tuple(axes[0])
+        if axes and axes != (1, 0) and axes != (1, 0, 2):
+            raise ValueError("Tensor only supports 2D spatial axis transposition.")
+        from .engines import ops as engine_ops
+
+        return engine_ops.orientation(self, orientation=5)
+
+    @property
+    def T(self) -> "Tensor":
+        """Spatial transpose. Same as ``transpose()``."""
+        return self.transpose()
 
     def compute(self) -> np.ndarray:
         """Materialize this tensor (engine graph only)."""

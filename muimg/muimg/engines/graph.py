@@ -125,6 +125,9 @@ class EngineOp:
     _infer_meta: Optional[GraphOutMetaFn] = None
 
     def __call__(self, x: Tensor, /, **attrs: Any) -> Tensor:
+        # TIFF orientation 1 is identity; skip the node.
+        if self.meta.name == "orientation" and int(attrs.get("orientation", 0)) == 1:
+            return x
         return emit(self, x, **attrs)
 
     def infer_out_meta(self, x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:

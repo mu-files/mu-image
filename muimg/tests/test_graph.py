@@ -12,7 +12,7 @@ from muimg.engines import get_default_engine, set_default_engine
 from muimg.engines.core import CoreEngine
 from muimg.engines.graph import EngineOp, flush
 from muimg.engines.ops import OPS_BY_NAME
-from muimg.raw_render import DemosaicAlgorithm, apply_tiff_orientation, demosaic
+from muimg.raw_render import DemosaicAlgorithm, demosaic
 from muimg.tensor import Tensor
 
 
@@ -124,7 +124,16 @@ def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
     for src in (src_u8, src_f32):
         for code in range(1, 9):
             calls.clear()
-            out = engine_ops.orientation(Tensor(src), orientation=code).compute()
+            src_t = Tensor(src)
+            t = engine_ops.orientation(src_t, orientation=code)
+            if code == 1:
+                assert t is src_t
+                assert t._node is None
+                assert calls == []
+                np.testing.assert_array_equal(t.compute(), src)
+                continue
+            assert t._node is not None and t._node.op == "orientation"
+            out = t.compute()
             assert len(calls) == 1
             assert [n["op"] for n in calls[0]["nodes"]] == ["orientation"]
             expect = np.ascontiguousarray(_tiff_orientation_numpy(src, code))
@@ -164,27 +173,19 @@ def test_engine_orientation_span_sandwich(monkeypatch):
         out = x.compute()
 
         assert len(calls) == 1, f"code {code}"
-        assert [n["op"] for n in calls[0]["nodes"]] == [
-            "sub_scalar",
-            "orientation",
-            "mul_scalar",
-            "orientation",
-        ], f"code {code}"
+        want_ops = (
+            ["sub_scalar", "mul_scalar"]
+            if code == 1
+            else [
+                "sub_scalar",
+                "orientation",
+                "mul_scalar",
+                "orientation",
+            ]
+        )
+        assert [n["op"] for n in calls[0]["nodes"]] == want_ops, f"code {code}"
         np.testing.assert_allclose(out, expect, err_msg=f"code {code}")
         assert out.shape == src.shape, f"code {code}"
-
-
-def test_apply_tiff_orientation_uses_engine_for_flips():
-    """Render helper emits engine_ops.orientation; codes 2/4 flip (not no-ops)."""
-    src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
-    t = Tensor(src)
-    assert apply_tiff_orientation(t, 1) is t
-
-    for code in (2, 4):
-        out_t = apply_tiff_orientation(Tensor(src), code)
-        assert out_t._node is not None and out_t._node.op == "orientation"
-        expect = np.ascontiguousarray(_tiff_orientation_numpy(src, code))
-        np.testing.assert_array_equal(out_t.compute(), expect)
 
 
 def test_crop_emit_rejects_window_outside_canvas():

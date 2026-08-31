@@ -27,6 +27,7 @@ from .deps import (
 # Package imports
 from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
+from .engines import ops as engine_ops
 from .raw_render import DemosaicAlgorithm
 from .tensor import Tensor
 from .common import PerfTimer
@@ -627,7 +628,7 @@ class DngPage(tifffile.TiffPage):
         # Apply orientation rotation
         orientation = self.get_tag("Orientation")
         if orientation is not None:
-            result = raw_render.apply_tiff_orientation(result, orientation)
+            result = engine_ops.orientation(result, orientation=int(orientation))
         
         # Convert dtype if needed
         if result.meta.dtype != np.dtype(output_dtype).name:
