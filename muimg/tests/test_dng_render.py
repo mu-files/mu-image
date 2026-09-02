@@ -148,7 +148,7 @@ def test_muimg_vs_photoshop(
     with DngFile(dng_path) as dng:
         result = dng.render_raw(
             output_dtype=np.uint16,
-            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
+            demosaic_algorithm=DemosaicAlgorithm.BILINEAR,
             strict=False,
             use_xmp=True,
             rendering_params={"highlight_preserving_exposure": True},
@@ -267,7 +267,7 @@ def test_muimg_vs_dng_validate(
     with DngFile(dng_path) as dng:
         muimg_result = dng.render_raw(
             output_dtype=np.uint16,
-            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
+            demosaic_algorithm=DemosaicAlgorithm.BILINEAR,
             strict=False,
             use_xmp=False,
             rendering_params={"highlight_preserving_exposure": False},

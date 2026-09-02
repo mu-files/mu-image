@@ -589,7 +589,7 @@ def run_batch_fits_to_dng(
     demosaic_algo = (
         demosaic_algorithm
         if demosaic_algorithm is not None
-        else DemosaicAlgorithm.DNGSDK_BILINEAR
+        else DemosaicAlgorithm.BILINEAR
     )
 
     # Pyramid params (JXL distance 1.0, 3 levels)
@@ -845,9 +845,9 @@ def main():
     )
     parser.add_argument(
         "--demosaic-algorithm",
-        default="DNGSDK_BILINEAR",
-        choices=["DNGSDK_BILINEAR", "EA", "EA_FAST", "OPENCV_EA", "VNG", "RCD"],
-        help="Demosaic algorithm (default: DNGSDK_BILINEAR)",
+        default="BILINEAR",
+        choices=["BILINEAR", "EA", "EA_FAST", "OPENCV_EA", "VNG", "RCD"],
+        help="Demosaic algorithm (default: BILINEAR)",
     )
     parser.add_argument(
         "--scale",

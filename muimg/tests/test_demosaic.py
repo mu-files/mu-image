@@ -60,8 +60,8 @@ def test_demosaic_uint8_consistency(cfa_data):
     # Convert CFA to uint8
     cfa_u8 = convert_dtype(Tensor(cfa), "uint8").compute()
     
-    # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    # Run BILINEAR as reference
+    reference = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).compute()
     assert reference.dtype == np.uint8
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
@@ -85,7 +85,7 @@ def test_demosaic_uint8_consistency(cfa_data):
         # Different algorithms will differ, but should be reasonably close
         # Based on actual measurements: mean ~0.02-0.15%, p99 ~0.4-1.2%, max ~15-41%
         diff_stats = compute_diff_stats(reference, result)
-        print(f"\n{algorithm} vs DNGSDK_BILINEAR (uint8): mean={diff_stats['mean']:.2f}%, p99={diff_stats['p99']:.2f}%, max={diff_stats['max']:.2f}%")
+        print(f"\n{algorithm} vs BILINEAR (uint8): mean={diff_stats['mean']:.2f}%, p99={diff_stats['p99']:.2f}%, max={diff_stats['max']:.2f}%")
         assert diff_stats['mean'] < 1.0, f"{algorithm} mean diff {diff_stats['mean']:.2f}% > 1.0%"
         assert diff_stats['p99'] < 2.0, f"{algorithm} p99 diff {diff_stats['p99']:.2f}% > 2.0%"
 
@@ -97,8 +97,8 @@ def test_demosaic_uint16_consistency(cfa_data):
     # Convert CFA to uint16
     cfa_u16 = convert_dtype(Tensor(cfa), "uint16").compute()
     
-    # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    # Run BILINEAR as reference
+    reference = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).compute()
     assert reference.dtype == np.uint16
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
@@ -121,7 +121,7 @@ def test_demosaic_uint16_consistency(cfa_data):
         # Check similarity to reference
         # Based on actual measurements: mean ~0.02-0.12%, p99 ~0.4-1.0%, max ~15-41%
         diff_stats = compute_diff_stats(reference, result)
-        print(f"\n{algorithm} vs DNGSDK_BILINEAR (uint16): mean={diff_stats['mean']:.2f}%, p99={diff_stats['p99']:.2f}%, max={diff_stats['max']:.2f}%")
+        print(f"\n{algorithm} vs BILINEAR (uint16): mean={diff_stats['mean']:.2f}%, p99={diff_stats['p99']:.2f}%, max={diff_stats['max']:.2f}%")
         assert diff_stats['mean'] < 1.0, f"{algorithm} mean diff {diff_stats['mean']:.2f}% > 1.0%"
         assert diff_stats['p99'] < 2.0, f"{algorithm} p99 diff {diff_stats['p99']:.2f}% > 2.0%"
 
@@ -133,8 +133,8 @@ def test_demosaic_float32_consistency(cfa_data):
     # Convert CFA to float32 (0-1 range)
     cfa_f32 = convert_dtype(Tensor(cfa), "float32").compute()
     
-    # Run DNGSDK_BILINEAR as reference
-    reference = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    # Run BILINEAR as reference
+    reference = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).compute()
     assert reference.dtype == np.float32
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
@@ -158,7 +158,7 @@ def test_demosaic_float32_consistency(cfa_data):
         # Check similarity to reference
         # Based on actual measurements: mean ~0.02-0.12%, p99 ~0.4-1.0%, max ~15-41%
         diff_stats = compute_diff_stats(reference, result)
-        print(f"\n{algorithm} vs DNGSDK_BILINEAR (float32): mean={diff_stats['mean']:.2f}%, p99={diff_stats['p99']:.2f}%, max={diff_stats['max']:.2f}%")
+        print(f"\n{algorithm} vs BILINEAR (float32): mean={diff_stats['mean']:.2f}%, p99={diff_stats['p99']:.2f}%, max={diff_stats['max']:.2f}%")
         assert diff_stats['mean'] < 1.0, f"{algorithm} mean diff {diff_stats['mean']:.2f}% > 1.0%"
         assert diff_stats['p99'] < 2.0, f"{algorithm} p99 diff {diff_stats['p99']:.2f}% > 2.0%"
 
@@ -169,11 +169,11 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     
     # Get float32 reference
     cfa_f32 = convert_dtype(Tensor(cfa), "float32").compute()
-    result_f32 = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    result_f32 = demosaic(Tensor(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).compute()
     
     # Convert to uint16 and demosaic
     cfa_u16 = convert_dtype(Tensor(cfa), "uint16").compute()
-    result_u16 = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    result_u16 = demosaic(Tensor(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).compute()
     
     # Convert uint16 result back to float32 for comparison
     result_u16_as_f32 = convert_dtype(Tensor(result_u16), "float32").compute()
@@ -185,7 +185,7 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     
     # Same test for uint8
     cfa_u8 = convert_dtype(Tensor(cfa), "uint8").compute()
-    result_u8 = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+    result_u8 = demosaic(Tensor(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).compute()
     result_u8_as_f32 = convert_dtype(Tensor(result_u8), "float32").compute()
     
     # uint8 has only 256 levels, so allow larger error
@@ -206,7 +206,7 @@ def test_demosaic_invalid_pattern(cfa_data):
     cfa, _ = cfa_data
     
     with pytest.raises(ValueError, match="Invalid CFA pattern"):
-        demosaic(Tensor(cfa), "INVALID_PATTERN", algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR).compute()
+        demosaic(Tensor(cfa), "INVALID_PATTERN", algorithm=DemosaicAlgorithm.BILINEAR).compute()
 
 
 def test_demosaic_cfa_pattern_consistency(cfa_data):
@@ -241,7 +241,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
     }
     
     # Test each algorithm for the reference
-    algorithms = [DemosaicAlgorithm.DNGSDK_BILINEAR] + get_available_algorithms()
+    algorithms = [DemosaicAlgorithm.BILINEAR] + get_available_algorithms()
     
     for ref_algorithm in algorithms:
         # Demosaic the original RGGB pattern with reference algorithm
@@ -333,7 +333,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
 
 @pytest.mark.parametrize(
     "algorithm",
-    [DemosaicAlgorithm.DNGSDK_BILINEAR, DemosaicAlgorithm.EA],
+    [DemosaicAlgorithm.BILINEAR, DemosaicAlgorithm.EA],
 )
 @pytest.mark.parametrize("cx,cy", [(1, 0), (0, 1), (3, 2)])
 def test_demosaic_then_crop_matches_post_process_slice(algorithm, cx, cy):

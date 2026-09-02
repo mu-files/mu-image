@@ -302,9 +302,9 @@ class WebViewBridge:
     def _resolve_demosaic_algorithm(settings):
         from muimg.raw_render import DemosaicAlgorithm
         try:
-            return DemosaicAlgorithm.lookup(settings.get("demosaicAlgo") or "DNGSDK_BILINEAR")
+            return DemosaicAlgorithm.lookup(settings.get("demosaicAlgo") or "BILINEAR")
         except Exception:
-            return DemosaicAlgorithm.DNGSDK_BILINEAR
+            return DemosaicAlgorithm.BILINEAR
 
     def _run_create_dng(self, tab, settings, log, progress_bar):
         """DNG → DNG copy/transcode (Create DNG tab, DNG input)."""

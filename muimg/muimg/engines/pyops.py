@@ -55,9 +55,9 @@ def demosaic_op(
     For Hamilton–Adams (``EA`` / ``EA_FAST``) use ``engines.ops.ea_demosaic``.
     ``OPENCV_EA`` stays here for quality comparison against the native EA path.
     """
-    if algorithm == "DNGSDK_BILINEAR":
+    if algorithm == "BILINEAR":
         raise ValueError(
-            "demosaic_op does not run DNGSDK_BILINEAR; "
+            "demosaic_op does not run BILINEAR; "
             "use engines.ops.bilinear_demosaic"
         )
     if algorithm in ("EA", "EA_FAST"):
@@ -78,7 +78,7 @@ def demosaic_op(
             raise ImportError(
                 "RCD demosaicing is not available. RCD is GPL-licensed and must be "
                 "enabled separately. See README.md for instructions to enable RCD, "
-                "or use a different algorithm (VNG, OPENCV_EA, DNGSDK_BILINEAR, EA, EA_FAST)."
+                "or use a different algorithm (VNG, OPENCV_EA, BILINEAR, EA, EA_FAST)."
             ) from e
         if arr.dtype != np.float32:
             raise ValueError(f"RCD kernel requires float32 CFA, got {arr.dtype}")

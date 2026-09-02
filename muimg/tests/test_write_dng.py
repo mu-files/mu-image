@@ -349,9 +349,9 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 
                 # Test render pipeline: with identity ProfileToneCurve, 
                 # render should apply sRGB gamma to linear RGB
-                # Use DNGSDK_BILINEAR for consistent demosaic comparison
+                # Use BILINEAR for consistent demosaic comparison
                 rendered = dng.render_raw(
-                    output_dtype=np.uint8, demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR)
+                    output_dtype=np.uint8, demosaic_algorithm=DemosaicAlgorithm.BILINEAR)
                 assert rendered is not None, f"Failed to render {comp_label}"
             
             '''
@@ -656,7 +656,7 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
     with DngFile(src_path) as src_dng:
         src_rendered = src_dng.render_raw(
             output_dtype=np.uint8,
-            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR
+            demosaic_algorithm=DemosaicAlgorithm.BILINEAR
         )
         assert src_rendered is not None, f"Failed to render source {src_label}"
     
@@ -685,7 +685,7 @@ def test_lossless_transcode(tmp_path, photometric, dtype_label, input_dtype, bit
     with DngFile(dst_path) as dst_dng:
         dst_rendered = dst_dng.render_raw(
             output_dtype=np.uint8,
-            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR
+            demosaic_algorithm=DemosaicAlgorithm.BILINEAR
         )
         assert dst_rendered is not None, f"Failed to render destination {dst_label}"
     

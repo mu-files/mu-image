@@ -569,7 +569,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 @click.argument("output_file", type=click.Path())
 @click.argument("stage", type=click.Choice(["raw", "camera-rgb"]))
 @click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
-@click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (EA, EA_FAST, OPENCV_EA, VNG, RCD, DNGSDK_BILINEAR)")
+@click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (EA, EA_FAST, OPENCV_EA, VNG, RCD, BILINEAR)")
 def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     """Extract raw image data at a specific pipeline stage.
     
@@ -685,8 +685,8 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
 @click.option(
     "--demosaic-algorithm",
     type=str,
-    default="DNGSDK_BILINEAR",
-    help="Demosaic algorithm (DNGSDK_BILINEAR, EA, EA_FAST, OPENCV_EA, VNG, RCD)",
+    default="BILINEAR",
+    help="Demosaic algorithm (BILINEAR, EA, EA_FAST, OPENCV_EA, VNG, RCD)",
 )
 @click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
 @click.option(
@@ -889,7 +889,7 @@ def dng_copy(
     "--demosaic-algorithm",
     type=str,
     default="EA",
-    help="Demosaic algorithm (EA, EA_FAST, OPENCV_EA, DNGSDK_BILINEAR, VNG, RCD)",
+    help="Demosaic algorithm (EA, EA_FAST, OPENCV_EA, BILINEAR, VNG, RCD)",
 )
 def dng_convert(
     input_file,
@@ -1143,7 +1143,7 @@ def run_batch_copy_dng(
             ),
         )
 
-    demosaic_algo = demosaic_algorithm if demosaic_algorithm is not None else DemosaicAlgorithm.DNGSDK_BILINEAR
+    demosaic_algo = demosaic_algorithm if demosaic_algorithm is not None else DemosaicAlgorithm.BILINEAR
 
     def dng_consumer(task):
         index, file_path, blob = task

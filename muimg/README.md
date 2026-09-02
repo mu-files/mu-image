@@ -12,7 +12,7 @@ Python library for reading, writing, and rendering Adobe DNG (Digital Negative) 
 
 - **DNG Read/Write**: Full support for reading, writing, and modifying Adobe DNG (Digital Negative) files.
 - **RAW Rendering Pipeline**: Complete implementation of DNG rendering pipeline (linearization, demosaicing, opcodes, color correction, tone curves). On macOS can opt between built-in renderer and Core Image renderer.
-- **Multiple Demosaicing Algorithms**: DNGSDK_BILINEAR, VNG, RCD (optional), EA, EA_FAST, OPENCV_EA
+- **Multiple Demosaicing Algorithms**: BILINEAR, VNG, RCD (optional), EA, EA_FAST, OPENCV_EA
 - **XMP Support**: Renderer supports Temperature, Tint, Exposure, Curves, and radial distortion from XMP metadata.
 - **Metadata Handling**: User-friendly TIFF/EXIF/XMP tag handling with automatic type conversion
 - **Compression**: Uncompressed, JPEG, JPEG XL support with multi-core parallel compression for tiled formats
@@ -379,7 +379,7 @@ See [docs/dng_render_pipeline.md](docs/dng_render_pipeline.md) for detailed impl
 ### Performance Notes
 
 **Demosaicing Algorithms**: muimg includes several demosaicing algorithms with different quality/speed tradeoffs:
-- **DNGSDK_BILINEAR**: Good quality, fast (default for most operations)
+- **BILINEAR**: Good quality, fast (default for most operations)
 - **VNG**: High quality, slower
 - **EA**: Hamilton–Adams (default for convert / camera RGB)
 - **EA_FAST**: Single-pass axis-pick green + bilinear chroma; faster, lower quality

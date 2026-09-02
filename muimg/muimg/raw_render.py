@@ -70,7 +70,7 @@ class DemosaicAlgorithm(StrEnum):
     EA = "EA"
     EA_FAST = "EA_FAST"
     OPENCV_EA = "OPENCV_EA"
-    DNGSDK_BILINEAR = "DNGSDK_BILINEAR"
+    BILINEAR = "BILINEAR"
     
     @classmethod
     def lookup(cls, value: str) -> "DemosaicAlgorithm":
@@ -534,7 +534,7 @@ def demosaic(
 
     out_dtype = dst_dtype if dst_dtype is not None else t.meta.dtype
 
-    if algorithm == DemosaicAlgorithm.DNGSDK_BILINEAR:
+    if algorithm == DemosaicAlgorithm.BILINEAR:
         x = convert_dtype(t, "float32")
         rgb = engine_ops.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
         return convert_dtype(rgb, out_dtype, clip_max=clip_max)
@@ -2875,7 +2875,7 @@ def _render_to_camera_space(
             None
             if demosaic_algorithm
             in (
-                DemosaicAlgorithm.DNGSDK_BILINEAR,
+                DemosaicAlgorithm.BILINEAR,
                 DemosaicAlgorithm.EA,
                 DemosaicAlgorithm.EA_FAST,
             )

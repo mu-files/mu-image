@@ -171,7 +171,7 @@ def make_test_dng(
             page=page_spec,
             scale=scale,
             demosaic=True,
-            demosaic_algorithm=DemosaicAlgorithm.DNGSDK_BILINEAR,
+            demosaic_algorithm=DemosaicAlgorithm.BILINEAR,
             preview=preview_params,
         )
         

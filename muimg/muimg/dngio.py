@@ -2127,7 +2127,7 @@ def _write_dng_with_params(
     ifd0_tags: MetadataTags,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.DNGSDK_BILINEAR,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.BILINEAR,
     preview: PreviewParams | None = None,
     pyramid: PyramidParams | None = None,
     num_compression_workers: int = 1,
@@ -2391,7 +2391,7 @@ def write_dng_from_array(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.DNGSDK_BILINEAR,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.BILINEAR,
     preview: PreviewParams | None = None,
     pyramid: PyramidParams | None = None,
     num_compression_workers: int = 1,
@@ -2490,7 +2490,7 @@ def write_dng_from_page(
     *,
     scale: float = 1.0,
     demosaic: bool = False,
-    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.DNGSDK_BILINEAR,
+    demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.BILINEAR,
     preview: PreviewParams | None = None,
     pyramid: PyramidParams | None = None,
     copy_ifd0_tags: bool = True,
@@ -2505,7 +2505,7 @@ def write_dng_from_page(
         page: Source page (IfdPageSpec or DngPage)
         scale: Scale factor for image (default: 1.0)
         demosaic: If True, convert CFA to LINEAR_RAW
-        demosaic_algorithm: Demosaic algorithm to use (default: DNGSDK_BILINEAR)
+        demosaic_algorithm: Demosaic algorithm to use (default: BILINEAR)
         preview: PreviewParams for preview generation (None = no preview)
         pyramid: PyramidParams for pyramid generation (None = no pyramid)
         copy_ifd0_tags: Copy IFD0 tags from source (default: True)
