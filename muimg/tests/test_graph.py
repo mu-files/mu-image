@@ -20,6 +20,7 @@ def test_catalog_engine_ops_io():
     """engines.ops carries EngineOp callables + OPS_BY_NAME."""
     assert "sub_scalar" in OPS_BY_NAME
     assert "view" in OPS_BY_NAME
+    assert "pad" in OPS_BY_NAME
     assert "orientation" in OPS_BY_NAME
     assert isinstance(engine_ops.bilinear_demosaic, EngineOp)
     assert engine_ops.bilinear_demosaic._in_channels == 1
@@ -53,7 +54,7 @@ def test_view_emit_meta_updates_origin_and_size():
     cat = base.view(left=1, top=2, width=3, height=2)
     assert cat.meta.height == 2 and cat.meta.width == 3
     assert cat.meta.origin == (2, 1)
-    assert cat.meta.canvas == (-1, -2, 7, 5)
+    assert cat.meta.canvas == (0, 0, 7, 5)
     assert cat._node is not None and cat._node.op == "view"
     assert cat._node.fn is None
 

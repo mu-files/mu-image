@@ -47,7 +47,7 @@ def test_view_restore_full_source():
     """6×6 → view(1,1,4,4) → crop(-1,-1,6,6) is the full input."""
     src = np.arange(6 * 6, dtype=np.float32).reshape(6, 6) + 1.0
     t = Tensor(src).view(left=1, top=1, width=4, height=4)
-    assert t.meta.canvas == (-1, -1, 6, 6)
+    assert t.meta.canvas == (0, 0, 6, 6)
     t = t.crop(left=-1, top=-1, width=6, height=6)
     np.testing.assert_array_equal(t.compute(), src)
 
@@ -124,15 +124,15 @@ def test_crop_slice_resets_canvas_view_keeps_it():
     viewed = t.view(np.s_[2:4, 1:4])
     cropped = t.crop(np.s_[2:4, 1:4])
     np.testing.assert_array_equal(viewed.compute(), cropped.compute())
-    assert viewed.meta.canvas == (-1, -2, 7, 5)
-    assert cropped.meta.canvas == (0, 0, 3, 2)
+    assert viewed.meta.canvas == (0, 0, 7, 5)
+    assert cropped.meta.canvas == (1, 2, 3, 2)
 
 
 def test_getitem_is_hard_crop():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
     t = Tensor(src)[2:4, 1:4]
     np.testing.assert_array_equal(t.compute(), src[2:4, 1:4])
-    assert t.meta.canvas == (0, 0, 3, 2)
+    assert t.meta.canvas == (1, 2, 3, 2)
     with pytest.raises(ValueError, match="outside canvas"):
         t.crop(left=-1, top=-1, width=5, height=4)
 

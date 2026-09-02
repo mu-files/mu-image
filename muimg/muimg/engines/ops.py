@@ -79,6 +79,54 @@ view = EngineOp(
     _infer_meta=graph._out_meta_view,
 )
 
+pad = EngineOp(
+    meta=OpMeta(name='pad'),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "top",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "bottom",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "left",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "right",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "mode",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "constant",
+      "edge",
+      "symmetric",
+      "reflect"
+    ]
+  },
+  {
+    "count": 4,
+    "key": "constant_values",
+    "optional": true,
+    "type": "f32_array"
+  }
+]''')),
+    _infer_meta=graph._out_meta_pad,
+)
+
 orientation = EngineOp(
     meta=OpMeta(name='orientation'),
     _out_dtype=graph._out_dtype_same,
@@ -823,6 +871,7 @@ OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
     'view': view,
+    'pad': pad,
     'orientation': orientation,
     'bilinear_demosaic': bilinear_demosaic,
     'ea_demosaic': ea_demosaic,

@@ -23,9 +23,10 @@ version: 1
 # gen_ops inlines the values into the generated attr spec for validation.
 enums:
   pad_mode:
-    - mirror
-    - extend
-    - zero
+    - constant
+    - edge
+    - symmetric
+    - reflect
 
 ops:
   - name: sub_scalar
@@ -77,6 +78,36 @@ ops:
       - key: oob_valid
         type: bool
         count: 1
+        optional: true
+
+  # Grow the tensor by spatial margins. Inverse of view with oob_valid=false.
+  - name: pad
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: pad
+    attrs:
+      - key: top
+        type: i32
+        count: 1
+      - key: bottom
+        type: i32
+        count: 1
+      - key: left
+        type: i32
+        count: 1
+      - key: right
+        type: i32
+        count: 1
+      - key: mode
+        type: string
+        count: 1
+        optional: true
+        enum: pad_mode
+      - key: constant_values
+        type: f32_array
+        count: 4
         optional: true
 
   # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation.

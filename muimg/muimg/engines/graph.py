@@ -181,14 +181,14 @@ def _out_channels_const(n: int) -> OutMetaFn:
 
 
 def _out_meta_view(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    """Geometry policy ``view``: H/W from attrs; update or reset world origin.
+    """Geometry policy ``view``: H/W from attrs. Canvas stays in this tensor's system.
 
-    View attrs ``left``/``top`` are column/row offsets into the current buffer.
-    The window must sit inside the input canvas.
-    Default: ``origin' = origin + (top, left)`` with origin stored as ``(row, col)``.
-    If ``reset_origin`` is true (ActiveArea / DefaultCrop), ``origin' = (0, 0)``.
-    ``oob_valid`` true: output canvas is the parent canvas shifted by
-    ``(-left, -top)``. ``oob_valid`` false: canvas is ``(0, 0, width, height)``.
+    View attrs ``left``/``top`` are dest-relative. The window is checked in
+    the shared canvas system (dest ``(0, 0)`` is ``origin``).
+    Default: ``origin' = origin + (top, left)``. ``reset_origin`` sets
+    ``(0, 0)``. ``oob_valid`` does not change origin: false puts canvas on
+    the view rect; true keeps the parent canvas (or remaps it into dest
+    space when origin was reset).
     """
     left, top = int(attrs["left"]), int(attrs["top"])
     width, height = int(attrs["width"]), int(attrs["height"])
@@ -197,11 +197,14 @@ def _out_meta_view(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
             f"view: invalid box top={top} left={left} width={width} height={height}"
         )
     cx, cy, cw, ch = x.meta.canvas
+    base_row, base_col = x.meta.origin
+    shared_left = left + base_col
+    shared_top = top + base_row
     if (
-        left < cx
-        or top < cy
-        or left + width > cx + cw
-        or top + height > cy + ch
+        shared_left < cx
+        or shared_top < cy
+        or shared_left + width > cx + cw
+        or shared_top + height > cy + ch
     ):
         raise ValueError(
             f"view: box top={top} left={left} width={width} height={height} "
@@ -210,17 +213,52 @@ def _out_meta_view(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     if attrs.get("reset_origin"):
         origin = (0, 0)
     else:
-        base_row, base_col = x.meta.origin
         origin = (base_row + top, base_col + left)
     if attrs.get("oob_valid", True):
-        canvas = (cx - left, cy - top, cw, ch)
+        if attrs.get("reset_origin"):
+            canvas = (cx - left, cy - top, cw, ch)
+        else:
+            canvas = (cx, cy, cw, ch)
     else:
-        canvas = (0, 0, width, height)
+        origin_row, origin_col = origin
+        canvas = (origin_col, origin_row, width, height)
     return x.meta.copy(
         height=height,
         width=width,
         origin=origin,
         canvas=canvas,
+    )
+
+
+def _out_meta_pad(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+    """Geometry policy ``pad``: grow H/W by margins in the shared canvas system.
+
+    Dest ``(left, top)`` is src ``(0, 0)``. Origin shifts by
+    ``-(top, left)``. Canvas is the new tensor at that origin, same as a
+    crop's view rect and canvas both sitting on the window.
+    """
+    top = int(attrs["top"])
+    bottom = int(attrs["bottom"])
+    left = int(attrs["left"])
+    right = int(attrs["right"])
+    if min(top, bottom, left, right) < 0:
+        raise ValueError(
+            f"pad: top/bottom/left/right {[top, bottom, left, right]} must be non-negative"
+        )
+    dest_h = x.meta.height + top + bottom
+    dest_w = x.meta.width + left + right
+    if dest_h < 1 or dest_w < 1:
+        raise ValueError(
+            f"pad: dest size {dest_h}x{dest_w} is empty"
+        )
+    base_row, base_col = x.meta.origin
+    origin = (base_row - top, base_col - left)
+    origin_row, origin_col = origin
+    return x.meta.copy(
+        height=dest_h,
+        width=dest_w,
+        origin=origin,
+        canvas=(origin_col, origin_row, dest_w, dest_h),
     )
 
 
@@ -281,8 +319,8 @@ def _map_rect_through_orientation(
 def _out_meta_orientation(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     """Geometry policy ``orientation``: swap H×W for TIFF codes 5–8.
 
-    Canvas is remapped the same way dest is: four corners and the inverse
-    TIFF code.
+    Canvas is remapped in dest space, then stored back in the shared
+    system (dest ``(0, 0)`` is ``origin``).
     """
     code = int(attrs["orientation"])
     if code < 1 or code > 8:
@@ -290,10 +328,14 @@ def _out_meta_orientation(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     swap = code in _ORIENTATION_SWAP_HW
     height = x.meta.width if swap else x.meta.height
     width = x.meta.height if swap else x.meta.width
+    origin_row, origin_col = x.meta.origin
+    cx, cy, cw, ch = x.meta.canvas
+    local = (cx - origin_col, cy - origin_row, cw, ch)
+    mx, my, mw, mh = _map_rect_through_orientation(code, local, width, height)
     return x.meta.copy(
         height=height,
         width=width,
-        canvas=_map_rect_through_orientation(code, x.meta.canvas, width, height),
+        canvas=(mx + origin_col, my + origin_row, mw, mh),
     )
 
 

@@ -76,9 +76,11 @@ class TensorMeta:
     height: int
     width: int
     channels: int
-    # World coordinate of buffer top-left as (row, col). Default (0, 0).
+    # Buffer top-left in the shared canvas coordinate system, as (row, col).
     origin: Tuple[int, int] = (0, 0)
-    # Rect on this tensor: (x0, y0, width, height). A later view or crop may use it.
+    # Rect in that same system: (x0, y0, width, height). A later view or
+    # crop uses it. When this tensor is the whole canvas, (x0, y0) is
+    # (origin col, origin row).
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
 
     @property
@@ -118,6 +120,39 @@ def _require_scalar(value: Any, op: str) -> float:
         return float(value)
     except (TypeError, ValueError) as e:
         raise TypeError(f"{op}: RHS must be a scalar") from e
+
+
+def _expand_spatial_pad(value: Any, name: str, *, nonneg: bool = False) -> list[int] | list[float]:
+    """NumPy ``pad_width`` / ``constant_values`` → ``[top, bottom, left, right]``.
+
+    An int is all four sides. A pair is ``(before, after)`` on both spatial
+    axes. A 2×2 is ``((top, bottom), (left, right))``. Channel axes are
+    never included.
+    """
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        sides = [arr.item(), arr.item(), arr.item(), arr.item()]
+    elif arr.ndim == 1 and arr.size == 1:
+        n = arr.reshape(-1)[0].item()
+        sides = [n, n, n, n]
+    elif arr.ndim == 1 and arr.size == 2:
+        before, after = (arr.flat[0].item(), arr.flat[1].item())
+        sides = [before, after, before, after]
+    elif arr.ndim == 2 and arr.shape == (2, 2):
+        sides = [
+            arr[0, 0].item(),
+            arr[0, 1].item(),
+            arr[1, 0].item(),
+            arr[1, 1].item(),
+        ]
+    else:
+        raise ValueError(
+            f"{name}: expected an int, a pair, or ((top, bottom), (left, right)); "
+            f"got {value!r}"
+        )
+    if nonneg and any(v < 0 for v in sides):
+        raise ValueError(f"{name}: values must be non-negative; got {sides}")
+    return sides
 
 
 def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int]:
@@ -290,7 +325,7 @@ class Tensor:
     ) -> "Tensor":
         """Window into this tensor.
 
-        ``oob_valid`` true keeps the parent canvas available for downstream peeking.
+        ``oob_valid`` true keeps the parent canvas in this coordinate system.
         """
         from .engines import ops as engine_ops
 
@@ -330,6 +365,29 @@ class Tensor:
             oob_valid=False,
             reset_origin=reset_origin,
         )
+
+    def pad(
+        self,
+        pad_width: Any,
+        mode: str = "constant",
+        constant_values: Any = 0,
+    ) -> "Tensor":
+        """Grow height and width. Same ``pad_width`` / ``constant_values`` shapes as ``numpy.pad``."""
+        from .engines import ops as engine_ops
+
+        top, bottom, left, right = (
+            int(v) for v in _expand_spatial_pad(pad_width, "pad_width", nonneg=True)
+        )
+        consts = [float(v) for v in _expand_spatial_pad(constant_values, "constant_values")]
+        attrs: dict[str, Any] = {
+            "top": top,
+            "bottom": bottom,
+            "left": left,
+            "right": right,
+            "mode": mode,
+            "constant_values": consts,
+        }
+        return engine_ops.pad(self, **attrs)
 
     def __getitem__(self, key: Any) -> "Tensor":
         """NumPy spatial slice: a hard crop of this tensor."""
