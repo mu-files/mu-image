@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
@@ -155,53 +156,122 @@ def _expand_spatial_pad(value: Any, name: str, *, nonneg: bool = False) -> list[
     return sides
 
 
-def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int]:
-    """Return (start, size) for a 1-d slice on an axis of ``length``."""
-    if slc.step not in (None, 1):
-        raise ValueError(f"{name}: slice step must be 1, got {slc.step}")
+def _require_slice_indices(slc: slice) -> None:
+    """Reject float (and other non-index) start/stop/step, as NumPy does."""
+    for part in (slc.start, slc.stop, slc.step):
+        if part is None:
+            continue
+        try:
+            operator.index(part)
+        except TypeError:
+            raise TypeError(
+                "slice indices must be integers or None or have an __index__ method"
+            ) from None
+
+
+def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, bool]:
+    """Return (start, size, reversed) for a 1-d slice on an axis of ``length``."""
+    _require_slice_indices(slc)
+    if slc.step not in (None, 1, -1):
+        raise ValueError(f"{name}: slice step must be 1 or -1, got {slc.step}")
     start, stop, step = slc.indices(length)
-    if step != 1:
-        raise ValueError(f"{name}: slice step must be 1, got {step}")
-    return start, stop - start
+    n = len(range(start, stop, step))
+    if n == 0:
+        raise ValueError(f"{name}: slice results in an empty dimension")
+    if step == 1:
+        return start, n, False
+    return start - n + 1, n, True
 
 
 def _full_channel_slice(slc: slice, channels: int) -> bool:
+    _require_slice_indices(slc)
     if slc.step not in (None, 1):
         return False
     start, stop, step = slc.indices(channels)
     return start == 0 and stop == channels and step == 1
 
 
-def _window_from_slices(
-    meta: TensorMeta, rows: slice, cols: slice, channels: Optional[slice] = None
-) -> Tuple[int, int, int, int]:
-    if channels is not None:
-        if meta.channels == 1:
-            raise IndexError("too many indices for a (H, W) tensor")
-        if not _full_channel_slice(channels, meta.channels):
-            raise ValueError("channel subsets are not supported")
-    top, height = _slice_span(rows, meta.height, "rows")
-    left, width = _slice_span(cols, meta.width, "cols")
-    return left, top, width, height
+def _orientation_from_flips(flip_rows: bool, flip_cols: bool) -> int:
+    """Map reversed slice axes to a TIFF orientation code.
+
+    Identity is 1. A reversed column axis is 2 (left–right). A reversed row
+    axis is 4 (up–down). Both reversed is 3 (180°).
+    """
+    if flip_rows and flip_cols:
+        return 3
+    if flip_rows:
+        return 4
+    if flip_cols:
+        return 2
+    return 1
 
 
-def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int]:
-    if isinstance(key, slice):
-        return _window_from_slices(meta, key, slice(None))
-    if not isinstance(key, tuple):
+def _as_axis_int(value: Any, name: str) -> int:
+    """Require a real integer for a view keyword (bool is not an int)."""
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    return int(value)
+
+
+def _expand_index_key(key: Any, ndim: int) -> Tuple[slice, ...]:
+    """Expand a slice key to one slice per axis of the tensor.
+
+    Mono tensors are rank 2 ``(H, W)``. RGB/RGBA tensors are rank 3
+    ``(H, W, C)``. At most one Ellipsis is replaced with ``slice(None)``.
+    A trailing Ellipsis that fills no axes is dropped, as in NumPy
+    (``arr[:, :, ...]`` on a 2-d array is ``arr[:, :]``). A short key such
+    as ``t[:]`` or ``t[10:90]`` is padded on the right with ``slice(None)``.
+    """
+    if key is Ellipsis:
+        items: Tuple[Any, ...] = (Ellipsis,)
+    elif isinstance(key, slice):
+        items = (key,)
+    elif isinstance(key, tuple):
+        items = key
+    else:
         raise TypeError("region must be a spatial slice or a tuple of slices")
-    if any(not isinstance(item, slice) for item in key):
+
+    n_ellipsis = sum(item is Ellipsis for item in items)
+    if n_ellipsis > 1:
+        raise IndexError("an index can only have a single ellipsis ('...')")
+    if n_ellipsis == 1:
+        i = items.index(Ellipsis)
+        n_fill = max(0, ndim - (len(items) - 1))
+        items = items[:i] + (slice(None),) * n_fill + items[i + 1 :]
+
+    if any(not isinstance(item, slice) for item in items):
         raise TypeError(
             "region must be slice objects; integer axes, "
             "masks, and newaxis are not supported"
         )
-    if len(key) == 1:
-        return _window_from_slices(meta, key[0], slice(None))
-    if len(key) == 2:
-        return _window_from_slices(meta, key[0], key[1])
-    if len(key) == 3:
-        return _window_from_slices(meta, key[0], key[1], key[2])
-    raise IndexError(f"too many indices for a tensor: {len(key)}")
+    if len(items) < ndim:
+        items = items + (slice(None),) * (ndim - len(items))
+    return items
+
+
+def _window_from_slices(
+    meta: TensorMeta, rows: slice, cols: slice, channels: Optional[slice] = None
+) -> Tuple[int, int, int, int, int]:
+    if channels is not None:
+        # Mono is rank 2 (H, W), even when channels == 1 in metadata.
+        if len(meta.shape) < 3:
+            raise IndexError("too many indices for a (H, W) tensor")
+        if not _full_channel_slice(channels, meta.channels):
+            raise ValueError("channel subsets are not supported")
+    top, height, flip_rows = _slice_span(rows, meta.height, "rows")
+    left, width, flip_cols = _slice_span(cols, meta.width, "cols")
+    return left, top, width, height, _orientation_from_flips(flip_rows, flip_cols)
+
+
+def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int, int]:
+    items = _expand_index_key(key, len(meta.shape))
+    if len(items) == 1:
+        return _window_from_slices(meta, items[0], slice(None))
+    if len(items) == 2:
+        return _window_from_slices(meta, items[0], items[1])
+    if len(items) == 3:
+        return _window_from_slices(meta, items[0], items[1], items[2])
+    raise IndexError(f"too many indices for a tensor: {len(items)}")
 
 
 def _window(
@@ -211,8 +281,14 @@ def _window(
     top: int | None,
     width: int | None,
     height: int | None,
-) -> Tuple[int, int, int, int]:
-    """Normalize a slice region or a keyword rect to (left, top, width, height)."""
+) -> Tuple[int, int, int, int, int]:
+    """Normalize a slice region or a keyword rect to (left, top, width, height, orientation).
+
+    ``orientation`` is TIFF 1 (identity) for a keyword rect or a forward slice.
+    A reversed slice axis is 2 (fliplr), 4 (flipud), or 3 (both, 180°).
+    ``left`` and ``top`` may be negative so a later view can reach back into
+    the parent canvas. ``width`` and ``height`` must be at least 1.
+    """
     rect = (left, top, width, height)
     has_rect = any(v is not None for v in rect)
     if region is not None:
@@ -221,7 +297,16 @@ def _window(
         return _window_from_key(meta, region)
     if any(v is None for v in rect):
         raise TypeError("view requires a slice region or left, top, width, and height")
-    return int(left), int(top), int(width), int(height)
+    left_i = _as_axis_int(left, "left")
+    top_i = _as_axis_int(top, "top")
+    width_i = _as_axis_int(width, "width")
+    height_i = _as_axis_int(height, "height")
+    if width_i < 1 or height_i < 1:
+        raise ValueError(
+            f"view: invalid box top={top_i} left={left_i} "
+            f"width={width_i} height={height_i}"
+        )
+    return left_i, top_i, width_i, height_i, 1
 
 
 def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
@@ -330,7 +415,7 @@ class Tensor:
         from .engines import ops as engine_ops
 
         # _window resolves the geometry and checks for mutual exclusivity errors
-        left_i, top_i, width_i, height_i = _window(
+        left_i, top_i, width_i, height_i, orientation = _window(
             self._meta, region, left, top, width, height
         )
 
@@ -343,7 +428,10 @@ class Tensor:
             "reset_origin": reset_origin,
         }
 
-        return engine_ops.view(self, **attrs)
+        out = engine_ops.view(self, **attrs)
+        if orientation != 1:
+            out = engine_ops.orientation(out, orientation=orientation)
+        return out
 
     def crop(
         self,

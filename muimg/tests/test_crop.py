@@ -148,6 +148,14 @@ def test_slice_rejects_step_and_mixed_args():
     t = Tensor(np.zeros((4, 6), dtype=np.float32))
     with pytest.raises(ValueError, match="step"):
         t.view(np.s_[::2, :])
+    with pytest.raises(ValueError, match="step"):
+        t.view(np.s_[::-2, :])
+    with pytest.raises(TypeError, match="slice indices must be integers"):
+        t.view(slice(None, None, 1.0))
+    with pytest.raises(TypeError, match="slice indices must be integers"):
+        t.view(slice(None, None, 2.0))
+    with pytest.raises(TypeError, match="slice indices must be integers"):
+        t.view(slice(1.5, 3, None))
     with pytest.raises(TypeError, match="mix"):
         t.view(np.s_[1:3, :], left=0)
     with pytest.raises(TypeError, match="slice region or left"):
@@ -161,3 +169,97 @@ def test_slice_rejects_step_and_mixed_args():
     )
     with pytest.raises(ValueError, match="channel"):
         rgb.view(np.s_[1:3, 2:5, 0:2])
+    with pytest.raises(TypeError, match="slice indices must be integers"):
+        rgb.view((slice(None), slice(None), slice(None, None, 1.0)))
+    with pytest.raises(IndexError, match="too many indices"):
+        t.view(np.s_[:, :, :])
+    with pytest.raises(IndexError, match="ellipsis"):
+        t.view((..., ...))
+    with pytest.raises(TypeError, match="must be an int"):
+        t.view(left=1.5, top=0, width=2, height=2)
+    with pytest.raises(TypeError, match="must be an int"):
+        t.view(left=True, top=0, width=2, height=2)
+    with pytest.raises(ValueError, match="invalid box"):
+        t.view(left=0, top=0, width=0, height=2)
+
+
+def _mono() -> np.ndarray:
+    return np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
+
+
+def _rgb() -> np.ndarray:
+    plane = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    return np.stack([plane, plane + 100.0, plane + 200.0], axis=-1)
+
+
+@pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
+@pytest.mark.parametrize(
+    "key",
+    [np.s_[::-1, :], np.s_[:, ::-1], np.s_[::-1, ::-1], np.s_[4:1:-1, 5:1:-1]],
+    ids=["flipud", "fliplr", "rot180", "partial"],
+)
+@pytest.mark.parametrize("method", ["view", "crop", "getitem"])
+def test_reverse_slice_matches_numpy(src, key, method):
+    t = Tensor(src)
+    if method == "view":
+        got = t.view(key)
+    elif method == "crop":
+        got = t.crop(key)
+    else:
+        got = t[key]
+    np.testing.assert_array_equal(got.compute(), src[key])
+
+
+def test_reverse_slice_rgb_keeps_all_channels():
+    src = _rgb()
+    np.testing.assert_array_equal(
+        Tensor(src).view(np.s_[::-1, :, :]).compute(), src[::-1, :, :]
+    )
+
+
+def test_empty_slice_is_rejected():
+    t = Tensor(_mono())
+    with pytest.raises(ValueError, match="empty dimension"):
+        t.view(np.s_[1:4:-1, :])
+    with pytest.raises(ValueError, match="empty dimension"):
+        t.view(np.s_[20:10, :])
+    with pytest.raises(ValueError, match="empty dimension"):
+        t.view(np.s_[10:20:-1, :])
+    with pytest.raises(ValueError, match="empty dimension"):
+        t.view(np.s_[2:2, :])
+
+
+def test_ellipsis_fills_remaining_axes():
+    src = _mono()
+    t = Tensor(src)
+    np.testing.assert_array_equal(t.view(...).compute(), src)
+    np.testing.assert_array_equal(t.view(np.s_[1:4, ...]).compute(), src[1:4])
+    np.testing.assert_array_equal(t.view(np.s_[1:4, 2:6, ...]).compute(), src[1:4, 2:6])
+    rgb = _rgb()
+    tr = Tensor(rgb)
+    np.testing.assert_array_equal(tr.view(...).compute(), rgb)
+    np.testing.assert_array_equal(tr[:].compute(), rgb[:])
+    np.testing.assert_array_equal(tr[1:4].compute(), rgb[1:4])
+    np.testing.assert_array_equal(
+        tr.view(np.s_[1:4, 2:6, ...]).compute(), rgb[1:4, 2:6]
+    )
+    np.testing.assert_array_equal(
+        tr.view(np.s_[1:4, 2:6, ..., :]).compute(), rgb[1:4, 2:6]
+    )
+
+
+def test_reverse_crop_resets_canvas_view_keeps_it():
+    """A reversed crop sits on its box. A reversed view remaps the parent canvas."""
+    src = _mono()
+    t = Tensor(src)
+    key = np.s_[4:1:-1, 1:4]
+    viewed = t.view(key)
+    cropped = t.crop(key)
+    want = src[key]
+    np.testing.assert_array_equal(viewed.compute(), want)
+    np.testing.assert_array_equal(cropped.compute(), want)
+    assert cropped.meta.canvas == (1, 2, 3, 3)
+    with pytest.raises(ValueError, match="outside canvas"):
+        cropped.crop(left=-1, top=0, width=5, height=3)
+    extra = viewed.crop(left=-1, top=0, width=5, height=3)
+    np.testing.assert_array_equal(extra.compute(), src[4:1:-1, 0:5])
