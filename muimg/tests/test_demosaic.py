@@ -7,7 +7,7 @@ import pytest
 from pathlib import Path
 import tifffile
 
-import muimg.engines.ops as engine_ops
+import mucompute as mc
 from muimg.dngio import DngFile
 from muimg.tensor import Tensor
 from muimg.raw_render import demosaic, convert_dtype, DemosaicAlgorithm

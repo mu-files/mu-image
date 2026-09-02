@@ -256,6 +256,13 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
         lines.append(f"    {name!r}: {name},")
     lines.append("}")
     lines.append("")
+    # __all__ lets muimg.mc star-import exactly the catalog surface.
+    lines.append("__all__ = [")
+    lines.append("    'OPS_BY_NAME',")
+    for name in sorted(names):
+        lines.append(f"    {name!r},")
+    lines.append("]")
+    lines.append("")
     return "\n".join(lines)
 
 

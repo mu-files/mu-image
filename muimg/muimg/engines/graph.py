@@ -114,7 +114,7 @@ class OpMeta:
 
 @dataclass(frozen=True)
 class EngineOp:
-    """Callable engine op + metadata. Public names live in ``engines.ops``."""
+    """Callable engine op + metadata. Public names live on ``muimg.mc``."""
 
     meta: OpMeta
     _out_dtype: OutMetaFn

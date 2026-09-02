@@ -311,7 +311,7 @@ def _window(
 
 def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
     """Rotate in the spatial plane. Same arguments as ``numpy.rot90``."""
-    from .engines import ops as engine_ops
+    from . import mc
 
     if tuple(axes) != (0, 1):
         raise ValueError("Tensor only supports rot90 in the spatial plane (axes=(0, 1)).")
@@ -319,21 +319,21 @@ def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
     if turns == 0:
         return m
     # k=1 is 90° CCW (TIFF 8); k=2 is 180 (3); k=3 is 90° CW (6).
-    return engine_ops.orientation(m, orientation={1: 8, 2: 3, 3: 6}[turns])
+    return mc.orientation(m, orientation={1: 8, 2: 3, 3: 6}[turns])
 
 
 def fliplr(m: "Tensor") -> "Tensor":
     """Flip left–right. Same as ``numpy.fliplr``."""
-    from .engines import ops as engine_ops
+    from . import mc
 
-    return engine_ops.orientation(m, orientation=2)
+    return mc.orientation(m, orientation=2)
 
 
 def flipud(m: "Tensor") -> "Tensor":
     """Flip up–down. Same as ``numpy.flipud``."""
-    from .engines import ops as engine_ops
+    from . import mc
 
-    return engine_ops.orientation(m, orientation=4)
+    return mc.orientation(m, orientation=4)
 
 
 class Tensor:
@@ -412,7 +412,7 @@ class Tensor:
 
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
         """
-        from .engines import ops as engine_ops
+        from . import mc
 
         # _window resolves the geometry and checks for mutual exclusivity errors
         left_i, top_i, width_i, height_i, orientation = _window(
@@ -428,9 +428,9 @@ class Tensor:
             "reset_origin": reset_origin,
         }
 
-        out = engine_ops.view(self, **attrs)
+        out = mc.view(self, **attrs)
         if orientation != 1:
-            out = engine_ops.orientation(out, orientation=orientation)
+            out = mc.orientation(out, orientation=orientation)
         return out
 
     def crop(
@@ -461,7 +461,7 @@ class Tensor:
         constant_values: Any = 0,
     ) -> "Tensor":
         """Grow height and width. Same ``pad_width`` / ``constant_values`` shapes as ``numpy.pad``."""
-        from .engines import ops as engine_ops
+        from . import mc
 
         top, bottom, left, right = (
             int(v) for v in _expand_spatial_pad(pad_width, "pad_width", nonneg=True)
@@ -475,7 +475,7 @@ class Tensor:
             "mode": mode,
             "constant_values": consts,
         }
-        return engine_ops.pad(self, **attrs)
+        return mc.pad(self, **attrs)
 
     def __getitem__(self, key: Any) -> "Tensor":
         """NumPy spatial slice: a hard crop of this tensor."""
@@ -490,9 +490,9 @@ class Tensor:
             axes = tuple(axes[0])
         if axes and axes != (1, 0) and axes != (1, 0, 2):
             raise ValueError("Tensor only supports 2D spatial axis transposition.")
-        from .engines import ops as engine_ops
+        from . import mc
 
-        return engine_ops.orientation(self, orientation=5)
+        return mc.orientation(self, orientation=5)
 
     @property
     def T(self) -> "Tensor":

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import muimg.engines.ops as engine_ops
+import mucompute as mc
 from muimg.tensor import Tensor
 from muimg.tiff_metadata import Orientation
 
@@ -77,7 +77,7 @@ def test_view_rotate_crop_maps_canvas():
         width=side,
         height=side,
     )
-    t = engine_ops.orientation(t, orientation=Orientation.ROTATE_90_CW)
+    t = mc.orientation(t, orientation=Orientation.ROTATE_90_CW)
     t = t.crop(left=-6, top=0, width=2 * w, height=side)
     from_source = t.compute()
 
@@ -101,7 +101,7 @@ def test_crop_rotate_crop_rejects_second():
         width=side,
         height=side,
     )
-    t = engine_ops.orientation(t, orientation=Orientation.ROTATE_90_CW)
+    t = mc.orientation(t, orientation=Orientation.ROTATE_90_CW)
     with pytest.raises(ValueError, match="outside canvas"):
         t.crop(left=-6, top=0, width=2 * w, height=side)
 

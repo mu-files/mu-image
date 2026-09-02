@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muimg"
-version = "0.1.20260901.2244"
+version = "0.1.20260902.1300"
 description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
@@ -73,6 +73,9 @@ packages = [
     "muimg.engines",
     "muimg.engines.tools",
     "muimg.engines.core",
+    # Public import spelling for the mu compute graph (`import mucompute as mc`).
+    # Re-exports muimg.mc until the mc core is extracted into its own package.
+    "mucompute",
 ]
 # Host-only abi3 CoreEngine extension selection is in setup.py (package_data).
 # MANIFEST.in still ships all engines/core/_binaries/* in the sdist.

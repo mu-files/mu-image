@@ -18,7 +18,7 @@ import pytest
 
 from muimg.imgio import convert_imgformat, convert_imgformat_to_stream, convert_dng_to_stream, decode_image
 from muimg.dngio import DngFile
-from muimg.engines import ops as engine_ops
+import mucompute as mc
 from muimg.tensor import Tensor
 from conftest import (
     compute_diff_stats,
@@ -397,7 +397,7 @@ def test_orientation_handling(tmp_path):
         
         # Apply inverse rotation to get back to original orientation
         inverse_orientation = inverse_rotations[orientation]
-        unrotated_img = engine_ops.orientation(
+        unrotated_img = mc.orientation(
             Tensor(oriented_img), orientation=int(inverse_orientation)
         ).compute()
         print(f"  After inverse rotation: {unrotated_img.shape}")

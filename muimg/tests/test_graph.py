@@ -7,7 +7,7 @@ from typing import Dict, List
 import numpy as np
 import pytest
 
-import muimg.engines.ops as engine_ops
+import mucompute as mc
 from muimg.engines import get_default_engine, set_default_engine
 from muimg.engines.core import CoreEngine
 from muimg.engines.graph import EngineOp, flush
@@ -22,12 +22,12 @@ def test_catalog_engine_ops_io():
     assert "view" in OPS_BY_NAME
     assert "pad" in OPS_BY_NAME
     assert "orientation" in OPS_BY_NAME
-    assert isinstance(engine_ops.bilinear_demosaic, EngineOp)
-    assert engine_ops.bilinear_demosaic._in_channels == 1
+    assert isinstance(mc.bilinear_demosaic, EngineOp)
+    assert mc.bilinear_demosaic._in_channels == 1
     x = Tensor(np.zeros((2, 2), dtype=np.float32))
-    assert engine_ops.bilinear_demosaic.infer_out_meta(x, {}).channels == 3
-    assert callable(engine_ops.matrix_3x3)
-    assert callable(engine_ops.lut)
+    assert mc.bilinear_demosaic.infer_out_meta(x, {}).channels == 3
+    assert callable(mc.matrix_3x3)
+    assert callable(mc.lut)
     assert callable(flush)
     assert "view" in get_default_engine().supported_ops
 
@@ -72,17 +72,17 @@ def test_view_emit_meta_updates_origin_and_size():
 def test_orientation_emit_meta_swaps_hw():
     """TIFF 5–8 swap H×W; 1–4 keep size; origin unchanged."""
     base = Tensor(np.zeros((4, 6, 3), dtype=np.float32))
-    same = engine_ops.orientation(base, orientation=3)
+    same = mc.orientation(base, orientation=3)
     assert same.meta.height == 4 and same.meta.width == 6
     assert same.meta.origin == (0, 0)
     assert same._node is not None and same._node.op == "orientation"
 
-    rot = engine_ops.orientation(base, orientation=6)
+    rot = mc.orientation(base, orientation=6)
     assert rot.meta.height == 6 and rot.meta.width == 4
     assert rot.meta.origin == (0, 0)
 
     with pytest.raises(ValueError, match="invalid TIFF code"):
-        engine_ops.orientation(base, orientation=0)
+        mc.orientation(base, orientation=0)
 
 
 def _tiff_orientation_numpy(arr: np.ndarray, code: int) -> np.ndarray:
@@ -107,7 +107,7 @@ def _tiff_orientation_numpy(arr: np.ndarray, code: int) -> np.ndarray:
 
 
 def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
-    """engine_ops.orientation is issued natively for TIFF 1–8."""
+    """mc.orientation is issued natively for TIFF 1–8."""
     from muimg.engines.core import _engine_load
 
     calls: List[dict] = []
@@ -126,7 +126,7 @@ def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
         for code in range(1, 9):
             calls.clear()
             src_t = Tensor(src)
-            t = engine_ops.orientation(src_t, orientation=code)
+            t = mc.orientation(src_t, orientation=code)
             if code == 1:
                 assert t is src_t
                 assert t._node is None
@@ -168,9 +168,9 @@ def test_engine_orientation_span_sandwich(monkeypatch):
         inv = _ORIENTATION_INVERSE[code]
         calls.clear()
         x = Tensor(src) - 1.0
-        x = engine_ops.orientation(x, orientation=code)
+        x = mc.orientation(x, orientation=code)
         x = x * 2.0
-        x = engine_ops.orientation(x, orientation=inv)
+        x = mc.orientation(x, orientation=inv)
         out = x.compute()
 
         assert len(calls) == 1, f"code {code}"
@@ -281,26 +281,26 @@ def test_sub_mul_chain():
 def test_matrix_3x3_identity():
     eye = np.eye(3, dtype=np.float32)
     inp = np.array([[[0.25, 0.5, 0.75]]], dtype=np.float32)
-    out = engine_ops.matrix_3x3(Tensor(inp), matrix=eye).compute()
+    out = mc.matrix_3x3(Tensor(inp), matrix=eye).compute()
     np.testing.assert_allclose(out, inp)
 
 
 def test_lut_identity_rgb():
     inp = np.array([[[0.0, 0.5, 1.0]]], dtype=np.float32)
-    out = engine_ops.lut(Tensor(inp), lut=[0.0, 1.0]).compute()
+    out = mc.lut(Tensor(inp), lut=[0.0, 1.0]).compute()
     np.testing.assert_allclose(out, inp)
 
 
 def test_bilinear_demosaic_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
-    out = engine_ops.bilinear_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    out = mc.bilinear_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
     assert out.shape == (2, 2, 3)
     np.testing.assert_allclose(out[0, 0, 0], 0.2)
 
 
 def test_ea_demosaic_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
-    out = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    out = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
     assert out.shape == (2, 2, 3)
     np.testing.assert_allclose(
         out,
@@ -320,8 +320,8 @@ def test_ea_demosaic_then_crop_matches_slice():
     """
     rng = np.random.default_rng(0)
     cfa = rng.random((17, 19), dtype=np.float32)
-    full = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
-    fused = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").view(
+    full = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    fused = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").view(
         left=3,
         top=2,
         width=11,
@@ -341,8 +341,8 @@ def test_ea_demosaic_fast_differs_from_ha():
     cfa[2, 3] = 0.2
     cfa[2, 0] = 0.0
     cfa[2, 4] = 0.0
-    ha = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
-    fast = engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB", fast=True).compute()
+    ha = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+    fast = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB", fast=True).compute()
     wrap = demosaic(
         Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST
     ).compute()
@@ -360,9 +360,9 @@ def test_ea_demosaic_fast_timing_label():
     try:
         set_engine_timing(EngineTiming.OPS)
         with PerfTimer("root") as ha_root:
-            engine_ops.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
+            mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").compute()
         with PerfTimer("root") as fast_root:
-            engine_ops.ea_demosaic(
+            mc.ea_demosaic(
                 Tensor(cfa), cfa_pattern="RGGB", fast=True
             ).compute()
     finally:
@@ -379,13 +379,13 @@ def test_ea_demosaic_fast_timing_label():
 def test_op_rejects_bad_channels():
     rgb = Tensor(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="expected 1 channel"):
-        engine_ops.bilinear_demosaic(rgb, cfa_pattern="RGGB")
+        mc.bilinear_demosaic(rgb, cfa_pattern="RGGB")
 
 
 def test_op_rejects_unknown_attr():
     x = Tensor(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="unknown attrs"):
-        engine_ops.matrix_3x3(x, matrix=np.eye(3, dtype=np.float32), extra=1)
+        mc.matrix_3x3(x, matrix=np.eye(3, dtype=np.float32), extra=1)
 
 
 def test_rejects_tensor_tensor_sub():
@@ -422,15 +422,15 @@ def test_flush_then_engine_again():
     x = x - 0.0
     x = x * 1.0
     x = demosaic(x, "RGGB", algorithm=DemosaicAlgorithm.EA)
-    x = engine_ops.matrix_3x3(x, matrix=eye)
-    x = engine_ops.lut(x, lut=lut)
+    x = mc.matrix_3x3(x, matrix=eye)
+    x = mc.lut(x, lut=lut)
     out = x.compute()
 
     ref = demosaic(
         Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA, dst_dtype="float32"
     )
-    ref = engine_ops.matrix_3x3(ref, matrix=eye)
-    ref = engine_ops.lut(ref, lut=lut).compute()
+    ref = mc.matrix_3x3(ref, matrix=eye)
+    ref = mc.lut(ref, lut=lut).compute()
     assert out.shape == (16, 16, 3)
     assert out.dtype == np.float32
     np.testing.assert_allclose(out, ref, rtol=1e-5, atol=1e-5)
