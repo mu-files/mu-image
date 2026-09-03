@@ -21,7 +21,17 @@ from __future__ import annotations
 from .engines import ops as _catalog
 from .engines.graph import emit, flush, op
 from .engines.ops import *  # noqa: F401,F403 — generated __all__ is the catalog surface
-from .tensor import ElementType, Tensor, TensorMeta
+from .tensor import (
+    ElementType,
+    Tensor,
+    TensorMeta,
+    full,
+    full_like,
+    ones,
+    ones_like,
+    zeros,
+    zeros_like,
+)
 
 __all__ = [
     "ElementType",
@@ -29,6 +39,12 @@ __all__ = [
     "TensorMeta",
     "emit",
     "flush",
+    "full",
+    "full_like",
+    "ones",
+    "ones_like",
     "op",
+    "zeros",
+    "zeros_like",
 ]
 __all__ += _catalog.__all__

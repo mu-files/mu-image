@@ -39,6 +39,8 @@ def _parse_scalar(raw: str):
         return True
     if raw == "false":
         return False
+    if raw == "[]":
+        return []
     if re.fullmatch(r"-?\d+", raw):
         return int(raw)
     return raw
@@ -172,9 +174,9 @@ def _infer_meta_expr(out_spec: dict[str, Any]) -> str:
 
 def _in_channels_expr(inputs: list[dict[str, Any]]) -> str:
     if not inputs:
-        raise ValueError("op requires at least one input")
+        return "None"
     if len(inputs) != 1:
-        raise ValueError("only single-input ops are supported in engines.ops")
+        raise ValueError("only zero- or single-input ops are supported in engines.ops")
     ch = inputs[0].get("channels", "any")
     if ch == "any":
         return "None"
@@ -233,7 +235,9 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
         name = op["name"]
         names.append(name)
         attrs = op.get("attrs") or []
-        inputs = op.get("inputs") or [{"channels": "any"}]
+        inputs = op.get("inputs")
+        if inputs is None:
+            inputs = [{"channels": "any"}]
         outputs = op.get("outputs") or [{"channels": "same"}]
         if len(outputs) != 1:
             raise ValueError(f"op {name!r}: only single-output ops are supported")
@@ -244,6 +248,7 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
         lines.append(f"    _out_dtype={_out_dtype_expr(out_spec)},")
         lines.append(f"    _out_channels={_out_channels_expr(out_spec)},")
         lines.append(f"    _in_channels={_in_channels_expr(inputs)},")
+        lines.append(f"    _n_inputs={len(inputs)},")
         lines.append(
             f"    _attr_specs=tuple(json.loads(r'''{attrs_json}''')),"
         )
@@ -277,14 +282,16 @@ def validate_ops(ops: list[dict[str, Any]]) -> None:
                 f"op {op['name']!r}: affinity is not allowed "
                 "(catalog is portable interface only)"
             )
-        if not op.get("inputs") or not op.get("outputs"):
+        if "inputs" not in op or not op.get("outputs"):
             raise ValueError(
                 f"op {op['name']!r}: inputs and outputs are required"
             )
-        if len(op["inputs"]) != 1 or len(op["outputs"]) != 1:
+        if not isinstance(op["inputs"], list):
+            raise ValueError(f"op {op['name']!r}: inputs must be a list")
+        if len(op["inputs"]) > 1 or len(op["outputs"]) != 1:
             raise ValueError(
-                f"op {op['name']!r}: only single-input/single-output ops "
-                "are supported"
+                f"op {op['name']!r}: only zero- or single-input / "
+                "single-output ops are supported"
             )
         geom = (op["outputs"][0] or {}).get("geometry")
         if geom is not None:

@@ -8,7 +8,7 @@
 #   python -m muimg.engines.tools.gen_ops
 #   (writes muimg/engines/ops.py)
 #
-# inputs/outputs: unary ops for now.
+# inputs/outputs: one output. Zero or one input (fill has none).
 #   channels: <int> | any | same
 #     - inputs: int or any
 #     - outputs: int or same (same = copy input 0)
@@ -48,6 +48,16 @@ ops:
       - key: value
         type: f32
         count: 1
+
+  # Constant dest: no input. Shape/dtype live on the output tensor.
+  - name: fill
+    inputs: []
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32_array
+        count: 0
 
   # ROI view: emit meta via geometry: view (_out_meta_view); native span execute.
   - name: view

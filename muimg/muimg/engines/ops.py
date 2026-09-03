@@ -12,6 +12,7 @@ sub_scalar = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -27,6 +28,7 @@ mul_scalar = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -37,11 +39,28 @@ mul_scalar = EngineOp(
     _infer_meta=None,
 )
 
+fill = EngineOp(
+    meta=OpMeta(name='fill'),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _n_inputs=0,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "value",
+    "type": "f32_array"
+  }
+]''')),
+    _infer_meta=None,
+)
+
 view = EngineOp(
     meta=OpMeta(name='view'),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -84,6 +103,7 @@ pad = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -132,6 +152,7 @@ orientation = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -147,6 +168,7 @@ bilinear_demosaic = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
     _in_channels=1,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -162,6 +184,7 @@ ea_demosaic = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
     _in_channels=1,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -183,6 +206,7 @@ matrix_3x3 = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 9,
@@ -198,6 +222,7 @@ lut = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -213,6 +238,7 @@ convert_dtype = EngineOp(
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -243,6 +269,7 @@ mono_lut = EngineOp(
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -273,6 +300,7 @@ transform_color = EngineOp(
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -321,6 +349,7 @@ clip_and_transform_color = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 3,
@@ -341,6 +370,7 @@ normalize_raw = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -394,6 +424,7 @@ apply_hue_sat_map = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -425,6 +456,7 @@ apply_hue_sat_val_map = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -461,6 +493,7 @@ apply_profile_gain_table_map = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -526,6 +559,7 @@ fix_vignette = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -551,6 +585,7 @@ warp_rectilinear = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -597,6 +632,7 @@ apply_gain_map = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -687,6 +723,7 @@ apply_gain_map_cfa = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -767,6 +804,7 @@ apply_flat_gain_map = EngineOp(
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -792,6 +830,7 @@ map_polynomial = EngineOp(
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -852,6 +891,7 @@ fix_bad_pixels_constant = EngineOp(
     _out_dtype=graph._out_dtype_const('uint16'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
+    _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -870,6 +910,7 @@ fix_bad_pixels_constant = EngineOp(
 OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
+    'fill': fill,
     'view': view,
     'pad': pad,
     'orientation': orientation,
@@ -906,6 +947,7 @@ __all__ = [
     'clip_and_transform_color',
     'convert_dtype',
     'ea_demosaic',
+    'fill',
     'fix_bad_pixels_constant',
     'fix_vignette',
     'lut',

@@ -121,6 +121,8 @@ class EngineOp:
     _out_dtype: OutMetaFn
     _out_channels: OutMetaFn
     _in_channels: Optional[int]  # None = any
+    # Catalog input count. 0 means ``x`` is dest meta only, not a graph input.
+    _n_inputs: int
     _attr_specs: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
     # When set (e.g. geometry: view), replaces dtype/channels/H×W/origin composition.
     _infer_meta: Optional[GraphOutMetaFn] = None
@@ -516,7 +518,7 @@ def emit(engine_op: EngineOp, x: Tensor, /, **attrs: Any) -> Tensor:
     out_meta = engine_op.infer_out_meta(x, coerced)
     node = OpNode(
         op=name,
-        inputs=(x,),
+        inputs=() if engine_op._n_inputs == 0 else (x,),
         attrs=MappingProxyType(dict(coerced)),
         out_meta=out_meta,
     )

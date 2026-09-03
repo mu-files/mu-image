@@ -12,16 +12,34 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 import numpy as np
 
 
-def _require_image_ndarray(arr: np.ndarray) -> None:
-    """Accept only (H, W) or (H, W, C) with C in 1, 3, 4."""
-    if arr.ndim == 2:
-        return
-    if arr.ndim == 3:
-        channels = int(arr.shape[2])
+def _hwc_from_shape(shape: Any) -> Tuple[int, int, int]:
+    """Return (height, width, channels) for ``(H, W)`` or ``(H, W, C)``.
+
+    ``C`` must be 1, 3, or 4. Height and width must be at least 1.
+    """
+    if isinstance(shape, np.ndarray):
+        dims = tuple(int(v) for v in shape.tolist())
+    else:
+        dims = tuple(int(v) for v in shape)
+    if len(dims) == 2:
+        height, width = dims
+        channels = 1
+    elif len(dims) == 3:
+        height, width, channels = dims
         if channels not in (1, 3, 4):
             raise ValueError(f"unsupported channel count: {channels}")
-        return
-    raise ValueError("array must be (H,W) or (H,W,C)")
+    else:
+        raise ValueError("array must be (H,W) or (H,W,C)")
+    if height < 1 or width < 1:
+        raise ValueError(
+            f"shape height and width must be at least 1, got {(height, width)}"
+        )
+    return height, width, channels
+
+
+def _require_image_ndarray(arr: np.ndarray) -> None:
+    """Accept only (H, W) or (H, W, C) with C in 1, 3, 4 and size at least 1×1."""
+    _hwc_from_shape(arr.shape)
 
 
 def _pixels_are_packed(arr: np.ndarray) -> bool:
@@ -142,22 +160,15 @@ class TensorMeta:
     def copy(self, **changes: Any) -> "TensorMeta":
         return replace(self, **changes)
 
+    def __post_init__(self) -> None:
+        if self.height < 1 or self.width < 1:
+            raise ValueError(
+                f"shape height and width must be at least 1, got {(self.height, self.width)}"
+            )
+
 
 def meta_from_array(arr: np.ndarray) -> TensorMeta:
-    _require_image_ndarray(arr)
-    if arr.ndim == 2:
-        h, w = arr.shape
-        channels = 1
-    else:
-        h, w, channels = arr.shape
-    return TensorMeta(
-        dtype=ElementType.from_numpy(arr.dtype),
-        height=h,
-        width=w,
-        channels=channels,
-        origin=(0, 0),
-        canvas=(0, 0, w, h),
-    )
+    return _meta_from_shape(arr.shape, ElementType.from_numpy(arr.dtype))
 
 
 def _require_scalar(value: Any, op: str) -> float:
@@ -382,6 +393,98 @@ def flipud(m: "Tensor") -> "Tensor":
     return mc.orientation(m, orientation=4)
 
 
+def _meta_from_shape(shape: Any, dtype: ElementType) -> TensorMeta:
+    """Build whole-canvas meta for ``(H, W)`` or ``(H, W, C)``."""
+    height, width, channels = _hwc_from_shape(shape)
+    return TensorMeta(
+        dtype=dtype,
+        height=height,
+        width=width,
+        channels=channels,
+        origin=(0, 0),
+        canvas=(0, 0, width, height),
+    )
+
+
+def _dtype_from_fill(fill_value: Any) -> ElementType:
+    """Element type of ``fill_value`` when ``full(..., dtype=None)``."""
+    if isinstance(fill_value, bool):
+        raise TypeError("unsupported fill_value dtype: bool")
+    if isinstance(fill_value, np.generic) or (
+        isinstance(fill_value, np.ndarray) and fill_value.ndim == 0
+    ):
+        return ElementType.from_numpy(np.asarray(fill_value).dtype)
+    if isinstance(fill_value, np.ndarray):
+        try:
+            return ElementType.from_numpy(fill_value.dtype)
+        except TypeError:
+            pass
+    if isinstance(fill_value, (int, float)):
+        return ElementType.FLOAT32
+    if isinstance(fill_value, (list, tuple)):
+        return ElementType.FLOAT32
+    raise TypeError(f"unsupported fill_value type: {type(fill_value).__name__}")
+
+
+def _fill_samples(fill_value: Any, channels: int) -> list[float]:
+    """Scalar or length-``channels`` vector as a flat f32 list."""
+    arr = np.asarray(fill_value)
+    if arr.ndim == 0:
+        return [float(arr.item())]
+    if arr.ndim != 1:
+        raise ValueError("fill_value must be a scalar or a length-C vector")
+    if arr.size == 1:
+        return [float(arr.reshape(-1)[0])]
+    if arr.size == channels:
+        return [float(v) for v in arr]
+    raise ValueError(
+        f"fill_value length {arr.size} does not match channel count {channels}"
+    )
+
+
+def _emit_fill(meta: TensorMeta, fill_value: Any) -> "Tensor":
+    from . import mc
+
+    return mc.fill(
+        Tensor(_meta=meta),
+        value=_fill_samples(fill_value, meta.channels),
+    )
+
+
+def zeros(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Tensor":
+    """Lazy tensor filled with 0. Same arguments as ``numpy.zeros`` for image rank."""
+    return _emit_fill(_meta_from_shape(shape, ElementType.coerce(dtype)), 0)
+
+
+def ones(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Tensor":
+    """Lazy tensor filled with 1. Same arguments as ``numpy.ones`` for image rank."""
+    return _emit_fill(_meta_from_shape(shape, ElementType.coerce(dtype)), 1)
+
+
+def full(shape: Any, fill_value: Any, dtype: Any = None) -> "Tensor":
+    """Lazy tensor filled with a constant. Same arguments as ``numpy.full`` for image rank."""
+    et = ElementType.coerce(dtype) if dtype is not None else _dtype_from_fill(fill_value)
+    return _emit_fill(_meta_from_shape(shape, et), fill_value)
+
+
+def zeros_like(tensor: "Tensor", dtype: Any = None) -> "Tensor":
+    """Lazy zeros with ``tensor``'s shape (and dtype unless ``dtype`` is set)."""
+    et = tensor.dtype if dtype is None else ElementType.coerce(dtype)
+    return zeros(tensor.shape, dtype=et)
+
+
+def ones_like(tensor: "Tensor", dtype: Any = None) -> "Tensor":
+    """Lazy ones with ``tensor``'s shape (and dtype unless ``dtype`` is set)."""
+    et = tensor.dtype if dtype is None else ElementType.coerce(dtype)
+    return ones(tensor.shape, dtype=et)
+
+
+def full_like(tensor: "Tensor", fill_value: Any, dtype: Any = None) -> "Tensor":
+    """Lazy constant with ``tensor``'s shape. ``dtype`` defaults to the reference."""
+    et = tensor.dtype if dtype is None else ElementType.coerce(dtype)
+    return full(tensor.shape, fill_value, dtype=et)
+
+
 class Tensor:
     """Lazy tensor handle: a source buffer and/or an engine op result.
 
@@ -414,14 +517,14 @@ class Tensor:
             self._meta = meta
             self._data = arr
             self._node = None
-        elif _meta is not None and _node is not None:
+        elif _meta is not None:
             if origin is not None:
                 raise ValueError("origin= is only valid for source Tensors")
             self._meta = _meta
             self._data = None
             self._node = _node
         else:
-            raise ValueError("Tensor requires an ndarray source or an op node")
+            raise ValueError("Tensor requires an ndarray source or _meta=")
 
     @property
     def dtype(self) -> ElementType:
