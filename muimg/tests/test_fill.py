@@ -20,6 +20,16 @@ def test_zeros_is_lazy_then_realizes():
     np.testing.assert_array_equal(z.realize(), np.zeros((3, 4), dtype=np.float32))
 
 
+def test_zeros_shape_from_tuple_list_and_ndarray_shape():
+    """Python tuple, list, and ``ndarray.shape`` all become the same meta."""
+    arr = np.zeros((3, 4), dtype=np.float32)
+    from_tuple = mc.zeros((3, 4))
+    from_list = mc.zeros([3, 4])
+    from_numpy_shape = mc.zeros(arr.shape)
+    assert from_tuple.shape == from_list.shape == from_numpy_shape.shape == (3, 4)
+    assert from_tuple.dtype == from_list.dtype == from_numpy_shape.dtype
+
+
 def test_ones_rgb():
     t = mc.ones((2, 3, 3), dtype="float32")
     assert t.shape == (2, 3, 3)
