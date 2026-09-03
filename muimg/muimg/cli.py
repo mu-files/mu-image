@@ -647,7 +647,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 sys.exit(1)
 
             # Convert to uint16 (single compute at the write boundary)
-            data_uint16 = raw_render.convert_dtype(t, "uint16").compute()
+            data_uint16 = raw_render.convert_dtype(t, "uint16").realize()
 
             # Save as TIFF
             tifffile.imwrite(output_file, data_uint16)
@@ -1677,7 +1677,7 @@ def run_batch_to_video(
                     logger.warning(f"Frame {index}: {msg}")
                 return (index, None)
 
-            img = img.compute()
+            img = img.realize()
             
             # Convert grayscale to RGB for video encoding
             if len(img.shape) == 2:

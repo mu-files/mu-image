@@ -93,7 +93,7 @@ def convert_dtype(
     """Convert image between data types with proper normalization and optional clipping.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
 
     Args:
         image: Input Tensor (H, W) or (H, W, C)
@@ -193,7 +193,7 @@ def mono_lut(
     """Apply LUT to monochrome (single channel) image.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
 
     Args:
         image: Input Tensor (H, W) or (H, W, 1)
@@ -298,7 +298,7 @@ def convert_colorspace(
 
     Wrapper: validate arguments and append ops to a deferred compute graph
     (typically via ``transform_color`` / ``convert_dtype``). Does not run pixels;
-    call ``.compute()`` on the returned ``Tensor`` to materialize.
+    call ``.realize()`` on the returned ``Tensor`` to materialize.
     """
     t = image
 
@@ -352,7 +352,7 @@ def transform_color(
     """Apply fused LUT→Matrix→LUT color transformation pipeline.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
     """
     t = image
     if t.meta.channels != 3:
@@ -431,7 +431,7 @@ def clip_and_transform_color(
     """Clip RGB channels and apply 3x3 color matrix in a single pass.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.compute()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
     """
     t = image
     if t.meta.channels != 3:
@@ -496,7 +496,7 @@ def demosaic(
 
     Wrapper: validate arguments and append ops to a deferred compute graph
     (engine and/or python ops depending on ``algorithm``). Does not run pixels;
-    call ``.compute()`` on the returned ``Tensor`` to materialize.
+    call ``.realize()`` on the returned ``Tensor`` to materialize.
 
     Args:
         image_data: CFA Tensor (uint8, uint16, float16, float32)
@@ -2911,7 +2911,7 @@ def _render_to_camera_space(
             except Exception as e:
                 logger.warning(f"Failed to apply OpcodeList3 ({type(e).__name__}): {e}")
 
-    # Apply DefaultCrop — Step 3: portable crop op (no .compute() here).
+    # Apply DefaultCrop — Step 3: portable crop op (no .realize() here).
     crop_origin = tags.get_tag("DefaultCropOrigin")
     crop_size = tags.get_tag("DefaultCropSize")
 
@@ -3247,7 +3247,7 @@ def _render_camera_rgb(
         needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
         if needs_adaptive_hist:
             flush_step = PerfTimer.step("camera_space+prophoto")
-            rgb_prophoto_arr = rgb_prophoto.compute()
+            rgb_prophoto_arr = rgb_prophoto.realize()
             flush_step.close()
             lut_step = PerfTimer.step("compute_exposure_ramp_lut")
             exposure_ramp_lut = compute_exposure_ramp_lut(
@@ -3497,7 +3497,7 @@ def _render_camera_monochrome(
         needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
         if needs_adaptive_hist:
             flush_step = PerfTimer.step("camera_space")
-            mono_camera_arr = mono_camera.compute()
+            mono_camera_arr = mono_camera.realize()
             flush_step.close()
             lut_step = PerfTimer.step("compute_exposure_ramp_lut")
             exposure_ramp_lut = compute_exposure_ramp_lut(

@@ -532,7 +532,7 @@ class DngPage(tifffile.TiffPage):
 
         Returns:
             Source ``Tensor`` of linear raw data, or None if not a LINEAR_RAW
-            page. Decode is eager; callers compose follow-on ops and ``.compute()``.
+            page. Decode is eager; callers compose follow-on ops and ``.realize()``.
         """
         if not self.is_linear_raw:
             return None
@@ -603,7 +603,7 @@ class DngPage(tifffile.TiffPage):
         For raw pages (CFA, LINEAR_RAW), renders with default parameters.
         For preview pages (RGB, YCBCR), decompresses then wraps as Tensor.
 
-        Call ``.compute()`` at encode/write/display edges.
+        Call ``.realize()`` at encode/write/display edges.
 
         Args:
             output_dtype: Output data type (np.uint8 or np.uint16)
@@ -618,7 +618,7 @@ class DngPage(tifffile.TiffPage):
         # Non-raw pages - let tifffile decode
         # Note: tifffile automatically converts JPEG-compressed YCBCR to RGB
         try:
-            result = Tensor(np.ascontiguousarray(self.asarray()))
+            result = Tensor(self.asarray())
         except Exception as e:
             logger.error(
                 f"Failed to decode page (photometric={self.photometric_name}): {e}"
@@ -651,7 +651,7 @@ class DngPage(tifffile.TiffPage):
         output color space. Supports XMP metadata for white balance, exposure, and
         tone curve adjustments.
 
-        Returns a deferred ``Tensor``; call ``.compute()`` at product edges.
+        Returns a deferred ``Tensor``; call ``.realize()`` at product edges.
         
         For RGB/YCBCR preview pages, use decode() instead.
         
@@ -676,7 +676,7 @@ class DngPage(tifffile.TiffPage):
         
         Example:
             # Use XMP metadata from DNG file
-            rgb = page.render_raw().compute()
+            rgb = page.render_raw().realize()
             
             # Override white balance
             rgb = page.render_raw(rendering_params={'temperature': 6500, 'tint': 10})
@@ -1022,11 +1022,11 @@ class DngFile(tifffile.TiffFile):
                 else:
                     # Downscaling: materialize around OpenCV resize for this PR
                     pre = PerfTimer.step("pre_scale (opencv)")
-                    camera_arr = camera_data.compute()
+                    camera_arr = camera_data.realize()
                     camera_arr = cv2.resize(
                         camera_arr, (target_w, target_h), interpolation=cv2.INTER_AREA
                     )
-                    camera_data = Tensor(np.ascontiguousarray(camera_arr))
+                    camera_data = Tensor(camera_arr)
                     pre.close()
 
         # Branch based on monochrome vs color
@@ -1067,11 +1067,11 @@ class DngFile(tifffile.TiffFile):
                 final_w, final_h = final_h, final_w
 
             post = PerfTimer.step("post_scale (opencv)")
-            rendered_arr = rendered_image.compute()
+            rendered_arr = rendered_image.realize()
             rendered_arr = cv2.resize(
                 rendered_arr, (final_w, final_h), interpolation=cv2.INTER_LINEAR
             )
-            rendered_image = Tensor(np.ascontiguousarray(rendered_arr))
+            rendered_image = Tensor(rendered_arr)
             post.close()
 
         return rendered_image
@@ -1709,12 +1709,12 @@ def write_dng(
                 if cfa_result is None:
                     raise ValueError("Failed to extract CFA data from page")
                 uncomp_data, _ = cfa_result
-                uncomp_data = uncomp_data.compute()
+                uncomp_data = uncomp_data.realize()
             elif photometric == "LINEAR_RAW":
                 uncomp_t = spec.page.get_linear_raw()
                 if uncomp_t is None:
                     raise ValueError("Failed to extract LINEAR_RAW data from page")
-                uncomp_data = uncomp_t.compute()
+                uncomp_data = uncomp_t.realize()
             else:
                 # Non-raw photometric (RGB, YCBCR, etc.) - use asarray like decode() does
                 try:
@@ -2082,7 +2082,7 @@ def _generate_pyramid(
         step = PerfTimer.step(f"pyramid_level_{len(levels)}_filter_{filter.name}")
         filtered = cv2.sepFilter2D(
             current, -1, kernel, kernel, anchor=anchor, borderType=cv2.BORDER_REFLECT_101)
-        downsampled = filtered[::2, ::2]
+        downsampled = filtered[::2, ::2].copy()
         step.close()
         
         levels.append(downsampled)
@@ -2180,7 +2180,7 @@ def _write_dng_with_params(
     camera_raw = raw_render._render_to_camera_space(
         main_spec.extratags, raw_t, photometric, cfa_pattern, demosaic_algorithm
     )
-    camera_raw = camera_raw.compute()
+    camera_raw = camera_raw.realize()
     extract_step.close()
     
     # if we are transforming then the main_spec is always a DataSpec with the transformed data
@@ -2215,7 +2215,7 @@ def _write_dng_with_params(
 
         # change main_spec - preserve original input dtype
         main_spec = IfdDataSpec(
-            data=raw_render.convert_dtype(Tensor(camera_raw), src_dtype).compute(),
+            data=raw_render.convert_dtype(Tensor(camera_raw), src_dtype).realize(),
             photometric="LINEAR_RAW",
             subfiletype=SubFileType.MAIN_IMAGE,
             encoding=main_encoding,
@@ -2263,7 +2263,7 @@ def _write_dng_with_params(
         for level_idx in range(1, max_pyramid_level):
             level_data = pyramid_images[level_idx]
             pyramid_spec = IfdDataSpec(
-                data=raw_render.convert_dtype(Tensor(level_data), src_dtype).compute(),
+                data=raw_render.convert_dtype(Tensor(level_data), src_dtype).realize(),
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 encoding=pyramid.encoding,
@@ -2332,14 +2332,14 @@ def _write_dng_with_params(
             mono = raw_render._render_camera_monochrome(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
-                mono_camera=Tensor(np.ascontiguousarray(pyramid_images[preview_level_idx])),
+                mono_camera=Tensor(pyramid_images[preview_level_idx]),
                 output_dtype=np.uint8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             )
             # mono_lut returns (H, W, 1); squeeze before stacking or RGB
             # becomes (H, W, 3, 1) and tifffile rejects sample count.
-            mono = mono.compute()
+            mono = mono.realize()
             if mono.ndim == 3 and mono.shape[-1] == 1:
                 mono = mono[..., 0]
             rendered_preview = np.stack([mono, mono, mono], axis=-1)
@@ -2348,11 +2348,11 @@ def _write_dng_with_params(
             rendered_preview = raw_render._render_camera_rgb(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
-                rgb_camera=Tensor(np.ascontiguousarray(pyramid_images[preview_level_idx])),
+                rgb_camera=Tensor(pyramid_images[preview_level_idx]),
                 output_dtype=np.uint8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
-            ).compute()
+            ).realize()
             preview_photometric = "RGB"
         step.close()
         

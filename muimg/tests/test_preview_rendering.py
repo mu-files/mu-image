@@ -133,7 +133,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
         print("\n1. Rendering main raw page...")
         main_render = dng.render_raw(output_dtype=np.uint16, strict=False)
         assert main_render is not None, "Failed to render main page"
-        main_render = main_render.compute()
+        main_render = main_render.realize()
         
         print(f"   Main render: {main_render.shape}, dtype={main_render.dtype}")
         
@@ -176,7 +176,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 # Decode LINEAR_RAW preview
                 preview = page.render_raw(output_dtype=np.uint16, strict=False)
                 assert preview is not None, f"render_raw returned None for IFD {i}"
-                preview = preview.compute()
+                preview = preview.realize()
                 
                 print(f"     ✓ Decoded: {preview.shape}, dtype={preview.dtype}")
                 
@@ -231,7 +231,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
             try:
                 preview = page.decode_to_rgb(output_dtype=np.uint16)
                 assert preview is not None, f"decode_to_rgb returned None for IFD {i}"
-                preview = preview.compute()
+                preview = preview.realize()
                 
                 print(f"     ✓ Decoded: {preview.shape}, dtype={preview.dtype}")
                 
@@ -318,7 +318,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 assert ifd0.photometric_name in ("RGB", "YCBCR"), \
                     f"get_preview_rgb() returned data but IFD0 is {ifd0.photometric_name} (not a preview)"
 
-                api_preview = api_preview.compute()
+                api_preview = api_preview.realize()
                 
                 print(f"     ✓ Correct: IFD0 is {ifd0.photometric_name} preview")
                 print(f"     ✓ DngFile.get_preview_rgb(): {api_preview.shape}, dtype={api_preview.dtype}")
@@ -326,7 +326,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 # Get preview using page API for comparison
                 page_preview = ifd0.decode_to_rgb(output_dtype=np.uint16)
                 assert page_preview is not None, "decode_to_rgb returned None"
-                page_preview = page_preview.compute()
+                page_preview = page_preview.realize()
                 
                 print(f"     ✓ DngPage.decode_to_rgb(): {page_preview.shape}, dtype={page_preview.dtype}")
                 
@@ -377,7 +377,7 @@ def test_decode_to_rgb_on_raw_page():
         # Should successfully decode (render) the raw page
         result = main_page.decode_to_rgb(output_dtype=np.uint8)
         assert result is not None
-        result = result.compute()
+        result = result.realize()
         assert result.shape[2] == 3  # RGB output
         assert result.dtype == np.uint8
 

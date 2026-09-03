@@ -449,7 +449,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
                 self._failed_frames.add(index)
                 return (index, None)
 
-            img = img.compute()
+            img = img.realize()
             
             # Resize with aspect ratio preservation if resolution is set
             if self.resolution is not None:

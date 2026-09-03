@@ -244,7 +244,7 @@ def generate_rgb_ramp(
     
     # Convert to target dtype if needed
     if dtype != np.float32:
-        img = convert_dtype(Tensor(img), np.dtype(dtype).name).compute()
+        img = convert_dtype(Tensor(img), np.dtype(dtype).name).realize()
     
     # Scale to specified bit depth if requested
     if bits_per_sample is not None:
@@ -303,7 +303,7 @@ def normalize_image(img: np.ndarray) -> np.ndarray:
     from muimg.tensor import Tensor
 
     if isinstance(img, Tensor):
-        img = img.compute()
+        img = img.realize()
     if img.dtype == np.uint8:
         return img.astype(np.float32) / 255.0
     elif img.dtype == np.uint16:
@@ -316,9 +316,9 @@ def compute_diff_stats(img1: np.ndarray, img2: np.ndarray) -> dict:
     from muimg.tensor import Tensor
 
     if isinstance(img1, Tensor):
-        img1 = img1.compute()
+        img1 = img1.realize()
     if isinstance(img2, Tensor):
-        img2 = img2.compute()
+        img2 = img2.realize()
     diff = np.abs(normalize_image(img1) - normalize_image(img2))
     stats = {
         "mean": np.mean(diff) * 100,

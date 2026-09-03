@@ -124,7 +124,7 @@ class PerfTimer:
 
     ``step(name)`` starts a child under ``current()``. When nothing is timing it
     returns a no-op handle so callers can always ``close()`` without checks.
-    Nested work (e.g. ``graph.compute``) records under the current stage via the
+    Nested work (e.g. ``graph.realize``) records under the current stage via the
     stack. An inconsistent stack yields ``broken stack``.
 
     ``with PerfTimer(...)`` still works and auto-nests, but is not required.

@@ -242,7 +242,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
         
         if use_preview:
             # Preview must be uint8 for JPEG compression
-            rgb_ramp_u8 = convert_dtype(Tensor(rgb_ramp), "uint8").compute()
+            rgb_ramp_u8 = convert_dtype(Tensor(rgb_ramp), "uint8").realize()
             preview_data = cv2.resize(
                 rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
             
@@ -341,11 +341,11 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                     decoded_cfa, decoded_pattern = dng.get_cfa()
                     assert decoded_cfa is not None, f"Failed to get CFA from {comp_label}"
                     assert decoded_pattern == "RGGB", f"CFA pattern mismatch: {decoded_pattern} != RGGB"
-                    decoded = decoded_cfa.compute()
+                    decoded = decoded_cfa.realize()
                 else:
                     decoded_rgb = dng.get_linear_raw()
                     assert decoded_rgb is not None, f"Failed to get LINEAR_RAW from {comp_label}"
-                    decoded = decoded_rgb.compute()
+                    decoded = decoded_rgb.realize()
                 
                 # Test render pipeline: with identity ProfileToneCurve, 
                 # render should apply sRGB gamma to linear RGB
@@ -386,7 +386,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 source_space=ColorSpace.SRGB_LINEAR,
                 dest_space=ColorSpace.SRGB_GAMMA,
                 dst_dtype="uint8"
-            ).compute()
+            ).realize()
             
             render_stats = compute_diff_stats(rendered, rgb_ramp_u8)
             

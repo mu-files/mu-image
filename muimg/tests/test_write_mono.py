@@ -145,7 +145,7 @@ def _test_write_mono(
         # Read back the raw data using our API
         raw_t = dng.get_linear_raw()
         assert raw_t is not None, f"Failed to get LINEAR_RAW from {label}"
-        raw_data = raw_t.compute()
+        raw_data = raw_t.realize()
         
         # Verify shape - should be 2D for monochrome (H, W) or 3D (H, W, 1)
         if raw_data.ndim == 3:
@@ -171,7 +171,7 @@ def _test_write_mono(
         # Render our output
         our_rendered = dng.render_raw(output_dtype=np.uint8)
         assert our_rendered is not None, f"Failed to render {label}"
-        our_rendered = our_rendered.compute()
+        our_rendered = our_rendered.realize()
         
         # Compare against dng_validate rendering (if available)
         output_tiff = Path(str(output_base) + '.tif')

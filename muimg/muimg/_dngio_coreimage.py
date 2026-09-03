@@ -379,11 +379,13 @@ def render_dng_coreimage(
                     context.output_space_cg,
                 )
 
-                # Convert final buffer to NumPy array once
-                rgba_image = np.frombuffer(
-                    bitmap_buffer, dtype=output_dtype).reshape((height, width, 4)).copy()
-
-                return rgba_image[:, :, :3], context.colorspace_name
+                # CI renders RGBA only. Copy RGB into a packed (H, W, 3) buffer.
+                rgba = np.frombuffer(bitmap_buffer, dtype=output_dtype).reshape(
+                    (height, width, 4)
+                )
+                rgb = np.empty((height, width, 3), dtype=output_dtype)
+                rgb[:] = rgba[:, :, :3]
+                return rgb, context.colorspace_name
 
             except Exception as e:
                 raise RuntimeError(f"An error occurred during Core Image processing: {e}") from e
@@ -407,7 +409,7 @@ def decode_dng_coreimage(
     
     Returns:
         RGB ``Tensor`` with shape (height, width, 3) and specified dtype.
-        Call ``.compute()`` at encode/write/display edges.
+        Call ``.realize()`` at encode/write/display edges.
     """
     from pathlib import Path
     from . import dngio

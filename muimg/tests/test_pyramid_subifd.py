@@ -87,7 +87,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         if generate_preview:
             decoded_u8 = dng.render_raw(output_dtype=np.uint8, strict=False)
             assert decoded_u8 is not None
-            decoded_u8 = decoded_u8.compute()
+            decoded_u8 = decoded_u8.realize()
             preview = cv2.resize(
                 decoded_u8,
                 (min(decoded_u8.shape[1], 512), min(decoded_u8.shape[0], 512)),
@@ -97,7 +97,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         camera_rgb = dng.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.EA)
         assert camera_rgb is not None
 
-        camera_rgb_u16 = np.clip((camera_rgb.compute() * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
+        camera_rgb_u16 = np.clip((camera_rgb.realize() * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
         pyramid_levels = _build_pyramid_rgb_u16(camera_rgb_u16)
         if not pyramid_levels:
             pytest.skip("Image too small for pyramid")
@@ -150,7 +150,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         for i, expected in enumerate(pyramid_levels):
             got_t = linear_pages[i + pyramid_start_idx].get_linear_raw()
             assert got_t is not None
-            got_arr = got_t.compute()
+            got_arr = got_t.realize()
             assert got_arr.shape == expected.shape
             assert got_arr.dtype == expected.dtype
             assert np.array_equal(got_arr, expected)
@@ -176,12 +176,12 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         decoded_orig_u8 = dng.render_raw(output_dtype=np.uint8, strict=False)
         assert decoded_orig_u8 is not None
-        decoded_orig_u8 = decoded_orig_u8.compute()
+        decoded_orig_u8 = decoded_orig_u8.realize()
 
         cfa_result = page.get_cfa()
         assert cfa_result is not None
         cfa_u16_full, cfa_pattern = cfa_result
-        cfa_u16_full = cfa_u16_full.compute()
+        cfa_u16_full = cfa_u16_full.realize()
         assert cfa_u16_full.dtype == np.uint16
 
         crop_w, crop_h = 1100, 800
@@ -203,7 +203,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         from muimg import raw_render
 
         rgb_u16_active = raw_render.demosaic(
-            Tensor(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.EA).compute()
+            Tensor(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.EA).realize()
         assert rgb_u16_active.dtype == np.uint16
         pyramid_levels = _build_pyramid_rgb_u16(rgb_u16_active)
         if not pyramid_levels:
@@ -252,7 +252,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
 
         decoded_crop_u8 = out_dng.render_raw(output_dtype=np.uint8, strict=False)
         assert decoded_crop_u8 is not None
-        decoded_crop_u8 = decoded_crop_u8.compute()
+        decoded_crop_u8 = decoded_crop_u8.realize()
 
         expected_crop_u8 = decoded_orig_u8[
             crop_top + aa_top : crop_top + aa_bottom,
@@ -299,7 +299,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         for i, expected in enumerate(pyramid_levels):
             got_t = linear_pages[i].get_linear_raw()
             assert got_t is not None
-            got_arr = got_t.compute()
+            got_arr = got_t.realize()
             assert got_arr.shape == expected.shape
             assert got_arr.dtype == expected.dtype
             assert np.array_equal(got_arr, expected)

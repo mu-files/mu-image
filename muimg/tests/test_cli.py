@@ -399,7 +399,7 @@ def test_orientation_handling(tmp_path):
         inverse_orientation = inverse_rotations[orientation]
         unrotated_img = mc.orientation(
             Tensor(oriented_img), orientation=int(inverse_orientation)
-        ).compute()
+        ).realize()
         print(f"  After inverse rotation: {unrotated_img.shape}")
         
         # Compare with original
@@ -472,7 +472,7 @@ def test_raw_stage(tmp_path):
                 assert api_t is not None, f"API returned None for {stage}"
 
             # 3. Convert API data to uint16
-            api_data_uint16 = convert_dtype(api_t, "uint16").compute()
+            api_data_uint16 = convert_dtype(api_t, "uint16").realize()
             
             # 4. Load CLI output
             cli_data = tifffile.imread(cli_output)

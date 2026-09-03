@@ -25,7 +25,7 @@ def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
 def cast_dtype_op(arr: np.ndarray, dst_dtype: str | ElementType) -> np.ndarray:
     """Bit-cast / widen with no rescale (unlike engine ``convert_dtype``)."""
     dest = ElementType.coerce(dst_dtype)
-    return np.ascontiguousarray(arr.astype(dest.numpy, copy=False))
+    return arr.astype(dest.numpy, copy=False)
 
 
 def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
@@ -112,7 +112,7 @@ def demosaic_op(
             "expected one of ['VNG', 'RCD', 'OPENCV_EA']"
         )
 
-    return np.ascontiguousarray(out)
+    return out
 
 
 @graph_op

@@ -41,7 +41,7 @@ def write_image(
         bool: True if successful, False otherwise
     """
     if isinstance(image, Tensor):
-        image = image.compute()
+        image = image.realize()
 
     # Determine output format
     if isinstance(output, (str, Path)):
@@ -99,7 +99,7 @@ def write_image(
     
     # Handle JPEG with imagecodecs (8-bit lossy only)
     elif format_ext in ('.jpg', '.jpeg'):
-        img_8bit = image if image.dtype == np.uint8 else convert_dtype(Tensor(image), "uint8").compute()
+        img_8bit = image if image.dtype == np.uint8 else convert_dtype(Tensor(image), "uint8").realize()
         jpeg_data = imagecodecs.jpeg_encode(img_8bit, level=90)
 
         if isinstance(output, (str, Path)):

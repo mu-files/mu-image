@@ -12,12 +12,13 @@ import functools
 import inspect
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 
 from ..common import PerfTimer
-from ..tensor import ElementType, Tensor, TensorMeta, meta_from_array
+from ..tensor import ElementType, Tensor, TensorMeta, _seal_ndarray, meta_from_array
 
 OutMetaFn = Callable[[Tensor, Dict[str, Any]], Any]
 GraphOutMetaFn = Callable[[Tensor, Dict[str, Any]], TensorMeta]
@@ -28,7 +29,7 @@ GraphOutMetaFn = Callable[[Tensor, Dict[str, Any]], TensorMeta]
 
 
 class EngineTiming(IntEnum):
-    """How much detail ``graph.compute`` / execute_segment should record."""
+    """How much detail ``graph.realize`` / execute_segment should record."""
 
     OFF = 0
     SEGMENTS = 1  # one row per python op or engine execute_segment
@@ -339,13 +340,13 @@ def _out_meta_orientation(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class OpNode:
     """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""
 
     op: str
     inputs: Tuple[Tensor, ...]
-    attrs: Dict[str, Any]
+    attrs: Mapping[str, Any]
     out_meta: TensorMeta
     fn: Optional[Callable[..., np.ndarray]] = None
 
@@ -396,7 +397,7 @@ def graph_op(
             node = OpNode(
                 op=f.__name__,
                 inputs=(image,),
-                attrs=attrs,
+                attrs=MappingProxyType(dict(attrs)),
                 out_meta=resolved,
                 fn=f,
             )
@@ -516,7 +517,7 @@ def emit(engine_op: EngineOp, x: Tensor, /, **attrs: Any) -> Tensor:
     node = OpNode(
         op=name,
         inputs=(x,),
-        attrs=coerced,
+        attrs=MappingProxyType(dict(coerced)),
         out_meta=out_meta,
     )
     return Tensor(_meta=out_meta, _node=node)
@@ -538,7 +539,7 @@ def flush(x: Tensor) -> Tensor:
     Prefer ``@graph_op`` helpers for reusable Python steps; ``flush`` remains
     for ad-hoc barriers.
     """
-    return Tensor(x.compute())
+    return Tensor(x.realize())
 
 
 def _is_python_node(t: Tensor) -> bool:
@@ -556,7 +557,6 @@ def _run_python_node(t: Tensor, values: Dict[int, np.ndarray]) -> None:
     out = node.fn(inp, **node.attrs)
     if not isinstance(out, np.ndarray):
         raise TypeError(f"python op {node.op!r}: kernel must return ndarray")
-    out = np.ascontiguousarray(out)
     got = meta_from_array(out)
     want = t.meta
     if (
@@ -569,30 +569,6 @@ def _run_python_node(t: Tensor, values: Dict[int, np.ndarray]) -> None:
             f"python op {node.op!r}: output meta {got} != inferred {want}"
         )
     values[id(t)] = out
-
-
-def _reachable_tensors(root: Tensor) -> List[Tensor]:
-    """Post-order DFS → topological order for a DAG."""
-    ordered: List[Tensor] = []
-    visiting: set[int] = set()
-    done: set[int] = set()
-
-    def visit(t: Tensor) -> None:
-        tid = id(t)
-        if tid in done:
-            return
-        if tid in visiting:
-            raise ValueError("cycle detected in compute graph")
-        visiting.add(tid)
-        if t._node is not None:
-            for inp in t._node.inputs:
-                visit(inp)
-        visiting.remove(tid)
-        done.add(tid)
-        ordered.append(t)
-
-    visit(root)
-    return ordered
 
 
 def _segment_boundary_outputs(
@@ -622,25 +598,14 @@ def _segment_boundary_outputs(
     return outs
 
 
-def compute(root: Tensor) -> np.ndarray:
-    """Topo-sort reachable nodes; run engine segments and ``@graph_op`` kernels."""
-    tensors = _reachable_tensors(root)
-    values: Dict[int, np.ndarray] = {}
-
-    for t in tensors:
-        if t._node is None:
-            if t._data is None:
-                raise ValueError("source Tensor has no data")
-            values[id(t)] = np.ascontiguousarray(t._data)
-
-    op_tensors = [t for t in tensors if t._node is not None]
-    if not op_tensors:
-        return values[id(root)]
-
+def _run_op_tensors(
+    op_tensors: List[Tensor],
+    values: Dict[int, np.ndarray],
+    root: Tensor,
+) -> None:
     parent = PerfTimer.current()
     level = get_engine_timing()
     record = parent is not None and level >= EngineTiming.SEGMENTS
-
     engine = get_default_engine()
     i = 0
     while i < len(op_tensors):
@@ -664,7 +629,6 @@ def compute(root: Tensor) -> np.ndarray:
         outs = _segment_boundary_outputs(segment, op_tensors, root)
         if not outs:
             outs = [segment[-1]]
-
         if record:
             assert parent is not None
             seg_step = parent.start_step("graph_compute")
@@ -674,6 +638,60 @@ def compute(root: Tensor) -> np.ndarray:
         seg_step.close()
         i = j
 
+
+def realize(root: Tensor, *, force_recompute: bool = False) -> np.ndarray:
+    """Run the graph if needed and return ``root``'s pixels.
+
+    Cached ``_data`` is handed to the engine as an extra bind. The engine
+    skips a producer when that buffer covers the tensor's canvas.
+    ``force_recompute`` omits those binds and reruns every op.
+    """
+    if root._data is not None and not force_recompute:
+        return root._data
+    if root._node is None:
+        if root._data is None:
+            raise ValueError("source Tensor has no data")
+        return root._data
+
+    values: Dict[int, np.ndarray] = {}
+    op_tensors: List[Tensor] = []
+    done: set[int] = set()
+    visiting: set[int] = set()
+
+    def gather(t: Tensor) -> None:
+        tid = id(t)
+        if tid in done:
+            return
+        if tid in visiting:
+            raise ValueError("cycle detected in compute graph")
+        visiting.add(tid)
+        if t._node is None:
+            if t._data is None:
+                raise ValueError("source Tensor has no data")
+            values[tid] = t._data
+        else:
+            for inp in t._node.inputs:
+                gather(inp)
+            op_tensors.append(t)
+            if t._data is not None and not force_recompute:
+                values[tid] = t._data
+        visiting.remove(tid)
+        done.add(tid)
+
+    gather(root)
+    if not op_tensors:
+        return values[id(root)]
+
+    _run_op_tensors(op_tensors, values, root)
+
+    for t in op_tensors:
+        arr = values.get(id(t))
+        if arr is None:
+            continue
+        if t._data is None or force_recompute:
+            t._data = _seal_ndarray(arr)
+            values[id(t)] = t._data
+
     if id(root) not in values:
-        raise RuntimeError("compute finished without materializing root")
+        raise RuntimeError("realize finished without materializing root")
     return values[id(root)]

@@ -11,6 +11,22 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 
 import numpy as np
 
+
+def _seal_ndarray(arr: np.ndarray) -> np.ndarray:
+    """Mark ``arr`` and every ndarray along ``.base`` read-only. Do not copy."""
+    arr = np.asarray(arr)
+    cur: np.ndarray | None = arr
+    seen: set[int] = set()
+    while cur is not None and isinstance(cur, np.ndarray):
+        if id(cur) in seen:
+            break
+        seen.add(id(cur))
+        if cur.flags.writeable:
+            cur.setflags(write=False)
+        base = cur.base
+        cur = base if isinstance(base, np.ndarray) else None
+    return arr
+
 if TYPE_CHECKING:
     from .engines.graph import OpNode
 
@@ -337,7 +353,11 @@ def flipud(m: "Tensor") -> "Tensor":
 
 
 class Tensor:
-    """Lazy tensor handle: either a concrete source buffer or an engine op result."""
+    """Lazy tensor handle: a source buffer and/or an engine op result.
+
+    Do not mutate an array after wrapping it. Ingest seals the array and its
+    ndarray ``.base`` root. ``realize()`` caches pixels on this handle.
+    """
 
     __slots__ = ("_meta", "_data", "_node")
 
@@ -352,7 +372,7 @@ class Tensor:
         if data is not None:
             if _node is not None:
                 raise ValueError("source Tensor cannot also have an op node")
-            arr = np.asarray(data)
+            arr = _seal_ndarray(np.asarray(data))
             meta = meta_from_array(arr)
             if origin is not None:
                 row, col = int(origin[0]), int(origin[1])
@@ -499,15 +519,15 @@ class Tensor:
         """Spatial transpose. Same as ``transpose()``."""
         return self.transpose()
 
-    def compute(self) -> np.ndarray:
-        """Materialize this tensor (engine graph only)."""
-        from .engines.graph import compute
+    def realize(self, *, force_recompute: bool = False) -> np.ndarray:
+        """Run the graph if needed and return this tensor's pixels (read-only)."""
+        from .engines.graph import realize
 
-        return compute(self)
+        return realize(self, force_recompute=force_recompute)
 
     def __array__(self, dtype: Any = None) -> np.ndarray:
         """NumPy array protocol: getting the array materializes the graph."""
-        arr = self.compute()
+        arr = self.realize()
         if dtype is None:
             return arr
         return np.asarray(arr, dtype=dtype)

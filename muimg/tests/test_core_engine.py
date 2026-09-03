@@ -10,9 +10,9 @@ def test_execute_graph_sub_mul():
     h = w = 2
     graph = {
         "tensor_descs": [
-            {"id": 0, "dtype": "float32", "height": h, "width": w, "channels": 1},
-            {"id": 1, "dtype": "float32", "height": h, "width": w, "channels": 1},
-            {"id": 2, "dtype": "float32", "height": h, "width": w, "channels": 1},
+            {"id": 0, "dtype": "float32", "height": h, "width": w, "channels": 1, "stride": w * 4},
+            {"id": 1, "dtype": "float32", "height": h, "width": w, "channels": 1, "stride": w * 4},
+            {"id": 2, "dtype": "float32", "height": h, "width": w, "channels": 1, "stride": w * 4},
         ],
         "inputs": [0],
         "outputs": [2],
@@ -44,8 +44,8 @@ def test_execute_graph_unknown_op():
 
     graph = {
         "tensor_descs": [
-            {"id": 0, "dtype": "float32", "height": 1, "width": 1, "channels": 1},
-            {"id": 1, "dtype": "float32", "height": 1, "width": 1, "channels": 1},
+            {"id": 0, "dtype": "float32", "height": 1, "width": 1, "channels": 1, "stride": 4},
+            {"id": 1, "dtype": "float32", "height": 1, "width": 1, "channels": 1, "stride": 4},
         ],
         "inputs": [0],
         "outputs": [1],
@@ -71,8 +71,8 @@ def test_execute_graph_matrix_3x3_identity():
     eye = np.eye(3, dtype=np.float32).reshape(-1)
     graph = {
         "tensor_descs": [
-            {"id": 0, "dtype": "float32", "height": 1, "width": 1, "channels": 3},
-            {"id": 1, "dtype": "float32", "height": 1, "width": 1, "channels": 3},
+            {"id": 0, "dtype": "float32", "height": 1, "width": 1, "channels": 3, "stride": 12},
+            {"id": 1, "dtype": "float32", "height": 1, "width": 1, "channels": 3, "stride": 12},
         ],
         "inputs": [0],
         "outputs": [1],

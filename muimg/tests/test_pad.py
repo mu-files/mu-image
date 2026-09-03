@@ -46,17 +46,17 @@ def test_pad_matches_numpy(mode, pad_width):
 def test_pad_rgb_does_not_pad_channels():
     rng = np.random.default_rng(1)
     src = rng.random((4, 6, 3), dtype=np.float32)
-    out = Tensor(src).pad(1, mode="edge").compute()
+    out = Tensor(src).pad(1, mode="edge").realize()
     expect = np.pad(src, ((1, 1), (1, 1), (0, 0)), mode="edge")
     np.testing.assert_array_equal(out, expect)
 
 
 def test_pad_constant_values():
     src = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-    out = Tensor(src).pad(1, mode="constant", constant_values=9).compute()
+    out = Tensor(src).pad(1, mode="constant", constant_values=9).realize()
     expect = np.pad(src, 1, mode="constant", constant_values=9)
     np.testing.assert_array_equal(out, expect)
-    per_edge = Tensor(src).pad(1, mode="constant", constant_values=((9, 8), (7, 6))).compute()
+    per_edge = Tensor(src).pad(1, mode="constant", constant_values=((9, 8), (7, 6))).realize()
     expect_edge = np.pad(src, 1, mode="constant", constant_values=((9, 8), (7, 6)))
     np.testing.assert_array_equal(per_edge, expect_edge)
 
@@ -66,4 +66,4 @@ def test_pad_then_interior_view():
     t = Tensor(src, origin=(5, 7)).pad(((1, 1), (2, 2)))
     interior = t.view(left=2, top=1, width=4, height=3, oob_valid=False)
     assert interior.meta.origin == (5, 7)
-    np.testing.assert_array_equal(interior.compute(), src)
+    np.testing.assert_array_equal(interior.realize(), src)

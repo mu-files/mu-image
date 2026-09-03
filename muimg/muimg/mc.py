@@ -9,7 +9,7 @@ Usage (the top-level ``mucompute`` package re-exports this module)::
     x = mc.Tensor(cfa)
     x = mc.ea_demosaic(x, cfa_pattern="RGGB")
     x = mc.matrix_3x3(x, matrix=M)
-    out = x.compute()
+    out = x.realize()
 
 Every op in ``engines/catalog/ops.yaml`` is a callable here (via the
 generated ``muimg.engines.ops``). Engines are pluggable backends that
