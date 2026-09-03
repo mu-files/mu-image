@@ -965,7 +965,17 @@ def test_strided_numpy_crop_ported_and_image_op():
     np.testing.assert_array_equal(identity, crop)
 
 
-def test_fortran_array_rejected_on_bind():
+def test_fortran_array_copied_on_ingest():
     arr = np.asfortranarray(np.arange(16, dtype=np.float32).reshape(4, 4))
-    with pytest.raises(ValueError, match="packed pixels"):
-        (Tensor(arr) - 0.0).realize()
+    t = Tensor(arr)
+    assert t._data.strides[1] == t._data.dtype.itemsize
+    np.testing.assert_array_equal((t - 0.0).realize(), arr)
+
+
+def test_stepped_slice_copied_on_ingest():
+    parent = np.arange(16, dtype=np.float32).reshape(4, 4)
+    stepped = parent[::2, ::2]
+    t = Tensor(stepped)
+    assert t._data.strides[1] == t._data.dtype.itemsize
+    assert t._data.base is not parent
+    np.testing.assert_array_equal(t._data, stepped)

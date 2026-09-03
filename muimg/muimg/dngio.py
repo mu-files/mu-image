@@ -2082,7 +2082,7 @@ def _generate_pyramid(
         step = PerfTimer.step(f"pyramid_level_{len(levels)}_filter_{filter.name}")
         filtered = cv2.sepFilter2D(
             current, -1, kernel, kernel, anchor=anchor, borderType=cv2.BORDER_REFLECT_101)
-        downsampled = filtered[::2, ::2].copy()
+        downsampled = filtered[::2, ::2]
         step.close()
         
         levels.append(downsampled)

@@ -12,6 +12,30 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 import numpy as np
 
 
+def _require_image_ndarray(arr: np.ndarray) -> None:
+    """Accept only (H, W) or (H, W, C) with C in 1, 3, 4."""
+    if arr.ndim == 2:
+        return
+    if arr.ndim == 3:
+        channels = int(arr.shape[2])
+        if channels not in (1, 3, 4):
+            raise ValueError(f"unsupported channel count: {channels}")
+        return
+    raise ValueError("array must be (H,W) or (H,W,C)")
+
+
+def _pixels_are_packed(arr: np.ndarray) -> bool:
+    """True when samples in a row are adjacent (unit column stride)."""
+    itemsize = int(arr.dtype.itemsize)
+    if arr.ndim == 2:
+        return int(arr.strides[1]) == itemsize
+    channels = int(arr.shape[2])
+    return (
+        int(arr.strides[2]) == itemsize
+        and int(arr.strides[1]) == itemsize * channels
+    )
+
+
 def _seal_ndarray(arr: np.ndarray) -> np.ndarray:
     """Mark ``arr`` and every ndarray along ``.base`` read-only. Do not copy."""
     arr = np.asarray(arr)
@@ -26,6 +50,15 @@ def _seal_ndarray(arr: np.ndarray) -> np.ndarray:
         base = cur.base
         cur = base if isinstance(base, np.ndarray) else None
     return arr
+
+
+def _ingest_ndarray(data: Any) -> np.ndarray:
+    """Wrap ``data`` as a source buffer. Copy only if pixels in a row are not packed."""
+    arr = np.asarray(data)
+    _require_image_ndarray(arr)
+    if not _pixels_are_packed(arr):
+        arr = np.ascontiguousarray(arr)
+    return _seal_ndarray(arr)
 
 if TYPE_CHECKING:
     from .engines.graph import OpNode
@@ -111,15 +144,12 @@ class TensorMeta:
 
 
 def meta_from_array(arr: np.ndarray) -> TensorMeta:
+    _require_image_ndarray(arr)
     if arr.ndim == 2:
         h, w = arr.shape
         channels = 1
-    elif arr.ndim == 3:
-        h, w, channels = arr.shape
-        if channels not in (1, 3, 4):
-            raise ValueError(f"unsupported channel count: {channels}")
     else:
-        raise ValueError("array must be (H,W) or (H,W,C)")
+        h, w, channels = arr.shape
     return TensorMeta(
         dtype=ElementType.from_numpy(arr.dtype),
         height=h,
@@ -372,7 +402,7 @@ class Tensor:
         if data is not None:
             if _node is not None:
                 raise ValueError("source Tensor cannot also have an op node")
-            arr = _seal_ndarray(np.asarray(data))
+            arr = _ingest_ndarray(data)
             meta = meta_from_array(arr)
             if origin is not None:
                 row, col = int(origin[0]), int(origin[1])

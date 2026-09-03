@@ -379,13 +379,11 @@ def render_dng_coreimage(
                     context.output_space_cg,
                 )
 
-                # CI renders RGBA only. Copy RGB into a packed (H, W, 3) buffer.
+                # CI renders RGBA only. Tensor ingest packs the RGB slice.
                 rgba = np.frombuffer(bitmap_buffer, dtype=output_dtype).reshape(
                     (height, width, 4)
                 )
-                rgb = np.empty((height, width, 3), dtype=output_dtype)
-                rgb[:] = rgba[:, :, :3]
-                return rgb, context.colorspace_name
+                return rgba[:, :, :3], context.colorspace_name
 
             except Exception as e:
                 raise RuntimeError(f"An error occurred during Core Image processing: {e}") from e
