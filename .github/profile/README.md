@@ -1,29 +1,31 @@
 ## About
 
-Welcome to my code repository. I'm an individual developer and `mu-files` is where I publish the custom software infrastructure, libraries, and desktop utilities I build to handle image-processing tasks.
+`mu-files` is where I publish image-processing libraries and desktop tools.
+The focus is high-performance, low-memory 2D pipelines for people who write
+Python — large stills, RAW/DNG, and batch convert — not a single vertical
+(astro, timelapse, or otherwise).
 
-Public packages here are released under the **BSD 3-Clause License**.
+Public packages are **BSD 3-Clause**.
 
 ---
 
-## Organization of the code
+## Repositories
 
-My software focuses heavily on **RAW image infrastructure, time-lapse compilation, and astrophotography data pipelines**.
-
-| Repository / Module | Target Audience | Primary Focus |
+| Repository / module | Who it is for | What it does |
 | :--- | :--- | :--- |
-| [**`muimg`**](https://github.com/mu-files/mu-image/tree/main/muimg) | Developers & Engineers | A Python library and CLI tool providing a comprehensive API for native Adobe DNG manipulation, custom RAW rendering pipelines, and parallel batch processing. |
-| [**`mu-dng-converter`**](https://github.com/mu-files/mu-image/tree/main/mu-dng-converter) | Astrophotographers & Editors | A lightweight, cross-platform desktop application. Transcodes and processes DNGs (compression, metadata operations), renders DNG sequences into MP4 videos or image sequences (ideal for timelapse footage), and converts astronomical FITS files to DNGs. Both source code and built installer packages are available. |
-| [**`mu-rasppi`**](https://github.com/mu-files/mu-rasppi) | Raspberry Pi camera users | Example code and benchmarks for Raspberry Pi setups. Includes scripts to capture raw frames from ZWO ASI or Raspberry Pi HQ Camera cameras directly to DNG, and performance benchmarks against PiDNG. |
+| [**`muimg`**](https://github.com/mu-files/mu-image/tree/main/muimg) | Python developers | Library and CLI: Adobe DNG I/O, a spec-true RAW develop, metadata, and parallel batch processing. On PyPI today. |
+| [**`mu-dng-converter`**](https://github.com/mu-files/mu-image/tree/main/mu-dng-converter) | Anyone batch-converting RAW/DNG | Desktop app on `muimg`: transcode, render to images or MP4, optional FITS→DNG. Source and installers. |
+| [**`mu-rasppi`**](https://github.com/mu-files/mu-rasppi) | Raspberry Pi camera work | Capture examples (HQ Camera, ZWO ASI) to DNG, plus PiDNG benchmarks. An example stack, not the product. |
 
 ---
 
-## Licensing & Usage Terms
+## License
 
-- **License**: [BSD 3-Clause](https://opensource.org/licenses/BSD-3-Clause). See each repository's `LICENSE` file for the full text.
+[BSD 3-Clause](https://opensource.org/licenses/BSD-3-Clause). See each
+repository `LICENSE`.
 
 ---
 
-## Feedback & Contributions
+## Feedback
 
-If this looks useful to you, your feedback, bug reports, and feature requests are incredibly valuable. Please feel free to open an issue!
+Issues and feature requests are welcome.
