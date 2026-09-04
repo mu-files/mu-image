@@ -2,17 +2,20 @@
 
 [![License](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-`mu-image` is a cross-platform toolkit for software engineers who process large
-2D images in Python: read and write Adobe DNG, run a spec-true RAW develop, and
-batch-convert without turning every step into a full-frame NumPy buffer.
+`mu-image` is a cross-platform toolkit for software engineers who process
+2D images in Python. The available set of image-processing primitives are
+highly-optimized and can be chained to run sequentially in native code.
+Where equivalent functions exist mu-image should be much faster and use less 
+memory than numpy or opencv. But interfacing with both those frameworks is
+seamless.
 
-The first shipped catalog is DNG/RAW. The same engine is meant for other
-spatial pipelines; DNG is the proof, not the ceiling.
+Included in the package is also a fully spec compliant DNG RAW decoder and
+encoder that is built completely on mu-image.
 
 The repository contains two packages:
 
 - **[`muimg`](muimg/README.md)**: A Python library and CLI for DNG I/O,
-  rendering, metadata, and multi-threaded batch processing. Usable today
+  rendering, metadata, and multi-threaded batch processing
   (`pip install muimg`).
 - **[`mu-dng-converter`](mu-dng-converter/README.md)**: A desktop GUI on
   `muimg` and [PyWebView](https://pywebview.flowrl.com/) for batch
@@ -22,8 +25,9 @@ The repository contains two packages:
 
 ## Primary use cases
 
-- **DNG in your app**: BSD-3-Clause Python package to read, write, and
-  render DNG.
+- **High performance image processing**: basic imaging primitives to develop
+  your own pipelines.
+- **DNG in your app**:  read, write, and render DNG.
 - **DNG transcode**: Re-encode a DNG with a different codec (uncompressed,
   JPEG XL lossless/lossy) and/or update TIFF/DNG metadata, without a
   full develop.
