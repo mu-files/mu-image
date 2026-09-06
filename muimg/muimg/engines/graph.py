@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""muimg compute graph: OpNode / Tensor DAG, engine protocol, and orchestration.
+"""muimg compute graph: OpNode / Array DAG, engine protocol, and orchestration.
 
 Pipeline code (e.g. ``raw_render``) builds this portable DAG. Engines execute
 engine-affinity segments of it; ``@graph_op`` kernels run in Python.
@@ -18,10 +18,10 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 import numpy as np
 
 from ..common import PerfTimer
-from ..tensor import ElementType, Tensor, TensorMeta, _seal_ndarray, meta_from_array
+from ..array import ElementType, Array, ArrayMeta, _seal_ndarray, meta_from_array
 
-OutMetaFn = Callable[[Tensor, Dict[str, Any]], Any]
-GraphOutMetaFn = Callable[[Tensor, Dict[str, Any]], TensorMeta]
+OutMetaFn = Callable[[Array, Dict[str, Any]], Any]
+GraphOutMetaFn = Callable[[Array, Dict[str, Any]], ArrayMeta]
 
 # ---------------------------------------------------------------------------
 # Engine timing policy
@@ -72,9 +72,9 @@ class Engine(Protocol):
 
     def execute_segment(
         self,
-        nodes: List[Tensor],
+        nodes: List[Array],
         values: dict[int, np.ndarray],
-        outputs: List[Tensor],
+        outputs: List[Array],
     ) -> None:
         """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).
 
@@ -105,7 +105,7 @@ def set_default_engine(engine: Engine) -> None:
 
 @dataclass(frozen=True)
 class OpMeta:
-    """Static catalog facts for an engine op (not dependent on a Tensor)."""
+    """Static catalog facts for an engine op (not dependent on a Array)."""
 
     name: str
     # Optional scheduler hint for a future executor; not part of the graph IR.
@@ -127,13 +127,13 @@ class EngineOp:
     # When set (e.g. geometry: view), replaces dtype/channels/H×W/origin composition.
     _infer_meta: Optional[GraphOutMetaFn] = None
 
-    def __call__(self, x: Tensor, /, **attrs: Any) -> Tensor:
+    def __call__(self, x: Array, /, **attrs: Any) -> Array:
         # TIFF orientation 1 is identity; skip the node.
         if self.meta.name == "orientation" and int(attrs.get("orientation", 0)) == 1:
             return x
         return emit(self, x, **attrs)
 
-    def infer_out_meta(self, x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+    def infer_out_meta(self, x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         if self._infer_meta is not None:
             return self._infer_meta(x, attrs)
         return x.meta.copy(
@@ -145,21 +145,21 @@ class EngineOp:
         return f"EngineOp({self.meta.name!r})"
 
 
-def _out_dtype_same(x: Tensor, attrs: Dict[str, Any]) -> ElementType:
+def _out_dtype_same(x: Array, attrs: Dict[str, Any]) -> ElementType:
     return x.meta.dtype
 
 
 def _out_dtype_const(dtype: str | ElementType) -> OutMetaFn:
     resolved = ElementType.coerce(dtype)
 
-    def _fn(x: Tensor, attrs: Dict[str, Any]) -> ElementType:
+    def _fn(x: Array, attrs: Dict[str, Any]) -> ElementType:
         return resolved
 
     return _fn
 
 
 def _out_dtype_from_attr(key: str) -> OutMetaFn:
-    def _fn(x: Tensor, attrs: Dict[str, Any]) -> ElementType:
+    def _fn(x: Array, attrs: Dict[str, Any]) -> ElementType:
         val = attrs.get(key)
         try:
             return ElementType.coerce(val)
@@ -172,19 +172,19 @@ def _out_dtype_from_attr(key: str) -> OutMetaFn:
     return _fn
 
 
-def _out_channels_same(x: Tensor, attrs: Dict[str, Any]) -> int:
+def _out_channels_same(x: Array, attrs: Dict[str, Any]) -> int:
     return x.meta.channels
 
 
 def _out_channels_const(n: int) -> OutMetaFn:
-    def _fn(x: Tensor, attrs: Dict[str, Any]) -> int:
+    def _fn(x: Array, attrs: Dict[str, Any]) -> int:
         return n
 
     return _fn
 
 
-def _out_meta_view(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
-    """Geometry policy ``view``: H/W from attrs. Canvas stays in this tensor's system.
+def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    """Geometry policy ``view``: H/W from attrs. Canvas stays in this array's system.
 
     View attrs ``left``/``top`` are dest-relative. The window is checked in
     the shared canvas system (dest ``(0, 0)`` is ``origin``).
@@ -233,11 +233,11 @@ def _out_meta_view(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
     )
 
 
-def _out_meta_pad(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``pad``: grow H/W by margins in the shared canvas system.
 
     Dest ``(left, top)`` is src ``(0, 0)``. Origin shifts by
-    ``-(top, left)``. Canvas is the new tensor at that origin, same as a
+    ``-(top, left)``. Canvas is the new array at that origin, same as a
     crop's view rect and canvas both sitting on the window.
     """
     top = int(attrs["top"])
@@ -319,7 +319,7 @@ def _map_rect_through_orientation(
     return (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
 
 
-def _out_meta_orientation(x: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``orientation``: swap H×W for TIFF codes 5–8.
 
     Canvas is remapped in dest space, then stored back in the shared
@@ -347,9 +347,9 @@ class OpNode:
     """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""
 
     op: str
-    inputs: Tuple[Tensor, ...]
+    inputs: Tuple[Array, ...]
     attrs: Mapping[str, Any]
-    out_meta: TensorMeta
+    out_meta: ArrayMeta
     fn: Optional[Callable[..., np.ndarray]] = None
 
 
@@ -359,7 +359,7 @@ def graph_op(
     *,
     out_meta: Optional[GraphOutMetaFn] = None,
 ):
-    """Decorator: eager ndarray body; Tensor first-arg attaches a lazy graph node.
+    """Decorator: eager ndarray body; Array first-arg attaches a lazy graph node.
 
     Usage::
 
@@ -381,7 +381,7 @@ def graph_op(
 
         @functools.wraps(f)
         def wrapper(image: Any, /, *args: Any, **kwargs: Any) -> Any:
-            if not isinstance(image, Tensor):
+            if not isinstance(image, Array):
                 return f(image, *args, **kwargs)
 
             placeholder = object()
@@ -403,7 +403,7 @@ def graph_op(
                 out_meta=resolved,
                 fn=f,
             )
-            return Tensor(_meta=resolved, _node=node)
+            return Array(_meta=resolved, _node=node)
 
         wrapper.__graph_op__ = True  # type: ignore[attr-defined]
         return wrapper
@@ -506,7 +506,7 @@ def _validate_attrs(
     return out
 
 
-def emit(engine_op: EngineOp, x: Tensor, /, **attrs: Any) -> Tensor:
+def emit(engine_op: EngineOp, x: Array, /, **attrs: Any) -> Array:
     """Validate attrs, ask the op for output meta, and build a lazy node."""
     name = engine_op.meta.name
     if engine_op._in_channels is not None and x.meta.channels != engine_op._in_channels:
@@ -522,10 +522,10 @@ def emit(engine_op: EngineOp, x: Tensor, /, **attrs: Any) -> Tensor:
         attrs=MappingProxyType(dict(coerced)),
         out_meta=out_meta,
     )
-    return Tensor(_meta=out_meta, _node=node)
+    return Array(_meta=out_meta, _node=node)
 
 
-def op(name: str, x: Tensor, /, **attrs: Any) -> Tensor:
+def op(name: str, x: Array, /, **attrs: Any) -> Array:
     """Emit a named engine op (thin alias over ``engines.ops.OPS_BY_NAME``)."""
     from .ops import OPS_BY_NAME
 
@@ -535,20 +535,20 @@ def op(name: str, x: Tensor, /, **attrs: Any) -> Tensor:
     return emit(engine_op, x, **attrs)
 
 
-def flush(x: Tensor) -> Tensor:
-    """Materialize a lazy graph into a concrete source Tensor.
+def flush(x: Array) -> Array:
+    """Materialize a lazy graph into a concrete source Array.
 
     Prefer ``@graph_op`` helpers for reusable Python steps; ``flush`` remains
     for ad-hoc barriers.
     """
-    return Tensor(x.realize())
+    return Array(x.realize())
 
 
-def _is_python_node(t: Tensor) -> bool:
+def _is_python_node(t: Array) -> bool:
     return t._node is not None and t._node.fn is not None
 
 
-def _run_python_node(t: Tensor, values: Dict[int, np.ndarray]) -> None:
+def _run_python_node(t: Array, values: Dict[int, np.ndarray]) -> None:
     node = t._node
     assert node is not None and node.fn is not None
     if len(node.inputs) != 1:
@@ -574,13 +574,13 @@ def _run_python_node(t: Tensor, values: Dict[int, np.ndarray]) -> None:
 
 
 def _segment_boundary_outputs(
-    nodes: List[Tensor],
-    all_op_tensors: List[Tensor],
-    root: Tensor,
-) -> List[Tensor]:
-    """Tensors produced in this segment that escape to later consumers or root."""
+    nodes: List[Array],
+    all_op_arrays: List[Array],
+    root: Array,
+) -> List[Array]:
+    """Arrays produced in this segment that escape to later consumers or root."""
     node_set = {id(t) for t in nodes}
-    outs: List[Tensor] = []
+    outs: List[Array] = []
     seen: set[int] = set()
     for t in nodes:
         tid = id(t)
@@ -588,7 +588,7 @@ def _segment_boundary_outputs(
             continue
         needed = t is root
         if not needed:
-            for u in all_op_tensors:
+            for u in all_op_arrays:
                 if id(u) in node_set or u._node is None:
                     continue
                 if any(inp is t for inp in u._node.inputs):
@@ -600,35 +600,35 @@ def _segment_boundary_outputs(
     return outs
 
 
-def _run_op_tensors(
-    op_tensors: List[Tensor],
+def _run_op_arrays(
+    op_arrays: List[Array],
     values: Dict[int, np.ndarray],
-    root: Tensor,
+    root: Array,
 ) -> None:
     parent = PerfTimer.current()
     level = get_engine_timing()
     record = parent is not None and level >= EngineTiming.SEGMENTS
     engine = get_default_engine()
     i = 0
-    while i < len(op_tensors):
-        if _is_python_node(op_tensors[i]):
-            node = op_tensors[i]._node
+    while i < len(op_arrays):
+        if _is_python_node(op_arrays[i]):
+            node = op_arrays[i]._node
             assert node is not None
             if record:
                 assert parent is not None
                 step = parent.start_step(f"{node.op} (python)")
             else:
                 step = PerfTimer.inactive
-            _run_python_node(op_tensors[i], values)
+            _run_python_node(op_arrays[i], values)
             step.close()
             i += 1
             continue
 
         j = i + 1
-        while j < len(op_tensors) and not _is_python_node(op_tensors[j]):
+        while j < len(op_arrays) and not _is_python_node(op_arrays[j]):
             j += 1
-        segment = op_tensors[i:j]
-        outs = _segment_boundary_outputs(segment, op_tensors, root)
+        segment = op_arrays[i:j]
+        outs = _segment_boundary_outputs(segment, op_arrays, root)
         if not outs:
             outs = [segment[-1]]
         if record:
@@ -641,26 +641,26 @@ def _run_op_tensors(
         i = j
 
 
-def realize(root: Tensor, *, force_recompute: bool = False) -> np.ndarray:
+def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     """Run the graph if needed and return ``root``'s pixels.
 
     Cached ``_data`` is handed to the engine as an extra bind. The engine
-    skips a producer when that buffer covers the tensor's canvas.
+    skips a producer when that buffer covers the array's canvas.
     ``force_recompute`` omits those binds and reruns every op.
     """
     if root._data is not None and not force_recompute:
         return root._data
     if root._node is None:
         if root._data is None:
-            raise ValueError("source Tensor has no data")
+            raise ValueError("source Array has no data")
         return root._data
 
     values: Dict[int, np.ndarray] = {}
-    op_tensors: List[Tensor] = []
+    op_arrays: List[Array] = []
     done: set[int] = set()
     visiting: set[int] = set()
 
-    def gather(t: Tensor) -> None:
+    def gather(t: Array) -> None:
         tid = id(t)
         if tid in done:
             return
@@ -669,24 +669,24 @@ def realize(root: Tensor, *, force_recompute: bool = False) -> np.ndarray:
         visiting.add(tid)
         if t._node is None:
             if t._data is None:
-                raise ValueError("source Tensor has no data")
+                raise ValueError("source Array has no data")
             values[tid] = t._data
         else:
             for inp in t._node.inputs:
                 gather(inp)
-            op_tensors.append(t)
+            op_arrays.append(t)
             if t._data is not None and not force_recompute:
                 values[tid] = t._data
         visiting.remove(tid)
         done.add(tid)
 
     gather(root)
-    if not op_tensors:
+    if not op_arrays:
         return values[id(root)]
 
-    _run_op_tensors(op_tensors, values, root)
+    _run_op_arrays(op_arrays, values, root)
 
-    for t in op_tensors:
+    for t in op_arrays:
         arr = values.get(id(t))
         if arr is None:
             continue

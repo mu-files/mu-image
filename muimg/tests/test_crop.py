@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import mucompute as mc
-from muimg.tensor import Tensor
+from muimg.array import Array
 from muimg.tiff_metadata import Orientation
 
 
@@ -19,7 +19,7 @@ def test_two_windows_first_view_maps_canvas():
     left0, top0, width0, height0 = 1, 1, 3, 3
     left1, top1, width1, height1 = -1, -1, 5, 5
 
-    t = Tensor(src).view(
+    t = Array(src).view(
         left=left0,
         top=top0,
         width=width0,
@@ -38,7 +38,7 @@ def test_two_windows_first_view_maps_canvas():
 def test_two_crops_first_hard_crop_rejects_second():
     """A crop resets canvas. A second crop past it fails."""
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
-    t = Tensor(src).crop(left=1, top=1, width=3, height=3)
+    t = Array(src).crop(left=1, top=1, width=3, height=3)
     with pytest.raises(ValueError, match="outside canvas"):
         t.crop(left=-1, top=-1, width=5, height=5)
 
@@ -46,7 +46,7 @@ def test_two_crops_first_hard_crop_rejects_second():
 def test_view_restore_full_source():
     """6×6 → view(1,1,4,4) → crop(-1,-1,6,6) is the full input."""
     src = np.arange(6 * 6, dtype=np.float32).reshape(6, 6) + 1.0
-    t = Tensor(src).view(left=1, top=1, width=4, height=4)
+    t = Array(src).view(left=1, top=1, width=4, height=4)
     assert t.meta.canvas == (0, 0, 6, 6)
     t = t.crop(left=-1, top=-1, width=6, height=6)
     np.testing.assert_array_equal(t.realize(), src)
@@ -71,7 +71,7 @@ def test_view_rotate_crop_maps_canvas():
     left0 = (w - side) // 2
     top0 = (h - side) // 2
 
-    t = Tensor(src).view(
+    t = Array(src).view(
         left=left0,
         top=top0,
         width=side,
@@ -95,7 +95,7 @@ def test_crop_rotate_crop_rejects_second():
     left0 = (w - side) // 2
     top0 = (h - side) // 2
 
-    t = Tensor(src).crop(
+    t = Array(src).crop(
         left=left0,
         top=top0,
         width=side,
@@ -108,7 +108,7 @@ def test_crop_rotate_crop_rejects_second():
 
 def test_slice_form_matches_rect_pixels():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
-    t = Tensor(src)
+    t = Array(src)
     rect = t.view(left=1, top=2, width=3, height=2)
     via_s = t.view(np.s_[2:4, 1:4])
     via_tuple = t.view((slice(2, 4), slice(1, 4)))
@@ -120,7 +120,7 @@ def test_slice_form_matches_rect_pixels():
 
 def test_crop_slice_resets_canvas_view_keeps_it():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
-    t = Tensor(src)
+    t = Array(src)
     viewed = t.view(np.s_[2:4, 1:4])
     cropped = t.crop(np.s_[2:4, 1:4])
     np.testing.assert_array_equal(viewed.realize(), cropped.realize())
@@ -130,7 +130,7 @@ def test_crop_slice_resets_canvas_view_keeps_it():
 
 def test_getitem_is_hard_crop():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
-    t = Tensor(src)[2:4, 1:4]
+    t = Array(src)[2:4, 1:4]
     np.testing.assert_array_equal(t.realize(), src[2:4, 1:4])
     assert t.meta.canvas == (1, 2, 3, 2)
     with pytest.raises(ValueError, match="outside canvas"):
@@ -139,13 +139,13 @@ def test_getitem_is_hard_crop():
 
 def test_slice_negative_indices_are_numpy():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
-    t = Tensor(src).crop(np.s_[-2:, -3:])
+    t = Array(src).crop(np.s_[-2:, -3:])
     np.testing.assert_array_equal(t.realize(), src[-2:, -3:])
     assert t.meta.height == 2 and t.meta.width == 3
 
 
 def test_slice_rejects_step_and_mixed_args():
-    t = Tensor(np.zeros((4, 6), dtype=np.float32))
+    t = Array(np.zeros((4, 6), dtype=np.float32))
     with pytest.raises(ValueError, match="step"):
         t.view(np.s_[::2, :])
     with pytest.raises(ValueError, match="step"):
@@ -162,7 +162,7 @@ def test_slice_rejects_step_and_mixed_args():
         t.view(left=1, top=1)
     with pytest.raises(TypeError, match="slice objects"):
         t.view(((2, 4), (1, 5)))
-    rgb = Tensor(np.zeros((4, 6, 3), dtype=np.float32))
+    rgb = Array(np.zeros((4, 6, 3), dtype=np.float32))
     np.testing.assert_array_equal(
         rgb.view(np.s_[1:3, 2:5, :]).realize(),
         np.zeros((2, 3, 3), dtype=np.float32),
@@ -200,7 +200,7 @@ def _rgb() -> np.ndarray:
 )
 @pytest.mark.parametrize("method", ["view", "crop", "getitem"])
 def test_reverse_slice_matches_numpy(src, key, method):
-    t = Tensor(src)
+    t = Array(src)
     if method == "view":
         got = t.view(key)
     elif method == "crop":
@@ -213,12 +213,12 @@ def test_reverse_slice_matches_numpy(src, key, method):
 def test_reverse_slice_rgb_keeps_all_channels():
     src = _rgb()
     np.testing.assert_array_equal(
-        Tensor(src).view(np.s_[::-1, :, :]).realize(), src[::-1, :, :]
+        Array(src).view(np.s_[::-1, :, :]).realize(), src[::-1, :, :]
     )
 
 
 def test_empty_slice_is_rejected():
-    t = Tensor(_mono())
+    t = Array(_mono())
     with pytest.raises(ValueError, match="empty dimension"):
         t.view(np.s_[1:4:-1, :])
     with pytest.raises(ValueError, match="empty dimension"):
@@ -231,12 +231,12 @@ def test_empty_slice_is_rejected():
 
 def test_ellipsis_fills_remaining_axes():
     src = _mono()
-    t = Tensor(src)
+    t = Array(src)
     np.testing.assert_array_equal(t.view(...).realize(), src)
     np.testing.assert_array_equal(t.view(np.s_[1:4, ...]).realize(), src[1:4])
     np.testing.assert_array_equal(t.view(np.s_[1:4, 2:6, ...]).realize(), src[1:4, 2:6])
     rgb = _rgb()
-    tr = Tensor(rgb)
+    tr = Array(rgb)
     np.testing.assert_array_equal(tr.view(...).realize(), rgb)
     np.testing.assert_array_equal(tr[:].realize(), rgb[:])
     np.testing.assert_array_equal(tr[1:4].realize(), rgb[1:4])
@@ -251,7 +251,7 @@ def test_ellipsis_fills_remaining_axes():
 def test_reverse_crop_resets_canvas_view_keeps_it():
     """A reversed crop sits on its box. A reversed view remaps the parent canvas."""
     src = _mono()
-    t = Tensor(src)
+    t = Array(src)
     key = np.s_[4:1:-1, 1:4]
     viewed = t.view(key)
     cropped = t.crop(key)

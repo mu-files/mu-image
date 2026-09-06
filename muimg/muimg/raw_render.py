@@ -17,7 +17,7 @@ from .engines.pyops import (
     demosaic_op,
     radial_distortion_op,
 )
-from .tensor import ElementType, Tensor
+from .array import ElementType, Array
 from .common import PerfTimer, enum_display_name
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
@@ -84,19 +84,19 @@ class DemosaicAlgorithm(StrEnum):
 
 
 def convert_dtype(
-    image: Tensor,
+    image: Array,
     dst_dtype: str | ElementType,
     src_bits: int | None = None,
     dst_bits: int | None = None,
     clip_max: float | None = None,
-) -> Tensor:
+) -> Array:
     """Convert image between data types with proper normalization and optional clipping.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Array`` to materialize.
 
     Args:
-        image: Input Tensor (H, W) or (H, W, C)
+        image: Input Array (H, W) or (H, W, C)
         dst_dtype: Destination ``ElementType`` or name (``"uint8"``, ``"uint16"``,
             ``"float16"``, or ``"float32"``)
         src_bits: Custom bit depth for source data (e.g., 12 for 12-bit data
@@ -109,7 +109,7 @@ def convert_dtype(
             For float destinations, only upper bound clipping is applied.
 
     Returns:
-        Lazy ``Tensor`` with dst_dtype
+        Lazy ``Array`` with dst_dtype
     """
     t = image
     try:
@@ -184,26 +184,26 @@ def convert_dtype(
 
 
 def mono_lut(
-    image: Tensor,
+    image: Array,
     lut: LUT | np.ndarray | None = None,
     src_bits: int | None = None,
     dst_bits: int | None = None,
     dst_dtype: str = "float32",
-) -> Tensor:
+) -> Array:
     """Apply LUT to monochrome (single channel) image.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Array`` to materialize.
 
     Args:
-        image: Input Tensor (H, W) or (H, W, 1)
+        image: Input Array (H, W) or (H, W, 1)
         lut: LUT to apply. If None, image is passed through via convert_dtype.
         src_bits: Source bit depth. If None, inferred from dtype.
         dst_bits: Destination bit depth. If None, inferred from dst_dtype.
         dst_dtype: Destination dtype name (``"uint8"``, ``"uint16"``, or ``"float32"``).
 
     Returns:
-        Lazy ``Tensor`` (H, W, 1) with dst_dtype
+        Lazy ``Array`` (H, W, 1) with dst_dtype
     """
     t = image
     if t.meta.channels != 1:
@@ -289,16 +289,16 @@ def compute_colorspace_matrix(
 
 
 def convert_colorspace(
-    image: Tensor,
+    image: Array,
     source_space: ColorSpace,
     dest_space: ColorSpace,
     dst_dtype: str = "float32",
-) -> Tensor:
+) -> Array:
     """Convert image between color spaces with optional dtype conversion.
 
     Wrapper: validate arguments and append ops to a deferred compute graph
     (typically via ``transform_color`` / ``convert_dtype``). Does not run pixels;
-    call ``.realize()`` on the returned ``Tensor`` to materialize.
+    call ``.realize()`` on the returned ``Array`` to materialize.
     """
     t = image
 
@@ -340,7 +340,7 @@ def convert_colorspace(
 
 
 def transform_color(
-    image: Tensor,
+    image: Array,
     input_lut: LUT | np.ndarray | None = None,
     matrix: np.ndarray | None = None,
     output_lut: LUT | np.ndarray | None = None,
@@ -348,11 +348,11 @@ def transform_color(
     dst_bits: int | None = None,
     dst_dtype: str = "float32",
     hue_preserving_input_lut: bool = False,
-) -> Tensor:
+) -> Array:
     """Apply fused LUT→Matrix→LUT color transformation pipeline.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Array`` to materialize.
     """
     t = image
     if t.meta.channels != 3:
@@ -424,14 +424,14 @@ def transform_color(
 
 
 def clip_and_transform_color(
-    image: Tensor,
+    image: Array,
     clip_max: np.ndarray,
     matrix: np.ndarray,
-) -> Tensor:
+) -> Array:
     """Clip RGB channels and apply 3x3 color matrix in a single pass.
 
     Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.realize()`` on the returned ``Tensor`` to materialize.
+    Does not run pixels; call ``.realize()`` on the returned ``Array`` to materialize.
     """
     t = image
     if t.meta.channels != 3:
@@ -486,20 +486,20 @@ def compute_xmp_crop_bounds(
 
 
 def demosaic(
-    image_data: Tensor,
+    image_data: Array,
     cfa_pattern: str,
     algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     clip_max: float | None = None,
     dst_dtype: str | None = None,
-) -> Tensor:
+) -> Array:
     """Demosaic CFA data to RGB.
 
     Wrapper: validate arguments and append ops to a deferred compute graph
     (engine and/or python ops depending on ``algorithm``). Does not run pixels;
-    call ``.realize()`` on the returned ``Tensor`` to materialize.
+    call ``.realize()`` on the returned ``Array`` to materialize.
 
     Args:
-        image_data: CFA Tensor (uint8, uint16, float16, float32)
+        image_data: CFA Array (uint8, uint16, float16, float32)
         cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
         algorithm: Demosaic algorithm selector (``EA`` is Hamilton–Adams;
             ``EA_FAST`` is the single-pass axis-pick path;
@@ -508,7 +508,7 @@ def demosaic(
         dst_dtype: Optional destination dtype name. If None, matches input dtype.
 
     Returns:
-        Lazy RGB ``Tensor``
+        Lazy RGB ``Array``
     """
     t = image_data
     if t.meta.channels != 1:
@@ -1681,11 +1681,11 @@ def parse_gain_map(data: bytes) -> dict[str, Any]:
     }
 
 def apply_opcodes(
-    data: Tensor,
+    data: Array,
     opcodes: list[dict[str, Any]],
     use_bicubic: bool = True,
     opcode_list_name: str = "RGB"
-) -> Tensor:
+) -> Array:
     """Apply parsed opcodes to image data.
 
     Supported opcodes:
@@ -1697,14 +1697,14 @@ def apply_opcodes(
     Engine-only ops are chained into one lazy graph (caller materializes).
 
     Args:
-        data: Image Tensor (H, W, C), float32, range [0, 1]
+        data: Image Array (H, W, C), float32, range [0, 1]
         opcodes: List of parsed opcodes from parse_opcode_list
         use_bicubic: If True, use SDK bicubic interpolation for WarpRectilinear;
                      if False, use bilinear (default: True)
         opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList3")
 
     Returns:
-        Processed image as a Tensor
+        Processed image as a Array
     """
     x = data
     if x.meta.dtype != "float32":
@@ -1817,10 +1817,10 @@ def apply_opcodes(
 
 
 def apply_opcodes_cfa(
-    data: Tensor,
+    data: Array,
     opcodes: list[dict[str, Any]],
     opcode_list_name: str = "CFA"
-) -> Tensor:
+) -> Array:
     """Apply parsed opcodes to CFA data.
 
     Handles both OpcodeList1 (pre-linearization, uint16) and OpcodeList2
@@ -1840,14 +1840,14 @@ def apply_opcodes_cfa(
     - GainMap (both lists)
 
     Args:
-        data: CFA Tensor (H, W)
+        data: CFA Array (H, W)
               - uint16 for OpcodeList1 (raw sensor values)
               - float32 for OpcodeList2 (linearized [0,1])
         opcodes: List of parsed opcodes from parse_opcode_list
         opcode_list_name: Name of opcode list for logging (e.g., "OpcodeList1")
 
     Returns:
-        Processed CFA Tensor (same dtype as input)
+        Processed CFA Array (same dtype as input)
     """
     x0 = data
     if x0.meta.channels != 1:
@@ -2467,10 +2467,10 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple[float, float
 
 
 def apply_post_rendering_operations(
-    rgb_input: Tensor,
+    rgb_input: Array,
     rendering_params: dict[str, Any],
-) -> Tensor:
-    """Apply XMP post-rendering ops in ProPhoto linear space (deferred Tensor DAG).
+) -> Array:
+    """Apply XMP post-rendering ops in ProPhoto linear space (deferred Array DAG).
 
     Processing pipeline:
     1. Tone curves in ProPhoto linear space (Adobe's approach)
@@ -2648,18 +2648,18 @@ def _get_ifd0_tag(
 
 def _linearize(
     tags: "DngPage" | "MetadataTags",
-    x: Tensor,
+    x: Array,
     photometric: str,
-) -> Tensor:
+) -> Array:
     """Linearize raw sensor data: apply OpcodeList1, normalize, apply OpcodeList2.
 
     Args:
         tags: Tag source (raw IFD page or MetadataTags) providing linearization tags.
-        x: Raw decoded image Tensor.
+        x: Raw decoded image Array.
         photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
 
     Returns:
-        Normalized float32 Tensor with opcode lists applied.
+        Normalized float32 Array with opcode lists applied.
     """
     is_cfa = photometric == "CFA"
     is_linear_raw = photometric == "LINEAR_RAW"
@@ -2849,22 +2849,22 @@ def _linearize(
 
 def _render_to_camera_space(
     tags: "DngPage" | "MetadataTags",
-    x: Tensor,
+    x: Array,
     photometric: str,
     cfa_pattern: str | None,
     demosaic_algorithm: "DemosaicAlgorithm",
-) -> Tensor:
+) -> Array:
     """Linearize raw data, demosaic if CFA, apply OpcodeList3 and DefaultCrop.
 
     Args:
         tags: Tag source (raw IFD page or MetadataTags) providing linearization/opcode tags.
-        x: Raw decoded image Tensor.
+        x: Raw decoded image Array.
         photometric: Photometric interpretation string ("CFA" or "LINEAR_RAW").
         cfa_pattern: CFA pattern string (e.g. "RGGB"), required if photometric == "CFA".
         demosaic_algorithm: Demosaic algorithm to use when the source is CFA.
 
     Returns:
-        Camera-space Tensor: (H, W, 3) float32 in [0, 1] for CFA/RGB, or
+        Camera-space Array: (H, W, 3) float32 in [0, 1] for CFA/RGB, or
         monochrome (H, W) / (H, W, 1) float32 in [0, 1] for monochrome LINEAR_RAW.
     """
     normalized = _linearize(tags, x, photometric)
@@ -2934,12 +2934,12 @@ def _render_to_camera_space(
 
 def _render_camera_rgb(
     ifd0_tags: "DngPage" | "MetadataTags",
-    rgb_camera: Tensor,
+    rgb_camera: Array,
     output_dtype: type,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict[str, Any] = None,
     use_xmp: bool = True,
-) -> Tensor:
+) -> Array:
     try:
         setup_step = PerfTimer.step("render_setup")
 
@@ -3242,7 +3242,7 @@ def _render_camera_rgb(
 
         # Adaptive exposure: two-graph hist barrier.
         # Graph1 ends at ProPhoto (+ HueSat/PGTM). Compute it for luminance hist,
-        # derive the exposure LUT, then start Graph2 from a fresh Tensor source.
+        # derive the exposure LUT, then start Graph2 from a fresh Array source.
         # Do not flush inside Graph1/Graph2 — that would split fused work.
         needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
         if needs_adaptive_hist:
@@ -3254,7 +3254,7 @@ def _render_camera_rgb(
                 exposure, shadow_scale, default_black_render, highlight_preserving_exposure,
                 camera_space_data=rgb_prophoto_arr,
             )
-            rgb_prophoto = Tensor(rgb_prophoto_arr)
+            rgb_prophoto = Array(rgb_prophoto_arr)
             lut_step.close()
         else:
             lut_step = PerfTimer.step("compute_exposure_ramp_lut")
@@ -3414,13 +3414,13 @@ def _render_camera_rgb(
 
 def _render_camera_monochrome(
     ifd0_tags: "DngPage" | "MetadataTags",
-    mono_camera: Tensor,
+    mono_camera: Array,
     output_dtype: type,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict[str, Any] = None,
     use_xmp: bool = True,
-) -> Tensor:
-    """Render monochrome linear data to output grayscale Tensor.
+) -> Array:
+    """Render monochrome linear data to output grayscale Array.
 
     This is a simplified rendering pipeline for monochrome images that skips
     all color-specific processing (ColorMatrix, HueSatMap, etc.) but keeps
@@ -3428,14 +3428,14 @@ def _render_camera_monochrome(
 
     Args:
         ifd0_tags: IFD0 tags source (contains rendering parameters)
-        mono_camera: Monochrome linear Tensor (H, W, 1) float32 in [0, 1]
+        mono_camera: Monochrome linear Array (H, W, 1) float32 in [0, 1]
         output_dtype: Output data type (np.uint8 or np.uint16)
         raw_ifd_tags: Optional raw IFD tags (for tags that may be on raw IFD)
         rendering_params: Optional rendering parameter overrides
         use_xmp: Whether to extract rendering params from XMP
 
     Returns:
-        Grayscale Tensor (H, W, 1) with output_dtype meta.
+        Grayscale Array (H, W, 1) with output_dtype meta.
     """
     try:
         # Build rendering parameters dict from XMP and overrides
@@ -3492,7 +3492,7 @@ def _render_camera_monochrome(
 
         # Adaptive exposure: two-graph hist barrier.
         # Graph1 ends at camera-space mono. Compute it for luminance hist, derive
-        # the exposure LUT, then start Graph2 from a fresh Tensor source.
+        # the exposure LUT, then start Graph2 from a fresh Array source.
         # Do not flush inside Graph1/Graph2 — that would split fused work.
         needs_adaptive_hist = highlight_preserving_exposure and exposure > 0.0
         if needs_adaptive_hist:
@@ -3507,7 +3507,7 @@ def _render_camera_monochrome(
                 highlight_preserving_exposure,
                 camera_space_data=mono_camera_arr,
             )
-            mono_camera = Tensor(mono_camera_arr)
+            mono_camera = Array(mono_camera_arr)
             lut_step.close()
         else:
             lut_step = PerfTimer.step("compute_exposure_ramp_lut")

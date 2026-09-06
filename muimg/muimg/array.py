@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""Tensor handle: concrete ndarray buffer and/or lazy engine graph node."""
+"""Array handle: concrete ndarray buffer and/or lazy engine graph node."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ if TYPE_CHECKING:
 
 
 class ElementType(StrEnum):
-    """Closed element-type vocabulary for Tensor / graph / engine IR.
+    """Closed element-type vocabulary for Array / graph / engine IR.
 
     String values match the native ``MuImgDType`` names and NumPy dtype names.
     Distinct from ``np.dtype`` (buffer descriptors) and TIFF ``TiffType``
@@ -139,7 +139,7 @@ _ELEMENT_TYPE_FROM_NUMPY = {
 
 
 @dataclass(frozen=True)
-class TensorMeta:
+class ArrayMeta:
     dtype: ElementType
     height: int
     width: int
@@ -147,7 +147,7 @@ class TensorMeta:
     # Buffer top-left in the shared canvas coordinate system, as (row, col).
     origin: Tuple[int, int] = (0, 0)
     # Rect in that same system: (x0, y0, width, height). A later view or
-    # crop uses it. When this tensor is the whole canvas, (x0, y0) is
+    # crop uses it. When this array is the whole canvas, (x0, y0) is
     # (origin col, origin row).
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
 
@@ -157,7 +157,7 @@ class TensorMeta:
             return (self.height, self.width)
         return (self.height, self.width, self.channels)
 
-    def copy(self, **changes: Any) -> "TensorMeta":
+    def copy(self, **changes: Any) -> "ArrayMeta":
         return replace(self, **changes)
 
     def __post_init__(self) -> None:
@@ -167,13 +167,13 @@ class TensorMeta:
             )
 
 
-def meta_from_array(arr: np.ndarray) -> TensorMeta:
+def meta_from_array(arr: np.ndarray) -> ArrayMeta:
     return _meta_from_shape(arr.shape, ElementType.from_numpy(arr.dtype))
 
 
 def _require_scalar(value: Any, op: str) -> float:
-    if isinstance(value, Tensor):
-        raise TypeError(f"{op}: tensor–tensor arithmetic not supported")
+    if isinstance(value, Array):
+        raise TypeError(f"{op}: array–array arithmetic not supported")
     try:
         return float(value)
     except (TypeError, ValueError) as e:
@@ -271,9 +271,9 @@ def _as_axis_int(value: Any, name: str) -> int:
 
 
 def _expand_index_key(key: Any, ndim: int) -> Tuple[slice, ...]:
-    """Expand a slice key to one slice per axis of the tensor.
+    """Expand a slice key to one slice per axis of the array.
 
-    Mono tensors are rank 2 ``(H, W)``. RGB/RGBA tensors are rank 3
+    Mono arrays are rank 2 ``(H, W)``. RGB/RGBA arrays are rank 3
     ``(H, W, C)``. At most one Ellipsis is replaced with ``slice(None)``.
     A trailing Ellipsis that fills no axes is dropped, as in NumPy
     (``arr[:, :, ...]`` on a 2-d array is ``arr[:, :]``). A short key such
@@ -307,12 +307,12 @@ def _expand_index_key(key: Any, ndim: int) -> Tuple[slice, ...]:
 
 
 def _window_from_slices(
-    meta: TensorMeta, rows: slice, cols: slice, channels: Optional[slice] = None
+    meta: ArrayMeta, rows: slice, cols: slice, channels: Optional[slice] = None
 ) -> Tuple[int, int, int, int, int]:
     if channels is not None:
         # Mono is rank 2 (H, W), even when channels == 1 in metadata.
         if len(meta.shape) < 3:
-            raise IndexError("too many indices for a (H, W) tensor")
+            raise IndexError("too many indices for a (H, W) array")
         if not _full_channel_slice(channels, meta.channels):
             raise ValueError("channel subsets are not supported")
     top, height, flip_rows = _slice_span(rows, meta.height, "rows")
@@ -320,7 +320,7 @@ def _window_from_slices(
     return left, top, width, height, _orientation_from_flips(flip_rows, flip_cols)
 
 
-def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int, int]:
+def _window_from_key(meta: ArrayMeta, key: Any) -> Tuple[int, int, int, int, int]:
     items = _expand_index_key(key, len(meta.shape))
     if len(items) == 1:
         return _window_from_slices(meta, items[0], slice(None))
@@ -328,11 +328,11 @@ def _window_from_key(meta: TensorMeta, key: Any) -> Tuple[int, int, int, int, in
         return _window_from_slices(meta, items[0], items[1])
     if len(items) == 3:
         return _window_from_slices(meta, items[0], items[1], items[2])
-    raise IndexError(f"too many indices for a tensor: {len(items)}")
+    raise IndexError(f"too many indices for an array: {len(items)}")
 
 
 def _window(
-    meta: TensorMeta,
+    meta: ArrayMeta,
     region: slice | tuple[Any, ...] | None,
     left: int | None,
     top: int | None,
@@ -366,12 +366,12 @@ def _window(
     return left_i, top_i, width_i, height_i, 1
 
 
-def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
+def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     """Rotate in the spatial plane. Same arguments as ``numpy.rot90``."""
     from . import mc
 
     if tuple(axes) != (0, 1):
-        raise ValueError("Tensor only supports rot90 in the spatial plane (axes=(0, 1)).")
+        raise ValueError("Array only supports rot90 in the spatial plane (axes=(0, 1)).")
     turns = int(k) % 4
     if turns == 0:
         return m
@@ -379,24 +379,24 @@ def rot90(m: "Tensor", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Tensor":
     return mc.orientation(m, orientation={1: 8, 2: 3, 3: 6}[turns])
 
 
-def fliplr(m: "Tensor") -> "Tensor":
+def fliplr(m: "Array") -> "Array":
     """Flip left–right. Same as ``numpy.fliplr``."""
     from . import mc
 
     return mc.orientation(m, orientation=2)
 
 
-def flipud(m: "Tensor") -> "Tensor":
+def flipud(m: "Array") -> "Array":
     """Flip up–down. Same as ``numpy.flipud``."""
     from . import mc
 
     return mc.orientation(m, orientation=4)
 
 
-def _meta_from_shape(shape: Any, dtype: ElementType) -> TensorMeta:
+def _meta_from_shape(shape: Any, dtype: ElementType) -> ArrayMeta:
     """Build whole-canvas meta for ``(H, W)`` or ``(H, W, C)``."""
     height, width, channels = _hwc_from_shape(shape)
-    return TensorMeta(
+    return ArrayMeta(
         dtype=dtype,
         height=height,
         width=width,
@@ -442,51 +442,51 @@ def _fill_samples(fill_value: Any, channels: int) -> list[float]:
     )
 
 
-def _emit_fill(meta: TensorMeta, fill_value: Any) -> "Tensor":
+def _emit_fill(meta: ArrayMeta, fill_value: Any) -> "Array":
     from . import mc
 
     return mc.fill(
-        Tensor(_meta=meta),
+        Array(_meta=meta),
         value=_fill_samples(fill_value, meta.channels),
     )
 
 
-def zeros(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Tensor":
-    """Lazy tensor filled with 0. Same arguments as ``numpy.zeros`` for image rank."""
+def zeros(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Array":
+    """Lazy array filled with 0. Same arguments as ``numpy.zeros`` for image rank."""
     return _emit_fill(_meta_from_shape(shape, ElementType.coerce(dtype)), 0)
 
 
-def ones(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Tensor":
-    """Lazy tensor filled with 1. Same arguments as ``numpy.ones`` for image rank."""
+def ones(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Array":
+    """Lazy array filled with 1. Same arguments as ``numpy.ones`` for image rank."""
     return _emit_fill(_meta_from_shape(shape, ElementType.coerce(dtype)), 1)
 
 
-def full(shape: Any, fill_value: Any, dtype: Any = None) -> "Tensor":
-    """Lazy tensor filled with a constant. Same arguments as ``numpy.full`` for image rank."""
+def full(shape: Any, fill_value: Any, dtype: Any = None) -> "Array":
+    """Lazy array filled with a constant. Same arguments as ``numpy.full`` for image rank."""
     et = ElementType.coerce(dtype) if dtype is not None else _dtype_from_fill(fill_value)
     return _emit_fill(_meta_from_shape(shape, et), fill_value)
 
 
-def zeros_like(tensor: "Tensor", dtype: Any = None) -> "Tensor":
-    """Lazy zeros with ``tensor``'s shape (and dtype unless ``dtype`` is set)."""
-    et = tensor.dtype if dtype is None else ElementType.coerce(dtype)
-    return zeros(tensor.shape, dtype=et)
+def zeros_like(array: "Array", dtype: Any = None) -> "Array":
+    """Lazy zeros with ``array``'s shape (and dtype unless ``dtype`` is set)."""
+    et = array.dtype if dtype is None else ElementType.coerce(dtype)
+    return zeros(array.shape, dtype=et)
 
 
-def ones_like(tensor: "Tensor", dtype: Any = None) -> "Tensor":
-    """Lazy ones with ``tensor``'s shape (and dtype unless ``dtype`` is set)."""
-    et = tensor.dtype if dtype is None else ElementType.coerce(dtype)
-    return ones(tensor.shape, dtype=et)
+def ones_like(array: "Array", dtype: Any = None) -> "Array":
+    """Lazy ones with ``array``'s shape (and dtype unless ``dtype`` is set)."""
+    et = array.dtype if dtype is None else ElementType.coerce(dtype)
+    return ones(array.shape, dtype=et)
 
 
-def full_like(tensor: "Tensor", fill_value: Any, dtype: Any = None) -> "Tensor":
-    """Lazy constant with ``tensor``'s shape. ``dtype`` defaults to the reference."""
-    et = tensor.dtype if dtype is None else ElementType.coerce(dtype)
-    return full(tensor.shape, fill_value, dtype=et)
+def full_like(array: "Array", fill_value: Any, dtype: Any = None) -> "Array":
+    """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
+    et = array.dtype if dtype is None else ElementType.coerce(dtype)
+    return full(array.shape, fill_value, dtype=et)
 
 
-class Tensor:
-    """Lazy tensor handle: a source buffer and/or an engine op result.
+class Array:
+    """Lazy array handle: a source buffer and/or an engine op result.
 
     Do not mutate an array after wrapping it. Ingest seals the array and its
     ndarray ``.base`` root. ``realize()`` caches pixels on this handle.
@@ -499,12 +499,12 @@ class Tensor:
         data: Optional[np.ndarray] = None,
         *,
         origin: Optional[Tuple[int, int]] = None,
-        _meta: Optional[TensorMeta] = None,
+        _meta: Optional[ArrayMeta] = None,
         _node: Optional["OpNode"] = None,
     ):
         if data is not None:
             if _node is not None:
-                raise ValueError("source Tensor cannot also have an op node")
+                raise ValueError("source Array cannot also have an op node")
             arr = _ingest_ndarray(data)
             meta = meta_from_array(arr)
             if origin is not None:
@@ -519,12 +519,12 @@ class Tensor:
             self._node = None
         elif _meta is not None:
             if origin is not None:
-                raise ValueError("origin= is only valid for source Tensors")
+                raise ValueError("origin= is only valid for source Arrays")
             self._meta = _meta
             self._data = None
             self._node = _node
         else:
-            raise ValueError("Tensor requires an ndarray source or _meta=")
+            raise ValueError("Array requires an ndarray source or _meta=")
 
     @property
     def dtype(self) -> ElementType:
@@ -535,16 +535,16 @@ class Tensor:
         return self._meta.shape
 
     @property
-    def meta(self) -> TensorMeta:
+    def meta(self) -> ArrayMeta:
         return self._meta
 
-    def __sub__(self, other: Any) -> "Tensor":
+    def __sub__(self, other: Any) -> "Array":
         from .engines.graph import op
 
         value = _require_scalar(other, "sub_scalar")
         return op("sub_scalar", self, value=value)
 
-    def __mul__(self, other: Any) -> "Tensor":
+    def __mul__(self, other: Any) -> "Array":
         from .engines.graph import op
 
         value = _require_scalar(other, "mul_scalar")
@@ -560,8 +560,8 @@ class Tensor:
         height: int | None = None,
         oob_valid: bool = True,
         reset_origin: bool = False,
-    ) -> "Tensor":
-        """Window into this tensor.
+    ) -> "Array":
+        """Window into this array.
 
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
         """
@@ -595,7 +595,7 @@ class Tensor:
         width: int | None = None,
         height: int | None = None,
         reset_origin: bool = False,
-    ) -> "Tensor":
+    ) -> "Array":
         """Hard window: same as ``view(..., oob_valid=False)``."""
         return self.view(
             region,
@@ -612,7 +612,7 @@ class Tensor:
         pad_width: Any,
         mode: str = "constant",
         constant_values: Any = 0,
-    ) -> "Tensor":
+    ) -> "Array":
         """Grow height and width. Same ``pad_width`` / ``constant_values`` shapes as ``numpy.pad``."""
         from . import mc
 
@@ -630,30 +630,30 @@ class Tensor:
         }
         return mc.pad(self, **attrs)
 
-    def __getitem__(self, key: Any) -> "Tensor":
-        """NumPy spatial slice: a hard crop of this tensor."""
+    def __getitem__(self, key: Any) -> "Array":
+        """NumPy spatial slice: a hard crop of this array."""
         return self.crop(key)
 
-    def transpose(self, *axes: Any) -> "Tensor":
-        """Transpose the 2D spatial dimensions of the tensor.
+    def transpose(self, *axes: Any) -> "Array":
+        """Transpose the 2D spatial dimensions of the array.
 
         Accepts optional axes to match NumPy, but enforces 2D spatial remapping.
         """
         if len(axes) == 1 and not isinstance(axes[0], (int, np.integer)):
             axes = tuple(axes[0])
         if axes and axes != (1, 0) and axes != (1, 0, 2):
-            raise ValueError("Tensor only supports 2D spatial axis transposition.")
+            raise ValueError("Array only supports 2D spatial axis transposition.")
         from . import mc
 
         return mc.orientation(self, orientation=5)
 
     @property
-    def T(self) -> "Tensor":
+    def T(self) -> "Array":
         """Spatial transpose. Same as ``transpose()``."""
         return self.transpose()
 
     def realize(self, *, force_recompute: bool = False) -> np.ndarray:
-        """Run the graph if needed and return this tensor's pixels (read-only)."""
+        """Run the graph if needed and return this array's pixels (read-only)."""
         from .engines.graph import realize
 
         return realize(self, force_recompute=force_recompute)

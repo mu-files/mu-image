@@ -15,7 +15,7 @@ from .splines import CubicSpline
 
 if TYPE_CHECKING:
     from .dngio import DngFile
-    from .tensor import Tensor
+    from .array import Array
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +379,7 @@ def render_dng_coreimage(
                     context.output_space_cg,
                 )
 
-                # CI renders RGBA only. Tensor ingest packs the RGB slice.
+                # CI renders RGBA only. Array ingest packs the RGB slice.
                 rgba = np.frombuffer(bitmap_buffer, dtype=output_dtype).reshape(
                     (height, width, 4)
                 )
@@ -394,9 +394,9 @@ def decode_dng_coreimage(
     use_xmp: bool = True,
     output_dtype: type = np.uint16,
     rendering_params: dict[str, Any] = None,
-) -> "Tensor":
+) -> "Array":
     """
-    Decode a DNG file to a ``Tensor`` using Core Image processing.
+    Decode a DNG file to a ``Array`` using Core Image processing.
     
     Args:
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
@@ -406,7 +406,7 @@ def decode_dng_coreimage(
             See dngio.decode_dng() for full list of supported keys.
     
     Returns:
-        RGB ``Tensor`` with shape (height, width, 3) and specified dtype.
+        RGB ``Array`` with shape (height, width, 3) and specified dtype.
         Call ``.realize()`` at encode/write/display edges.
     """
     from pathlib import Path
@@ -420,7 +420,7 @@ def decode_dng_coreimage(
         
         # Import raw_render for parameter extraction
         from . import raw_render
-        from .tensor import Tensor
+        from .array import Array
         
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
         extracted_params = raw_render.supported_xmp_to_dict(dng_file) if use_xmp else {}
@@ -498,7 +498,7 @@ def decode_dng_coreimage(
         
         # Convert Core Image output to ProPhoto linear for post-rendering
         rgb_prophoto_linear = raw_render.convert_colorspace(
-            Tensor(ci_output),
+            Array(ci_output),
             source_colorspace,
             raw_render.ColorSpace.PROPHOTO_LINEAR
         )
@@ -521,7 +521,7 @@ def decode_dng_coreimage(
         )
         
         logger.debug(
-            f"Successfully decoded DNG to Tensor "
+            f"Successfully decoded DNG to Array "
             f"{result.meta.height}x{result.meta.width} dtype={result.meta.dtype}"
         )
         return result

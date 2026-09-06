@@ -49,7 +49,7 @@ ops:
         type: f32
         count: 1
 
-  # Constant dest: no input. Shape/dtype live on the output tensor.
+  # Constant dest: no input. Shape/dtype live on the output array.
   - name: fill
     inputs: []
     outputs:
@@ -90,7 +90,7 @@ ops:
         count: 1
         optional: true
 
-  # Grow the tensor by spatial margins. Inverse of view with oob_valid=false.
+  # Grow the array by spatial margins. Inverse of view with oob_valid=false.
   - name: pad
     inputs:
       - channels: any

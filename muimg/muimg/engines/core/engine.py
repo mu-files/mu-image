@@ -9,7 +9,7 @@ from typing import Dict, List, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from ...tensor import Tensor
+    from ...array import Array
 
 
 class CoreEngine:
@@ -28,9 +28,9 @@ class CoreEngine:
 
     def execute_segment(
         self,
-        nodes: List["Tensor"],
+        nodes: List["Array"],
         values: Dict[int, np.ndarray],
-        outputs: List["Tensor"],
+        outputs: List["Array"],
     ) -> None:
         from ...common import PerfTimer
         from ..graph import EngineTiming, get_engine_timing
@@ -49,25 +49,25 @@ class CoreEngine:
             )
 
         produced = {id(t) for t in nodes}
-        input_tensors: List["Tensor"] = []
+        input_arrays: List["Array"] = []
         seen_in: set[int] = set()
         for t in nodes:
             assert t._node is not None
             for inp in t._node.inputs:
                 iid = id(inp)
                 if iid not in produced and iid not in seen_in:
-                    input_tensors.append(inp)
+                    input_arrays.append(inp)
                     seen_in.add(iid)
 
-        all_tensors = input_tensors + nodes
-        id_of = {id(t): i for i, t in enumerate(all_tensors)}
+        all_arrays = input_arrays + nodes
+        id_of = {id(t): i for i, t in enumerate(all_arrays)}
 
         output_ids = {id(t) for t in outputs}
         in_binds: Dict[int, np.ndarray] = {}
-        for t in input_tensors:
+        for t in input_arrays:
             tid = id(t)
             if tid not in values:
-                raise ValueError(f"missing materialized input for tensor {tid}")
+                raise ValueError(f"missing materialized input for array {tid}")
             in_binds[id_of[tid]] = values[tid]
         for t in nodes:
             tid = id(t)
@@ -83,7 +83,7 @@ class CoreEngine:
             out_binds[id_of[id(t)]] = arr
 
         tensor_descs = []
-        for t in all_tensors:
+        for t in all_arrays:
             m = t.meta
             origin_row, origin_col = m.origin
             bound = out_binds.get(id_of[id(t)], in_binds.get(id_of[id(t)]))
@@ -121,7 +121,7 @@ class CoreEngine:
 
         graph = {
             "tensor_descs": tensor_descs,
-            "inputs": [id_of[id(t)] for t in input_tensors],
+            "inputs": [id_of[id(t)] for t in input_arrays],
             "outputs": [id_of[id(t)] for t in outputs],
             "nodes": graph_nodes,
         }

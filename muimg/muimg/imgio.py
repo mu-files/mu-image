@@ -13,14 +13,14 @@ from typing import IO, Callable, Iterable, Any
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm, convert_dtype
-from .tensor import Tensor
+from .array import Array
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, TiffType
 from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
 logger = logging.getLogger(__name__)
 
 def write_image(
-    image: np.ndarray | Tensor,
+    image: np.ndarray | Array,
     output: str | Path | IO[bytes],
     output_format_stream: str = "jpg",
     metadata: MetadataTags | None = None,
@@ -31,7 +31,7 @@ def write_image(
     Helper function used by convert_imgformat and convert_dng.
     
     Args:
-        image: RGB image array or ``Tensor`` with shape (height, width, 3)
+        image: RGB image array or ``Array`` with shape (height, width, 3)
         output: Output file path (str/Path) or stream (IO[bytes])
         output_format_stream: Output format for stream output ("jpg", "png", "tiff", etc.)
             Ignored when output is a file path (format determined by extension)
@@ -40,7 +40,7 @@ def write_image(
     Returns:
         bool: True if successful, False otherwise
     """
-    if isinstance(image, Tensor):
+    if isinstance(image, Array):
         image = image.realize()
 
     # Determine output format
@@ -99,7 +99,7 @@ def write_image(
     
     # Handle JPEG with imagecodecs (8-bit lossy only)
     elif format_ext in ('.jpg', '.jpeg'):
-        img_8bit = image if image.dtype == np.uint8 else convert_dtype(Tensor(image), "uint8").realize()
+        img_8bit = image if image.dtype == np.uint8 else convert_dtype(Array(image), "uint8").realize()
         jpeg_data = imagecodecs.jpeg_encode(img_8bit, level=90)
 
         if isinstance(output, (str, Path)):
@@ -138,9 +138,9 @@ def write_image(
 def decode_image(
     file: str | Path | IO[bytes],
     output_dtype: type = np.uint8,
-) -> Tensor:
+) -> Array:
     """
-    Decode an image file to a ``Tensor``.
+    Decode an image file to a ``Array``.
     
     Supports DNG files (with default raw processing) and standard image formats
     (JPEG, PNG, TIFF, etc.) via OpenCV.
@@ -153,7 +153,7 @@ def decode_image(
             'muimg dng convert' CLI command instead.
         
     Returns:
-        RGB ``Tensor`` with shape (height, width, 3) and specified dtype
+        RGB ``Array`` with shape (height, width, 3) and specified dtype
     """
     # Try to open as DNG - DngFile handles str, Path, and IO[bytes]
     dng_file = None
@@ -186,7 +186,7 @@ def decode_image(
             raise ValueError("Failed to decode JXL image")
         
         # JXL already returns RGB, just convert dtype if needed
-        return convert_dtype(Tensor(img), np.dtype(output_dtype).name)
+        return convert_dtype(Array(img), np.dtype(output_dtype).name)
     
     # Check if it's a TIFF file - use tifffile to avoid OpenCV warnings about EXIF tags
     if isinstance(file, (str, Path)) and str(file).lower().endswith(('.tif', '.tiff')):
@@ -195,7 +195,7 @@ def decode_image(
             raise ValueError("Failed to decode TIFF image")
         
         # tifffile returns RGB, just convert dtype if needed
-        return convert_dtype(Tensor(img), np.dtype(output_dtype).name)
+        return convert_dtype(Array(img), np.dtype(output_dtype).name)
     
     # Fall back to cv2 for other formats
     if isinstance(file, (str, Path)):
@@ -220,7 +220,7 @@ def decode_image(
     else:
         raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
-    return convert_dtype(Tensor(img), np.dtype(output_dtype).name)
+    return convert_dtype(Array(img), np.dtype(output_dtype).name)
 
 def convert_imgformat(
     file: str | Path | IO[bytes],

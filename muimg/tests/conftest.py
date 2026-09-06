@@ -15,7 +15,7 @@ import pytest
 import tifffile
 
 from muimg.raw_render import convert_dtype
-from muimg.tensor import Tensor
+from muimg.array import Array
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ def generate_rgb_ramp(
     
     # Convert to target dtype if needed
     if dtype != np.float32:
-        img = convert_dtype(Tensor(img), np.dtype(dtype).name).realize()
+        img = convert_dtype(Array(img), np.dtype(dtype).name).realize()
     
     # Scale to specified bit depth if requested
     if bits_per_sample is not None:
@@ -300,9 +300,9 @@ def sample_as_cfa(rgb_img: np.ndarray, pattern: str = "RGGB") -> np.ndarray:
 
 def normalize_image(img: np.ndarray) -> np.ndarray:
     """Normalize image to float [0,1] range."""
-    from muimg.tensor import Tensor
+    from muimg.array import Array
 
-    if isinstance(img, Tensor):
+    if isinstance(img, Array):
         img = img.realize()
     if img.dtype == np.uint8:
         return img.astype(np.float32) / 255.0
@@ -313,11 +313,11 @@ def normalize_image(img: np.ndarray) -> np.ndarray:
 
 def compute_diff_stats(img1: np.ndarray, img2: np.ndarray) -> dict:
     """Compute difference statistics between two images."""
-    from muimg.tensor import Tensor
+    from muimg.array import Array
 
-    if isinstance(img1, Tensor):
+    if isinstance(img1, Array):
         img1 = img1.realize()
-    if isinstance(img2, Tensor):
+    if isinstance(img2, Array):
         img2 = img2.realize()
     diff = np.abs(normalize_image(img1) - normalize_image(img2))
     stats = {

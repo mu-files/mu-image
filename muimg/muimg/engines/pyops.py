@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
-"""Python graph ops: write eager NumPy, call on Tensor to attach lazily.
+"""Python graph ops: write eager NumPy, call on Array to attach lazily.
 
 Decorated with ``@graph_op`` — not in ``ops.yaml``.
 """
@@ -12,11 +12,11 @@ from typing import Any, Dict
 import numpy as np
 
 from ..deps import cv2_proxy as cv2
-from ..tensor import ElementType, Tensor, TensorMeta
+from ..array import ElementType, Array, ArrayMeta
 from .graph import graph_op
 
 
-def _cast_dtype_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+def _cast_dtype_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     dest = ElementType.coerce(attrs["dst_dtype"])
     return t.meta.copy(dtype=dest)
 
@@ -28,7 +28,7 @@ def cast_dtype_op(arr: np.ndarray, dst_dtype: str | ElementType) -> np.ndarray:
     return arr.astype(dest.numpy, copy=False)
 
 
-def _demosaic_out_meta(t: Tensor, attrs: Dict[str, Any]) -> TensorMeta:
+def _demosaic_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     if t.meta.channels != 1:
         raise ValueError("demosaic_op input must be mono / CFA (1 channel)")
     algorithm = attrs.get("algorithm", "VNG")

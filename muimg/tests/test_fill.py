@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import mucompute as mc
-from muimg.tensor import ElementType, Tensor
+from muimg.array import ElementType, Array
 
 
 def test_zeros_is_lazy_then_realizes():
@@ -66,7 +66,7 @@ def test_full_rejects_non_broadcast_vector():
 
 
 def test_zeros_like_does_not_realize_input():
-    src = Tensor(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
+    src = Array(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
     lazy = src - 1.0
     assert lazy._data is None
     z = mc.zeros_like(lazy)
@@ -78,14 +78,14 @@ def test_zeros_like_does_not_realize_input():
 
 
 def test_ones_like_dtype_override():
-    src = Tensor(np.zeros((2, 2), dtype=np.float32))
+    src = Array(np.zeros((2, 2), dtype=np.float32))
     t = mc.ones_like(src, dtype="uint8")
     assert t.dtype == ElementType.UINT8
     np.testing.assert_array_equal(t.realize(), np.ones((2, 2), dtype=np.uint8))
 
 
 def test_full_like_uses_reference_dtype():
-    src = Tensor(np.zeros((2, 3), dtype=np.uint8))
+    src = Array(np.zeros((2, 3), dtype=np.uint8))
     t = mc.full_like(src, 9)
     assert t.dtype == ElementType.UINT8
     np.testing.assert_array_equal(t.realize(), np.full((2, 3), 9, dtype=np.uint8))
@@ -113,8 +113,8 @@ def test_zeros_rejects_zero_size():
         mc.zeros((3, 0))
 
 
-def test_tensor_rejects_zero_size_array():
+def test_array_rejects_zero_size():
     with pytest.raises(ValueError, match="at least 1"):
-        Tensor(np.zeros((0, 4), dtype=np.float32))
+        Array(np.zeros((0, 4), dtype=np.float32))
     with pytest.raises(ValueError, match="at least 1"):
-        Tensor(np.zeros((3, 0, 3), dtype=np.float32))
+        Array(np.zeros((3, 0, 3), dtype=np.float32))

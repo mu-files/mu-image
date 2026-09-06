@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from muimg.dngio import DngFile, IfdPageSpec, IfdDataSpec, SubFileType, write_dng
-from muimg.tensor import Tensor
+from muimg.array import Array
 from muimg.raw_render import DemosaicAlgorithm
 from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
@@ -203,7 +203,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         from muimg import raw_render
 
         rgb_u16_active = raw_render.demosaic(
-            Tensor(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.EA).realize()
+            Array(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.EA).realize()
         assert rgb_u16_active.dtype == np.uint16
         pyramid_levels = _build_pyramid_rgb_u16(rgb_u16_active)
         if not pyramid_levels:

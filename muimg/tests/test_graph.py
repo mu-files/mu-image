@@ -1,4 +1,4 @@
-"""Tensor / engines.graph tests + eager flush at python barriers."""
+"""Array / engines.graph tests + eager flush at python barriers."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from muimg.engines.core import CoreEngine
 from muimg.engines.graph import EngineOp, flush
 from muimg.engines.ops import OPS_BY_NAME
 from muimg.raw_render import DemosaicAlgorithm, demosaic
-from muimg.tensor import Tensor
+from muimg.array import Array
 
 
 def test_catalog_engine_ops_io():
@@ -24,7 +24,7 @@ def test_catalog_engine_ops_io():
     assert "orientation" in OPS_BY_NAME
     assert isinstance(mc.bilinear_demosaic, EngineOp)
     assert mc.bilinear_demosaic._in_channels == 1
-    x = Tensor(np.zeros((2, 2), dtype=np.float32))
+    x = Array(np.zeros((2, 2), dtype=np.float32))
     assert mc.bilinear_demosaic.infer_out_meta(x, {}).channels == 3
     assert callable(mc.matrix_3x3)
     assert callable(mc.lut)
@@ -32,8 +32,8 @@ def test_catalog_engine_ops_io():
     assert "view" in get_default_engine().supported_ops
 
 
-def test_tensor_meta_origin_default():
-    x = Tensor(np.zeros((4, 6), dtype=np.float32))
+def test_array_meta_origin_default():
+    x = Array(np.zeros((4, 6), dtype=np.float32))
     assert x.meta.origin == (0, 0)
     assert x.meta.canvas == (0, 0, 6, 4)
     y = x - 1.0
@@ -42,15 +42,15 @@ def test_tensor_meta_origin_default():
     assert y.meta.height == 4 and y.meta.width == 6
 
 
-def test_tensor_origin_kwarg():
-    src = Tensor(np.zeros((4, 6), dtype=np.float32), origin=(-3, -5))
+def test_array_origin_kwarg():
+    src = Array(np.zeros((4, 6), dtype=np.float32), origin=(-3, -5))
     assert src.meta.origin == (-3, -5)
     assert src.meta.canvas == (-5, -3, 6, 4)
 
 
 def test_view_emit_meta_updates_origin_and_size():
     """Default view accumulates origin; reset_origin re-zeros world."""
-    base = Tensor(np.arange(5 * 7, dtype=np.float32).reshape(5, 7))
+    base = Array(np.arange(5 * 7, dtype=np.float32).reshape(5, 7))
     cat = base.view(left=1, top=2, width=3, height=2)
     assert cat.meta.height == 2 and cat.meta.width == 3
     assert cat.meta.origin == (2, 1)
@@ -71,7 +71,7 @@ def test_view_emit_meta_updates_origin_and_size():
 
 def test_orientation_emit_meta_swaps_hw():
     """TIFF 5–8 swap H×W; 1–4 keep size; origin unchanged."""
-    base = Tensor(np.zeros((4, 6, 3), dtype=np.float32))
+    base = Array(np.zeros((4, 6, 3), dtype=np.float32))
     same = mc.orientation(base, orientation=3)
     assert same.meta.height == 4 and same.meta.width == 6
     assert same.meta.origin == (0, 0)
@@ -125,7 +125,7 @@ def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
     for src in (src_u8, src_f32):
         for code in range(1, 9):
             calls.clear()
-            src_t = Tensor(src)
+            src_t = Array(src)
             t = mc.orientation(src_t, orientation=code)
             if code == 1:
                 assert t is src_t
@@ -167,7 +167,7 @@ def test_engine_orientation_span_sandwich(monkeypatch):
     for code in range(1, 9):
         inv = _ORIENTATION_INVERSE[code]
         calls.clear()
-        x = Tensor(src) - 1.0
+        x = Array(src) - 1.0
         x = mc.orientation(x, orientation=code)
         x = x * 2.0
         x = mc.orientation(x, orientation=inv)
@@ -190,7 +190,7 @@ def test_engine_orientation_span_sandwich(monkeypatch):
 
 
 def test_crop_emit_rejects_window_outside_canvas():
-    x = Tensor(np.zeros((4, 4), dtype=np.float32))
+    x = Array(np.zeros((4, 4), dtype=np.float32))
     t = x.view(left=1, top=1, width=2, height=2)
     assert t._node is not None and t._node.op == "view"
     assert t.meta.height == 2 and t.meta.width == 2
@@ -220,7 +220,7 @@ def test_span_crop_span_one_execute_graph(monkeypatch):
     inp = np.array(
         [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32
     )
-    x = Tensor(inp) - 1.0
+    x = Array(inp) - 1.0
     x = x.view(left=1, top=1, width=2, height=2)
     x = x * 2.0
     out = x.realize()
@@ -249,7 +249,7 @@ def test_crop_sub_crop_sub_ramp(monkeypatch):
     cols = np.arange(8, dtype=np.float32)[None, :]
     inp = 10.0 * rows + cols
 
-    x = Tensor(inp)
+    x = Array(inp)
     x = x.view(left=1, top=1, width=6, height=6)  # → inp[1:7, 1:7]
     x = x - 1.0
     x = x.view(left=1, top=1, width=4, height=4)  # → inp[2:6, 2:6] after first crop
@@ -271,7 +271,7 @@ def test_crop_sub_crop_sub_ramp(monkeypatch):
 
 def test_sub_mul_chain():
     inp = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-    x = Tensor(inp)
+    x = Array(inp)
     x = x - 1.0
     x = x * 2.0
     out = x.realize()
@@ -281,26 +281,26 @@ def test_sub_mul_chain():
 def test_matrix_3x3_identity():
     eye = np.eye(3, dtype=np.float32)
     inp = np.array([[[0.25, 0.5, 0.75]]], dtype=np.float32)
-    out = mc.matrix_3x3(Tensor(inp), matrix=eye).realize()
+    out = mc.matrix_3x3(Array(inp), matrix=eye).realize()
     np.testing.assert_allclose(out, inp)
 
 
 def test_lut_identity_rgb():
     inp = np.array([[[0.0, 0.5, 1.0]]], dtype=np.float32)
-    out = mc.lut(Tensor(inp), lut=[0.0, 1.0]).realize()
+    out = mc.lut(Array(inp), lut=[0.0, 1.0]).realize()
     np.testing.assert_allclose(out, inp)
 
 
 def test_bilinear_demosaic_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
-    out = mc.bilinear_demosaic(Tensor(cfa), cfa_pattern="RGGB").realize()
+    out = mc.bilinear_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
     assert out.shape == (2, 2, 3)
     np.testing.assert_allclose(out[0, 0, 0], 0.2)
 
 
 def test_ea_demosaic_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
-    out = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").realize()
+    out = mc.ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
     assert out.shape == (2, 2, 3)
     np.testing.assert_allclose(
         out,
@@ -320,8 +320,8 @@ def test_ea_demosaic_then_crop_matches_slice():
     """
     rng = np.random.default_rng(0)
     cfa = rng.random((17, 19), dtype=np.float32)
-    full = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").realize()
-    fused = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").view(
+    full = mc.ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
+    fused = mc.ea_demosaic(Array(cfa), cfa_pattern="RGGB").view(
         left=3,
         top=2,
         width=11,
@@ -341,10 +341,10 @@ def test_ea_demosaic_fast_differs_from_ha():
     cfa[2, 3] = 0.2
     cfa[2, 0] = 0.0
     cfa[2, 4] = 0.0
-    ha = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").realize()
-    fast = mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB", fast=True).realize()
+    ha = mc.ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
+    fast = mc.ea_demosaic(Array(cfa), cfa_pattern="RGGB", fast=True).realize()
     wrap = demosaic(
-        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST
+        Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST
     ).realize()
     np.testing.assert_allclose(fast[2, 2, 1], 0.2, atol=1e-6)
     np.testing.assert_allclose(ha[2, 2, 1], 0.5, atol=1e-6)
@@ -360,10 +360,10 @@ def test_ea_demosaic_fast_timing_label():
     try:
         set_engine_timing(EngineTiming.OPS)
         with PerfTimer("root") as ha_root:
-            mc.ea_demosaic(Tensor(cfa), cfa_pattern="RGGB").realize()
+            mc.ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
         with PerfTimer("root") as fast_root:
             mc.ea_demosaic(
-                Tensor(cfa), cfa_pattern="RGGB", fast=True
+                Array(cfa), cfa_pattern="RGGB", fast=True
             ).realize()
     finally:
         set_engine_timing(prev)
@@ -377,38 +377,38 @@ def test_ea_demosaic_fast_timing_label():
 
 
 def test_op_rejects_bad_channels():
-    rgb = Tensor(np.zeros((2, 2, 3), dtype=np.float32))
+    rgb = Array(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="expected 1 channel"):
         mc.bilinear_demosaic(rgb, cfa_pattern="RGGB")
 
 
 def test_op_rejects_unknown_attr():
-    x = Tensor(np.zeros((2, 2, 3), dtype=np.float32))
+    x = Array(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="unknown attrs"):
         mc.matrix_3x3(x, matrix=np.eye(3, dtype=np.float32), extra=1)
 
 
-def test_rejects_tensor_tensor_sub():
-    a = Tensor(np.zeros((2, 2), dtype=np.float32))
-    b = Tensor(np.ones((2, 2), dtype=np.float32))
-    with pytest.raises(TypeError, match="tensor–tensor"):
+def test_rejects_array_array_sub():
+    a = Array(np.zeros((2, 2), dtype=np.float32))
+    b = Array(np.ones((2, 2), dtype=np.float32))
+    with pytest.raises(TypeError, match="array–array"):
         _ = a - b
 
 
-def test_demosaic_tensor_lazy():
-    """demosaic(Tensor) returns a lazy Tensor; compute materializes RGB."""
+def test_demosaic_array_lazy():
+    """demosaic(Array) returns a lazy Array; compute materializes RGB."""
     rng = np.random.default_rng(0)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out_t = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA)
+    out_t = demosaic(Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA)
     assert out_t._node is not None
     out = out_t.realize()
-    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA).realize()
+    ref = demosaic(Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA).realize()
     assert out.shape == (16, 16, 3)
     np.testing.assert_array_equal(out, ref)
 
 
 def test_flush_then_engine_again():
-    """Normalize (engine) → demosaic(Tensor) → matrix+lut (same DAG)."""
+    """Normalize (engine) → demosaic(Array) → matrix+lut (same DAG)."""
     rng = np.random.default_rng(1)
     cfa = (
         rng.integers(100, 1000, size=(16, 16), dtype=np.uint16).astype(np.float32)
@@ -418,7 +418,7 @@ def test_flush_then_engine_again():
     eye = np.eye(3, dtype=np.float32)
     lut = np.array([0.0, 1.0], dtype=np.float32)
 
-    x = Tensor(cfa)
+    x = Array(cfa)
     x = x - 0.0
     x = x * 1.0
     x = demosaic(x, "RGGB", algorithm=DemosaicAlgorithm.EA)
@@ -427,7 +427,7 @@ def test_flush_then_engine_again():
     out = x.realize()
 
     ref = demosaic(
-        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA, dst_dtype="float32"
+        Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA, dst_dtype="float32"
     )
     ref = mc.matrix_3x3(ref, matrix=eye)
     ref = mc.lut(ref, lut=lut).realize()
@@ -473,7 +473,7 @@ def test_apply_opcodes_single_execute():
 
     _engine_load.execute_graph = counting_execute
     try:
-        out_t = apply_opcodes(Tensor(rgb), opcodes, use_bicubic=False)
+        out_t = apply_opcodes(Array(rgb), opcodes, use_bicubic=False)
         out = out_t.realize()
     finally:
         _engine_load.execute_graph = real
@@ -492,9 +492,9 @@ class _RecordingEngine:
 
     def execute_segment(
         self,
-        nodes: List[Tensor],
+        nodes: List[Array],
         values: Dict[int, np.ndarray],
-        outputs: List[Tensor],
+        outputs: List[Array],
     ) -> None:
         self.calls.append(len(nodes))
         # Produce zeros for outputs (enough to exercise the dispatch path).
@@ -503,13 +503,13 @@ class _RecordingEngine:
 
 
 def test_set_default_engine_stub():
-    """set_default_engine swaps the backend used by Tensor.realize()."""
+    """set_default_engine swaps the backend used by Array.realize()."""
     prev = get_default_engine()
     stub = _RecordingEngine()
     set_default_engine(stub)
     try:
         assert get_default_engine() is stub
-        x = Tensor(np.ones((2, 2), dtype=np.float32)) - 0.0
+        x = Array(np.ones((2, 2), dtype=np.float32)) - 0.0
         out = x.realize()
         assert stub.calls == [1]
         assert out.shape == (2, 2)
@@ -535,7 +535,7 @@ def test_graph_op_cast_then_native_crop():
     from muimg.engines.pyops import cast_dtype_op
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    x = cast_dtype_op(Tensor(src), "uint16")
+    x = cast_dtype_op(Array(src), "uint16")
     x = x.view(left=1, top=1, width=3, height=2)
     assert x._node is not None and x._node.op == "view" and x._node.fn is None
     out = x.realize()
@@ -717,7 +717,7 @@ def test_compute_times_python_ops():
     from muimg.engines.graph import EngineTiming, engine_timing, set_engine_timing
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    x = cast_dtype_op(Tensor(src), "uint16")
+    x = cast_dtype_op(Array(src), "uint16")
     x = cast_dtype_op(x, "float32")
 
     prev = engine_timing
@@ -744,7 +744,7 @@ def test_compute_times_engine_ops():
     try:
         set_engine_timing(EngineTiming.OPS)
         with PerfTimer("root") as root:
-            out = (Tensor(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0)
+            out = (Array(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0)
             out = (out * 2.0).realize()
     finally:
         set_engine_timing(prev)
@@ -766,7 +766,7 @@ def test_core_engine_segments_no_op_children():
     try:
         set_engine_timing(EngineTiming.SEGMENTS)
         with PerfTimer("root") as root:
-            out = (Tensor(np.array([[1.0, 2.0]], dtype=np.float32)) * 2.0).realize()
+            out = (Array(np.array([[1.0, 2.0]], dtype=np.float32)) * 2.0).realize()
     finally:
         set_engine_timing(prev)
 
@@ -783,7 +783,7 @@ def test_core_engine_off_no_rows_even_with_open_timer():
     try:
         set_engine_timing(EngineTiming.OFF)
         with PerfTimer("root") as root:
-            (Tensor(np.array([[1.0]], dtype=np.float32)) * 2.0).realize()
+            (Array(np.array([[1.0]], dtype=np.float32)) * 2.0).realize()
     finally:
         set_engine_timing(prev)
 
@@ -799,7 +799,7 @@ def test_compute_nests_under_current_stack_top():
         set_engine_timing(EngineTiming.SEGMENTS)
         with PerfTimer("root") as root:
             fence = root.start_step("fence")
-            (Tensor(np.array([[1.0]], dtype=np.float32)) * 2.0).realize()
+            (Array(np.array([[1.0]], dtype=np.float32)) * 2.0).realize()
             fence.close()
     finally:
         set_engine_timing(prev)
@@ -816,7 +816,7 @@ def test_compute_ops_under_graph_compute():
         set_engine_timing(EngineTiming.OPS)
         with PerfTimer("root") as root:
             parent = root.start_step("camera_space")
-            out = (Tensor(np.array([[1.0, 2.0]], dtype=np.float32)) * 2.0).realize()
+            out = (Array(np.array([[1.0, 2.0]], dtype=np.float32)) * 2.0).realize()
             parent.close()
     finally:
         set_engine_timing(prev)
@@ -831,7 +831,7 @@ def test_graph_op_splits_engine_segments():
     from muimg.engines.pyops import cast_dtype_op
 
     src = np.arange(16, dtype=np.float32).reshape(4, 4)
-    x = Tensor(src) - 0.0
+    x = Array(src) - 0.0
     x = cast_dtype_op(x, "float32")  # python fence between engine segments
     x = x * 2.0
 
@@ -857,13 +857,13 @@ def test_demosaic_op_lazy():
 
     rng = np.random.default_rng(4)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out = demosaic_op(Tensor(cfa), "RGGB", "VNG").realize()
-    ref = demosaic(Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.VNG).realize()
+    out = demosaic_op(Array(cfa), "RGGB", "VNG").realize()
+    ref = demosaic(Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.VNG).realize()
     np.testing.assert_array_equal(out, ref)
 
-    out_ea = demosaic_op(Tensor(cfa), "RGGB", "OPENCV_EA").realize()
+    out_ea = demosaic_op(Array(cfa), "RGGB", "OPENCV_EA").realize()
     ref_ea = demosaic(
-        Tensor(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA
+        Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA
     ).realize()
     np.testing.assert_array_equal(out_ea, ref_ea)
 
@@ -873,7 +873,7 @@ def test_ingest_seals_view_and_base():
         np.arange(16, dtype=np.float32).reshape(4, 4), copy=True
     )
     view = parent[1:3, 1:3]
-    t = Tensor(view)
+    t = Array(view)
     assert view.base is parent
     assert not t._data.flags.writeable
     assert not view.flags.writeable
@@ -885,7 +885,7 @@ def test_ingest_seals_view_and_base():
 def test_realized_view_walks_upstream_for_canvas_crop():
     """A realized view's _data is the window; canvas pixels still need the graph."""
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
-    viewed = Tensor(src).view(left=1, top=2, width=3, height=2)
+    viewed = Array(src).view(left=1, top=2, width=3, height=2)
     viewed.realize()
     assert viewed._data is not None
     extra = viewed.crop(left=-1, top=0, width=5, height=2)
@@ -906,7 +906,7 @@ def test_realized_crop_is_extra_bind(monkeypatch):
     monkeypatch.setattr(_engine_load, "execute_graph", wrap)
 
     src = np.arange(3 * 4, dtype=np.float32).reshape(3, 4)
-    cropped = Tensor(src).crop(left=1, top=1, width=2, height=2)
+    cropped = Array(src).crop(left=1, top=1, width=2, height=2)
     cropped.realize()
     assert len(calls) == 1
     extra = cropped * 2.0
@@ -924,7 +924,7 @@ def test_realize_caches_and_force_recompute():
     stub = _RecordingEngine()
     set_default_engine(stub)
     try:
-        x = Tensor(np.ones((2, 2), dtype=np.float32)) - 0.0
+        x = Array(np.ones((2, 2), dtype=np.float32)) - 0.0
         first = x.realize()
         assert stub.calls == [1]
         assert x._data is first
@@ -942,7 +942,7 @@ def test_realize_caches_and_force_recompute():
 
 
 def test_op_node_is_frozen():
-    x = Tensor(np.ones((2, 2), dtype=np.float32)) - 1.0
+    x = Array(np.ones((2, 2), dtype=np.float32)) - 1.0
     assert x._node is not None
     with pytest.raises(AttributeError):
         x._node.op = "mul_scalar"
@@ -953,11 +953,11 @@ def test_op_node_is_frozen():
 def test_strided_numpy_crop_ported_and_image_op():
     parent = np.arange(16, dtype=np.float32).reshape(4, 4)
     crop = parent[1:3, 1:3]
-    got = (Tensor(crop) - 1.0).realize()
+    got = (Array(crop) - 1.0).realize()
     np.testing.assert_array_equal(got, crop - 1.0)
 
     identity = mc.apply_flat_gain_map(
-        Tensor(crop),
+        Array(crop),
         gain_map=[1.0, 1.0, 1.0, 1.0],
         gain_h=2,
         gain_w=2,
@@ -967,7 +967,7 @@ def test_strided_numpy_crop_ported_and_image_op():
 
 def test_fortran_array_copied_on_ingest():
     arr = np.asfortranarray(np.arange(16, dtype=np.float32).reshape(4, 4))
-    t = Tensor(arr)
+    t = Array(arr)
     assert t._data.strides[1] == t._data.dtype.itemsize
     np.testing.assert_array_equal((t - 0.0).realize(), arr)
 
@@ -975,7 +975,7 @@ def test_fortran_array_copied_on_ingest():
 def test_stepped_slice_copied_on_ingest():
     parent = np.arange(16, dtype=np.float32).reshape(4, 4)
     stepped = parent[::2, ::2]
-    t = Tensor(stepped)
+    t = Array(stepped)
     assert t._data.strides[1] == t._data.dtype.itemsize
     assert t._data.base is not parent
     np.testing.assert_array_equal(t._data, stepped)

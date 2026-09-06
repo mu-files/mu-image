@@ -23,7 +23,7 @@ from muimg.dngio import (
     write_dng_from_array, write_dng, DngFile, IfdDataSpec, 
     IfdPageSpec, PageEncoding, decode_dng
 )
-from muimg.tensor import Tensor
+from muimg.array import Array
 from muimg.raw_render import DemosaicAlgorithm
 try:
     from muimg._dngio_coreimage import core_image_available
@@ -242,7 +242,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
         
         if use_preview:
             # Preview must be uint8 for JPEG compression
-            rgb_ramp_u8 = convert_dtype(Tensor(rgb_ramp), "uint8").realize()
+            rgb_ramp_u8 = convert_dtype(Array(rgb_ramp), "uint8").realize()
             preview_data = cv2.resize(
                 rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
             
@@ -382,7 +382,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 ramp_for_render = rgb_ramp
             # Convert linear RGB to sRGB gamma-encoded uint8 for comparison
             rgb_ramp_u8 = convert_colorspace(
-                Tensor(ramp_for_render),
+                Array(ramp_for_render),
                 source_space=ColorSpace.SRGB_LINEAR,
                 dest_space=ColorSpace.SRGB_GAMMA,
                 dst_dtype="uint8"

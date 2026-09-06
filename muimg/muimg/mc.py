@@ -6,7 +6,7 @@ Usage (the top-level ``mucompute`` package re-exports this module)::
 
     import mucompute as mc
 
-    x = mc.Tensor(cfa)
+    x = mc.Array(cfa)
     x = mc.ea_demosaic(x, cfa_pattern="RGGB")
     x = mc.matrix_3x3(x, matrix=M)
     out = x.realize()
@@ -21,10 +21,10 @@ from __future__ import annotations
 from .engines import ops as _catalog
 from .engines.graph import emit, flush, op
 from .engines.ops import *  # noqa: F401,F403 — generated __all__ is the catalog surface
-from .tensor import (
+from .array import (
     ElementType,
-    Tensor,
-    TensorMeta,
+    Array,
+    ArrayMeta,
     full,
     full_like,
     ones,
@@ -35,8 +35,8 @@ from .tensor import (
 
 __all__ = [
     "ElementType",
-    "Tensor",
-    "TensorMeta",
+    "Array",
+    "ArrayMeta",
     "emit",
     "flush",
     "full",
