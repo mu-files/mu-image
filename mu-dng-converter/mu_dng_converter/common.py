@@ -48,7 +48,7 @@ def parse_metadata_ops(metadata_ops, log):
         (strip_tags, extra_tags, time_offset_seconds, time_timezone) where
         strip_tags is a set or None and extra_tags is a MetadataTags or None.
     """
-    from muimg.tiff_metadata import MetadataTags
+    from muraw.tiff_metadata import MetadataTags
 
     strip_tags = set()
     extra_tags = MetadataTags()

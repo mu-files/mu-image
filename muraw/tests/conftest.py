@@ -1,0 +1,508 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 mu-files
+
+"""Pytest configuration and fixtures for muraw tests.
+
+Provides shared test utilities for DNG validation and comparison.
+"""
+
+import logging
+import subprocess
+from pathlib import Path
+
+import numpy as np
+import pytest
+import tifffile
+
+from muraw.raw_render import convert_dtype
+from muraw.array import Array
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Test Data Download
+# =============================================================================
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_test_data():
+    """Clone test data repository from GitHub if not present.
+    
+    This fixture runs once per test session before any tests execute.
+    If the dngfiles directory is not a git repository, it clones the
+    mu-image-testdata repository. If it exists, it pulls the latest changes.
+    """
+    dngfiles_dir = Path(__file__).parent / "dngfiles"
+    
+    # Check if dngfiles is already a git repository
+    if (dngfiles_dir / ".git").exists():
+        # Already cloned, pull latest changes
+        try:
+            # Run git pull without --quiet to show progress
+            result = subprocess.run(
+                ["git", "pull"],
+                cwd=dngfiles_dir,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            # Show what was updated
+            if "Already up to date" in result.stdout:
+                logger.warning("Test data: ✓ up to date (https://github.com/mu-files/mu-image-testdata.git)")
+            else:
+                logger.warning("Test data: ✓ updated from GitHub")
+                # Show summary of changes if available
+                if result.stdout.strip():
+                    logger.warning(f"  {result.stdout.strip()}")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Test data: ⚠ update failed ({e.stderr.strip()}), continuing with existing data")
+        return
+    
+    # Not cloned yet, clone the repository
+    import threading
+    import time
+    
+    # Get repository size from GitHub API
+    import requests
+    try:
+        response = requests.get("https://api.github.com/repos/mu-files/mu-image-testdata", timeout=5)
+        repo_info = response.json()
+        expected_mb = repo_info.get("size", 70000) / 1024  # GitHub returns size in KB
+    except Exception as e:
+        logger.warning(f"Warning: Could not fetch repository size from GitHub API: {e}")
+        logger.warning("Using estimated size for progress indicator...")
+        expected_mb = 70  # Fallback if API call fails (~70 MB as of May 2026)
+    
+    logger.warning("=" * 70)
+    logger.warning(f"Downloading test data from GitHub (~{int(expected_mb)} MB)...")
+    logger.warning("Repository: https://github.com/mu-files/mu-image-testdata.git")
+    logger.warning("This may take a minute...")
+    logger.warning("=" * 70)
+    
+    # Progress indicator
+    stop_progress = threading.Event()
+    
+    def show_progress():
+        while not stop_progress.is_set():
+            time.sleep(2)
+            if not stop_progress.is_set() and dngfiles_dir.exists():
+                # Calculate size of downloaded files
+                total_size = sum(f.stat().st_size for f in dngfiles_dir.rglob('*') if f.is_file())
+                mb_downloaded = total_size / (1024 * 1024)
+                percent = min(99, int((mb_downloaded / expected_mb) * 100))
+                logger.warning(f"Downloading... {percent}% ({mb_downloaded:.1f}/{int(expected_mb)} MB)")
+    
+    progress_thread = threading.Thread(target=show_progress, daemon=True)
+    progress_thread.start()
+    
+    try:
+        subprocess.run(
+            ["git", "clone", "--quiet", "https://github.com/mu-files/mu-image-testdata.git", str(dngfiles_dir)],
+            check=True
+        )
+        stop_progress.set()
+        progress_thread.join(timeout=1)
+        logger.warning("✓ Test data downloaded successfully!")
+        logger.warning("=" * 70)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Failed to clone test data repository.\n"
+            f"Make sure you have internet access and git is installed.\n"
+            f"Repository: https://github.com/mu-files/mu-image-testdata.git"
+        ) from e
+
+
+# =============================================================================
+# Test Output Configuration
+# =============================================================================
+
+# Base output directory for all tests
+TEST_OUTPUTS_DIR = Path(__file__).parent / "test_outputs"
+
+
+class OutputPathManager:
+    """Manages test output paths with optional persistence.
+    
+    Allows per-test-file control over whether outputs are saved to a persistent
+    directory or pytest's temporary directory.
+    """
+    
+    def __init__(self, persistent: bool):
+        """Initialize output path manager.
+        
+        Args:
+            persistent: If True, use persistent test_outputs folder. 
+                       If False, use pytest's tmp_path.
+        """
+        self.persistent = persistent
+    
+    def get_path(self, tmp_path: Path, test_name: str) -> Path:
+        """Get output path for a test.
+        
+        Args:
+            tmp_path: pytest tmp_path fixture
+            test_name: Name of the test (used as subdirectory name)
+        
+        Returns:
+            Path to use for test outputs
+        """
+        if self.persistent:
+            output_path = TEST_OUTPUTS_DIR / test_name
+            output_path.mkdir(parents=True, exist_ok=True)
+            return output_path
+        else:
+            return tmp_path
+
+
+def core_image_available_for_tests() -> bool:
+    try:
+        from muraw._dngio_coreimage import core_image_available
+
+        return bool(core_image_available)
+    except ImportError:
+        return False
+
+
+# =============================================================================
+# Shared Test Utilities
+# =============================================================================
+
+# Path to the C++ SDK dng_validate tool (reference)
+DNG_VALIDATE_PATH = Path.home() / "Projects/C/3dparty/dng_sdk_1_7_1/dng_sdk/targets/mac/release64/dng_validate"
+
+
+def generate_rgb_ramp(
+    width: int,
+    height: int,
+    dtype: np.dtype = np.uint16,
+    noise_stddev: float = 0.0,
+    bits_per_sample: int = None
+) -> np.ndarray:
+    """Generate synthetic RGB ramp test image with optional noise.
+    
+    Args:
+        width: Image width in pixels
+        height: Image height in pixels
+        dtype: Output data type (np.uint8, np.uint16, np.float32, etc.)
+        noise_stddev: Standard deviation of Gaussian noise in [0,1] range.
+                     Typical camera sensor noise is ~0.001-0.01 for good sensors.
+                     0.0 = no noise (default, smooth gradient)
+        bits_per_sample: If specified, scale values to this bit depth (e.g., 10 for 10-bit data in uint16)
+        
+    Returns:
+        RGB image (H, W, 3) with specified dtype:
+        - Red channel: gradient left to right
+        - Blue channel: gradient top to bottom
+        - Green channel: gradient on diagonal
+        - Optional: Gaussian noise added to simulate sensor noise
+        - If bits_per_sample specified, values scaled to that bit depth
+    """
+    # Generate in float32 for highest precision
+    img = np.zeros((height, width, 3), dtype=np.float32)
+    
+    # Red: left to right gradient (0.0 to 1.0)
+    img[:, :, 0] = np.linspace(0.0, 1.0, width, dtype=np.float32)[np.newaxis, :]
+    
+    # Blue: top to bottom gradient (0.0 to 1.0)
+    img[:, :, 2] = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, np.newaxis]
+    
+    # Green: diagonal gradient (top-left to bottom-right, 0.0 to 1.0)
+    x = np.arange(width, dtype=np.float32)
+    y = np.arange(height, dtype=np.float32)
+    xx, yy = np.meshgrid(x, y)
+    diagonal = (xx / width + yy / height) / 2.0
+    img[:, :, 1] = diagonal
+    
+    # Add Gaussian noise if requested (simulates camera sensor noise)
+    if noise_stddev > 0:
+        # Use fixed seed for reproducibility in tests
+        rng = np.random.RandomState(42)
+        
+        # 1. Gaussian noise (per-pixel sensor noise)
+        noise = rng.normal(0, noise_stddev, img.shape).astype(np.float32)
+        img = np.clip(img + noise, 0.0, 1.0)
+        
+        # 2. Random block noise (simulates compression artifacts, hot pixels, etc.)
+        # Add ~200 random blocks of varying sizes with random RGB offsets
+        block_count = 200
+        for _ in range(block_count):
+            # Random block size (4x4 to 32x32 for more visible blocks)
+            block_h = rng.randint(4, 33)
+            block_w = rng.randint(4, 33)
+            
+            # Random position
+            y = rng.randint(0, max(1, height - block_h))
+            x = rng.randint(0, max(1, width - block_w))
+            
+            # Random RGB offset for this block (±10x the Gaussian noise level for visibility)
+            block_offset = rng.uniform(-10*noise_stddev, 10*noise_stddev, 3).astype(np.float32)
+            
+            # Apply offset to block
+            img[y:y+block_h, x:x+block_w, :] = np.clip(
+                img[y:y+block_h, x:x+block_w, :] + block_offset, 0.0, 1.0
+            )
+    
+    # Convert to target dtype if needed
+    if dtype != np.float32:
+        img = convert_dtype(Array(img), np.dtype(dtype).name).realize()
+    
+    # Scale to specified bit depth if requested
+    if bits_per_sample is not None:
+        dtype_bits = dtype(0).itemsize * 8
+        if bits_per_sample < dtype_bits:
+            # Scale from full dtype range to bits_per_sample range using ratio
+            src_max = (1 << dtype_bits) - 1
+            dst_max = (1 << bits_per_sample) - 1
+            img = (img.astype(np.float64) * dst_max / src_max).astype(dtype)
+    
+    return img
+
+
+def sample_as_cfa(rgb_img: np.ndarray, pattern: str = "RGGB") -> np.ndarray:
+    """Sample RGB image as CFA (Bayer pattern).
+    
+    Extracts color channels at RGGB positions from full resolution RGB image.
+    
+    Args:
+        rgb_img: RGB image (H, W, 3) - any numeric dtype
+        pattern: CFA pattern, currently only "RGGB" supported
+        
+    Returns:
+        CFA array (H, W) with same dtype as input - single channel with Bayer pattern
+        
+    Raises:
+        ValueError: If pattern is not "RGGB"
+    """
+    if pattern != "RGGB":
+        raise ValueError(f"Only RGGB pattern supported, got {pattern}")
+    
+    height, width = rgb_img.shape[:2]
+    cfa = np.zeros((height, width), dtype=rgb_img.dtype)
+    
+    # RGGB pattern:
+    # Row 0 (even): R G R G ...
+    # Row 1 (odd):  G B G B ...
+    
+    # Even rows, even cols: Red
+    cfa[0::2, 0::2] = rgb_img[0::2, 0::2, 0]
+    
+    # Even rows, odd cols: Green
+    cfa[0::2, 1::2] = rgb_img[0::2, 1::2, 1]
+    
+    # Odd rows, even cols: Green
+    cfa[1::2, 0::2] = rgb_img[1::2, 0::2, 1]
+    
+    # Odd rows, odd cols: Blue
+    cfa[1::2, 1::2] = rgb_img[1::2, 1::2, 2]
+    
+    return cfa
+
+
+def normalize_image(img: np.ndarray) -> np.ndarray:
+    """Normalize image to float [0,1] range."""
+    from muraw.array import Array
+
+    if isinstance(img, Array):
+        img = img.realize()
+    if img.dtype == np.uint8:
+        return img.astype(np.float32) / 255.0
+    elif img.dtype == np.uint16:
+        return img.astype(np.float32) / 65535.0
+    return img.astype(np.float32)
+
+
+def compute_diff_stats(img1: np.ndarray, img2: np.ndarray) -> dict:
+    """Compute difference statistics between two images."""
+    from muraw.array import Array
+
+    if isinstance(img1, Array):
+        img1 = img1.realize()
+    if isinstance(img2, Array):
+        img2 = img2.realize()
+    diff = np.abs(normalize_image(img1) - normalize_image(img2))
+    stats = {
+        "mean": np.mean(diff) * 100,
+        "p99": np.percentile(diff, 99) * 100,
+        "max": np.max(diff) * 100,
+    }
+    
+    # Add per-channel stats if RGB image
+    if img1.ndim == 3 and img1.shape[2] == 3:
+        for ch_idx, ch_name in enumerate(['R', 'G', 'B']):
+            ch_diff = diff[:, :, ch_idx]
+            stats[f"mean_{ch_name}"] = np.mean(ch_diff) * 100
+            stats[f"p99_{ch_name}"] = np.percentile(ch_diff, 99) * 100
+            stats[f"max_{ch_name}"] = np.max(ch_diff) * 100
+    
+    return stats
+
+
+def load_tiff(path: Path) -> np.ndarray | None:
+    """Load TIFF and convert to interleaved format if needed."""
+    if path is None or not path.exists():
+        return None
+    try:
+        with tifffile.TiffFile(str(path)) as tif:
+            img = tif.pages[0].asarray()
+            # Convert planar (3,H,W) to interleaved (H,W,3)
+            if img.ndim == 3 and img.shape[0] == 3 and img.shape[0] < img.shape[1]:
+                img = np.moveaxis(img, 0, -1)
+            return img
+    except Exception:
+        return None
+
+
+def run_dng_validate(
+    dng_path: Path, 
+    output_base: Path, 
+    timeout: int = 120, 
+    ignored_warnings: list[str] | None = None,
+    validate: bool = True, 
+    skip_dng_validate: bool = False, 
+    indent: str = ""
+    ) -> np.ndarray | None:
+    """Run dng_validate and muraw metadata validators on a DNG file.
+    
+    Args:
+        dng_path: Path to DNG file
+        output_base: Base path for output (will append .tif)
+        timeout: Timeout in seconds
+        ignored_warnings: Optional list of warning patterns to ignore (case-insensitive)
+        validate: If False, ignore all errors/warnings and just decode (for reference comparison)
+        skip_dng_validate: If True, skip external dng_validate tool but still run muraw metadata validation
+        indent: String to prepend to validation messages (default: no indent)
+        
+    Returns:
+        Loaded TIFF as numpy array, or None if dng_validate not available and validate=False
+        
+    Raises:
+        RuntimeError: If dng_validate fails or produces errors (only when validate=True and not skip_dng_validate)
+        AssertionError: If either validator produces warnings (only when validate=True, except ignored ones)
+    
+    Note:
+        If Adobe's dng_validate is not found, the function will:
+        - Still run muraw's metadata validator (if validate=True)
+        - Return None (if validate=False, for rendering comparisons)
+        - Print a one-time warning with installation instructions
+    """
+    # Warnings to ignore (add patterns here as needed)
+    IGNORED_WARNINGS = [w.lower() for w in (ignored_warnings or [])]
+    
+    # Check if Adobe dng_validate is available
+    dng_validate_available = DNG_VALIDATE_PATH.exists()
+    
+    # Print one-time warning if dng_validate is not available
+    if not dng_validate_available and not skip_dng_validate:
+        # Use a global flag to only print once per session
+        if not hasattr(run_dng_validate, '_warned_missing'):
+            print("\n" + "="*70)
+            print("Adobe dng_validate not found")
+            print("="*70)
+            print(f"Expected location: {DNG_VALIDATE_PATH}")
+            print("\nTo install Adobe DNG SDK dng_validate:")
+            print("1. Download DNG SDK from: https://helpx.adobe.com/camera-raw/digital-negative.html")
+            print("2. Build the dng_validate tool (see SDK documentation)")
+            print("3. Place the binary at the path above, or update DNG_VALIDATE_PATH in conftest.py")
+            print("\nTests will continue using muraw's validator only.")
+            print("="*70 + "\n")
+            run_dng_validate._warned_missing = True
+    
+    output_tiff = Path(str(output_base) + ".tif")
+    all_warnings = []
+    
+    try:
+        # Run dng_validate (C++ SDK validator) if available and not skipped
+        if dng_validate_available and not skip_dng_validate:
+            result = subprocess.run(
+                [str(DNG_VALIDATE_PATH), "-v", "-16", "-tif", str(output_base), str(dng_path)],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"dng_validate failed with return code {result.returncode}:\n{result.stderr}")
+            
+            # Only check for errors/warnings if validate=True
+            if validate:
+                # Check for errors or warnings in dng_validate output
+                combined = (result.stdout or "") + "\n" + (result.stderr or "")
+                
+                # Extract only error/warning lines for cleaner output
+                # Note: dng_validate uses "*** Error:" and "*** Warning:" (capital E/W)
+                error_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** error:')]
+                warning_lines = [line for line in combined.split('\n') if line.strip().lower().startswith('*** warning:')]
+                
+                # Collect warnings and errors from dng_validate (errors can be ignored too)
+                if warning_lines:
+                    all_warnings.extend(warning_lines)
+                if error_lines:
+                    all_warnings.extend(error_lines)
+        
+        # Run muraw dng metadata validator (always run if validate=True)
+        if validate:
+            import sys
+            muraw_cmd = [sys.executable, "-m", "muraw.cli", "dng", "metadata", str(dng_path)]
+            muraw_result = subprocess.run(
+                muraw_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            # Extract validation issues from muraw output
+            if muraw_result.returncode == 0:
+                output_lines = muraw_result.stdout.split('\n')
+                in_validation_section = False
+                for line in output_lines:
+                    if '=== DNG Validation Issues ===' in line:
+                        in_validation_section = True
+                        continue
+                    if in_validation_section and line.strip().startswith('*-'):
+                        # Convert muraw format to dng_validate format
+                        # "*-1: DefaultScale found in ifd0 IFD, should be in raw IFD"
+                        # becomes "*** Warning: DefaultScale found in ifd0 IFD, should be in raw IFD ***"
+                        issue_text = line.strip().split(':', 1)[1].strip() if ':' in line else line.strip()
+                        all_warnings.append(f"*** Warning: {issue_text} ***")
+            
+            # Filter out ignored warnings/errors, checking each individually
+            if all_warnings:
+                unignored_warnings = []
+                ignored_count = 0
+                for warning in all_warnings:
+                    warning_lower = warning.lower()
+                    is_ignored = any(ignored in warning_lower for ignored in IGNORED_WARNINGS)
+                    if not is_ignored:
+                        unignored_warnings.append(warning)
+                    else:
+                        ignored_count += 1
+                
+                # Only print unignored warnings/errors to make failures clear
+                if unignored_warnings:
+                    unignored_text = '\n'.join(unignored_warnings)
+                    if ignored_count > 0:
+                        print(f"{indent}Validation issues ({ignored_count} ignored):")
+                    else:
+                        print(f"{indent}Validation issues:")
+                    print(unignored_text)
+                    # Check if any are errors (start with "*** Error:")
+                    has_errors = any(line.strip().lower().startswith('*** error:') for line in unignored_warnings)
+                    if has_errors:
+                        error_summary = '; '.join([line.strip() for line in unignored_warnings if line.strip().lower().startswith('*** error:')])
+                        raise RuntimeError(f"dng_validate errors: {error_summary}")
+                    else:
+                        raise AssertionError(f"Validation produced {len(unignored_warnings)} unignored warning(s)")
+                elif ignored_count > 0:
+                    print(f"{indent}Validation: {ignored_count} warning(s) ignored")
+            
+    except (subprocess.TimeoutExpired, Exception) as e:
+        if isinstance(e, (RuntimeError, AssertionError)):
+            raise
+        raise RuntimeError(f"Validation error: {e}")
+    
+    # Return TIFF if dng_validate ran and produced output
+    if dng_validate_available and not skip_dng_validate:
+        return load_tiff(output_tiff)
+    else:
+        # dng_validate didn't run, so no TIFF was generated
+        # Return None for rendering comparison tests (they'll skip)
+        return None

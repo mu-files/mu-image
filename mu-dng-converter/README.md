@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 [![Releases](https://img.shields.io/github/v/release/mu-files/mu-image?label=Download)](https://github.com/mu-files/mu-image/releases/latest)
 
-A cross-platform desktop application for batch image conversion built on [muimg](../muimg/README.md).
+A cross-platform desktop application for batch image conversion built on [muraw](../muraw/README.md).
 
 [Download latest release](https://github.com/mu-files/mu-image/releases/latest)
 

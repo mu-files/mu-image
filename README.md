@@ -14,11 +14,11 @@ encoder that is built completely on mu-image.
 
 The repository contains two packages:
 
-- **[`muimg`](muimg/README.md)**: A Python library and CLI for DNG I/O,
-  rendering, metadata, and multi-threaded batch processing
-  (`pip install muimg`).
+- **[`muraw`](muraw/README.md)**: A Python library and CLI for DNG I/O,
+  rendering, metadata, and multi-threaded batch processing. Import
+  `muraw`. The last published PyPI name is still `muimg`.
 - **[`mu-dng-converter`](mu-dng-converter/README.md)**: A desktop GUI on
-  `muimg` and [PyWebView](https://pywebview.flowrl.com/) for batch
+  `muraw` and [PyWebView](https://pywebview.flowrl.com/) for batch
   convert and transcode.
 
 ---
@@ -41,7 +41,7 @@ The repository contains two packages:
 
 ## Key technical features
 
-### RAW rendering (`muimg`)
+### RAW rendering (`muraw`)
 
 - **Demosaicing**: `BILINEAR`, `VNG`, `RCD`, `EA`, `EA_FAST`, and
   `OPENCV_EA`.
@@ -88,7 +88,7 @@ the [mu-dng-converter releases page](https://github.com/mu-files/mu-image/releas
 No Python install required. See
 [mu-dng-converter/README.md](mu-dng-converter/README.md).
 
-**Python library:** See [muimg/README.md](muimg/README.md) for install,
+**Python library:** See [muraw/README.md](muraw/README.md) for install,
 API, and CLI.
 
-**Release history:** See [CHANGELOG.md](muimg/CHANGELOG.md).
+**Release history:** See [CHANGELOG.md](muraw/CHANGELOG.md).

@@ -6,9 +6,9 @@ __pycache__/
 # C extensions
 *.so
 # Ship prebuilt abi3 CoreEngine extensions from private CI
-!muimg/muimg/engines/core/_binaries/*.so
+!muraw/muraw/engines/core/_binaries/*.so
 # *.py[cod] also matches *.pyd — allow Windows abi3 artifacts
-!muimg/muimg/engines/core/_binaries/*.pyd
+!muraw/muraw/engines/core/_binaries/*.pyd
 
 # Distribution / packaging
 .Python
@@ -118,10 +118,10 @@ ehthumbs.db
 Desktop.ini
 
 # Test output files
-muimg/tests/test_outputs/
+muraw/tests/test_outputs/
 
 # Test data repository (cloned on-demand from mu-image-testdata)
-muimg/tests/dngfiles/
+muraw/tests/dngfiles/
 
 # GPL-licensed RCD demosaic (user-enabled, not distributed)
-muimg/c-src/demosaic/rcd.c
+muraw/c-src/demosaic/rcd.c

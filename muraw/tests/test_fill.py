@@ -1,0 +1,120 @@
+"""zeros / ones / full are lazy fill nodes."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+import muimage as mi
+from muraw.array import ElementType, Array
+
+
+def test_zeros_is_lazy_then_realizes():
+    z = mi.zeros((3, 4))
+    assert z._data is None
+    assert z._node is not None
+    assert z._node.op == "fill"
+    assert z._node.inputs == ()
+    assert z.dtype == ElementType.FLOAT32
+    assert z.shape == (3, 4)
+    np.testing.assert_array_equal(z.realize(), np.zeros((3, 4), dtype=np.float32))
+
+
+def test_zeros_shape_from_tuple_list_and_ndarray_shape():
+    """Python tuple, list, and ``ndarray.shape`` all become the same meta."""
+    arr = np.zeros((3, 4), dtype=np.float32)
+    from_tuple = mi.zeros((3, 4))
+    from_list = mi.zeros([3, 4])
+    from_numpy_shape = mi.zeros(arr.shape)
+    assert from_tuple.shape == from_list.shape == from_numpy_shape.shape == (3, 4)
+    assert from_tuple.dtype == from_list.dtype == from_numpy_shape.dtype
+
+
+def test_ones_rgb():
+    t = mi.ones((2, 3, 3), dtype="float32")
+    assert t.shape == (2, 3, 3)
+    np.testing.assert_array_equal(t.realize(), np.ones((2, 3, 3), dtype=np.float32))
+
+
+def test_full_scalar_uint8():
+    t = mi.full((2, 2), 128, dtype="uint8")
+    assert t.dtype == ElementType.UINT8
+    np.testing.assert_array_equal(t.realize(), np.full((2, 2), 128, dtype=np.uint8))
+
+
+def test_full_default_dtype_python_int_is_float32():
+    t = mi.full((2, 2), 128)
+    assert t.dtype == ElementType.FLOAT32
+    np.testing.assert_array_equal(t.realize(), np.full((2, 2), 128, dtype=np.float32))
+
+
+def test_full_inherits_numpy_scalar_dtype():
+    t = mi.full((2, 2), np.uint8(7))
+    assert t.dtype == ElementType.UINT8
+    np.testing.assert_array_equal(t.realize(), np.full((2, 2), 7, dtype=np.uint8))
+
+
+def test_full_rgb_vector():
+    t = mi.full((2, 2, 3), [1.0, 2.0, 3.0])
+    want = np.full((2, 2, 3), [1.0, 2.0, 3.0], dtype=np.float32)
+    np.testing.assert_array_equal(t.realize(), want)
+
+
+def test_full_rejects_non_broadcast_vector():
+    with pytest.raises(ValueError, match="channel count"):
+        mi.full((2, 2), [1.0, 2.0, 3.0])
+
+
+def test_zeros_like_does_not_realize_input():
+    src = Array(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
+    lazy = src - 1.0
+    assert lazy._data is None
+    z = mi.zeros_like(lazy)
+    assert lazy._data is None
+    assert z.shape == lazy.shape
+    assert z.dtype == lazy.dtype
+    np.testing.assert_array_equal(z.realize(), np.zeros((2, 2), dtype=np.float32))
+    assert lazy._data is None
+
+
+def test_ones_like_dtype_override():
+    src = Array(np.zeros((2, 2), dtype=np.float32))
+    t = mi.ones_like(src, dtype="uint8")
+    assert t.dtype == ElementType.UINT8
+    np.testing.assert_array_equal(t.realize(), np.ones((2, 2), dtype=np.uint8))
+
+
+def test_full_like_uses_reference_dtype():
+    src = Array(np.zeros((2, 3), dtype=np.uint8))
+    t = mi.full_like(src, 9)
+    assert t.dtype == ElementType.UINT8
+    np.testing.assert_array_equal(t.realize(), np.full((2, 3), 9, dtype=np.uint8))
+
+
+def test_zeros_minus_one_runs():
+    t = mi.zeros((2, 2)) - 1.0
+    np.testing.assert_array_equal(t.realize(), np.full((2, 2), -1.0, dtype=np.float32))
+
+
+def test_zeros_rejects_bad_rank():
+    with pytest.raises(ValueError, match=r"\(H,W\)"):
+        mi.zeros((2,))
+
+
+def test_zeros_rejects_bad_channels():
+    with pytest.raises(ValueError, match="channel count"):
+        mi.zeros((2, 2, 2))
+
+
+def test_zeros_rejects_zero_size():
+    with pytest.raises(ValueError, match="at least 1"):
+        mi.zeros((0, 4))
+    with pytest.raises(ValueError, match="at least 1"):
+        mi.zeros((3, 0))
+
+
+def test_array_rejects_zero_size():
+    with pytest.raises(ValueError, match="at least 1"):
+        Array(np.zeros((0, 4), dtype=np.float32))
+    with pytest.raises(ValueError, match="at least 1"):
+        Array(np.zeros((3, 0, 3), dtype=np.float32))

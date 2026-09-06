@@ -1,6 +1,6 @@
 """FITS → DNG conversion: core logic and CLI.
 
-Converts FITS files containing CFA/Bayer data to DNG using the muimg library.
+Converts FITS files containing CFA/Bayer data to DNG using the muraw library.
 Supports single-file and batch conversion with full metadata mapping,
 AVM XMP embedding, and optional batch pipeline via ImageSequencePipeline.
 
@@ -350,8 +350,8 @@ def _build_metadata_tags(
         time_offset_seconds: signed seconds to add to the DATE-OBS datetime
         time_timezone: timezone offset string (e.g. "+02:00") for OffsetTime* tags
     """
-    from muimg.tiff_metadata import MetadataTags
-    from muimg.raw_render import add_supported_xmp_from_dict
+    from muraw.tiff_metadata import MetadataTags
+    from muraw.raw_render import add_supported_xmp_from_dict
 
     tags = MetadataTags()
 
@@ -550,7 +550,7 @@ def run_batch_fits_to_dng(
     from astropy.io import fits as astropy_fits
     from tifffile import COMPRESSION
 
-    from muimg.dngio import (
+    from muraw.dngio import (
         IfdDataSpec,
         PageEncoding,
         PreviewParams,
@@ -558,8 +558,8 @@ def run_batch_fits_to_dng(
         PyramidParams,
         write_dng_from_array,
     )
-    from muimg.imgio import ImageSequencePipeline
-    from muimg.raw_render import DemosaicAlgorithm
+    from muraw.imgio import ImageSequencePipeline
+    from muraw.raw_render import DemosaicAlgorithm
 
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -608,7 +608,7 @@ def run_batch_fits_to_dng(
         index, file_path, blob = task
         try:
 
-            from muimg.tiff_metadata import normalize_array_to_target_byteorder
+            from muraw.tiff_metadata import normalize_array_to_target_byteorder
 
             with astropy_fits.open(io.BytesIO(blob)) as hdul:
                 data = hdul[0].data
@@ -989,11 +989,11 @@ def main():
     # White balance -> xy chromaticity
     wb_xy = None
     if args.wb_temperature is not None:
-        from muimg.raw_render import temp_tint_to_xy
+        from muraw.raw_render import temp_tint_to_xy
         wb_xy = temp_tint_to_xy(args.wb_temperature, args.wb_tint)
 
     # Demosaic algorithm
-    from muimg.raw_render import DemosaicAlgorithm
+    from muraw.raw_render import DemosaicAlgorithm
     demosaic_algorithm = DemosaicAlgorithm.lookup(args.demosaic_algorithm)
 
     # Parse --strip-tag options, supporting comma-separated lists
@@ -1009,7 +1009,7 @@ def main():
     # Parse --tag NAME=VALUE options into MetadataTags
     extra_tags = None
     if args.tag:
-        from muimg.tiff_metadata import MetadataTags
+        from muraw.tiff_metadata import MetadataTags
         extra_tags = MetadataTags()
         for tag_spec in args.tag:
             if "=" not in tag_spec:

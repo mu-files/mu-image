@@ -184,7 +184,7 @@ class WebViewBridge:
             or None if not found.
         """
         try:
-            from muimg.tiff_metadata import TIFF_TAG_TYPE_REGISTRY
+            from muraw.tiff_metadata import TIFF_TAG_TYPE_REGISTRY
             
             # Exact match
             if name in TIFF_TAG_TYPE_REGISTRY:
@@ -300,7 +300,7 @@ class WebViewBridge:
 
     @staticmethod
     def _resolve_demosaic_algorithm(settings):
-        from muimg.raw_render import DemosaicAlgorithm
+        from muraw.raw_render import DemosaicAlgorithm
         try:
             return DemosaicAlgorithm.lookup(settings.get("demosaicAlgo") or "BILINEAR")
         except Exception:
@@ -308,7 +308,7 @@ class WebViewBridge:
 
     def _run_create_dng(self, tab, settings, log, progress_bar):
         """DNG → DNG copy/transcode (Create DNG tab, DNG input)."""
-        from muimg.cli import run_batch_copy_dng
+        from muraw.cli import run_batch_copy_dng
 
         dng_files, output = self._gather_input_files(settings, (".dng",), log)
         if dng_files is None:
@@ -360,7 +360,7 @@ class WebViewBridge:
     def _run_create_fits(self, tab, settings, log, progress_bar):
         """FITS → DNG conversion (Create DNG tab, FITS input)."""
         from mu_dng_converter.fits2dng import run_batch_fits_to_dng
-        from muimg.raw_render import temp_tint_to_xy
+        from muraw.raw_render import temp_tint_to_xy
 
         fits_files, output = self._gather_input_files(settings, (".fits", ".fit"), log)
         if fits_files is None:
@@ -487,7 +487,7 @@ class WebViewBridge:
         on_task_done = self._make_on_task_done(tab, progress_bar)
 
         if mode == "video":
-            from muimg.cli import run_batch_to_video
+            from muraw.cli import run_batch_to_video
             output_mp4 = Path(output)
             log(f"Input: {len(dng_files)} DNG files → {output_mp4.name}")
             w, h = (settings.get("resolution") or "1920x1080").lower().split("x")
@@ -507,7 +507,7 @@ class WebViewBridge:
                 log_callback=log,
             )
         else:
-            from muimg.cli import run_batch_convert
+            from muraw.cli import run_batch_convert
             log(f"Input: {len(dng_files)} DNG files → .{mode}")
             result = run_batch_convert(
                 dng_files=dng_files,
