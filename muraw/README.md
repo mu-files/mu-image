@@ -23,10 +23,6 @@ Python library for reading, writing, and rendering Adobe DNG (Digital Negative) 
 
 ### From PyPI
 
-The last published package name is still `muimg`. This tree installs as
-`muraw`. Use the GitHub or local-dev instructions until `muraw` is
-published.
-
 ```bash
 pip install muraw
 ```

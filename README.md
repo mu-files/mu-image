@@ -16,7 +16,7 @@ The repository contains two packages:
 
 - **[`muraw`](muraw/README.md)**: A Python library and CLI for DNG I/O,
   rendering, metadata, and multi-threaded batch processing. Import
-  `muraw`. The last published PyPI name is still `muimg`.
+  `muraw`. Install with `pip install muraw`.
 - **[`mu-dng-converter`](mu-dng-converter/README.md)**: A desktop GUI on
   `muraw` and [PyWebView](https://pywebview.flowrl.com/) for batch
   convert and transcode.
