@@ -192,11 +192,26 @@ ops:
       - key: src_bits
         type: i32
         count: 1
+        optional: true
       - key: dst_bits
         type: i32
         count: 1
+        optional: true
       - key: clip_max
         type: f32
+        count: 1
+        optional: true
+
+  - name: cast_dtype
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype:
+          from_attr: dest_dtype
+    attrs:
+      - key: dest_dtype
+        type: string
         count: 1
 
   - name: mono_lut
