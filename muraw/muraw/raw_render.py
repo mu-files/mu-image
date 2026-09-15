@@ -113,8 +113,8 @@ def convert_dtype(
     """
     t = image
     try:
-        dest = ElementType.coerce(dst_dtype)
-    except (TypeError, KeyError) as e:
+        dest = ElementType(dst_dtype)
+    except ValueError as e:
         raise TypeError(
             f"Unsupported destination dtype: {dst_dtype!r}. "
             "Must be uint8, uint16, float16, or float32"

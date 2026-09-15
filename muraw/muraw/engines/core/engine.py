@@ -76,9 +76,8 @@ class CoreEngine:
 
         out_binds: Dict[int, np.ndarray] = {}
         for t in outputs:
-            # empty, not zeros: kernels fully overwrite; zeros would first-touch
-            # ~full-frame pages only to discard them (several ms on R5-sized buffers).
-            arr = np.empty(t.meta.shape, dtype=t.meta.dtype.numpy)
+            # Kernels write every dest pixel, so do not spend a pass zeroing arr.
+            arr = np.empty(t.meta.shape, dtype=t.meta.dtype.numpy_dtype)
             values[id(t)] = arr
             out_binds[id_of[id(t)]] = arr
 
@@ -86,25 +85,23 @@ class CoreEngine:
         for t in all_arrays:
             m = t.meta
             origin_row, origin_col = m.origin
-            bound = out_binds.get(id_of[id(t)], in_binds.get(id_of[id(t)]))
-            tensor_descs.append(
-                {
-                    "id": id_of[id(t)],
-                    "dtype": m.dtype.value,
-                    "height": m.height,
-                    "width": m.width,
-                    "channels": m.channels,
-                    "stride": int(bound.strides[0])
-                    if bound is not None
-                    else m.width * m.channels * np.dtype(m.dtype.numpy).itemsize,
-                    "origin_y": int(origin_row),
-                    "origin_x": int(origin_col),
-                    "canvas_x0": int(m.canvas[0]),
-                    "canvas_y0": int(m.canvas[1]),
-                    "canvas_width": int(m.canvas[2]),
-                    "canvas_height": int(m.canvas[3]),
-                }
-            )
+            buffer = out_binds.get(id_of[id(t)], in_binds.get(id_of[id(t)]))
+            desc = {
+                "id": id_of[id(t)],
+                "dtype": m.dtype.value,
+                "height": m.height,
+                "width": m.width,
+                "channels": m.channels,
+                "origin_y": int(origin_row),
+                "origin_x": int(origin_col),
+                "canvas_x0": int(m.canvas[0]),
+                "canvas_y0": int(m.canvas[1]),
+                "canvas_width": int(m.canvas[2]),
+                "canvas_height": int(m.canvas[3]),
+            }
+            if buffer is not None:
+                desc["stride"] = int(buffer.strides[0])
+            tensor_descs.append(desc)
 
         graph_nodes = []
         for t in nodes:

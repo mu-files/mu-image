@@ -74,7 +74,6 @@ packages = [
     "muraw.engines.tools",
     "muraw.engines.core",
     # Public import spelling for the graph (`import muimage as mi`).
-    # Re-exports muraw.mc until the graph is extracted into its own package.
     "muimage",
 ]
 # Host-only abi3 CoreEngine extension selection is in setup.py (package_data).

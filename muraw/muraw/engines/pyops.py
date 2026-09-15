@@ -17,15 +17,15 @@ from .graph import graph_op
 
 
 def _cast_dtype_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
-    dest = ElementType.coerce(attrs["dst_dtype"])
+    dest = ElementType(attrs["dst_dtype"])
     return t.meta.copy(dtype=dest)
 
 
 @graph_op(out_meta=_cast_dtype_out_meta)
 def cast_dtype_op(arr: np.ndarray, dst_dtype: str | ElementType) -> np.ndarray:
     """Bit-cast / widen with no rescale (unlike engine ``convert_dtype``)."""
-    dest = ElementType.coerce(dst_dtype)
-    return arr.astype(dest.numpy, copy=False)
+    dest = ElementType(dst_dtype)
+    return arr.astype(dest.numpy_dtype, copy=False)
 
 
 def _demosaic_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:

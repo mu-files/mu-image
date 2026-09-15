@@ -2,10 +2,53 @@
 # Copyright (c) 2026 mu-files
 """muimage — ``import muimage as mi``.
 
-Today this re-exports ``muraw.mc`` from the muraw wheel. When the graph
-is extracted into a standalone package, this becomes that package and
-the import spelling at call sites does not change.
+Ships from the muraw wheel today. When the graph is extracted into a
+standalone package, this becomes that package and the import spelling
+at call sites does not change::
+
+    import muimage as mi
+
+    x = mi.Array(cfa)
+    x = mi.ea_demosaic(x, cfa_pattern="RGGB")
+    x = mi.matrix_3x3(x, matrix=M)
+    out = x.realize()
+
+Every op in ``engines/catalog/ops.yaml`` is a callable here (via the
+generated ``muraw.engines.ops``). Engines are pluggable backends that
+execute the graph; pipeline code calls ``mi.<op>``, not ``engines.*``.
 """
 
-from muraw.mc import *  # noqa: F401,F403 — __all__ defined by muraw.mc
-from muraw.mc import __all__  # noqa: F401
+from __future__ import annotations
+
+from muraw.engines import ops as _catalog
+from muraw.engines.graph import emit, flush, op
+from muraw.engines.ops import *  # noqa: F401,F403 — generated __all__ is the catalog surface
+from muraw.array import (
+    ElementType,
+    ElementTypeLike,
+    Array,
+    ArrayMeta,
+    full,
+    full_like,
+    ones,
+    ones_like,
+    zeros,
+    zeros_like,
+)
+
+__all__ = [
+    "ElementType",
+    "ElementTypeLike",
+    "Array",
+    "ArrayMeta",
+    "emit",
+    "flush",
+    "full",
+    "full_like",
+    "ones",
+    "ones_like",
+    "op",
+    "zeros",
+    "zeros_like",
+]
+__all__ += _catalog.__all__

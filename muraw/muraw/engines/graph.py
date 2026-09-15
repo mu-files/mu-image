@@ -150,7 +150,7 @@ def _out_dtype_same(x: Array, attrs: Dict[str, Any]) -> ElementType:
 
 
 def _out_dtype_const(dtype: str | ElementType) -> OutMetaFn:
-    resolved = ElementType.coerce(dtype)
+    resolved = ElementType(dtype)
 
     def _fn(x: Array, attrs: Dict[str, Any]) -> ElementType:
         return resolved
@@ -162,8 +162,8 @@ def _out_dtype_from_attr(key: str) -> OutMetaFn:
     def _fn(x: Array, attrs: Dict[str, Any]) -> ElementType:
         val = attrs.get(key)
         try:
-            return ElementType.coerce(val)
-        except (TypeError, KeyError) as e:
+            return ElementType(val)
+        except ValueError as e:
             raise ValueError(
                 f"attr {key!r} must be a dtype "
                 f"(one of {[d.value for d in ElementType]}), got {val!r}"

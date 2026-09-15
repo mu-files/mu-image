@@ -7,7 +7,7 @@ from __future__ import annotations
 import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import numpy as np
 
@@ -96,34 +96,27 @@ class ElementType(StrEnum):
     UINT16 = "uint16"
 
     @classmethod
-    def lookup(cls, value: str) -> "ElementType":
-        """Look up enum member by string value."""
-        from .common import enum_from_string
-
-        return enum_from_string(cls, value)
-
-    @classmethod
-    def from_numpy(cls, dtype: np.dtype | type) -> "ElementType":
-        """Map a NumPy dtype / scalar type onto ``ElementType``."""
-        key = np.dtype(dtype)
-        try:
-            return _ELEMENT_TYPE_FROM_NUMPY[key]
-        except KeyError as e:
-            raise TypeError(f"unsupported ndarray dtype: {dtype}") from e
-
-    @classmethod
-    def coerce(cls, value: Union[str, "ElementType", np.dtype, type]) -> "ElementType":
-        """Normalize a string, ``ElementType``, or NumPy dtype to ``ElementType``."""
-        if isinstance(value, cls):
-            return value
+    def _missing_(cls, value: object) -> ElementType | None:
+        """Map a NumPy dtype or scalar type. Strings use the StrEnum values."""
         if isinstance(value, str):
-            return cls.lookup(value)
-        return cls.from_numpy(value)
+            return None
+        try:
+            return _ELEMENT_TYPE_FROM_NUMPY[np.dtype(value)]
+        except (KeyError, TypeError):
+            return None
 
     @property
-    def numpy(self) -> type:
-        """NumPy scalar type for this element type."""
+    def numpy_dtype(self) -> type:
+        """NumPy scalar type for this element type (``np.float32``, …)."""
         return NUMPY_FROM_ELEMENT_TYPE[self]
+
+    @property
+    def itemsize(self) -> int:
+        """Bytes per element."""
+        return int(np.dtype(self.numpy_dtype).itemsize)
+
+
+type ElementTypeLike = str | ElementType | np.dtype[Any] | type[np.generic]
 
 
 NUMPY_FROM_ELEMENT_TYPE: dict[ElementType, type] = {
@@ -168,7 +161,7 @@ class ArrayMeta:
 
 
 def meta_from_array(arr: np.ndarray) -> ArrayMeta:
-    return _meta_from_shape(arr.shape, ElementType.from_numpy(arr.dtype))
+    return _meta_from_shape(arr.shape, ElementType(arr.dtype))
 
 
 def _require_scalar(value: Any, op: str) -> float:
@@ -368,7 +361,7 @@ def _window(
 
 def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     """Rotate in the spatial plane. Same arguments as ``numpy.rot90``."""
-    from . import mc
+    import muimage as mi
 
     if tuple(axes) != (0, 1):
         raise ValueError("Array only supports rot90 in the spatial plane (axes=(0, 1)).")
@@ -376,21 +369,21 @@ def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     if turns == 0:
         return m
     # k=1 is 90° CCW (TIFF 8); k=2 is 180 (3); k=3 is 90° CW (6).
-    return mc.orientation(m, orientation={1: 8, 2: 3, 3: 6}[turns])
+    return mi.orientation(m, orientation={1: 8, 2: 3, 3: 6}[turns])
 
 
 def fliplr(m: "Array") -> "Array":
     """Flip left–right. Same as ``numpy.fliplr``."""
-    from . import mc
+    import muimage as mi
 
-    return mc.orientation(m, orientation=2)
+    return mi.orientation(m, orientation=2)
 
 
 def flipud(m: "Array") -> "Array":
     """Flip up–down. Same as ``numpy.flipud``."""
-    from . import mc
+    import muimage as mi
 
-    return mc.orientation(m, orientation=4)
+    return mi.orientation(m, orientation=4)
 
 
 def _meta_from_shape(shape: Any, dtype: ElementType) -> ArrayMeta:
@@ -413,11 +406,11 @@ def _dtype_from_fill(fill_value: Any) -> ElementType:
     if isinstance(fill_value, np.generic) or (
         isinstance(fill_value, np.ndarray) and fill_value.ndim == 0
     ):
-        return ElementType.from_numpy(np.asarray(fill_value).dtype)
+        return ElementType(np.asarray(fill_value).dtype)
     if isinstance(fill_value, np.ndarray):
         try:
-            return ElementType.from_numpy(fill_value.dtype)
-        except TypeError:
+            return ElementType(fill_value.dtype)
+        except ValueError:
             pass
     if isinstance(fill_value, (int, float)):
         return ElementType.FLOAT32
@@ -443,45 +436,45 @@ def _fill_samples(fill_value: Any, channels: int) -> list[float]:
 
 
 def _emit_fill(meta: ArrayMeta, fill_value: Any) -> "Array":
-    from . import mc
+    import muimage as mi
 
-    return mc.fill(
+    return mi.fill(
         Array(_meta=meta),
         value=_fill_samples(fill_value, meta.channels),
     )
 
 
-def zeros(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Array":
+def zeros(shape: Any, dtype: ElementTypeLike = ElementType.FLOAT32) -> "Array":
     """Lazy array filled with 0. Same arguments as ``numpy.zeros`` for image rank."""
-    return _emit_fill(_meta_from_shape(shape, ElementType.coerce(dtype)), 0)
+    return _emit_fill(_meta_from_shape(shape, ElementType(dtype)), 0)
 
 
-def ones(shape: Any, dtype: Any = ElementType.FLOAT32) -> "Array":
+def ones(shape: Any, dtype: ElementTypeLike = ElementType.FLOAT32) -> "Array":
     """Lazy array filled with 1. Same arguments as ``numpy.ones`` for image rank."""
-    return _emit_fill(_meta_from_shape(shape, ElementType.coerce(dtype)), 1)
+    return _emit_fill(_meta_from_shape(shape, ElementType(dtype)), 1)
 
 
-def full(shape: Any, fill_value: Any, dtype: Any = None) -> "Array":
+def full(shape: Any, fill_value: Any, dtype: ElementTypeLike | None = None) -> "Array":
     """Lazy array filled with a constant. Same arguments as ``numpy.full`` for image rank."""
-    et = ElementType.coerce(dtype) if dtype is not None else _dtype_from_fill(fill_value)
+    et = ElementType(dtype) if dtype is not None else _dtype_from_fill(fill_value)
     return _emit_fill(_meta_from_shape(shape, et), fill_value)
 
 
-def zeros_like(array: "Array", dtype: Any = None) -> "Array":
+def zeros_like(array: "Array", dtype: ElementTypeLike | None = None) -> "Array":
     """Lazy zeros with ``array``'s shape (and dtype unless ``dtype`` is set)."""
-    et = array.dtype if dtype is None else ElementType.coerce(dtype)
+    et = array.dtype if dtype is None else ElementType(dtype)
     return zeros(array.shape, dtype=et)
 
 
-def ones_like(array: "Array", dtype: Any = None) -> "Array":
+def ones_like(array: "Array", dtype: ElementTypeLike | None = None) -> "Array":
     """Lazy ones with ``array``'s shape (and dtype unless ``dtype`` is set)."""
-    et = array.dtype if dtype is None else ElementType.coerce(dtype)
+    et = array.dtype if dtype is None else ElementType(dtype)
     return ones(array.shape, dtype=et)
 
 
-def full_like(array: "Array", fill_value: Any, dtype: Any = None) -> "Array":
+def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = None) -> "Array":
     """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
-    et = array.dtype if dtype is None else ElementType.coerce(dtype)
+    et = array.dtype if dtype is None else ElementType(dtype)
     return full(array.shape, fill_value, dtype=et)
 
 
@@ -565,7 +558,7 @@ class Array:
 
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
         """
-        from . import mc
+        import muimage as mi
 
         # _window resolves the geometry and checks for mutual exclusivity errors
         left_i, top_i, width_i, height_i, orientation = _window(
@@ -581,9 +574,9 @@ class Array:
             "reset_origin": reset_origin,
         }
 
-        out = mc.view(self, **attrs)
+        out = mi.view(self, **attrs)
         if orientation != 1:
-            out = mc.orientation(out, orientation=orientation)
+            out = mi.orientation(out, orientation=orientation)
         return out
 
     def crop(
@@ -614,7 +607,7 @@ class Array:
         constant_values: Any = 0,
     ) -> "Array":
         """Grow height and width. Same ``pad_width`` / ``constant_values`` shapes as ``numpy.pad``."""
-        from . import mc
+        import muimage as mi
 
         top, bottom, left, right = (
             int(v) for v in _expand_spatial_pad(pad_width, "pad_width", nonneg=True)
@@ -628,7 +621,7 @@ class Array:
             "mode": mode,
             "constant_values": consts,
         }
-        return mc.pad(self, **attrs)
+        return mi.pad(self, **attrs)
 
     def __getitem__(self, key: Any) -> "Array":
         """NumPy spatial slice: a hard crop of this array."""
@@ -643,9 +636,9 @@ class Array:
             axes = tuple(axes[0])
         if axes and axes != (1, 0) and axes != (1, 0, 2):
             raise ValueError("Array only supports 2D spatial axis transposition.")
-        from . import mc
+        import muimage as mi
 
-        return mc.orientation(self, orientation=5)
+        return mi.orientation(self, orientation=5)
 
     @property
     def T(self) -> "Array":
