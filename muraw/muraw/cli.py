@@ -647,7 +647,7 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 sys.exit(1)
 
             # Convert to uint16 (single compute at the write boundary)
-            data_uint16 = raw_render.convert_dtype(t, "uint16").realize()
+            data_uint16 = t.convert_type("uint16").realize()
 
             # Save as TIFF
             tifffile.imwrite(output_file, data_uint16)

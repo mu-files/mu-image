@@ -30,7 +30,7 @@ try:
 except ImportError:
     core_image_available = False
 from muraw.tiff_metadata import MetadataTags
-from muraw.raw_render import convert_dtype, convert_colorspace
+from muraw.raw_render import convert_colorspace
 from muraw.splines import ColorSpace
 from conftest import generate_rgb_ramp, sample_as_cfa, compute_diff_stats, run_dng_validate, OutputPathManager
 
@@ -242,7 +242,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
         
         if use_preview:
             # Preview must be uint8 for JPEG compression
-            rgb_ramp_u8 = convert_dtype(Array(rgb_ramp), "uint8").realize()
+            rgb_ramp_u8 = np.asarray(Array(rgb_ramp).convert_type("uint8"))
             preview_data = cv2.resize(
                 rgb_ramp_u8, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
             
@@ -341,11 +341,11 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                     decoded_cfa, decoded_pattern = dng.get_cfa()
                     assert decoded_cfa is not None, f"Failed to get CFA from {comp_label}"
                     assert decoded_pattern == "RGGB", f"CFA pattern mismatch: {decoded_pattern} != RGGB"
-                    decoded = decoded_cfa.realize()
+                    decoded = decoded_cfa
                 else:
                     decoded_rgb = dng.get_linear_raw()
                     assert decoded_rgb is not None, f"Failed to get LINEAR_RAW from {comp_label}"
-                    decoded = decoded_rgb.realize()
+                    decoded = decoded_rgb
                 
                 # Test render pipeline: with identity ProfileToneCurve, 
                 # render should apply sRGB gamma to linear RGB
@@ -386,7 +386,7 @@ def _test_compression_fidelity(tmp_path, dtype_label, input_dtype, photometric, 
                 source_space=ColorSpace.SRGB_LINEAR,
                 dest_space=ColorSpace.SRGB_GAMMA,
                 dst_dtype="uint8"
-            ).realize()
+            )
             
             render_stats = compute_diff_stats(rendered, rgb_ramp_u8)
             

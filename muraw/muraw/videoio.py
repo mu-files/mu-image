@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable
 from .deps import cv2_proxy as cv2
 
 # Package imports
+from .array import ElementType
 from .imgio import decode_image, ImageSequencePipeline
 from .processing import ProcessingPipeline, DEFAULT_PIPELINE_CALLABLE
 
@@ -284,11 +285,11 @@ class VideoEncodePipeline(ImageSequencePipeline):
         
         # Determine output dtype and pixel format based on bit depth
         if self.bit_depth == 10:
-            output_dtype = np.uint16
+            output_dtype = ElementType.UINT16
             self.pix_fmt = "yuv420p10le"
             self.input_format = "rgb48le"
         else:
-            output_dtype = np.uint8
+            output_dtype = ElementType.UINT8
             self.pix_fmt = "yuv420p"
             self.input_format = "rgb24"
         

@@ -16,18 +16,6 @@ from ..array import ElementType, Array, ArrayMeta
 from .graph import graph_op
 
 
-def _cast_dtype_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
-    dest = ElementType(attrs["dst_dtype"])
-    return t.meta.copy(dtype=dest)
-
-
-@graph_op(out_meta=_cast_dtype_out_meta)
-def cast_dtype_op(arr: np.ndarray, dst_dtype: str | ElementType) -> np.ndarray:
-    """Bit-cast / widen with no rescale (unlike engine ``convert_dtype``)."""
-    dest = ElementType(dst_dtype)
-    return arr.astype(dest.numpy_dtype, copy=False)
-
-
 def _demosaic_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     if t.meta.channels != 1:
         raise ValueError("demosaic_op input must be mono / CFA (1 channel)")
@@ -50,7 +38,7 @@ def demosaic_op(
 ) -> np.ndarray:
     """Non-bilinear demosaic kernel (ndarray in/out).
 
-    Caller (``raw_render.demosaic``) emits pre/post ``convert_dtype`` neighbors.
+    Caller (``raw_render.demosaic``) emits pre/post ``convert_type`` neighbors.
     For bilinear use ``mi.bilinear_demosaic``.
     For Hamilton–Adams (``EA`` / ``EA_FAST``) use ``mi.ea_demosaic``.
     ``OPENCV_EA`` stays here for quality comparison against the native EA path.

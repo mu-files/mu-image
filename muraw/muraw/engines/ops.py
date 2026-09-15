@@ -248,17 +248,36 @@ convert_dtype = EngineOp(
   {
     "count": 1,
     "key": "src_bits",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "dst_bits",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "clip_max",
+    "optional": true,
     "type": "f32"
+  }
+]''')),
+    _infer_meta=None,
+)
+
+cast_dtype = EngineOp(
+    meta=OpMeta(name='cast_dtype'),
+    _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _n_inputs=1,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "dest_dtype",
+    "type": "string"
   }
 ]''')),
     _infer_meta=None,
@@ -919,6 +938,7 @@ OPS_BY_NAME = {
     'matrix_3x3': matrix_3x3,
     'lut': lut,
     'convert_dtype': convert_dtype,
+    'cast_dtype': cast_dtype,
     'mono_lut': mono_lut,
     'transform_color': transform_color,
     'clip_and_transform_color': clip_and_transform_color,
@@ -944,6 +964,7 @@ __all__ = [
     'apply_hue_sat_val_map',
     'apply_profile_gain_table_map',
     'bilinear_demosaic',
+    'cast_dtype',
     'clip_and_transform_color',
     'convert_dtype',
     'ea_demosaic',

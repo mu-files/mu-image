@@ -74,3 +74,41 @@ def test_transpose_rejects_other_axes():
     t = Array(_rgb())
     with pytest.raises(ValueError, match="2D spatial"):
         t.transpose(2, 1, 0)
+
+
+def test_astype_is_numeric_cast():
+    src = np.array([[0, 128, 255]], dtype=np.uint8)
+    out = Array(src).astype("float32").realize()
+    np.testing.assert_array_equal(out, src.astype(np.float32))
+    assert out.dtype == np.float32
+
+
+def test_convert_type_rescales_pixel_range():
+    src = np.array([[0, 128, 255]], dtype=np.uint8)
+    out = Array(src).convert_type("float32").realize()
+    np.testing.assert_allclose(out, np.array([[0.0, 128.0 / 255.0, 1.0]], dtype=np.float32))
+
+
+def test_convert_type_src_bits_scales_count_valued_float():
+    src = np.array([[0.0, 65535.0]], dtype=np.float32)
+    out = Array(src).convert_type("float32", src_bits=16).realize()
+    np.testing.assert_allclose(out, np.array([[0.0, 1.0]], dtype=np.float32))
+
+
+def test_array_constructor_aliases_existing_array():
+    src = Array(_mono())
+    assert Array(src) is src
+    lazy = src.astype("uint8")
+    assert lazy._node is not None
+    assert Array(lazy) is lazy
+    assert lazy._data is None
+
+
+def test_astype_same_dtype_is_identity():
+    t = Array(_mono())
+    assert t.astype("float32") is t
+
+
+def test_convert_type_same_dtype_no_attrs_is_identity():
+    t = Array(_mono())
+    assert t.convert_type("float32") is t

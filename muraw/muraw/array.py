@@ -487,14 +487,32 @@ class Array:
 
     __slots__ = ("_meta", "_data", "_node")
 
-    def __init__(
-        self,
-        data: Optional[np.ndarray] = None,
+    def __new__(
+        cls,
+        data: Optional[np.ndarray | Array] = None,
         *,
         origin: Optional[Tuple[int, int]] = None,
         _meta: Optional[ArrayMeta] = None,
         _node: Optional["OpNode"] = None,
     ):
+        if isinstance(data, Array):
+            if origin is not None:
+                raise ValueError("origin= is only valid when ingesting a source buffer")
+            if _meta is not None or _node is not None:
+                raise ValueError("Array(Array) cannot take _meta= or _node=")
+            return data
+        return super().__new__(cls)
+
+    def __init__(
+        self,
+        data: Optional[np.ndarray | Array] = None,
+        *,
+        origin: Optional[Tuple[int, int]] = None,
+        _meta: Optional[ArrayMeta] = None,
+        _node: Optional["OpNode"] = None,
+    ):
+        if isinstance(data, Array):
+            return
         if data is not None:
             if _node is not None:
                 raise ValueError("source Array cannot also have an op node")
@@ -644,6 +662,46 @@ class Array:
     def T(self) -> "Array":
         """Spatial transpose. Same as ``transpose()``."""
         return self.transpose()
+
+    def astype(self, dtype: ElementTypeLike) -> "Array":
+        """Numeric cast. ``255`` uint8 becomes ``255.0`` float32."""
+        import muimage as mi
+
+        dest = ElementType(dtype)
+        if dest is self.dtype:
+            return self
+        return mi.cast_dtype(self, dest_dtype=dest.value)
+
+    def convert_type(
+        self,
+        dtype: ElementTypeLike,
+        src_bits: int | None = None,
+        dst_bits: int | None = None,
+        clip_max: float | None = None,
+    ) -> "Array":
+        """Pixel-range convert. ``255`` uint8, ``65535`` uint16, and ``1.0`` float16 become ``1.0`` float32.
+
+        If the values are already float but not yet in that 0..1 range, pass
+        ``src_bits`` / ``dst_bits`` to name the integer range they still use.
+        """
+        import muimage as mi
+
+        dest = ElementType(dtype)
+        if (
+            dest is self.dtype
+            and src_bits is None
+            and dst_bits is None
+            and clip_max is None
+        ):
+            return self
+        attrs: dict[str, Any] = {"dest_dtype": dest.value}
+        if src_bits is not None:
+            attrs["src_bits"] = int(src_bits)
+        if dst_bits is not None:
+            attrs["dst_bits"] = int(dst_bits)
+        if clip_max is not None:
+            attrs["clip_max"] = float(clip_max)
+        return mi.convert_dtype(self, **attrs)
 
     def realize(self, *, force_recompute: bool = False) -> np.ndarray:
         """Run the graph if needed and return this array's pixels (read-only)."""

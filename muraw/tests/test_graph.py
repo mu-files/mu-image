@@ -10,10 +10,21 @@ import pytest
 import muimage as mi
 from muraw.engines import get_default_engine, set_default_engine
 from muraw.engines.core import CoreEngine
-from muraw.engines.graph import EngineOp, flush
+from muraw.engines.graph import EngineOp, flush, graph_op
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
-from muraw.array import Array
+from muraw.array import Array, ArrayMeta, ElementType
+
+
+def _fence_cast_out_meta(t: Array, attrs: dict) -> ArrayMeta:
+    dest = ElementType(attrs["dst_dtype"])
+    return t.meta.copy(dtype=dest)
+
+
+@graph_op(out_meta=_fence_cast_out_meta)
+def _fence_cast(arr: np.ndarray, dst_dtype: str) -> np.ndarray:
+    dest = ElementType(dst_dtype)
+    return arr.astype(dest.numpy_dtype, copy=False)
 
 
 def test_catalog_engine_ops_io():
@@ -22,6 +33,9 @@ def test_catalog_engine_ops_io():
     assert "view" in OPS_BY_NAME
     assert "pad" in OPS_BY_NAME
     assert "orientation" in OPS_BY_NAME
+    assert "cast_dtype" in OPS_BY_NAME
+    assert callable(mi.cast_dtype)
+    assert callable(mi.convert_dtype)
     assert isinstance(mi.bilinear_demosaic, EngineOp)
     assert mi.bilinear_demosaic._in_channels == 1
     x = Array(np.zeros((2, 2), dtype=np.float32))
@@ -532,10 +546,8 @@ def test_core_binaries_path():
 
 
 def test_graph_op_cast_then_native_crop():
-    from muraw.engines.pyops import cast_dtype_op
-
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    x = cast_dtype_op(Array(src), "uint16")
+    x = _fence_cast(Array(src), "uint16")
     x = x.view(left=1, top=1, width=3, height=2)
     assert x._node is not None and x._node.op == "view" and x._node.fn is None
     out = x.realize()
@@ -713,12 +725,11 @@ def test_perftimer_missed_close_then_continue_at_parent():
 
 def test_compute_times_python_ops():
     from muraw.common import PerfTimer
-    from muraw.engines.pyops import cast_dtype_op
     from muraw.engines.graph import EngineTiming, engine_timing, set_engine_timing
 
     src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    x = cast_dtype_op(Array(src), "uint16")
-    x = cast_dtype_op(x, "float32")
+    x = _fence_cast(Array(src), "uint16")
+    x = _fence_cast(x, "float32")
 
     prev = engine_timing
     try:
@@ -732,7 +743,7 @@ def test_compute_times_python_ops():
 
     np.testing.assert_allclose(out, src.astype(np.float32))
     names = [c.name for c in parent.children]
-    assert names == ["cast_dtype_op (python)", "cast_dtype_op (python)"]
+    assert names == ["_fence_cast (python)", "_fence_cast (python)"]
     assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
 
 
@@ -828,11 +839,10 @@ def test_compute_ops_under_graph_compute():
 
 def test_graph_op_splits_engine_segments():
     from muraw.engines.core import _engine_load
-    from muraw.engines.pyops import cast_dtype_op
 
     src = np.arange(16, dtype=np.float32).reshape(4, 4)
     x = Array(src) - 0.0
-    x = cast_dtype_op(x, "float32")  # python fence between engine segments
+    x = _fence_cast(x, "float32")  # python fence between engine segments
     x = x * 2.0
 
     calls = {"n": 0}

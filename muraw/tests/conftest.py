@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 import tifffile
 
-from muraw.raw_render import convert_dtype
 from muraw.array import Array
 
 logger = logging.getLogger(__name__)
@@ -244,8 +243,8 @@ def generate_rgb_ramp(
     
     # Convert to target dtype if needed
     if dtype != np.float32:
-        img = convert_dtype(Array(img), np.dtype(dtype).name).realize()
-    
+        img = np.asarray(Array(img).convert_type(dtype))
+
     # Scale to specified bit depth if requested
     if bits_per_sample is not None:
         dtype_bits = dtype(0).itemsize * 8
@@ -254,7 +253,7 @@ def generate_rgb_ramp(
             src_max = (1 << dtype_bits) - 1
             dst_max = (1 << bits_per_sample) - 1
             img = (img.astype(np.float64) * dst_max / src_max).astype(dtype)
-    
+
     return img
 
 

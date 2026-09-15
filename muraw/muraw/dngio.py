@@ -29,7 +29,7 @@ from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 import muimage as mi
 from .raw_render import DemosaicAlgorithm
-from .array import Array
+from .array import Array, ElementType, ElementTypeLike
 from .common import PerfTimer
 from .tiff_metadata import (
     MetadataTags,
@@ -596,7 +596,7 @@ class DngPage(tifffile.TiffPage):
     
     def decode_to_rgb(
         self,
-        output_dtype: type = np.uint8
+        output_dtype: ElementTypeLike = ElementType.UINT8,
     ) -> Array | None:
         """Decode any DNG page to an RGB ``Array``.
 
@@ -606,7 +606,7 @@ class DngPage(tifffile.TiffPage):
         Call ``.realize()`` at encode/write/display edges.
 
         Args:
-            output_dtype: Output data type (np.uint8 or np.uint16)
+            output_dtype: Output element type.
 
         Returns:
             RGB Array (H, W, 3) or None if decoding fails
@@ -630,15 +630,11 @@ class DngPage(tifffile.TiffPage):
         if orientation is not None:
             result = mi.orientation(result, orientation=int(orientation))
         
-        # Convert dtype if needed
-        if result.meta.dtype != np.dtype(output_dtype).name:
-            result = raw_render.convert_dtype(result, np.dtype(output_dtype).name)
-        
-        return result
+        return result.convert_type(output_dtype)
     
     def render_raw(
         self,
-        output_dtype: type = np.uint16,
+        output_dtype: ElementTypeLike = ElementType.UINT16,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
         strict: bool = True,
         use_xmp: bool = True,
@@ -656,7 +652,7 @@ class DngPage(tifffile.TiffPage):
         For RGB/YCBCR preview pages, use decode() instead.
         
         Args:
-            output_dtype: Output data type (np.uint8 or np.uint16)
+            output_dtype: Output element type.
             demosaic_algorithm: Algorithm for CFA demosaicing ("RCD", "VNG", "AHD")
             strict: If True, raise error on unsupported DNG tags. If False, warn and continue.
             use_xmp: If True, extract rendering parameters from XMP metadata (Temperature,
@@ -951,7 +947,7 @@ class DngFile(tifffile.TiffFile):
 
     def render_raw(
         self,
-        output_dtype: type = np.uint16,
+        output_dtype: ElementTypeLike = ElementType.UINT16,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
         strict: bool = True,
         use_xmp: bool = True,
@@ -969,7 +965,7 @@ class DngFile(tifffile.TiffFile):
         See `DngPage.render_raw` for full documentation.
         
         Args:
-            output_dtype: Output data type (np.uint8 or np.uint16)
+            output_dtype: Output element type.
             demosaic_algorithm: Algorithm for CFA demosaicing
             strict: If True, raise error on unsupported DNG tags
             use_xmp: If True, extract rendering parameters from XMP metadata
@@ -1078,7 +1074,7 @@ class DngFile(tifffile.TiffFile):
 
     def get_preview_rgb(
         self,
-        output_dtype: type = np.uint8,
+        output_dtype: ElementTypeLike = ElementType.UINT8,
     ) -> Array | None:
         """Decode preview image from IFD0 to an RGB ``Array``.
         
@@ -1090,7 +1086,7 @@ class DngFile(tifffile.TiffFile):
         See `DngPage.decode_to_rgb` for full documentation.
         
         Args:
-            output_dtype: Output data type (np.uint8 or np.uint16)
+            output_dtype: Output element type.
             
         Returns:
             RGB ``Array`` or None if IFD0 is not a preview or decoding fails
@@ -2215,7 +2211,7 @@ def _write_dng_with_params(
 
         # change main_spec - preserve original input dtype
         main_spec = IfdDataSpec(
-            data=raw_render.convert_dtype(Array(camera_raw), src_dtype).realize(),
+            data=Array(camera_raw).convert_type(src_dtype).realize(),
             photometric="LINEAR_RAW",
             subfiletype=SubFileType.MAIN_IMAGE,
             encoding=main_encoding,
@@ -2263,7 +2259,7 @@ def _write_dng_with_params(
         for level_idx in range(1, max_pyramid_level):
             level_data = pyramid_images[level_idx]
             pyramid_spec = IfdDataSpec(
-                data=raw_render.convert_dtype(Array(level_data), src_dtype).realize(),
+                data=Array(level_data).convert_type(src_dtype).realize(),
                 photometric="LINEAR_RAW",
                 subfiletype=SubFileType.PREVIEW_IMAGE,
                 encoding=pyramid.encoding,
@@ -2333,7 +2329,7 @@ def _write_dng_with_params(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 mono_camera=Array(pyramid_images[preview_level_idx]),
-                output_dtype=np.uint8,
+                output_dtype=ElementType.UINT8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             )
@@ -2349,7 +2345,7 @@ def _write_dng_with_params(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 rgb_camera=Array(pyramid_images[preview_level_idx]),
-                output_dtype=np.uint8,
+                output_dtype=ElementType.UINT8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             ).realize()
@@ -2655,7 +2651,7 @@ def create_dng_from_page(
 
 def decode_dng(
     file: str | Path | IO[bytes] | DngFile | DngPage,
-    output_dtype: type = np.uint16,
+    output_dtype: ElementTypeLike = ElementType.UINT16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,
@@ -2675,7 +2671,7 @@ def decode_dng(
     
     Args:
         file: Path to DNG file, file-like object, DngFile instance, or DngPage instance
-        output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
+        output_dtype: Output element type.
         demosaic_algorithm: Demosaic algorithm for Python pipeline - "RCD" (default), "VNG", etc.
         use_coreimage_if_available: If True, use (MacOS) Core Image pipeline when available
         use_xmp: Whether to read XMP metadata for processing defaults (both pipelines)

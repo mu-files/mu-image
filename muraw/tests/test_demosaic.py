@@ -9,7 +9,7 @@ import tifffile
 
 from muraw.dngio import DngFile
 from muraw.array import Array
-from muraw.raw_render import demosaic, convert_dtype, DemosaicAlgorithm
+from muraw.raw_render import demosaic, DemosaicAlgorithm
 from conftest import compute_diff_stats
 
 
@@ -57,16 +57,16 @@ def test_demosaic_uint8_consistency(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Convert CFA to uint8
-    cfa_u8 = convert_dtype(Array(cfa), "uint8").realize()
+    cfa_u8 = Array(cfa).convert_type("uint8")
     
     # Run BILINEAR as reference
-    reference = demosaic(Array(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
+    reference = demosaic(cfa_u8, cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
     assert reference.dtype == np.uint8
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
     for algorithm in get_available_algorithms():
-        result = demosaic(Array(cfa_u8), cfa_pattern, algorithm=algorithm).realize()
+        result = demosaic(cfa_u8, cfa_pattern, algorithm=algorithm).realize()
         
         # Check dtype preservation
         assert result.dtype == np.uint8, f"{algorithm} should preserve uint8 dtype"
@@ -94,16 +94,16 @@ def test_demosaic_uint16_consistency(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Convert CFA to uint16
-    cfa_u16 = convert_dtype(Array(cfa), "uint16").realize()
+    cfa_u16 = Array(cfa).convert_type("uint16")
     
     # Run BILINEAR as reference
-    reference = demosaic(Array(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
+    reference = demosaic(cfa_u16, cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
     assert reference.dtype == np.uint16
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
     for algorithm in get_available_algorithms():
-        result = demosaic(Array(cfa_u16), cfa_pattern, algorithm=algorithm).realize()
+        result = demosaic(cfa_u16, cfa_pattern, algorithm=algorithm).realize()
         
         # Check dtype preservation
         assert result.dtype == np.uint16, f"{algorithm} should preserve uint16 dtype"
@@ -130,16 +130,16 @@ def test_demosaic_float32_consistency(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Convert CFA to float32 (0-1 range)
-    cfa_f32 = convert_dtype(Array(cfa), "float32").realize()
+    cfa_f32 = Array(cfa).convert_type("float32")
     
     # Run BILINEAR as reference
-    reference = demosaic(Array(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
+    reference = demosaic(cfa_f32, cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
     assert reference.dtype == np.float32
     assert reference.shape == (cfa.shape[0], cfa.shape[1], 3)
     
     # Test other algorithms produce same dtype and similar results
     for algorithm in get_available_algorithms():
-        result = demosaic(Array(cfa_f32), cfa_pattern, algorithm=algorithm).realize()
+        result = demosaic(cfa_f32, cfa_pattern, algorithm=algorithm).realize()
         
         # Check dtype preservation
         assert result.dtype == np.float32, f"{algorithm} should preserve float32 dtype"
@@ -167,15 +167,15 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     cfa, cfa_pattern = cfa_data
     
     # Get float32 reference
-    cfa_f32 = convert_dtype(Array(cfa), "float32").realize()
-    result_f32 = demosaic(Array(cfa_f32), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
+    cfa_f32 = Array(cfa).convert_type("float32")
+    result_f32 = demosaic(cfa_f32, cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
     
     # Convert to uint16 and demosaic
-    cfa_u16 = convert_dtype(Array(cfa), "uint16").realize()
-    result_u16 = demosaic(Array(cfa_u16), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
+    cfa_u16 = Array(cfa).convert_type("uint16")
+    result_u16 = demosaic(cfa_u16, cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR)
     
     # Convert uint16 result back to float32 for comparison
-    result_u16_as_f32 = convert_dtype(Array(result_u16), "float32").realize()
+    result_u16_as_f32 = result_u16.convert_type("float32")
     
     # Results should be very close (within quantization error)
     # uint16 has 65536 levels, so max error is ~1/65536 ≈ 0.000015
@@ -183,9 +183,9 @@ def test_demosaic_dtype_conversion_roundtrip(cfa_data):
     assert max_diff < 0.001, f"Float32 and uint16 results differ by {max_diff}"
     
     # Same test for uint8
-    cfa_u8 = convert_dtype(Array(cfa), "uint8").realize()
-    result_u8 = demosaic(Array(cfa_u8), cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR).realize()
-    result_u8_as_f32 = convert_dtype(Array(result_u8), "float32").realize()
+    cfa_u8 = Array(cfa).convert_type("uint8")
+    result_u8 = demosaic(cfa_u8, cfa_pattern, algorithm=DemosaicAlgorithm.BILINEAR)
+    result_u8_as_f32 = result_u8.convert_type("float32")
     
     # uint8 has only 256 levels, so allow larger error
     max_diff = np.abs(result_f32 - result_u8_as_f32).max()
@@ -229,7 +229,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
     assert cfa_pattern == "RGGB", f"Test expects RGGB pattern, got {cfa_pattern}"
     
     # Convert to uint16 for testing
-    cfa_u16 = convert_dtype(Array(cfa), "uint16").realize()
+    cfa_u16 = Array(cfa).convert_type("uint16")
     
     # Pattern transformations: (crop_x, crop_y) -> new_pattern
     pattern_crops = {
@@ -244,7 +244,7 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
     
     for ref_algorithm in algorithms:
         # Demosaic the original RGGB pattern with reference algorithm
-        reference_rgb = demosaic(Array(cfa_u16), "RGGB", algorithm=ref_algorithm).realize()
+        reference_rgb = demosaic(cfa_u16, "RGGB", algorithm=ref_algorithm).realize()
         
         # Test each pattern variant
         for pattern_name, (crop_x, crop_y) in pattern_crops.items():

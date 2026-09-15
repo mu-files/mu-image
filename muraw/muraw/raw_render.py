@@ -12,12 +12,11 @@ from typing import TYPE_CHECKING, Any
 # Package imports
 import muimage as mi
 from .engines.pyops import (
-    cast_dtype_op,
     channel_luts_op,
     demosaic_op,
     radial_distortion_op,
 )
-from .array import ElementType, Array
+from .array import Array, ElementType
 from .common import PerfTimer, enum_display_name
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
@@ -83,112 +82,12 @@ class DemosaicAlgorithm(StrEnum):
 # =============================================================================
 
 
-def convert_dtype(
-    image: Array,
-    dst_dtype: str | ElementType,
-    src_bits: int | None = None,
-    dst_bits: int | None = None,
-    clip_max: float | None = None,
-) -> Array:
-    """Convert image between data types with proper normalization and optional clipping.
-
-    Wrapper: validate arguments and append ops to a deferred compute graph.
-    Does not run pixels; call ``.realize()`` on the returned ``Array`` to materialize.
-
-    Args:
-        image: Input Array (H, W) or (H, W, C)
-        dst_dtype: Destination ``ElementType`` or name (``"uint8"``, ``"uint16"``,
-            ``"float16"``, or ``"float32"``)
-        src_bits: Custom bit depth for source data (e.g., 12 for 12-bit data
-            in uint16 container). Must be None for float types. Defaults to container
-            bit depth if None.
-        dst_bits: Custom bit depth for destination data. Must be None for
-            float types. Defaults to container bit depth if None.
-        clip_max: Maximum value to clip to in destination space. If None, no clipping
-            is performed. For integer destinations, values are clipped to [0, clip_max].
-            For float destinations, only upper bound clipping is applied.
-
-    Returns:
-        Lazy ``Array`` with dst_dtype
-    """
-    t = image
-    try:
-        dest = ElementType(dst_dtype)
-    except ValueError as e:
-        raise TypeError(
-            f"Unsupported destination dtype: {dst_dtype!r}. "
-            "Must be uint8, uint16, float16, or float32"
-        ) from e
-
-    # Early-out: same float dtype with no clip
-    if t.meta.dtype == dest and clip_max is None and dest in (ElementType.FLOAT16, ElementType.FLOAT32):
-        return t
-
-    output_is_float16 = dest is ElementType.FLOAT16
-    engine_dest = ElementType.FLOAT32 if output_is_float16 else dest
-
-    # float16 → float32 via python op (engine has no float16 kernels)
-    if t.meta.dtype is ElementType.FLOAT16:
-        t = cast_dtype_op(t, ElementType.FLOAT32)
-
-    _engine_dtypes = (ElementType.UINT8, ElementType.UINT16, ElementType.FLOAT32)
-    if engine_dest not in _engine_dtypes:
-        raise TypeError(
-            f"Unsupported destination dtype: {dest}. "
-            "Must be uint8, uint16, float16, or float32"
-        )
-    if t.meta.dtype not in _engine_dtypes:
-        raise TypeError(
-            f"Unsupported source dtype: {t.meta.dtype}. "
-            "Must be uint8, uint16, float16, or float32"
-        )
-
-    if src_bits is None:
-        src_bits = (
-            -1
-            if t.meta.dtype.startswith("float")
-            else (8 if t.meta.dtype is ElementType.UINT8 else 16)
-        )
-    else:
-        src_bits = int(src_bits)
-
-    if dst_bits is None:
-        dst_bits = (
-            -1
-            if engine_dest.startswith("float")
-            else (8 if engine_dest is ElementType.UINT8 else 16)
-        )
-    else:
-        dst_bits = int(dst_bits)
-
-    # Early-out: same dtype, same bits, no clip, not float16 output
-    if (
-        t.meta.dtype == engine_dest
-        and src_bits == dst_bits
-        and clip_max is None
-        and not output_is_float16
-    ):
-        return t
-
-    clip_value = -1.0 if clip_max is None else float(clip_max)
-    result = mi.convert_dtype(
-        t,
-        dest_dtype=engine_dest.value,
-        src_bits=int(src_bits),
-        dst_bits=int(dst_bits),
-        clip_max=float(clip_value),
-    )
-    if output_is_float16:
-        result = cast_dtype_op(result, ElementType.FLOAT16)
-    return result
-
-
 def mono_lut(
     image: Array,
     lut: LUT | np.ndarray | None = None,
     src_bits: int | None = None,
     dst_bits: int | None = None,
-    dst_dtype: str = "float32",
+    dst_dtype: ElementType = ElementType.FLOAT32,
 ) -> Array:
     """Apply LUT to monochrome (single channel) image.
 
@@ -197,26 +96,27 @@ def mono_lut(
 
     Args:
         image: Input Array (H, W) or (H, W, 1)
-        lut: LUT to apply. If None, image is passed through via convert_dtype.
+        lut: LUT to apply. If None, image is passed through via convert_type.
         src_bits: Source bit depth. If None, inferred from dtype.
         dst_bits: Destination bit depth. If None, inferred from dst_dtype.
-        dst_dtype: Destination dtype name (``"uint8"``, ``"uint16"``, or ``"float32"``).
+        dst_dtype: Destination element type.
 
     Returns:
         Lazy ``Array`` (H, W, 1) with dst_dtype
     """
     t = image
+    dest = ElementType(dst_dtype)
     if t.meta.channels != 1:
         raise ValueError(
             f"Monochrome image must have 1 channel, got channels={t.meta.channels}"
         )
 
     if lut is None:
-        return convert_dtype(t, dst_dtype, src_bits, dst_bits)
+        return t.convert_type(dest, src_bits, dst_bits)
 
     lut_array = np.asarray(lut, dtype=np.float32)
-    if dst_dtype not in ("uint8", "uint16", "float32"):
-        raise TypeError(f"Unsupported destination dtype: {dst_dtype}")
+    if dest not in (ElementType.UINT8, ElementType.UINT16, ElementType.FLOAT32):
+        raise TypeError(f"Unsupported destination dtype: {dest}")
 
     if src_bits is None:
         src_bits = (
@@ -227,8 +127,8 @@ def mono_lut(
     if dst_bits is None:
         dst_bits = (
             -1
-            if dst_dtype.startswith("float")
-            else (8 if dst_dtype == "uint8" else 16)
+            if dest.startswith("float")
+            else (8 if dest is ElementType.UINT8 else 16)
         )
 
     return mi.mono_lut(
@@ -236,7 +136,7 @@ def mono_lut(
         lut=lut_array,
         src_bits=int(src_bits),
         dst_bits=int(dst_bits),
-        dest_dtype=dst_dtype,
+        dest_dtype=dest.value,
     )
 
 
@@ -292,24 +192,25 @@ def convert_colorspace(
     image: Array,
     source_space: ColorSpace,
     dest_space: ColorSpace,
-    dst_dtype: str = "float32",
+    dst_dtype: ElementType = ElementType.FLOAT32,
 ) -> Array:
     """Convert image between color spaces with optional dtype conversion.
 
     Wrapper: validate arguments and append ops to a deferred compute graph
-    (typically via ``transform_color`` / ``convert_dtype``). Does not run pixels;
+    (typically via ``transform_color`` / ``convert_type``). Does not run pixels;
     call ``.realize()`` on the returned ``Array`` to materialize.
     """
     t = image
+    dest = ElementType(dst_dtype)
 
     if source_space == dest_space:
-        return convert_dtype(t, dst_dtype)
+        return t.convert_type(dest)
 
-    output_is_float16 = dst_dtype == "float16"
-    engine_out = "float32" if output_is_float16 else dst_dtype
+    output_is_float16 = dest is ElementType.FLOAT16
+    engine_out = ElementType.FLOAT32 if output_is_float16 else dest
 
     if t.meta.dtype == "float16":
-        t = cast_dtype_op(t, "float32")
+        t = t.astype("float32")
 
     input_lut = None
     if source_space.is_gamma():
@@ -322,9 +223,9 @@ def convert_colorspace(
     if dest_space.is_gamma():
         output_lut = ColorSpaceLUT(dest_space, inverse=False, size=4096)
 
-    # Same linear space, dtype-only: convert_dtype
+    # Same linear space, dtype-only: convert_type
     if input_lut is None and matrix is None and output_lut is None:
-        result = convert_dtype(t, engine_out)
+        result = t.convert_type(engine_out)
     else:
         result = transform_color(
             t,
@@ -335,7 +236,7 @@ def convert_colorspace(
         )
 
     if output_is_float16:
-        result = cast_dtype_op(result, "float16")
+        result = result.astype("float16")
     return result
 
 
@@ -346,7 +247,7 @@ def transform_color(
     output_lut: LUT | np.ndarray | None = None,
     src_bits: int | None = None,
     dst_bits: int | None = None,
-    dst_dtype: str = "float32",
+    dst_dtype: ElementType = ElementType.FLOAT32,
     hue_preserving_input_lut: bool = False,
 ) -> Array:
     """Apply fused LUT→Matrix→LUT color transformation pipeline.
@@ -355,6 +256,7 @@ def transform_color(
     Does not run pixels; call ``.realize()`` on the returned ``Array`` to materialize.
     """
     t = image
+    dest = ElementType(dst_dtype)
     if t.meta.channels != 3:
         raise ValueError(
             f"Image must be (H, W, 3), got channels={t.meta.channels}"
@@ -369,9 +271,9 @@ def transform_color(
             "transform_color requires at least one of: input_lut, matrix, or output_lut"
         )
 
-    if dst_dtype not in ("uint8", "uint16", "float32"):
+    if dest not in (ElementType.UINT8, ElementType.UINT16, ElementType.FLOAT32):
         raise ValueError(
-            f"dst_dtype must be uint8, uint16, or float32, got {dst_dtype}"
+            f"dst_dtype must be uint8, uint16, or float32, got {dest}"
         )
 
     if hue_preserving_input_lut:
@@ -386,10 +288,10 @@ def transform_color(
                 raise ValueError(
                     "hue_preserving_input_lut=True with no matrix requires no output_lut"
                 )
-            if dst_dtype != "float32":
+            if dest is not ElementType.FLOAT32:
                 raise ValueError(
                     "hue_preserving_input_lut=True with no matrix requires float32 "
-                    f"output, got {dst_dtype}"
+                    f"output, got {dest}"
                 )
 
     input_lut_array = None
@@ -418,7 +320,7 @@ def transform_color(
         output_lut=output_lut_array,
         src_bits=int(src_bits if src_bits is not None else -1),
         dst_bits=int(dst_bits if dst_bits is not None else -1),
-        dest_dtype=dst_dtype,
+        dest_dtype=dest.value,
         hue_preserving=bool(hue_preserving_input_lut),
     )
 
@@ -490,7 +392,7 @@ def demosaic(
     cfa_pattern: str,
     algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     clip_max: float | None = None,
-    dst_dtype: str | None = None,
+    dst_dtype: ElementType | None = None,
 ) -> Array:
     """Demosaic CFA data to RGB.
 
@@ -505,7 +407,7 @@ def demosaic(
             ``EA_FAST`` is the single-pass axis-pick path;
             ``OPENCV_EA`` is OpenCV's edge-aware demosaic, kept for quality comparison)
         clip_max: Optional max value to clip output to (e.g., 1.0 for float32)
-        dst_dtype: Optional destination dtype name. If None, matches input dtype.
+        dst_dtype: Optional destination element type. If None, matches input dtype.
 
     Returns:
         Lazy RGB ``Array``
@@ -532,35 +434,35 @@ def demosaic(
             f"Supported algorithms are: {list(DemosaicAlgorithm)}."
         )
 
-    out_dtype = dst_dtype if dst_dtype is not None else t.meta.dtype
+    out_dtype = ElementType(dst_dtype) if dst_dtype is not None else t.meta.dtype
 
     if algorithm == DemosaicAlgorithm.BILINEAR:
-        x = convert_dtype(t, "float32")
+        x = t.convert_type("float32")
         rgb = mi.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
-        return convert_dtype(rgb, out_dtype, clip_max=clip_max)
+        return rgb.convert_type(out_dtype, clip_max=clip_max)
 
     if algorithm in (DemosaicAlgorithm.EA, DemosaicAlgorithm.EA_FAST):
-        x = convert_dtype(t, "float32")
+        x = t.convert_type("float32")
         rgb = mi.ea_demosaic(
             x, cfa_pattern=cfa_pattern, fast=algorithm == DemosaicAlgorithm.EA_FAST
         )
-        return convert_dtype(rgb, out_dtype, clip_max=clip_max)
+        return rgb.convert_type(out_dtype, clip_max=clip_max)
 
     # Working dtype required by each python kernel
     if algorithm == DemosaicAlgorithm.RCD:
-        work = convert_dtype(t, "float32")
+        work = t.convert_type("float32")
     elif algorithm == DemosaicAlgorithm.VNG:
-        work = convert_dtype(t, "uint16")
+        work = t.convert_type("uint16")
     elif algorithm == DemosaicAlgorithm.OPENCV_EA:
         if t.meta.dtype in ("uint8", "uint16"):
             work = t
         else:
-            work = convert_dtype(t, "uint16")
+            work = t.convert_type("uint16")
     else:
         raise ValueError(f"Unsupported demosaic algorithm: {algorithm}")
 
     rgb = demosaic_op(work, cfa_pattern, algorithm.name)
-    return convert_dtype(rgb, out_dtype, clip_max=clip_max)
+    return rgb.convert_type(out_dtype, clip_max=clip_max)
 
 
 # =============================================================================
@@ -1708,7 +1610,7 @@ def apply_opcodes(
     """
     x = data
     if x.meta.dtype != "float32":
-        x = convert_dtype(x, "float32")
+        x = x.convert_type("float32")
     num_channels = x.meta.channels
 
     for opcode in opcodes:
@@ -1858,9 +1760,9 @@ def apply_opcodes_cfa(
 
     want_uint16 = x0.meta.dtype == "uint16"
     if want_uint16:
-        x = x0 if x0.meta.dtype == "uint16" else convert_dtype(x0, "uint16")
+        x = x0 if x0.meta.dtype == "uint16" else x0.convert_type("uint16")
     else:
-        x = x0 if x0.meta.dtype == "float32" else convert_dtype(x0, "float32")
+        x = x0 if x0.meta.dtype == "float32" else x0.convert_type("float32")
 
     for opcode in opcodes:
         opcode_type = opcode.get('type')
@@ -1871,7 +1773,7 @@ def apply_opcodes_cfa(
                     "FixBadPixelsConstant requires uint16 input data, skipping"
                 )
                 continue
-            x = convert_dtype(x, "uint16")
+            x = x.convert_type("uint16")
             constant = opcode['constant']
             bayer_phase = opcode['bayer_phase']
             logger.debug(
@@ -1885,7 +1787,7 @@ def apply_opcodes_cfa(
             )
 
         elif opcode_type == 'GainMap':
-            x = convert_dtype(x, "float32")
+            x = x.convert_type("float32")
             area = opcode['area']
             logger.debug(
                 f"GainMap CFA: area={area}, plane={opcode['plane']}, "
@@ -1912,7 +1814,7 @@ def apply_opcodes_cfa(
             )
 
         elif opcode_type == 'MapPolynomial':
-            x = convert_dtype(x, "float32")
+            x = x.convert_type("float32")
             area = opcode['area']
             coefficients = np.asarray(opcode['coefficients'], dtype=np.float32)
             logger.debug(
@@ -1930,7 +1832,7 @@ def apply_opcodes_cfa(
             )
 
         elif opcode_type == 'FixVignetteRadial':
-            x = convert_dtype(x, "float32")
+            x = x.convert_type("float32")
             logger.debug(
                 f"FixVignetteRadial CFA: center=({opcode['center_x']:.4f}, "
                 f"{opcode['center_y']:.4f}), coeffs={opcode['coefficients']}"
@@ -1947,7 +1849,7 @@ def apply_opcodes_cfa(
             logger.warning(f"Skipping unsupported {opcode_list_name} opcode: {name}")
 
     if want_uint16:
-        x = convert_dtype(x, "uint16")
+        x = x.convert_type("uint16")
     return x
 
 def exposure_tone(x: np.ndarray, exposure: float, highlight_preserving_exposure: bool = True) -> np.ndarray:
@@ -2777,7 +2679,7 @@ def _linearize(
         )
 
     # Fast path: trivial normalization (black=0, white=default, no
-    # deltas/LUT, uint16 data) can use optimized convert_dtype instead
+    # deltas/LUT, uint16 data) can use convert_type instead
     is_pure_convert = (
         samples_per_pixel == 3
         and x.meta.dtype == "uint16"
@@ -2789,8 +2691,7 @@ def _linearize(
     )
 
     if is_pure_convert:
-        normalized = convert_dtype(
-            x,
+        normalized = x.convert_type(
             "float32",
             src_bits=int(bits_per_sample),
         )
@@ -2798,11 +2699,9 @@ def _linearize(
         # normalize_raw accepts uint16 or float32 natively;
         # widen edge-case dtypes via lazy cast (no rescale).
         if x.meta.dtype == "uint8":
-            x = cast_dtype_op(x, "uint16")
+            x = x.astype("uint16")
         elif x.meta.dtype == "float16":
-            x = cast_dtype_op(x, "float32")
-        elif x.meta.dtype not in ("uint16", "float32"):
-            x = cast_dtype_op(x, "float32")
+            x = x.astype("float32")
         lin = None
         if linearization_table is not None and len(linearization_table) > 0:
             lin = np.asarray(linearization_table, dtype=np.int32).reshape(-1)
@@ -2870,7 +2769,7 @@ def _render_to_camera_space(
     normalized = _linearize(tags, x, photometric)
 
     if photometric == "CFA":
-        # Bilinear and HA write [0, 1]. VNG/RCD still clip in convert_dtype.
+        # Bilinear and HA write [0, 1]. VNG/RCD still clip in convert_type.
         clip = (
             None
             if demosaic_algorithm
@@ -2935,7 +2834,7 @@ def _render_to_camera_space(
 def _render_camera_rgb(
     ifd0_tags: "DngPage" | "MetadataTags",
     rgb_camera: Array,
-    output_dtype: type,
+    output_dtype: ElementType,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict[str, Any] = None,
     use_xmp: bool = True,
@@ -3393,7 +3292,7 @@ def _render_camera_rgb(
             matrix=matrix,
             output_lut=output_lut,
             hue_preserving_input_lut=True if tone_input_lut else False,
-            dst_dtype=np.dtype(output_dtype).name,
+            dst_dtype=output_dtype,
         )
 
         # Apply orientation rotation at END of pipeline (matching SDK behavior)
@@ -3415,7 +3314,7 @@ def _render_camera_rgb(
 def _render_camera_monochrome(
     ifd0_tags: "DngPage" | "MetadataTags",
     mono_camera: Array,
-    output_dtype: type,
+    output_dtype: ElementType,
     raw_ifd_tags: "DngPage" | "MetadataTags" | None = None,
     rendering_params: dict[str, Any] = None,
     use_xmp: bool = True,
@@ -3429,7 +3328,7 @@ def _render_camera_monochrome(
     Args:
         ifd0_tags: IFD0 tags source (contains rendering parameters)
         mono_camera: Monochrome linear Array (H, W, 1) float32 in [0, 1]
-        output_dtype: Output data type (np.uint8 or np.uint16)
+        output_dtype: Output element type.
         raw_ifd_tags: Optional raw IFD tags (for tags that may be on raw IFD)
         rendering_params: Optional rendering parameter overrides
         use_xmp: Whether to extract rendering params from XMP
@@ -3565,7 +3464,7 @@ def _render_camera_monochrome(
         result = mono_lut(
             mono_camera,
             lut=final_lut,
-            dst_dtype=np.dtype(output_dtype).name,
+            dst_dtype=output_dtype,
         )
 
         # =====================================================================

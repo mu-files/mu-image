@@ -11,6 +11,7 @@ import os
 from typing import TYPE_CHECKING, Any, IO
 
 # Package imports
+from .array import ElementType, ElementTypeLike
 from .splines import CubicSpline
 
 if TYPE_CHECKING:
@@ -254,7 +255,7 @@ def render_dng_coreimage(
         dng_input: Path to DNG file or file-like object containing DNG data
         raw_filter_options: Dictionary of Core Image raw filter options
         use_gpu: Whether to use GPU acceleration for processing
-        output_dtype: Output numpy data type. Supported: np.uint8, np.uint16, np.float16, np.float32
+        output_dtype: Output NumPy data type. Supported: np.uint8, np.uint16, np.float16, np.float32.
         use_system_camera_profiles: If True, use macOS built-in camera profiles. If False,
             strip UniqueCameraModel tag to force generic DNG processing.
     
@@ -348,12 +349,11 @@ def render_dng_coreimage(
                 height = int(extent.size.height)
 
                 # --- Render to Bitmap ---
-                # Map numpy dtype to Core Image format
                 dtype_to_format = {
-                    np.float16: (kCIFormatRGBAh, 2),  # Half-float, 2 bytes per channel
-                    np.float32: (kCIFormatRGBAf, 4),  # Float, 4 bytes per channel
-                    np.uint8: (kCIFormatRGBA8, 1),    # 8-bit, 1 byte per channel
-                    np.uint16: (kCIFormatRGBA16, 2),  # 16-bit, 2 bytes per channel
+                    np.float16: (kCIFormatRGBAh, 2),
+                    np.float32: (kCIFormatRGBAf, 4),
+                    np.uint8: (kCIFormatRGBA8, 1),
+                    np.uint16: (kCIFormatRGBA16, 2),
                 }
                 
                 if output_dtype not in dtype_to_format:
@@ -392,7 +392,7 @@ def render_dng_coreimage(
 def decode_dng_coreimage(
     file: str | os.PathLike[str] | IO[bytes] | "DngFile",
     use_xmp: bool = True,
-    output_dtype: type = np.uint16,
+    output_dtype: ElementTypeLike = ElementType.UINT16,
     rendering_params: dict[str, Any] = None,
 ) -> "Array":
     """
@@ -401,7 +401,7 @@ def decode_dng_coreimage(
     Args:
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
         use_xmp: Whether to read XMP metadata for default values
-        output_dtype: Output numpy data type (np.uint8, np.uint16, np.float16, np.float32)
+        output_dtype: Output element type.
         rendering_params: Optional dict to override rendering parameters.
             See dngio.decode_dng() for full list of supported keys.
     
@@ -478,7 +478,7 @@ def decode_dng_coreimage(
             dng_input=dng_input,
             raw_filter_options=ci_options,
             use_gpu=False,
-            output_dtype=np.float32,  # Use float32 for color space conversion
+            output_dtype=np.float32,
         )
         
         if ci_output is None:
@@ -517,7 +517,7 @@ def decode_dng_coreimage(
             rgb_output,
             raw_render.ColorSpace.PROPHOTO_LINEAR,
             raw_render.ColorSpace.SRGB_GAMMA,
-            dst_dtype=np.dtype(output_dtype).name,
+            dst_dtype=output_dtype,
         )
         
         logger.debug(

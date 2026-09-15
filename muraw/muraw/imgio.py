@@ -12,8 +12,8 @@ from typing import IO, Callable, Iterable, Any
 # Package imports
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
-from .raw_render import DemosaicAlgorithm, convert_dtype
-from .array import Array
+from .raw_render import DemosaicAlgorithm
+from .array import Array, ElementType, ElementTypeLike
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, TiffType
 from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
@@ -99,7 +99,7 @@ def write_image(
     
     # Handle JPEG with imagecodecs (8-bit lossy only)
     elif format_ext in ('.jpg', '.jpeg'):
-        img_8bit = image if image.dtype == np.uint8 else convert_dtype(Array(image), "uint8").realize()
+        img_8bit = image if image.dtype == np.uint8 else Array(image).convert_type("uint8")
         jpeg_data = imagecodecs.jpeg_encode(img_8bit, level=90)
 
         if isinstance(output, (str, Path)):
@@ -137,7 +137,7 @@ def write_image(
 
 def decode_image(
     file: str | Path | IO[bytes],
-    output_dtype: type = np.uint8,
+    output_dtype: ElementTypeLike = ElementType.UINT8,
 ) -> Array:
     """
     Decode an image file to a ``Array``.
@@ -147,7 +147,7 @@ def decode_image(
     
     Args:
         file: Path to image file or file-like object
-        output_dtype: Output data type (np.uint8 or np.uint16)
+        output_dtype: Output element type.
         **processing_params: Ignored. Kept for API compatibility.
             For DNG files with custom rendering parameters, use the 
             'muraw dng convert' CLI command instead.
@@ -186,7 +186,7 @@ def decode_image(
             raise ValueError("Failed to decode JXL image")
         
         # JXL already returns RGB, just convert dtype if needed
-        return convert_dtype(Array(img), np.dtype(output_dtype).name)
+        return Array(img).convert_type(output_dtype)
     
     # Check if it's a TIFF file - use tifffile to avoid OpenCV warnings about EXIF tags
     if isinstance(file, (str, Path)) and str(file).lower().endswith(('.tif', '.tiff')):
@@ -195,7 +195,7 @@ def decode_image(
             raise ValueError("Failed to decode TIFF image")
         
         # tifffile returns RGB, just convert dtype if needed
-        return convert_dtype(Array(img), np.dtype(output_dtype).name)
+        return Array(img).convert_type(output_dtype)
     
     # Fall back to cv2 for other formats
     if isinstance(file, (str, Path)):
@@ -220,12 +220,12 @@ def decode_image(
     else:
         raise ValueError(f"Unsupported decoded image shape: {img.shape}")
 
-    return convert_dtype(Array(img), np.dtype(output_dtype).name)
+    return Array(img).convert_type(output_dtype)
 
 def convert_imgformat(
     file: str | Path | IO[bytes],
     output: str | Path | IO[bytes],
-    output_dtype: type = np.uint8,
+    output_dtype: ElementTypeLike = ElementType.UINT8,
     output_format_stream: str = "jpg",
 ) -> bool:
     """
@@ -237,7 +237,7 @@ def convert_imgformat(
     Args:
         file: Path to image file or file-like object
         output: Output file path (str/Path) or stream (IO[bytes])
-        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
+        output_dtype: Output element type.
         output_format_stream: Output format for stream output ("jpg", "png", "tiff", etc.)
             Ignored when output is a file path (format determined by extension)
         
@@ -259,7 +259,7 @@ def convert_imgformat(
 def convert_imgformat_to_stream(
     file: str | Path | IO[bytes],
     output_format_stream: str = "jpg",
-    output_dtype: type = np.uint8,
+    output_dtype: ElementTypeLike = ElementType.UINT8,
 ) -> IO[bytes]:
     """
     Encode an image file to a BytesIO stream.
@@ -269,7 +269,7 @@ def convert_imgformat_to_stream(
     Args:
         file: Path to image file or file-like object
         output_format_stream: Output format ("jpg", "png", "tiff", etc.)
-        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
+        output_dtype: Output element type.
         
     Returns:
         BytesIO: Stream containing encoded image data
@@ -285,7 +285,7 @@ def convert_imgformat_to_stream(
 def convert_dng(
     file: str | Path | IO[bytes] | "DngFile" | "DngPage",
     output: str | Path | IO[bytes],
-    output_dtype: type = np.uint16,
+    output_dtype: ElementTypeLike = ElementType.UINT16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     strict: bool = True,
     use_xmp: bool = True,
@@ -302,7 +302,7 @@ def convert_dng(
     Args:
         file: DNG file path, file-like object, DngFile instance, or DngPage instance
         output: Output file path (str/Path) or stream (IO[bytes])
-        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
+        output_dtype: Output element type.
         demosaic_algorithm: Demosaic algorithm for CFA pages ("RCD", "VNG", etc.)
         strict: If True, raise error on unsupported DNG tags
         use_xmp: Whether to read XMP metadata for rendering defaults
@@ -351,7 +351,7 @@ def convert_dng(
 def convert_dng_to_stream(
     file: str | Path | IO[bytes] | "DngFile" | "DngPage",
     output_format_stream: str = "jpg",
-    output_dtype: type = np.uint16,
+    output_dtype: ElementTypeLike = ElementType.UINT16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     strict: bool = True,
     use_xmp: bool = True,
@@ -366,7 +366,7 @@ def convert_dng_to_stream(
     Args:
         file: DNG file path, file-like object, DngFile instance, or DngPage instance
         output_format_stream: Output format ("jpg", "png", "tiff", etc.)
-        output_dtype: Output data type (np.uint8 for 8-bit, np.uint16 for 16-bit)
+        output_dtype: Output element type.
         demosaic_algorithm: Demosaic algorithm for CFA pages ("RCD", "VNG", etc.)
         strict: If True, raise error on unsupported DNG tags
         use_xmp: Whether to read XMP metadata for rendering defaults
@@ -406,7 +406,7 @@ class ImageSequencePipeline(ProcessingPipeline):
             source_files=[Path("img1.jpg"), Path("img2.jpg")],
             output_folder=Path("/output"),
             output_format="tif",
-            output_dtype=np.uint16,
+            output_dtype=ElementType.UINT16,
             num_workers=4,
         )
         pipeline.run()
@@ -417,7 +417,7 @@ class ImageSequencePipeline(ProcessingPipeline):
         source_files: list[Any] = None,
         output_folder = None,
         output_format: str = "tif",
-        output_dtype = None,
+        output_dtype: ElementTypeLike | None = None,
         producer: Callable[[], Iterable[Any]] | None = DEFAULT_PIPELINE_CALLABLE,
         consumer: Callable[[Any], Any] | None = DEFAULT_PIPELINE_CALLABLE,
         writer: Callable[[Any], None] | None = DEFAULT_PIPELINE_CALLABLE,
@@ -432,7 +432,7 @@ class ImageSequencePipeline(ProcessingPipeline):
             source_files: List of source image file paths
             output_folder: Output folder path
             output_format: Output format extension (e.g., 'tif', 'jxl', 'jpg')
-            output_dtype: Output data type (np.uint8 or np.uint16)
+            output_dtype: Output element type.
             producer: Custom producer callable, or None to disable. Defaults to default_producer.
             consumer: Custom consumer callable, or None to disable. Defaults to default_consumer.
             writer: Custom writer callable, or None to disable. Defaults to default_writer.
@@ -447,7 +447,9 @@ class ImageSequencePipeline(ProcessingPipeline):
         self.source_files = source_files
         self.output_folder = Path(output_folder) if output_folder else None
         self.output_format = output_format
-        self.output_dtype = output_dtype or np.uint8
+        self.output_dtype = (
+            ElementType.UINT8 if output_dtype is None else output_dtype
+        )
         
         # Use default methods if not explicitly provided
         # Sentinel value allows caller to explicitly pass None to disable

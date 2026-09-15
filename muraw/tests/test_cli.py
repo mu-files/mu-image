@@ -399,7 +399,7 @@ def test_orientation_handling(tmp_path):
         inverse_orientation = inverse_rotations[orientation]
         unrotated_img = mi.orientation(
             Array(oriented_img), orientation=int(inverse_orientation)
-        ).realize()
+        )
         print(f"  After inverse rotation: {unrotated_img.shape}")
         
         # Compare with original
@@ -436,7 +436,7 @@ def test_raw_stage(tmp_path):
         
         print(f"\nTesting raw-stage on: {page.photometric_name}, size={page.imagewidth}x{page.imagelength}")
         
-        from muraw.raw_render import DemosaicAlgorithm, convert_dtype
+        from muraw.raw_render import DemosaicAlgorithm
         import tifffile
         
         # Test each stage
@@ -472,7 +472,7 @@ def test_raw_stage(tmp_path):
                 assert api_t is not None, f"API returned None for {stage}"
 
             # 3. Convert API data to uint16
-            api_data_uint16 = convert_dtype(api_t, "uint16").realize()
+            api_data_uint16 = api_t.convert_type("uint16")
             
             # 4. Load CLI output
             cli_data = tifffile.imread(cli_output)
