@@ -14,6 +14,7 @@ from muraw.engines.graph import EngineOp, flush, graph_op
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
 from muraw.array import Array, ArrayMeta, ElementType
+from conftest import generate_rgb_ramp
 
 
 def _fence_cast_out_meta(t: Array, attrs: dict) -> ArrayMeta:
@@ -303,6 +304,15 @@ def test_lut_identity_rgb():
     inp = np.array([[[0.0, 0.5, 1.0]]], dtype=np.float32)
     out = mi.lut(Array(inp), lut=[0.0, 1.0]).realize()
     np.testing.assert_allclose(out, inp)
+
+
+def test_convert_type_f32_to_f16_ramp():
+    """Public dest is np.float16. Crate GraphRun is Vec<u16>; this is the gap."""
+    rgb = generate_rgb_ramp(1280, 720, dtype=np.float32)
+    got = np.asarray(Array(rgb).convert_type(np.float16))
+    expect = rgb.astype(np.float16)
+    assert np.isfinite(got).all()
+    assert np.array_equal(got, expect)
 
 
 def test_bilinear_demosaic_rggb():
