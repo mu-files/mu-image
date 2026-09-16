@@ -315,6 +315,18 @@ def test_convert_type_f32_to_f16_ramp():
     assert np.array_equal(got, expect)
 
 
+def test_convert_type_f32_to_f16_subnormals():
+    """Values below 2^-14 store as float16 subnormals. The noisy write_dng
+    fixtures produce them via np.clip(ramp + noise, 0, 1); on Windows they
+    take the MSVC software float16 converter that clang/gcc never compile.
+    """
+    src = np.linspace(-6.2e-5, 6.2e-5, 12288, dtype=np.float32).reshape(4, 3072)
+    got = np.asarray(Array(src).convert_type(np.float16))
+    expect = src.astype(np.float16)
+    assert np.isfinite(got).all()
+    assert np.array_equal(got, expect)
+
+
 def test_bilinear_demosaic_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
     out = mi.bilinear_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
