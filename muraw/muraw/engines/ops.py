@@ -93,6 +93,12 @@ view = EngineOp(
     "key": "oob_valid",
     "optional": true,
     "type": "bool"
+  },
+  {
+    "count": 0,
+    "key": "src_channels",
+    "optional": true,
+    "type": "i32_array"
   }
 ]''')),
     _infer_meta=graph._out_meta_view,

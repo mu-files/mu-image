@@ -18,7 +18,14 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 import numpy as np
 
 from ..common import PerfTimer
-from ..array import ElementType, Array, ArrayMeta, _seal_ndarray, meta_from_array
+from ..array import (
+    ElementType,
+    Array,
+    ArrayMeta,
+    _seal_ndarray,
+    _wrap_channel_index,
+    meta_from_array,
+)
 
 OutMetaFn = Callable[[Array, Dict[str, Any]], Any]
 GraphOutMetaFn = Callable[[Array, Dict[str, Any]], ArrayMeta]
@@ -225,9 +232,18 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     else:
         origin_row, origin_col = origin
         canvas = (origin_col, origin_row, width, height)
+    channels = x.meta.channels
+    if "src_channels" in attrs:
+        src_channels = attrs["src_channels"]
+        channels = len(src_channels)
+        if channels < 1:
+            raise ValueError("view: src_channels must be non-empty")
+        for value in src_channels:
+            _wrap_channel_index(value, x.meta.channels)
     return x.meta.copy(
         height=height,
         width=width,
+        channels=channels,
         origin=origin,
         canvas=canvas,
     )

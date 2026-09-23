@@ -15,7 +15,7 @@ import numpy as np
 def _hwc_from_shape(shape: Any) -> Tuple[int, int, int]:
     """Return (height, width, channels) for ``(H, W)`` or ``(H, W, C)``.
 
-    ``C`` must be 1, 3, or 4. Height and width must be at least 1.
+    ``C`` must be at least 1. Height and width must be at least 1.
     """
     if isinstance(shape, np.ndarray):
         dims = tuple(int(v) for v in shape.tolist())
@@ -26,7 +26,7 @@ def _hwc_from_shape(shape: Any) -> Tuple[int, int, int]:
         channels = 1
     elif len(dims) == 3:
         height, width, channels = dims
-        if channels not in (1, 3, 4):
+        if channels < 1:
             raise ValueError(f"unsupported channel count: {channels}")
     else:
         raise ValueError("array must be (H,W) or (H,W,C)")
@@ -38,7 +38,7 @@ def _hwc_from_shape(shape: Any) -> Tuple[int, int, int]:
 
 
 def _require_image_ndarray(arr: np.ndarray) -> None:
-    """Accept only (H, W) or (H, W, C) with C in 1, 3, 4 and size at least 1×1."""
+    """Accept only (H, W) or (H, W, C) with C at least 1 and size at least 1×1."""
     _hwc_from_shape(arr.shape)
 
 
@@ -233,14 +233,6 @@ def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, bool]:
     return start - n + 1, n, True
 
 
-def _full_channel_slice(slc: slice, channels: int) -> bool:
-    _require_slice_indices(slc)
-    if slc.step not in (None, 1):
-        return False
-    start, stop, step = slc.indices(channels)
-    return start == 0 and stop == channels and step == 1
-
-
 def _orientation_from_flips(flip_rows: bool, flip_cols: bool) -> int:
     """Map reversed slice axes to a TIFF orientation code.
 
@@ -263,14 +255,61 @@ def _as_axis_int(value: Any, name: str) -> int:
     return int(value)
 
 
-def _expand_index_key(key: Any, ndim: int) -> Tuple[slice, ...]:
-    """Expand a slice key to one slice per axis of the array.
+def _wrap_channel_index(value: Any, channels: int) -> int:
+    """NumPy wrap of one last-axis index into ``0 .. channels-1``."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise TypeError("channel index must be an int")
+    raw = int(value)
+    index = raw + channels if raw < 0 else raw
+    if index < 0 or index >= channels:
+        raise IndexError(
+            f"index {value} is out of bounds for axis 2 with size {channels}"
+        )
+    return index
 
-    Mono arrays are rank 2 ``(H, W)``. RGB/RGBA arrays are rank 3
+
+def _src_channels_from_last_axis(key: Any, channels: int) -> Optional[list[int]]:
+    """Source channel list for a last-axis key. ``None`` is identity ``0..C-1``."""
+    if isinstance(key, slice):
+        _require_slice_indices(key)
+        start, stop, step = key.indices(channels)
+        src_channels = list(range(start, stop, step))
+        if not src_channels:
+            raise ValueError("channels: slice results in an empty dimension")
+        if src_channels == list(range(channels)):
+            return None
+        return src_channels
+    if isinstance(key, np.ndarray):
+        if key.dtype == np.bool_ or key.ndim != 1:
+            raise TypeError("channel index must be a 1-d sequence of ints")
+        values = key.tolist()
+    elif isinstance(key, (list, tuple)):
+        values = list(key)
+    elif isinstance(key, (int, np.integer)) and not isinstance(key, (bool, np.bool_)):
+        values = [int(key)]
+    else:
+        raise TypeError(
+            "channel index must be an int, a slice, or a sequence of ints"
+        )
+    if not values:
+        raise ValueError("channels: empty index")
+    src_channels = [_wrap_channel_index(value, channels) for value in values]
+    if src_channels == list(range(channels)):
+        return None
+    return src_channels
+
+
+def _expand_index_key(key: Any, ndim: int) -> Tuple[Any, ...]:
+    """Expand a slice key to one entry per axis of the array.
+
+    Mono arrays are rank 2 ``(H, W)``. Multi-channel arrays are rank 3
     ``(H, W, C)``. At most one Ellipsis is replaced with ``slice(None)``.
     A trailing Ellipsis that fills no axes is dropped, as in NumPy
     (``arr[:, :, ...]`` on a 2-d array is ``arr[:, :]``). A short key such
     as ``t[:]`` or ``t[10:90]`` is padded on the right with ``slice(None)``.
+
+    H and W must be slices. The last axis of a rank-3 array may be an int,
+    a slice, or a sequence of ints.
     """
     if key is Ellipsis:
         items: Tuple[Any, ...] = (Ellipsis,)
@@ -289,31 +328,43 @@ def _expand_index_key(key: Any, ndim: int) -> Tuple[slice, ...]:
         n_fill = max(0, ndim - (len(items) - 1))
         items = items[:i] + (slice(None),) * n_fill + items[i + 1 :]
 
-    if any(not isinstance(item, slice) for item in items):
+    if len(items) > ndim:
+        raise IndexError(f"too many indices for an array: {len(items)}")
+    if len(items) < ndim:
+        items = items + (slice(None),) * (ndim - len(items))
+    spatial_end = len(items) - 1 if ndim == 3 else len(items)
+    if any(not isinstance(items[axis], slice) for axis in range(spatial_end)):
         raise TypeError(
             "region must be slice objects; integer axes, "
             "masks, and newaxis are not supported"
         )
-    if len(items) < ndim:
-        items = items + (slice(None),) * (ndim - len(items))
     return items
 
 
 def _window_from_slices(
-    meta: ArrayMeta, rows: slice, cols: slice, channels: Optional[slice] = None
-) -> Tuple[int, int, int, int, int]:
+    meta: ArrayMeta, rows: Any, cols: Any, channels: Any = None
+) -> Tuple[int, int, int, int, int, Optional[list[int]]]:
+    src_channels = None
     if channels is not None:
         # Mono is rank 2 (H, W), even when channels == 1 in metadata.
         if len(meta.shape) < 3:
             raise IndexError("too many indices for a (H, W) array")
-        if not _full_channel_slice(channels, meta.channels):
-            raise ValueError("channel subsets are not supported")
+        src_channels = _src_channels_from_last_axis(channels, meta.channels)
     top, height, flip_rows = _slice_span(rows, meta.height, "rows")
     left, width, flip_cols = _slice_span(cols, meta.width, "cols")
-    return left, top, width, height, _orientation_from_flips(flip_rows, flip_cols)
+    return (
+        left,
+        top,
+        width,
+        height,
+        _orientation_from_flips(flip_rows, flip_cols),
+        src_channels,
+    )
 
 
-def _window_from_key(meta: ArrayMeta, key: Any) -> Tuple[int, int, int, int, int]:
+def _window_from_key(
+    meta: ArrayMeta, key: Any
+) -> Tuple[int, int, int, int, int, Optional[list[int]]]:
     items = _expand_index_key(key, len(meta.shape))
     if len(items) == 1:
         return _window_from_slices(meta, items[0], slice(None))
@@ -331,9 +382,11 @@ def _window(
     top: int | None,
     width: int | None,
     height: int | None,
-) -> Tuple[int, int, int, int, int]:
-    """Normalize a slice region or a keyword rect to (left, top, width, height, orientation).
+) -> Tuple[int, int, int, int, int, Optional[list[int]]]:
+    """Normalize a slice region or a keyword rect to a spatial box plus channels.
 
+    Returns ``(left, top, width, height, orientation, src_channels)``.
+    ``src_channels`` is ``None`` when the last axis is identity.
     ``orientation`` is TIFF 1 (identity) for a keyword rect or a forward slice.
     A reversed slice axis is 2 (fliplr), 4 (flipud), or 3 (both, 180°).
     ``left`` and ``top`` may be negative so a later view can reach back into
@@ -356,7 +409,7 @@ def _window(
             f"view: invalid box top={top_i} left={left_i} "
             f"width={width_i} height={height_i}"
         )
-    return left_i, top_i, width_i, height_i, 1
+    return left_i, top_i, width_i, height_i, 1, None
 
 
 def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
@@ -579,7 +632,7 @@ class Array:
         import muimage as mi
 
         # _window resolves the geometry and checks for mutual exclusivity errors
-        left_i, top_i, width_i, height_i, orientation = _window(
+        left_i, top_i, width_i, height_i, orientation, src_channels = _window(
             self._meta, region, left, top, width, height
         )
 
@@ -591,6 +644,8 @@ class Array:
             "oob_valid": oob_valid,
             "reset_origin": reset_origin,
         }
+        if src_channels is not None:
+            attrs["src_channels"] = src_channels
 
         out = mi.view(self, **attrs)
         if orientation != 1:

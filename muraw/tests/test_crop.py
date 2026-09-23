@@ -167,8 +167,10 @@ def test_slice_rejects_step_and_mixed_args():
         rgb.view(np.s_[1:3, 2:5, :]).realize(),
         np.zeros((2, 3, 3), dtype=np.float32),
     )
-    with pytest.raises(ValueError, match="channel"):
-        rgb.view(np.s_[1:3, 2:5, 0:2])
+    np.testing.assert_array_equal(
+        rgb.view(np.s_[1:3, 2:5, 0:2]).realize(),
+        np.zeros((2, 3, 2), dtype=np.float32),
+    )
     with pytest.raises(TypeError, match="slice indices must be integers"):
         rgb.view((slice(None), slice(None), slice(None, None, 1.0)))
     with pytest.raises(IndexError, match="too many indices"):

@@ -101,9 +101,30 @@ def test_zeros_rejects_bad_rank():
         mi.zeros((2,))
 
 
-def test_zeros_rejects_bad_channels():
+def test_zeros_two_channels():
+    z = mi.zeros((2, 3, 2))
+    assert z.shape == (2, 3, 2)
+    np.testing.assert_array_equal(z.realize(), np.zeros((2, 3, 2), dtype=np.float32))
+
+
+def test_full_vector_five_channels():
+    t = mi.full((2, 2, 5), [1.0, 2.0, 3.0, 4.0, 5.0])
+    want = np.full((2, 2, 5), [1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+    np.testing.assert_array_equal(t.realize(), want)
+
+
+def test_array_ingests_two_and_five_channels():
+    two = np.arange(2 * 3 * 2, dtype=np.float32).reshape(2, 3, 2)
+    five = np.arange(2 * 3 * 5, dtype=np.uint8).reshape(2, 3, 5)
+    assert Array(two).shape == (2, 3, 2)
+    assert Array(five).shape == (2, 3, 5)
+    np.testing.assert_array_equal(Array(two).realize(), two)
+    np.testing.assert_array_equal(Array(five).realize(), five)
+
+
+def test_zeros_rejects_zero_channels():
     with pytest.raises(ValueError, match="channel count"):
-        mi.zeros((2, 2, 2))
+        mi.zeros((2, 2, 0))
 
 
 def test_zeros_rejects_zero_size():
