@@ -1,8 +1,5 @@
-# Portable engine op catalog (SSOT) — public muraw.
-# Location: muraw/engines/catalog/ops.yaml
-#
-# This file defines the portable op interface (names, attrs, I/O).
-# Engine providers consume it to implement compatible dispatch / kernels.
+# The master copy of this file lives in mu-image-engine/kernels/portable_ops.yaml.
+# Edit that file. copy_to_public.sh installs this copy.
 #
 # Regenerate the public Python API:
 #   python -m muraw.engines.tools.gen_ops
