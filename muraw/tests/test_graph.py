@@ -914,6 +914,27 @@ def test_ingest_seals_view_and_base():
         parent[0, 0] = 99.0
 
 
+def test_ingest_strided_view_seals_array_and_base():
+    """The object passed to Array, and its .base chain, become read-only.
+
+    A sibling view created earlier is a separate NumPy object. Sealing
+    does not walk sideways, so that sibling can stay writeable.
+    """
+    parent = np.array(np.arange(16, dtype=np.float32).reshape(4, 4), copy=True)
+    sibling = parent[1:3, :]
+    stepped = parent[::2, ::2]
+    t = Array(stepped)
+    assert t._node is not None and t._node.op == "view"
+    assert not stepped.flags.writeable
+    assert not parent.flags.writeable
+    with pytest.raises(ValueError):
+        stepped[0, 0] = 99.0
+    with pytest.raises(ValueError):
+        parent[0, 0] = 99.0
+    np.testing.assert_array_equal(t.realize(), np.arange(16, dtype=np.float32).reshape(4, 4)[::2, ::2])
+    assert sibling.flags.writeable
+
+
 def test_realized_view_walks_upstream_for_canvas_crop():
     """A realized view's _data is the window; canvas pixels still need the graph."""
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
@@ -1000,14 +1021,156 @@ def test_strided_numpy_crop_ported_and_image_op():
 def test_fortran_array_copied_on_ingest():
     arr = np.asfortranarray(np.arange(16, dtype=np.float32).reshape(4, 4))
     t = Array(arr)
+    assert t._node is None
     assert t._data.strides[1] == t._data.dtype.itemsize
+    assert not np.shares_memory(t._data, arr)
     np.testing.assert_array_equal((t - 0.0).realize(), arr)
 
 
-def test_stepped_slice_copied_on_ingest():
+def test_stepped_slice_installed_as_view():
     parent = np.arange(16, dtype=np.float32).reshape(4, 4)
     stepped = parent[::2, ::2]
     t = Array(stepped)
+    assert t._data is None
+    assert t._node is not None and t._node.op == "view"
+    assert np.shares_memory(t._node.inputs[0]._data, parent)
+    assert t.meta.origin == (0, 0)
+    assert t.meta.canvas == (0, 0, stepped.shape[1], stepped.shape[0])
+    np.testing.assert_array_equal(t.realize(), stepped)
+    np.testing.assert_array_equal((t - 1.0).realize(), stepped - 1.0)
+
+
+def test_row_step_stays_a_source_buffer():
+    parent = np.arange(16, dtype=np.float32).reshape(4, 4)
+    rows = parent[::2, :]
+    t = Array(rows)
+    assert t._node is None
+    assert np.shares_memory(t._data, parent)
+    np.testing.assert_array_equal(t.realize(), rows)
+
+
+def test_reversed_slice_installed_as_view():
+    parent = np.arange(20, dtype=np.float32).reshape(4, 5)
+    flipped = parent[::-1, ::-1]
+    t = Array(flipped)
+    assert t._data is None
+    assert t._node is not None and t._node.op == "view"
+    assert np.shares_memory(t._node.inputs[0]._data, parent)
+    np.testing.assert_array_equal(t.realize(), flipped)
+
+
+def test_channel_slice_and_pad_installed_as_view():
+    rgb = np.arange(4 * 6 * 4, dtype=np.uint8).reshape(4, 6, 4)
+    gathered = rgb[:, :, :3]
+    t = Array(gathered)
+    assert t._data is None
+    assert t._node is not None and t._node.op == "view"
+    assert np.shares_memory(t._node.inputs[0]._data, rgb)
+    np.testing.assert_array_equal(t.realize(), gathered)
+
+    reversed_channels = rgb[:, :, ::-1]
+    rev = Array(reversed_channels)
+    assert rev._node is not None and rev._node.op == "view"
+    assert np.shares_memory(rev._node.inputs[0]._data, rgb)
+    np.testing.assert_array_equal(rev.realize(), reversed_channels)
+
+    one = Array(rgb[:, :, 1])
+    assert one.shape == (4, 6)
+    assert one._node is not None and one._node.op == "view"
+    np.testing.assert_array_equal(one.realize(), rgb[:, :, 1])
+
+    kept = Array(rgb[:, :, 0:1])
+    assert kept.shape == (4, 6, 1)
+    np.testing.assert_array_equal(kept.realize(), rgb[:, :, 0:1])
+
+    planes = rgb[::2, 1::2, ::-1]
+    mixed = Array(planes)
+    assert mixed._node is not None and mixed._node.op == "view"
+    assert np.shares_memory(mixed._node.inputs[0]._data, rgb)
+    np.testing.assert_array_equal(mixed.realize(), planes)
+
+    mono = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    lifted = Array(mono[:, :, None])
+    assert lifted.shape == (4, 5, 1)
+    assert np.shares_memory(lifted.realize(), mono)
+
+
+def test_padded_pixel_without_channel_axis_installed_as_view():
+    height, width = 3, 5
+    raw = np.arange(height * width * 4, dtype=np.uint8)
+    view = np.ndarray(
+        shape=(height, width, 3),
+        dtype=np.uint8,
+        buffer=raw,
+        strides=(width * 4, 4, 1),
+    )
+    t = Array(view)
+    assert t._data is None
+    assert t._node is not None and t._node.op == "view"
+    assert np.shares_memory(t._node.inputs[0]._data, raw)
+    np.testing.assert_array_equal(t.realize(), view)
+
+
+def test_broadcast_and_odd_pad_still_copy_on_ingest():
+    row = np.arange(8, dtype=np.float32)
+    broadcast = np.broadcast_to(row, (4, 8))
+    t = Array(broadcast)
+    assert t._node is None
     assert t._data.strides[1] == t._data.dtype.itemsize
-    assert t._data.base is not parent
-    np.testing.assert_array_equal(t._data, stepped)
+    assert not np.shares_memory(t._data, broadcast)
+    np.testing.assert_array_equal(t.realize(), broadcast)
+
+    raw = np.arange(2 * 2 * 7, dtype=np.uint8)
+    odd = np.ndarray(
+        shape=(2, 2, 3),
+        dtype="<u2",
+        buffer=raw,
+        strides=(14, 7, 2),
+    )
+    copied = Array(odd)
+    assert copied._node is None
+    assert not np.shares_memory(copied._data, odd)
+    np.testing.assert_array_equal(copied.realize(), odd)
+
+
+def _random_axis_slice(rng: np.random.Generator, length: int) -> slice:
+    """A non-empty slice on an axis of ``length``."""
+    for _ in range(32):
+        step = int(rng.choice([-3, -2, -1, 1, 2, 3]))
+        start = int(rng.integers(-length, length))
+        stop = int(rng.integers(-length, length + 1))
+        slc = slice(start, stop, step)
+        if len(range(*slc.indices(length))) >= 1:
+            return slc
+    return slice(None)
+
+
+def test_ingest_random_views_match_numpy():
+    """Packed-parent slices ingest as a view or a bound buffer, never a wrong copy."""
+    rng = np.random.default_rng(20260923)
+    mono = np.arange(16 * 20, dtype=np.float32).reshape(16, 20)
+    rgb = np.arange(12 * 15 * 4, dtype=np.uint8).reshape(12, 15, 4)
+    for _ in range(25):
+        view = mono[_random_axis_slice(rng, 16), _random_axis_slice(rng, 20)]
+        if rng.random() < 0.25:
+            view = view[:, :, None]
+        t = Array(view)
+        np.testing.assert_array_equal(t.realize(), view)
+        src = t._data if t._node is None else t._node.inputs[0]._data
+        assert np.shares_memory(src, mono)
+    for _ in range(25):
+        rows = _random_axis_slice(rng, 12)
+        cols = _random_axis_slice(rng, 15)
+        choice = int(rng.integers(0, 4))
+        if choice == 0:
+            view = rgb[rows, cols]
+        elif choice == 1:
+            view = rgb[rows, cols, ::-1]
+        elif choice == 2:
+            view = rgb[rows, cols, :3]
+        else:
+            view = rgb[rows, cols, int(rng.integers(0, 4))]
+        t = Array(view)
+        np.testing.assert_array_equal(t.realize(), view)
+        src = t._data if t._node is None else t._node.inputs[0]._data
+        assert np.shares_memory(src, rgb)

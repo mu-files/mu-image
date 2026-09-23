@@ -117,6 +117,12 @@ def test_view_rejects_spatial_fancy_and_mono_channel():
     mono = Array(np.zeros((4, 6), dtype=np.float32))
     with pytest.raises(IndexError, match="too many indices"):
         mono[:, :, 0]
+    with pytest.raises(IndexError, match="newaxis"):
+        mono[None, :, :]
+    with pytest.raises(IndexError, match="newaxis"):
+        mono[:, None, :]
+    with pytest.raises(IndexError, match="newaxis"):
+        Array(np.zeros((2, 3, 1), dtype=np.float32))[:, :, None]
     with pytest.raises(ValueError, match="empty"):
         t[:, :, 1:4:-1]
     with pytest.raises(ValueError, match="empty"):
@@ -129,6 +135,15 @@ def test_view_rejects_spatial_fancy_and_mono_channel():
             width=t.meta.width,
             height=t.meta.height,
             src_channels=[7],
+        )
+    with pytest.raises(IndexError, match="out of bounds"):
+        mi.view(
+            t,
+            left=0,
+            top=0,
+            width=t.meta.width,
+            height=t.meta.height,
+            src_channels=[-1],
         )
 
 
@@ -145,6 +160,12 @@ def test_convert_and_cast_two_channels():
     np.testing.assert_allclose(converted, src.astype(np.float32) / 255.0)
     cast = t.astype("float32").realize()
     np.testing.assert_array_equal(cast, src.astype(np.float32))
+
+
+def test_strided_channel_gather_matches_numpy():
+    src = _hwc(3)
+    got = Array(src)[::2, 1::2, ::-1].realize()
+    np.testing.assert_array_equal(got, src[::2, 1::2, ::-1])
 
 
 def test_matrix_3x3_rejects_two_channels():

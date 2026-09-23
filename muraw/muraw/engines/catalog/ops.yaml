@@ -94,6 +94,17 @@ ops:
         type: i32_array
         count: 0
         optional: true
+      # Dest row y reads source row top + y * row_step. Omit for 1.
+      # Step -1 is a flip along this axis.
+      - key: row_step
+        type: i32
+        count: 1
+        optional: true
+      # Dest column x reads source column left + x * col_step. Omit for 1.
+      - key: col_step
+        type: i32
+        count: 1
+        optional: true
 
   # Grow the array by spatial margins. Inverse of view with oob_valid=false.
   - name: pad

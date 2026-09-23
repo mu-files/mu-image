@@ -23,7 +23,6 @@ from ..array import (
     Array,
     ArrayMeta,
     _seal_ndarray,
-    _wrap_channel_index,
     meta_from_array,
 )
 
@@ -190,56 +189,137 @@ def _out_channels_const(n: int) -> OutMetaFn:
     return _fn
 
 
+def _sample_box(origin: int, count: int, step: int) -> Tuple[int, int]:
+    """Bounding box of ``count`` samples starting at ``origin`` with ``step``."""
+    last = origin + (count - 1) * step
+    start = min(origin, last)
+    return start, abs(last - origin) + 1
+
+
+def _reflected_canvas(
+    canvas: Tuple[int, int, int, int],
+    sample_col: int,
+    sample_row: int,
+    col_step: int,
+    row_step: int,
+    origin_col: int,
+    origin_row: int,
+) -> Tuple[int, int, int, int]:
+    """Parent canvas in dest coordinates.
+
+    Dest ``(0, 0)`` is the first sample. One dest step on an axis moves by
+    that axis's source step, which is ±1.
+    """
+
+    def axis(
+        parent_start: int,
+        parent_len: int,
+        sample: int,
+        step: int,
+        dest_origin: int,
+    ) -> Tuple[int, int]:
+        parent_last = parent_start + parent_len - 1
+        dest_first = (parent_start - sample) * step
+        dest_last = (parent_last - sample) * step
+        start = min(dest_first, dest_last)
+        return dest_origin + start, abs(dest_last - dest_first) + 1
+
+    cx, cy, cw, ch = canvas
+    x0, width = axis(cx, cw, sample_col, col_step, origin_col)
+    y0, height = axis(cy, ch, sample_row, row_step, origin_row)
+    return (x0, y0, width, height)
+
+
 def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``view``: H/W from attrs. Canvas stays in this array's system.
 
-    View attrs ``left``/``top`` are dest-relative. The window is checked in
-    the shared canvas system (dest ``(0, 0)`` is ``origin``).
-    Default: ``origin' = origin + (top, left)``. ``reset_origin`` sets
-    ``(0, 0)``. ``oob_valid`` does not change origin: false puts canvas on
-    the view rect; true keeps the parent canvas (or remaps it into dest
-    space when origin was reset).
+    View attrs ``left``/``top`` are dest-relative. The sample bounding box
+    is checked in the shared canvas system (dest ``(0, 0)`` is ``origin``).
+    ``width`` and ``height`` are sample counts. ``row_step`` and ``col_step``
+    default to 1. A step of -1 keeps the parent canvas, reflected so dest
+    +1 follows that step. A step whose absolute value is greater than 1
+    puts the result on its own canvas at origin ``(0, 0)``.
+    Default: ``origin' = origin + (top, left)``, the first sample.
+    ``reset_origin`` sets ``(0, 0)``. ``oob_valid`` does not change origin:
+    false puts canvas on the view rect; true keeps the parent canvas (or
+    remaps it into dest space when origin was reset).
     """
     left, top = int(attrs["left"]), int(attrs["top"])
     width, height = int(attrs["width"]), int(attrs["height"])
+    row_step = int(attrs.get("row_step", 1))
+    col_step = int(attrs.get("col_step", 1))
     if width < 1 or height < 1:
         raise ValueError(
             f"view: invalid box top={top} left={left} width={width} height={height}"
         )
+    if row_step == 0 or col_step == 0:
+        raise ValueError(f"view: step must be non-zero, got row={row_step} col={col_step}")
     cx, cy, cw, ch = x.meta.canvas
     base_row, base_col = x.meta.origin
-    shared_left = left + base_col
-    shared_top = top + base_row
+    box_left, box_width = _sample_box(left, width, col_step)
+    box_top, box_height = _sample_box(top, height, row_step)
+    shared_left = box_left + base_col
+    shared_top = box_top + base_row
     if (
         shared_left < cx
         or shared_top < cy
-        or shared_left + width > cx + cw
-        or shared_top + height > cy + ch
+        or shared_left + box_width > cx + cw
+        or shared_top + box_height > cy + ch
     ):
         raise ValueError(
             f"view: box top={top} left={left} width={width} height={height} "
+            f"row_step={row_step} col_step={col_step} "
             f"is outside canvas {(cx, cy, cw, ch)}"
         )
-    if attrs.get("reset_origin"):
+    decimated = abs(row_step) > 1 or abs(col_step) > 1
+    reflected = row_step != 1 or col_step != 1
+    if decimated:
         origin = (0, 0)
+        canvas = (0, 0, width, height)
+    elif attrs.get("reset_origin"):
+        origin = (0, 0)
+        if not attrs.get("oob_valid", True):
+            canvas = (0, 0, width, height)
+        elif reflected:
+            canvas = _reflected_canvas(
+                (cx, cy, cw, ch),
+                base_col + left,
+                base_row + top,
+                col_step,
+                row_step,
+                0,
+                0,
+            )
+        else:
+            canvas = (cx - left, cy - top, cw, ch)
     else:
         origin = (base_row + top, base_col + left)
-    if attrs.get("oob_valid", True):
-        if attrs.get("reset_origin"):
-            canvas = (cx - left, cy - top, cw, ch)
+        origin_row, origin_col = origin
+        if not attrs.get("oob_valid", True):
+            canvas = (origin_col, origin_row, width, height)
+        elif reflected:
+            canvas = _reflected_canvas(
+                (cx, cy, cw, ch),
+                origin_col,
+                origin_row,
+                col_step,
+                row_step,
+                origin_col,
+                origin_row,
+            )
         else:
             canvas = (cx, cy, cw, ch)
-    else:
-        origin_row, origin_col = origin
-        canvas = (origin_col, origin_row, width, height)
     channels = x.meta.channels
     if "src_channels" in attrs:
         src_channels = attrs["src_channels"]
         channels = len(src_channels)
-        if channels < 1:
-            raise ValueError("view: src_channels must be non-empty")
         for value in src_channels:
-            _wrap_channel_index(value, x.meta.channels)
+            index = int(value)
+            if index < 0 or index >= x.meta.channels:
+                raise IndexError(
+                    f"view: src_channels index {value} is out of bounds "
+                    f"for {x.meta.channels} channel(s)"
+                )
     return x.meta.copy(
         height=height,
         width=width,
@@ -266,10 +346,6 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         )
     dest_h = x.meta.height + top + bottom
     dest_w = x.meta.width + left + right
-    if dest_h < 1 or dest_w < 1:
-        raise ValueError(
-            f"pad: dest size {dest_h}x{dest_w} is empty"
-        )
     base_row, base_col = x.meta.origin
     origin = (base_row - top, base_col - left)
     origin_row, origin_col = origin
@@ -429,35 +505,23 @@ def graph_op(
     return decorate
 
 
-def _as_f32_array(value: Any, *, name: str, size: Optional[int] = None) -> np.ndarray:
-    arr = np.ascontiguousarray(value, dtype=np.float32).reshape(-1)
+_SCALAR_FLOAT = {"f32": np.float32, "f64": np.float64}
+_ARRAY_DTYPE = {
+    "f32_array": np.float32,
+    "f64_array": np.float64,
+    "i32_array": np.int32,
+}
+
+
+def _as_typed_array(
+    value: Any, dtype: Any, *, name: str, size: Optional[int] = None
+) -> np.ndarray:
+    arr = np.ascontiguousarray(value, dtype=dtype).reshape(-1)
     if size is not None and arr.size != size:
         raise ValueError(f"{name} must have {size} elements, got {arr.size}")
     if arr.size < 1:
         raise ValueError(f"{name} must be non-empty")
     return arr
-
-
-def _as_f64_array(value: Any, *, name: str, size: Optional[int] = None) -> np.ndarray:
-    arr = np.ascontiguousarray(value, dtype=np.float64).reshape(-1)
-    if size is not None and arr.size != size:
-        raise ValueError(f"{name} must have {size} elements, got {arr.size}")
-    if arr.size < 1:
-        raise ValueError(f"{name} must be non-empty")
-    return arr
-
-
-def _as_i32_array(value: Any, *, name: str, size: Optional[int] = None) -> np.ndarray:
-    arr = np.ascontiguousarray(value, dtype=np.int32).reshape(-1)
-    if size is not None and arr.size != size:
-        raise ValueError(f"{name} must have {size} elements, got {arr.size}")
-    if arr.size < 1:
-        raise ValueError(f"{name} must be non-empty")
-    return arr
-
-
-def _attr_optional(spec: Dict[str, Any]) -> bool:
-    return bool(spec.get("optional"))
 
 
 def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
@@ -465,14 +529,10 @@ def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
     key = spec["key"]
     typ = spec["type"]
     count = spec.get("count", 1)
-    if typ == "f32":
+    if typ in _SCALAR_FLOAT:
         if isinstance(value, bool) or not isinstance(value, (int, float, np.floating)):
             raise TypeError(f"attr {key!r} must be a float")
-        return np.float32(value)
-    if typ == "f64":
-        if isinstance(value, bool) or not isinstance(value, (int, float, np.floating)):
-            raise TypeError(f"attr {key!r} must be a float")
-        return np.float64(value)
+        return _SCALAR_FLOAT[typ](value)
     if typ == "i32":
         if isinstance(value, bool) or not isinstance(value, (int, float, np.integer)):
             raise TypeError(f"attr {key!r} must be an int")
@@ -490,15 +550,10 @@ def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
                 f"attr {key!r} must be one of {list(allowed)}, got {value!r}"
             )
         return value
-    if typ == "f32_array":
-        size = count if count else None
-        return _as_f32_array(value, name=key, size=size)
-    if typ == "f64_array":
-        size = count if count else None
-        return _as_f64_array(value, name=key, size=size)
-    if typ == "i32_array":
-        size = count if count else None
-        return _as_i32_array(value, name=key, size=size)
+    if typ in _ARRAY_DTYPE:
+        return _as_typed_array(
+            value, _ARRAY_DTYPE[typ], name=key, size=count or None
+        )
     raise ValueError(f"attr {key!r}: unsupported catalog type {typ!r}")
 
 
@@ -510,13 +565,13 @@ def _validate_attrs(
     unknown = set(attrs) - set(by_key)
     if unknown:
         raise ValueError(f"op {name!r}: unknown attrs {sorted(unknown)}")
-    required = {k for k, s in by_key.items() if not _attr_optional(s)}
+    required = {k for k, s in by_key.items() if not s.get("optional")}
     missing = required - set(attrs)
     if missing:
         raise ValueError(f"op {name!r}: missing attrs {sorted(missing)}")
     out: Dict[str, Any] = {}
     for k, v in attrs.items():
-        if v is None and _attr_optional(by_key[k]):
+        if v is None and by_key[k].get("optional"):
             continue
         out[k] = _coerce_attr(by_key[k], v)
     return out
@@ -577,11 +632,11 @@ def _run_python_node(t: Array, values: Dict[int, np.ndarray]) -> None:
         raise TypeError(f"python op {node.op!r}: kernel must return ndarray")
     got = meta_from_array(out)
     want = t.meta
-    if (
-        got.height != want.height
-        or got.width != want.width
-        or got.channels != want.channels
-        or got.dtype != want.dtype
+    if (got.height, got.width, got.channels, got.dtype) != (
+        want.height,
+        want.width,
+        want.channels,
+        want.dtype,
     ):
         raise ValueError(
             f"python op {node.op!r}: output meta {got} != inferred {want}"
@@ -596,24 +651,13 @@ def _segment_boundary_outputs(
 ) -> List[Array]:
     """Arrays produced in this segment that escape to later consumers or root."""
     node_set = {id(t) for t in nodes}
-    outs: List[Array] = []
-    seen: set[int] = set()
-    for t in nodes:
-        tid = id(t)
-        if tid in seen:
-            continue
-        needed = t is root
-        if not needed:
-            for u in all_op_arrays:
-                if id(u) in node_set or u._node is None:
-                    continue
-                if any(inp is t for inp in u._node.inputs):
-                    needed = True
-                    break
-        if needed:
-            outs.append(t)
-            seen.add(tid)
-    return outs
+    outside_inputs = {
+        id(inp)
+        for other in all_op_arrays
+        if id(other) not in node_set
+        for inp in other._node.inputs
+    }
+    return [t for t in nodes if t is root or id(t) in outside_inputs]
 
 
 def _run_op_arrays(
@@ -624,17 +668,18 @@ def _run_op_arrays(
     parent = PerfTimer.current()
     level = get_engine_timing()
     record = parent is not None and level >= EngineTiming.SEGMENTS
+    timer = parent if record else None
     engine = get_default_engine()
     i = 0
     while i < len(op_arrays):
         if _is_python_node(op_arrays[i]):
             node = op_arrays[i]._node
             assert node is not None
-            if record:
-                assert parent is not None
-                step = parent.start_step(f"{node.op} (python)")
-            else:
-                step = PerfTimer.inactive
+            step = (
+                timer.start_step(f"{node.op} (python)")
+                if record
+                else PerfTimer.inactive
+            )
             _run_python_node(op_arrays[i], values)
             step.close()
             i += 1
@@ -645,13 +690,9 @@ def _run_op_arrays(
             j += 1
         segment = op_arrays[i:j]
         outs = _segment_boundary_outputs(segment, op_arrays, root)
-        if not outs:
-            outs = [segment[-1]]
-        if record:
-            assert parent is not None
-            seg_step = parent.start_step("graph_compute")
-        else:
-            seg_step = PerfTimer.inactive
+        seg_step = (
+            timer.start_step("graph_compute") if record else PerfTimer.inactive
+        )
         engine.execute_segment(segment, values, outs)
         seg_step.close()
         i = j
@@ -675,28 +716,35 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     op_arrays: List[Array] = []
     done: set[int] = set()
     visiting: set[int] = set()
-
-    def gather(t: Array) -> None:
-        tid = id(t)
+    stack: List[Array] = [root]
+    while stack:
+        current = stack[-1]
+        tid = id(current)
         if tid in done:
-            return
-        if tid in visiting:
-            raise ValueError("cycle detected in compute graph")
-        visiting.add(tid)
-        if t._node is None:
-            if t._data is None:
+            stack.pop()
+            continue
+        if current._node is None:
+            if current._data is None:
                 raise ValueError("source Array has no data")
-            values[tid] = t._data
-        else:
-            for inp in t._node.inputs:
-                gather(inp)
-            op_arrays.append(t)
-            if t._data is not None and not force_recompute:
-                values[tid] = t._data
+            values[tid] = current._data
+            done.add(tid)
+            stack.pop()
+            continue
+        if tid not in visiting:
+            visiting.add(tid)
+            for inp in reversed(current._node.inputs):
+                inp_id = id(inp)
+                if inp_id in visiting and inp_id not in done:
+                    raise ValueError("cycle detected in compute graph")
+                if inp_id not in done:
+                    stack.append(inp)
+            continue
+        op_arrays.append(current)
+        if current._data is not None and not force_recompute:
+            values[tid] = current._data
         visiting.remove(tid)
         done.add(tid)
-
-    gather(root)
+        stack.pop()
     if not op_arrays:
         return values[id(root)]
 

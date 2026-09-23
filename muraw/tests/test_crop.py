@@ -143,13 +143,72 @@ def test_slice_negative_indices_are_numpy():
     np.testing.assert_array_equal(t.realize(), src[-2:, -3:])
     assert t.meta.height == 2 and t.meta.width == 3
 
+    tall = np.arange(100 * 40, dtype=np.float32).reshape(100, 40)
+    image = Array(tall)
+    for key in (np.s_[-10:], np.s_[:-10], np.s_[-20:-10], np.s_[-20:-10, -15:-5]):
+        got = image[key]
+        np.testing.assert_array_equal(got.realize(), tall[key])
+        assert got.shape == tall[key].shape
+
+
+def test_strided_slice_matches_numpy():
+    raw = np.arange(8 * 8, dtype=np.float32).reshape(8, 8)
+    planes = (
+        np.s_[::2, ::2],
+        np.s_[::2, 1::2],
+        np.s_[1::2, ::2],
+        np.s_[1::2, 1::2],
+        np.s_[::-2, ::2],
+        np.s_[1:7:2, 2:8:2],
+    )
+    for key in planes:
+        got = Array(raw)[key]
+        np.testing.assert_array_equal(got.realize(), raw[key])
+        assert got.shape == raw[key].shape
+    again = Array(raw)[::2, ::2][1:2, 0:2]
+    np.testing.assert_array_equal(again.realize(), raw[::2, ::2][1:2, 0:2])
+    rgb = np.arange(4 * 4 * 3, dtype=np.float32).reshape(4, 4, 3)
+    gathered = Array(rgb)[::2, ::2, [2, 1, 0]]
+    np.testing.assert_array_equal(gathered.realize(), rgb[::2, ::2][:, :, [2, 1, 0]])
+
+
+def test_newaxis_lifts_mono_to_rank3():
+    mono = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    src = Array(mono)
+    lifted = src[:, :, None]
+    assert lifted.shape == (4, 5, 1)
+    assert lifted._node is None
+    np.testing.assert_array_equal(lifted.realize(), mono[:, :, None])
+    assert lifted[:, :, 0].shape == (4, 5)
+    np.testing.assert_array_equal(lifted[:, :, 0].realize(), mono)
+    kept = lifted[:, :, 0:1]
+    assert kept.shape == (4, 5, 1)
+    np.testing.assert_array_equal(kept.realize(), mono[:, :, None])
+    via_ellipsis = src[..., None]
+    assert via_ellipsis.shape == (4, 5, 1)
+    cropped = src[1:3, ::2, None]
+    np.testing.assert_array_equal(cropped.realize(), mono[1:3, ::2, None])
+    ingested = Array(mono[:, :, None])
+    assert ingested.shape == (4, 5, 1)
+    assert ingested[:, :, 0].shape == (4, 5)
+    lazy = mi.zeros((4, 5))
+    lazy_lifted = lazy[:, :, None]
+    assert lazy_lifted._node is lazy._node
+    assert lazy_lifted.shape == (4, 5, 1)
+    np.testing.assert_array_equal(
+        lazy_lifted.realize(), np.zeros((4, 5, 1), dtype=np.float32)
+    )
+    filled = mi.zeros((2, 3, 1))
+    assert filled.shape == (2, 3, 1)
+    dropped = filled[:, :, 0]
+    assert dropped.shape == (2, 3)
+    assert dropped._node is filled._node
+    np.testing.assert_array_equal(filled.realize(), np.zeros((2, 3, 1), dtype=np.float32))
+    np.testing.assert_array_equal(dropped.realize(), np.zeros((2, 3), dtype=np.float32))
+
 
 def test_slice_rejects_step_and_mixed_args():
     t = Array(np.zeros((4, 6), dtype=np.float32))
-    with pytest.raises(ValueError, match="step"):
-        t.view(np.s_[::2, :])
-    with pytest.raises(ValueError, match="step"):
-        t.view(np.s_[::-2, :])
     with pytest.raises(TypeError, match="slice indices must be integers"):
         t.view(slice(None, None, 1.0))
     with pytest.raises(TypeError, match="slice indices must be integers"):
@@ -251,17 +310,28 @@ def test_ellipsis_fills_remaining_axes():
 
 
 def test_reverse_crop_resets_canvas_view_keeps_it():
-    """A reversed crop sits on its box. A reversed view remaps the parent canvas."""
+    """A reversed crop sits on its box. A reversed view keeps the parent canvas."""
     src = _mono()
     t = Array(src)
     key = np.s_[4:1:-1, 1:4]
     viewed = t.view(key)
     cropped = t.crop(key)
     want = src[key]
+    assert viewed._node is not None and viewed._node.op == "view"
     np.testing.assert_array_equal(viewed.realize(), want)
     np.testing.assert_array_equal(cropped.realize(), want)
-    assert cropped.meta.canvas == (1, 2, 3, 3)
+    # First sample is source (row 4, col 1). The crop canvas sits on that box.
+    assert cropped.meta.canvas == (1, 4, 3, 3)
     with pytest.raises(ValueError, match="outside canvas"):
         cropped.crop(left=-1, top=0, width=5, height=3)
     extra = viewed.crop(left=-1, top=0, width=5, height=3)
     np.testing.assert_array_equal(extra.realize(), src[4:1:-1, 0:5])
+
+
+def test_view_flip_reaches_back_with_negative_top():
+    """A flipped view of a canvas-keeping window can step one row past it."""
+    src = _mono()
+    windowed = Array(src).view(left=1, top=1, width=4, height=3)
+    flipped = windowed.view(np.s_[::-1, :])
+    extra = flipped.view(left=0, top=-1, width=4, height=4)
+    np.testing.assert_array_equal(extra.realize(), src[4:0:-1, 1:5])

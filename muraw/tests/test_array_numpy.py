@@ -45,6 +45,50 @@ def test_rot90_then_fliplr_matches_numpy(src):
     np.testing.assert_array_equal(fliplr(rot90(Array(src), 1)), np.fliplr(np.rot90(src, 1)))
 
 
+def test_flips_and_rot180_are_views():
+    src = Array(_mono())
+    assert fliplr(src)._node is not None and fliplr(src)._node.op == "view"
+    assert flipud(src)._node is not None and flipud(src)._node.op == "view"
+    assert rot90(src, 2)._node is not None and rot90(src, 2)._node.op == "view"
+    quarter = rot90(src, 1)
+    assert quarter._node is not None and quarter._node.op == "orientation"
+    assert rot90(src, 3)._node is not None and rot90(src, 3)._node.op == "orientation"
+
+
+def test_flipud_keeps_parent_canvas_reachable():
+    src = _mono()
+    windowed = Array(src).view(left=1, top=1, width=4, height=3)
+    flipped = flipud(windowed)
+    extra = flipped.view(left=0, top=-1, width=4, height=4)
+    np.testing.assert_array_equal(extra.realize(), src[4:0:-1, 1:5])
+
+
+def test_fliplr_keeps_parent_canvas_reachable():
+    src = _mono()
+    windowed = Array(src).view(left=1, top=1, width=4, height=3)
+    flipped = fliplr(windowed)
+    extra = flipped.view(left=-1, top=0, width=5, height=3)
+    np.testing.assert_array_equal(extra.realize(), src[1:4, 5:0:-1])
+
+
+def test_flipud_fuses_as_span_not_orientation(monkeypatch):
+    from muraw.engines.core import _engine_load
+
+    calls: list[dict] = []
+    real = _engine_load.execute_graph
+
+    def wrap(graph, in_binds, out_binds, record_ops=False):
+        calls.append(graph)
+        return real(graph, in_binds, out_binds, record_ops)
+
+    monkeypatch.setattr(_engine_load, "execute_graph", wrap)
+
+    src = _mono()
+    out = flipud((Array(src) - 1.0) * 2.0).realize()
+    assert [n["op"] for n in calls[0]["nodes"]] == ["sub_scalar", "mul_scalar", "view"]
+    np.testing.assert_array_equal(out, np.flipud((src - 1.0) * 2.0))
+
+
 def test_transpose_and_T_match_numpy_2d():
     src = _mono()
     t = Array(src)

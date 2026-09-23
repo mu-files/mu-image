@@ -99,6 +99,18 @@ view = EngineOp(
     "key": "src_channels",
     "optional": true,
     "type": "i32_array"
+  },
+  {
+    "count": 1,
+    "key": "row_step",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "col_step",
+    "optional": true,
+    "type": "i32"
   }
 ]''')),
     _infer_meta=graph._out_meta_view,
