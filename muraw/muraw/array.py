@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import gcd
@@ -1007,6 +1008,44 @@ def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = N
     """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
     et = array.dtype if dtype is None else ElementType(dtype)
     return full(array.shape, fill_value, dtype=et)
+
+
+def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
+    """Right-align ``reps`` onto ``shape`` and return ``(row, col, channel)``.
+
+    An int is the last axis. Missing leading counts are 1. A longer tuple
+    would add an axis. A rank-2 array has no channel axis, so that count
+    stays 1.
+    """
+    if np.iterable(reps):
+        counts = tuple(operator.index(value) for value in reps)
+    else:
+        counts = (operator.index(reps),)
+    if len(counts) > len(shape):
+        raise ValueError(f"tile reps {reps!r} would add an axis on shape {shape}")
+    if any(count < 1 for count in counts):
+        raise ValueError(f"tile reps must be >= 1, got {reps!r}")
+    row, col, channel = (1,) * (len(shape) - len(counts)) + counts + (1,) * (3 - len(shape))
+    return row, col, channel
+
+
+def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
+    """Repeat ``array`` like ``numpy.tile`` for an image-rank array.
+
+    Unlike NumPy, a count of 0 and ``reps`` longer than the array rank
+    (which would add a leading axis) raise ``ValueError``.
+    """
+    from .engines.graph import op
+
+    array = Array(array)
+    row_reps, col_reps, channel_reps = _tile_reps(array.shape, reps)
+    return op(
+        "tile",
+        array,
+        row_reps=row_reps,
+        col_reps=col_reps,
+        channel_reps=channel_reps,
+    )
 
 
 class Array:

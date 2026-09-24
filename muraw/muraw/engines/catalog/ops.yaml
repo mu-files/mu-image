@@ -144,6 +144,26 @@ ops:
         count: 0
         optional: true
 
+  # Repeat the source. row_reps, col_reps, and channel_reps are the
+  # counts after NumPy's right-aligned padding with leading 1s. Each
+  # must be >= 1. The public mi.tile parses reps; this op takes the counts.
+  - name: tile
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: tile
+    attrs:
+      - key: row_reps
+        type: i32
+        count: 1
+      - key: col_reps
+        type: i32
+        count: 1
+      - key: channel_reps
+        type: i32
+        count: 1
+
   # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation.
   - name: orientation
     inputs:

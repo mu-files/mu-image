@@ -79,6 +79,12 @@ def test_view_emit_meta_updates_origin_and_size():
     reset = base.view(left=1, top=2, width=3, height=2, reset_origin=True)
     assert reset.meta.origin == (0, 0)
 
+    # The parent canvas moves by the first sample in the shared system,
+    # which includes the parent's own origin.
+    shifted = Array(np.zeros((10, 10), dtype=np.float32), origin=(4, 5))
+    reset_shifted = shifted.view(left=2, top=3, width=4, height=4, reset_origin=True)
+    assert reset_shifted.meta.canvas == (-2, -3, 10, 10)
+
     out = cat.realize()
     assert out.shape == (2, 3)
     np.testing.assert_array_equal(out, np.asarray(base)[2:4, 1:4])

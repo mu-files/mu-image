@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import functools
 import inspect
+import itertools
+import operator
 from dataclasses import dataclass, field
 from enum import IntEnum
 from types import MappingProxyType
@@ -52,12 +54,10 @@ def get_engine_timing() -> EngineTiming:
 def set_engine_timing(level: EngineTiming | int | str) -> None:
     """Set engine compute timing detail."""
     global engine_timing
-    if isinstance(level, EngineTiming):
-        engine_timing = level
-    elif isinstance(level, int):
-        engine_timing = EngineTiming(level)
+    if isinstance(level, str):
+        engine_timing = EngineTiming[level.strip().upper()]
     else:
-        engine_timing = EngineTiming[str(level).strip().upper()]
+        engine_timing = EngineTiming(level)
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +114,6 @@ class OpMeta:
     """Static catalog facts for an engine op (not dependent on a Array)."""
 
     name: str
-    # Optional scheduler hint for a future executor; not part of the graph IR.
-    granularity: str = "full_image"  # "span" | "tile" | "full_image"
-    halo: int = 0
 
 
 @dataclass(frozen=True)
@@ -218,11 +215,8 @@ def _reflected_canvas(
         step: int,
         dest_origin: int,
     ) -> Tuple[int, int]:
-        parent_last = parent_start + parent_len - 1
-        dest_first = (parent_start - sample) * step
-        dest_last = (parent_last - sample) * step
-        start = min(dest_first, dest_last)
-        return dest_origin + start, abs(dest_last - dest_first) + 1
+        start, length = _sample_box((parent_start - sample) * step, parent_len, step)
+        return dest_origin + start, length
 
     cx, cy, cw, ch = canvas
     x0, width = axis(cx, cw, sample_col, col_step, origin_col)
@@ -273,53 +267,30 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         )
     decimated = abs(row_step) > 1 or abs(col_step) > 1
     reflected = row_step != 1 or col_step != 1
+    first_row, first_col = base_row + top, base_col + left
     if decimated:
         origin = (0, 0)
         canvas = (0, 0, width, height)
-    elif attrs.get("reset_origin"):
-        origin = (0, 0)
-        if not attrs.get("oob_valid", True):
-            canvas = (0, 0, width, height)
-        elif reflected:
-            canvas = _reflected_canvas(
-                (cx, cy, cw, ch),
-                base_col + left,
-                base_row + top,
-                col_step,
-                row_step,
-                0,
-                0,
-            )
-        else:
-            canvas = (cx - left, cy - top, cw, ch)
     else:
-        origin = (base_row + top, base_col + left)
+        origin = (0, 0) if attrs.get("reset_origin") else (first_row, first_col)
         origin_row, origin_col = origin
         if not attrs.get("oob_valid", True):
             canvas = (origin_col, origin_row, width, height)
         elif reflected:
             canvas = _reflected_canvas(
-                (cx, cy, cw, ch),
-                origin_col,
-                origin_row,
-                col_step,
-                row_step,
-                origin_col,
-                origin_row,
+                (cx, cy, cw, ch), first_col, first_row, col_step, row_step, origin_col, origin_row
             )
         else:
-            canvas = (cx, cy, cw, ch)
+            canvas = (cx + origin_col - first_col, cy + origin_row - first_row, cw, ch)
     channels = x.meta.channels
     if "src_channels" in attrs:
         src_channels = attrs["src_channels"]
         channels = len(src_channels)
-        for value in src_channels:
-            index = int(value)
-            if index < 0 or index >= x.meta.channels:
-                raise IndexError(
-                    f"view: src_channels index {value} is out of bounds "
-                    f"for {x.meta.channels} channel(s)"
-                )
+        if any(not 0 <= int(value) < x.meta.channels for value in src_channels):
+            raise IndexError(
+                f"view: src_channels {list(src_channels)} has an index out of bounds "
+                f"for {x.meta.channels} channel(s)"
+            )
     return x.meta.copy(
         height=height,
         width=width,
@@ -368,58 +339,56 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     )
 
 
-# TIFF 5–8 include a 90° (H×W swap). 1–4 keep size.
-_ORIENTATION_SWAP_HW = frozenset({5, 6, 7, 8})
+def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    """Geometry policy ``tile``: each axis grows by its repeat count.
 
-
-def _dest_to_src(
-    code: int, dx: int, dy: int, src_w: int, src_h: int
-) -> Tuple[int, int]:
-    if code == 1:
-        return (dx, dy)
-    if code == 2:
-        return (src_w - 1 - dx, dy)
-    if code == 3:
-        return (src_w - 1 - dx, src_h - 1 - dy)
-    if code == 4:
-        return (dx, src_h - 1 - dy)
-    if code == 5:
-        return (dy, dx)
-    if code == 6:
-        return (dy, src_h - 1 - dx)
-    if code == 7:
-        return (src_w - 1 - dy, src_h - 1 - dx)
-    if code == 8:
-        return (src_w - 1 - dy, dx)
-    raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
-
-
-def _invert_orientation(code: int) -> int:
-    if code == 6:
-        return 8
-    if code == 8:
-        return 6
-    return code
-
-
-def _map_rect_through_orientation(
-    code: int, rect: Tuple[int, int, int, int], dest_w: int, dest_h: int
-) -> Tuple[int, int, int, int]:
-    inv = _invert_orientation(code)
-    x0, y0, w, h = rect
-    x1 = x0 + w - 1
-    y1 = y0 + h - 1
-    corners = (
-        _dest_to_src(inv, x0, y0, dest_w, dest_h),
-        _dest_to_src(inv, x1, y0, dest_w, dest_h),
-        _dest_to_src(inv, x0, y1, dest_w, dest_h),
-        _dest_to_src(inv, x1, y1, dest_w, dest_h),
+    The first copy keeps the source origin. Canvas grows to the right
+    and down from that origin.
+    """
+    row_reps = int(attrs["row_reps"])
+    col_reps = int(attrs["col_reps"])
+    channel_reps = int(attrs["channel_reps"])
+    if min(row_reps, col_reps, channel_reps) < 1:
+        raise ValueError(
+            "tile: row_reps/col_reps/channel_reps "
+            f"{[row_reps, col_reps, channel_reps]} must be >= 1"
+        )
+    dest_h = x.meta.height * row_reps
+    dest_w = x.meta.width * col_reps
+    origin_row, origin_col = x.meta.origin
+    return x.meta.copy(
+        height=dest_h,
+        width=dest_w,
+        channels=x.meta.channels * channel_reps,
+        canvas=(origin_col, origin_row, dest_w, dest_h),
     )
-    xs = [c[0] for c in corners]
-    ys = [c[1] for c in corners]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    return (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+
+
+# TIFF orientation code → (swap H and W, flip x, flip y) of the map from
+# dest to source.
+_ORIENTATION = {
+    1: (False, False, False),
+    2: (False, True, False),
+    3: (False, True, True),
+    4: (False, False, True),
+    5: (True, False, False),
+    6: (True, False, True),
+    7: (True, True, True),
+    8: (True, True, False),
+}
+
+
+def _orient_rect(
+    code: int, rect: Tuple[int, int, int, int], src_w: int, src_h: int
+) -> Tuple[int, int, int, int]:
+    """Map ``rect`` in source coordinates to dest coordinates."""
+    swap, flip_x, flip_y = _ORIENTATION[code]
+    x0, y0, w, h = rect
+    if flip_x:
+        x0 = src_w - x0 - w
+    if flip_y:
+        y0 = src_h - y0 - h
+    return (y0, x0, h, w) if swap else (x0, y0, w, h)
 
 
 def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
@@ -429,15 +398,15 @@ def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     system (dest ``(0, 0)`` is ``origin``).
     """
     code = int(attrs["orientation"])
-    if code < 1 or code > 8:
+    if code not in _ORIENTATION:
         raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
-    swap = code in _ORIENTATION_SWAP_HW
+    swap = _ORIENTATION[code][0]
     height = x.meta.width if swap else x.meta.height
     width = x.meta.height if swap else x.meta.width
     origin_row, origin_col = x.meta.origin
     cx, cy, cw, ch = x.meta.canvas
     local = (cx - origin_col, cy - origin_row, cw, ch)
-    mx, my, mw, mh = _map_rect_through_orientation(code, local, width, height)
+    mx, my, mw, mh = _orient_rect(code, local, x.meta.width, x.meta.height)
     return x.meta.copy(
         height=height,
         width=width,
@@ -494,15 +463,11 @@ def graph_op(
                 k: v for k, v in bound.arguments.items() if k != first_name
             }
 
-            if out_meta is None:
-                resolved = image.meta
-            else:
-                resolved = out_meta(image, attrs)
-
+            resolved = image.meta if out_meta is None else out_meta(image, attrs)
             node = OpNode(
                 op=f.__name__,
                 inputs=(image,),
-                attrs=MappingProxyType(dict(attrs)),
+                attrs=MappingProxyType(attrs),
                 out_meta=resolved,
                 fn=f,
             )
@@ -524,17 +489,6 @@ _ARRAY_DTYPE = {
 }
 
 
-def _as_typed_array(
-    value: Any, dtype: Any, *, name: str, size: Optional[int] = None
-) -> np.ndarray:
-    arr = np.ascontiguousarray(value, dtype=dtype).reshape(-1)
-    if size is not None and arr.size != size:
-        raise ValueError(f"{name} must have {size} elements, got {arr.size}")
-    if arr.size < 1:
-        raise ValueError(f"{name} must be non-empty")
-    return arr
-
-
 def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
     """Coerce a Python attr value to the catalog wire form."""
     key = spec["key"]
@@ -545,9 +499,12 @@ def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
             raise TypeError(f"attr {key!r} must be a float")
         return _SCALAR_FLOAT[typ](value)
     if typ == "i32":
-        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer)):
+        if isinstance(value, bool):
             raise TypeError(f"attr {key!r} must be an int")
-        return int(value)
+        try:
+            return operator.index(value)
+        except TypeError as e:
+            raise TypeError(f"attr {key!r} must be an int") from e
     if typ == "bool":
         if not isinstance(value, (bool, np.bool_, int)):
             raise TypeError(f"attr {key!r} must be a bool")
@@ -562,9 +519,12 @@ def _coerce_attr(spec: Dict[str, Any], value: Any) -> Any:
             )
         return value
     if typ in _ARRAY_DTYPE:
-        return _as_typed_array(
-            value, _ARRAY_DTYPE[typ], name=key, size=count or None
-        )
+        arr = np.ascontiguousarray(value, dtype=_ARRAY_DTYPE[typ]).reshape(-1)
+        if count and arr.size != count:
+            raise ValueError(f"{key} must have {count} elements, got {arr.size}")
+        if arr.size < 1:
+            raise ValueError(f"{key} must be non-empty")
+        return arr
     raise ValueError(f"attr {key!r}: unsupported catalog type {typ!r}")
 
 
@@ -601,7 +561,7 @@ def emit(engine_op: EngineOp, x: Array, /, **attrs: Any) -> Array:
     node = OpNode(
         op=name,
         inputs=() if engine_op._n_inputs == 0 else (x,),
-        attrs=MappingProxyType(dict(coerced)),
+        attrs=MappingProxyType(coerced),
         out_meta=out_meta,
     )
     return Array(_meta=out_meta, _node=node)
@@ -676,37 +636,34 @@ def _run_op_arrays(
     values: Dict[int, np.ndarray],
     root: Array,
 ) -> None:
+    """Run each Python node on its own, and each run of consecutive engine
+    nodes as one engine segment."""
     parent = PerfTimer.current()
-    level = get_engine_timing()
-    record = parent is not None and level >= EngineTiming.SEGMENTS
-    timer = parent if record else None
-    engine = get_default_engine()
-    i = 0
-    while i < len(op_arrays):
-        if _is_python_node(op_arrays[i]):
-            node = op_arrays[i]._node
-            assert node is not None
-            step = (
-                timer.start_step(f"{node.op} (python)")
-                if record
-                else PerfTimer.inactive
-            )
-            _run_python_node(op_arrays[i], values)
-            step.close()
-            i += 1
-            continue
+    record = get_engine_timing() >= EngineTiming.SEGMENTS
 
-        j = i + 1
-        while j < len(op_arrays) and not _is_python_node(op_arrays[j]):
-            j += 1
-        segment = op_arrays[i:j]
-        outs = _segment_boundary_outputs(segment, op_arrays, root)
-        seg_step = (
-            timer.start_step("graph_compute") if record else PerfTimer.inactive
-        )
-        engine.execute_segment(segment, values, outs)
-        seg_step.close()
-        i = j
+    def step(name: str) -> Any:
+        if parent is None or not record:
+            return PerfTimer.inactive
+        return parent.start_step(name)
+
+    engine = get_default_engine()
+    for is_python, group in itertools.groupby(op_arrays, _is_python_node):
+        group = list(group)
+        if is_python:
+            for t in group:
+                assert t._node is not None
+                timing = step(f"{t._node.op} (python)")
+                try:
+                    _run_python_node(t, values)
+                finally:
+                    timing.close()
+        else:
+            outs = _segment_boundary_outputs(group, op_arrays, root)
+            timing = step("graph_compute")
+            try:
+                engine.execute_segment(group, values, outs)
+            finally:
+                timing.close()
 
 
 def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
@@ -717,10 +674,6 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     ``force_recompute`` omits those binds and reruns every op.
     """
     if root._data is not None and not force_recompute:
-        return root._data
-    if root._node is None:
-        if root._data is None:
-            raise ValueError("source Array has no data")
         return root._data
 
     values: Dict[int, np.ndarray] = {}
@@ -761,14 +714,11 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
 
     _run_op_arrays(op_arrays, values, root)
 
-    for t in op_arrays:
-        arr = values.get(id(t))
-        if arr is None:
-            continue
-        if t._data is None or force_recompute:
-            t._data = _seal_ndarray(arr)
-            values[id(t)] = t._data
-
     if id(root) not in values:
         raise RuntimeError("realize finished without materializing root")
-    return values[id(root)]
+    for t in op_arrays:
+        arr = values.get(id(t))
+        if arr is not None and (t._data is None or force_recompute):
+            t._data = _seal_ndarray(arr)
+    assert root._data is not None
+    return root._data

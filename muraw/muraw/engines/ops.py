@@ -177,6 +177,32 @@ pad = EngineOp(
     _infer_meta=graph._out_meta_pad,
 )
 
+tile = EngineOp(
+    meta=OpMeta(name='tile'),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _n_inputs=1,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "row_reps",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "col_reps",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "channel_reps",
+    "type": "i32"
+  }
+]''')),
+    _infer_meta=graph._out_meta_tile,
+)
+
 orientation = EngineOp(
     meta=OpMeta(name='orientation'),
     _out_dtype=graph._out_dtype_same,
@@ -962,6 +988,7 @@ OPS_BY_NAME = {
     'fill': fill,
     'view': view,
     'pad': pad,
+    'tile': tile,
     'orientation': orientation,
     'bilinear_demosaic': bilinear_demosaic,
     'ea_demosaic': ea_demosaic,
@@ -1010,6 +1037,7 @@ __all__ = [
     'orientation',
     'pad',
     'sub_scalar',
+    'tile',
     'transform_color',
     'view',
     'warp_rectilinear',

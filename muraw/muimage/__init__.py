@@ -32,6 +32,7 @@ from muraw.array import (
     full_like,
     ones,
     ones_like,
+    tile,
     zeros,
     zeros_like,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "ones",
     "ones_like",
     "op",
+    "tile",
     "zeros",
     "zeros_like",
 ]
