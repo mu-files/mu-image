@@ -1,6 +1,6 @@
 # The master copy of this file lives in mu-image-engine/kernels/portable_ops.yaml.
 # Edit that file. copy_to_public.sh installs this copy.
-#
+
 # Regenerate the public Python API:
 #   python -m muraw.engines.tools.gen_ops
 #   (writes muraw/engines/ops.py)
@@ -103,7 +103,10 @@ ops:
         count: 1
         optional: true
 
-  # Grow the array by spatial margins. Inverse of view with oob_valid=false.
+  # Grow height and width. channel_before / channel_after add constant
+  # channels; that requires mode constant. constant_values is the four
+  # spatial edges, or those four plus the channel-before and channel-after
+  # fills (prepare accepts length 4 or 6).
   - name: pad
     inputs:
       - channels: any
@@ -123,6 +126,14 @@ ops:
       - key: right
         type: i32
         count: 1
+      - key: channel_before
+        type: i32
+        count: 1
+        optional: true
+      - key: channel_after
+        type: i32
+        count: 1
+        optional: true
       - key: mode
         type: string
         count: 1
@@ -130,7 +141,7 @@ ops:
         enum: pad_mode
       - key: constant_values
         type: f32_array
-        count: 4
+        count: 0
         optional: true
 
   # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation.

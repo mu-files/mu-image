@@ -145,6 +145,18 @@ pad = EngineOp(
   },
   {
     "count": 1,
+    "key": "channel_before",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "channel_after",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
     "key": "mode",
     "optional": true,
     "type": "string",
@@ -156,7 +168,7 @@ pad = EngineOp(
     ]
   },
   {
-    "count": 4,
+    "count": 0,
     "key": "constant_values",
     "optional": true,
     "type": "f32_array"

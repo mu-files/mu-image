@@ -330,7 +330,7 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
 
 
 def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
-    """Geometry policy ``pad``: grow H/W by margins in the shared canvas system.
+    """Geometry policy ``pad``: grow H/W, and channels when those attrs are set.
 
     Dest ``(left, top)`` is src ``(0, 0)``. Origin shifts by
     ``-(top, left)``. Canvas is the new array at that origin, same as a
@@ -340,9 +340,18 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     bottom = int(attrs["bottom"])
     left = int(attrs["left"])
     right = int(attrs["right"])
-    if min(top, bottom, left, right) < 0:
+    channel_before = int(attrs.get("channel_before", 0))
+    channel_after = int(attrs.get("channel_after", 0))
+    if min(top, bottom, left, right, channel_before, channel_after) < 0:
         raise ValueError(
-            f"pad: top/bottom/left/right {[top, bottom, left, right]} must be non-negative"
+            "pad: top/bottom/left/right/channel_before/channel_after "
+            f"{[top, bottom, left, right, channel_before, channel_after]} "
+            "must be non-negative"
+        )
+    mode = attrs.get("mode", "constant")
+    if (channel_before or channel_after) and mode != "constant":
+        raise ValueError(
+            f"pad: a channel pad requires mode 'constant', got {mode!r}"
         )
     dest_h = x.meta.height + top + bottom
     dest_w = x.meta.width + left + right
@@ -352,6 +361,8 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     return x.meta.copy(
         height=dest_h,
         width=dest_w,
+        channels=x.meta.channels + channel_before + channel_after,
+        channel_axis=x.meta.channel_axis or channel_before + channel_after > 0,
         origin=origin,
         canvas=(origin_col, origin_row, dest_w, dest_h),
     )

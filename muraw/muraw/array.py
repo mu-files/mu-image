@@ -572,24 +572,59 @@ def _require_scalar(value: Any, op: str) -> float:
         raise TypeError(f"{op}: RHS must be a scalar") from e
 
 
-def _expand_spatial_pad(value: Any, name: str, *, nonneg: bool = False) -> list[int] | list[float]:
-    """NumPy ``pad_width`` / ``constant_values`` → ``[top, bottom, left, right]``.
+def _expand_pad(
+    value: Any, name: str, axes: int, *, nonneg: bool = False
+) -> list[int] | list[float]:
+    """NumPy ``pad_width`` / ``constant_values`` broadcast to ``axes`` pairs.
 
-    An int is all four sides. A pair is ``(before, after)`` on both spatial
-    axes. A 2×2 is ``((top, bottom), (left, right))``. Channel axes are
-    never included.
+    Returns ``[before, after]`` for each axis, flattened. An int is every
+    side. A pair is ``(before, after)`` on every axis.
     """
     try:
-        pairs = np.broadcast_to(np.asarray(value), (2, 2))
+        pairs = np.broadcast_to(np.asarray(value), (axes, 2))
     except ValueError:
+        if axes == 3:
+            detail = "((top, bottom), (left, right), (before, after))"
+        else:
+            detail = "((top, bottom), (left, right))"
         raise ValueError(
-            f"{name}: expected an int, a pair, or "
-            f"((top, bottom), (left, right)); got {value!r}"
+            f"{name}: expected an int, a pair, or {detail}; got {value!r}"
         ) from None
     sides = [pair.item() for pair in pairs.flat]
     if nonneg and any(side < 0 for side in sides):
         raise ValueError(f"{name}: values must be non-negative; got {sides}")
     return sides
+
+
+def _expand_spatial_pad(value: Any, name: str, *, nonneg: bool = False) -> list[int] | list[float]:
+    """``[top, bottom, left, right]``. Channel axes are never included."""
+    return _expand_pad(value, name, 2, nonneg=nonneg)
+
+
+def _pad_width_has_channel_axis(pad_width: Any) -> bool:
+    """True when ``pad_width`` is three ``(before, after)`` pairs.
+
+    A bare int and a single pair stay spatial even on a rank-3 array.
+    """
+    if isinstance(pad_width, bool) or isinstance(
+        pad_width, (int, np.integer, float, np.floating)
+    ):
+        return False
+    if (
+        isinstance(pad_width, (tuple, list))
+        and len(pad_width) == 2
+        and all(
+            isinstance(side, (int, np.integer, float, np.floating))
+            and not isinstance(side, bool)
+            for side in pad_width
+        )
+    ):
+        return False
+    try:
+        arr = np.asarray(pad_width)
+    except (ValueError, TypeError):
+        return False
+    return arr.shape == (3, 2)
 
 
 def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, int]:
@@ -1154,14 +1189,47 @@ class Array:
         mode: str = "constant",
         constant_values: Any = 0,
     ) -> "Array":
-        """Grow height and width. Same ``pad_width`` / ``constant_values`` shapes as ``numpy.pad``."""
+        """Grow the array. ``pad_width`` and ``constant_values`` follow ``numpy.pad``.
+
+        A bare int or a two-axis width grows height and width only. On an
+        array whose shape is ``(H, W, C)``, a third pair ``(before, after)``
+        adds constant channels. That channel pad requires ``mode="constant"``.
+        """
         import muimage as mi
+
+        if _pad_width_has_channel_axis(pad_width):
+            if len(self.shape) != 3:
+                raise ValueError(
+                    f"pad_width has 3 axes but array shape is {self.shape}"
+                )
+            sides = _expand_pad(pad_width, "pad_width", 3, nonneg=True)
+            top, bottom, left, right, channel_before, channel_after = (
+                int(v) for v in sides
+            )
+            consts = [
+                float(v) for v in _expand_pad(constant_values, "constant_values", 3)
+            ]
+            if (channel_before or channel_after) and mode != "constant":
+                raise ValueError(
+                    f"pad: a channel pad requires mode 'constant', got {mode!r}"
+                )
+            attrs: dict[str, Any] = {
+                "top": top,
+                "bottom": bottom,
+                "left": left,
+                "right": right,
+                "channel_before": channel_before,
+                "channel_after": channel_after,
+                "mode": mode,
+                "constant_values": consts,
+            }
+            return mi.pad(self, **attrs)
 
         top, bottom, left, right = (
             int(v) for v in _expand_spatial_pad(pad_width, "pad_width", nonneg=True)
         )
         consts = [float(v) for v in _expand_spatial_pad(constant_values, "constant_values")]
-        attrs: dict[str, Any] = {
+        attrs = {
             "top": top,
             "bottom": bottom,
             "left": left,
