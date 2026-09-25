@@ -168,7 +168,7 @@ def test_strided_channel_gather_matches_numpy():
     np.testing.assert_array_equal(got, src[::2, 1::2, ::-1])
 
 
-def test_matrix_3x3_rejects_two_channels():
+def test_rgb_matrix_3x3_rejects_two_channels():
     x = Array(np.zeros((2, 2, 2), dtype=np.float32))
     with pytest.raises(ValueError, match="expected 3 channel"):
-        mi.matrix_3x3(x, matrix=np.eye(3, dtype=np.float32))
+        mi.rgb_matrix_3x3(x, matrix=np.eye(3, dtype=np.float32))

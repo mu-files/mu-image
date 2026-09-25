@@ -8,7 +8,7 @@ from . import graph
 from .graph import EngineOp, OpMeta
 
 sub_scalar = EngineOp(
-    meta=OpMeta(name='sub_scalar'),
+    meta=OpMeta(name='sub_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -24,7 +24,7 @@ sub_scalar = EngineOp(
 )
 
 mul_scalar = EngineOp(
-    meta=OpMeta(name='mul_scalar'),
+    meta=OpMeta(name='mul_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -40,7 +40,7 @@ mul_scalar = EngineOp(
 )
 
 fill = EngineOp(
-    meta=OpMeta(name='fill'),
+    meta=OpMeta(name='fill', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -56,7 +56,7 @@ fill = EngineOp(
 )
 
 view = EngineOp(
-    meta=OpMeta(name='view'),
+    meta=OpMeta(name='view', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -117,7 +117,7 @@ view = EngineOp(
 )
 
 pad = EngineOp(
-    meta=OpMeta(name='pad'),
+    meta=OpMeta(name='pad', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -178,7 +178,7 @@ pad = EngineOp(
 )
 
 tile = EngineOp(
-    meta=OpMeta(name='tile'),
+    meta=OpMeta(name='tile', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -204,7 +204,7 @@ tile = EngineOp(
 )
 
 orientation = EngineOp(
-    meta=OpMeta(name='orientation'),
+    meta=OpMeta(name='orientation', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -219,8 +219,8 @@ orientation = EngineOp(
     _infer_meta=graph._out_meta_orientation,
 )
 
-bilinear_demosaic = EngineOp(
-    meta=OpMeta(name='bilinear_demosaic'),
+cfa_bilinear_demosaic = EngineOp(
+    meta=OpMeta(name='cfa_bilinear_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
     _in_channels=1,
@@ -235,8 +235,8 @@ bilinear_demosaic = EngineOp(
     _infer_meta=None,
 )
 
-ea_demosaic = EngineOp(
-    meta=OpMeta(name='ea_demosaic'),
+cfa_ea_demosaic = EngineOp(
+    meta=OpMeta(name='cfa_ea_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
     _in_channels=1,
@@ -257,8 +257,8 @@ ea_demosaic = EngineOp(
     _infer_meta=None,
 )
 
-matrix_3x3 = EngineOp(
-    meta=OpMeta(name='matrix_3x3'),
+rgb_matrix_3x3 = EngineOp(
+    meta=OpMeta(name='rgb_matrix_3x3', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=3,
@@ -274,7 +274,7 @@ matrix_3x3 = EngineOp(
 )
 
 lut = EngineOp(
-    meta=OpMeta(name='lut'),
+    meta=OpMeta(name='lut', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -290,7 +290,7 @@ lut = EngineOp(
 )
 
 convert_dtype = EngineOp(
-    meta=OpMeta(name='convert_dtype'),
+    meta=OpMeta(name='convert_dtype', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -324,7 +324,7 @@ convert_dtype = EngineOp(
 )
 
 cast_dtype = EngineOp(
-    meta=OpMeta(name='cast_dtype'),
+    meta=OpMeta(name='cast_dtype', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -340,7 +340,7 @@ cast_dtype = EngineOp(
 )
 
 mono_lut = EngineOp(
-    meta=OpMeta(name='mono_lut'),
+    meta=OpMeta(name='mono_lut', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
@@ -370,8 +370,8 @@ mono_lut = EngineOp(
     _infer_meta=None,
 )
 
-transform_color = EngineOp(
-    meta=OpMeta(name='transform_color'),
+rgb_transform = EngineOp(
+    meta=OpMeta(name='rgb_transform', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
@@ -419,8 +419,8 @@ transform_color = EngineOp(
     _infer_meta=None,
 )
 
-clip_and_transform_color = EngineOp(
-    meta=OpMeta(name='clip_and_transform_color'),
+rgb_clip_and_transform = EngineOp(
+    meta=OpMeta(name='rgb_clip_and_transform', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
@@ -440,11 +440,11 @@ clip_and_transform_color = EngineOp(
     _infer_meta=None,
 )
 
-normalize_raw = EngineOp(
-    meta=OpMeta(name='normalize_raw'),
+cfa_normalize_raw = EngineOp(
+    meta=OpMeta(name='cfa_normalize_raw', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_const('float32'),
-    _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _out_channels=graph._out_channels_const(1),
+    _in_channels=1,
     _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
@@ -460,11 +460,6 @@ normalize_raw = EngineOp(
   {
     "count": 1,
     "key": "black_repeat_cols",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "samples_per_pixel",
     "type": "i32"
   },
   {
@@ -494,8 +489,57 @@ normalize_raw = EngineOp(
     _infer_meta=None,
 )
 
-apply_hue_sat_map = EngineOp(
-    meta=OpMeta(name='apply_hue_sat_map'),
+normalize_raw = EngineOp(
+    meta=OpMeta(name='normalize_raw', requires_2d=True, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const('float32'),
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _n_inputs=1,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "black_level",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "black_repeat_rows",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "black_repeat_cols",
+    "type": "i32"
+  },
+  {
+    "count": 0,
+    "key": "white_level",
+    "type": "f32_array"
+  },
+  {
+    "count": 0,
+    "key": "black_delta_h",
+    "optional": true,
+    "type": "f32_array"
+  },
+  {
+    "count": 0,
+    "key": "black_delta_v",
+    "optional": true,
+    "type": "f32_array"
+  },
+  {
+    "count": 0,
+    "key": "linearization_table",
+    "optional": true,
+    "type": "i32_array"
+  }
+]''')),
+    _infer_meta=None,
+)
+
+rgb_apply_hue_sat_map = EngineOp(
+    meta=OpMeta(name='rgb_apply_hue_sat_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
@@ -526,8 +570,8 @@ apply_hue_sat_map = EngineOp(
     _infer_meta=None,
 )
 
-apply_hue_sat_val_map = EngineOp(
-    meta=OpMeta(name='apply_hue_sat_val_map'),
+rgb_apply_hue_sat_val_map = EngineOp(
+    meta=OpMeta(name='rgb_apply_hue_sat_val_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
@@ -563,8 +607,8 @@ apply_hue_sat_val_map = EngineOp(
     _infer_meta=None,
 )
 
-apply_profile_gain_table_map = EngineOp(
-    meta=OpMeta(name='apply_profile_gain_table_map'),
+rgb_apply_profile_gain_table_map = EngineOp(
+    meta=OpMeta(name='rgb_apply_profile_gain_table_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
@@ -630,7 +674,7 @@ apply_profile_gain_table_map = EngineOp(
 )
 
 fix_vignette = EngineOp(
-    meta=OpMeta(name='fix_vignette'),
+    meta=OpMeta(name='fix_vignette', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -656,7 +700,7 @@ fix_vignette = EngineOp(
 )
 
 warp_rectilinear = EngineOp(
-    meta=OpMeta(name='warp_rectilinear'),
+    meta=OpMeta(name='warp_rectilinear', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -702,8 +746,8 @@ warp_rectilinear = EngineOp(
     _infer_meta=None,
 )
 
-apply_gain_map = EngineOp(
-    meta=OpMeta(name='apply_gain_map'),
+rgb_apply_gain_map = EngineOp(
+    meta=OpMeta(name='rgb_apply_gain_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
     _in_channels=3,
@@ -793,8 +837,8 @@ apply_gain_map = EngineOp(
     _infer_meta=None,
 )
 
-apply_gain_map_cfa = EngineOp(
-    meta=OpMeta(name='apply_gain_map_cfa'),
+cfa_apply_gain_map = EngineOp(
+    meta=OpMeta(name='cfa_apply_gain_map', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
@@ -875,7 +919,7 @@ apply_gain_map_cfa = EngineOp(
 )
 
 apply_flat_gain_map = EngineOp(
-    meta=OpMeta(name='apply_flat_gain_map'),
+    meta=OpMeta(name='apply_flat_gain_map', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
@@ -901,7 +945,7 @@ apply_flat_gain_map = EngineOp(
 )
 
 map_polynomial = EngineOp(
-    meta=OpMeta(name='map_polynomial'),
+    meta=OpMeta(name='map_polynomial', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=None,
@@ -961,8 +1005,8 @@ map_polynomial = EngineOp(
     _infer_meta=None,
 )
 
-fix_bad_pixels_constant = EngineOp(
-    meta=OpMeta(name='fix_bad_pixels_constant'),
+cfa_fix_bad_pixels_constant = EngineOp(
+    meta=OpMeta(name='cfa_fix_bad_pixels_constant', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_const('uint16'),
     _out_channels=graph._out_channels_const(1),
     _in_channels=1,
@@ -990,55 +1034,57 @@ OPS_BY_NAME = {
     'pad': pad,
     'tile': tile,
     'orientation': orientation,
-    'bilinear_demosaic': bilinear_demosaic,
-    'ea_demosaic': ea_demosaic,
-    'matrix_3x3': matrix_3x3,
+    'cfa_bilinear_demosaic': cfa_bilinear_demosaic,
+    'cfa_ea_demosaic': cfa_ea_demosaic,
+    'rgb_matrix_3x3': rgb_matrix_3x3,
     'lut': lut,
     'convert_dtype': convert_dtype,
     'cast_dtype': cast_dtype,
     'mono_lut': mono_lut,
-    'transform_color': transform_color,
-    'clip_and_transform_color': clip_and_transform_color,
+    'rgb_transform': rgb_transform,
+    'rgb_clip_and_transform': rgb_clip_and_transform,
+    'cfa_normalize_raw': cfa_normalize_raw,
     'normalize_raw': normalize_raw,
-    'apply_hue_sat_map': apply_hue_sat_map,
-    'apply_hue_sat_val_map': apply_hue_sat_val_map,
-    'apply_profile_gain_table_map': apply_profile_gain_table_map,
+    'rgb_apply_hue_sat_map': rgb_apply_hue_sat_map,
+    'rgb_apply_hue_sat_val_map': rgb_apply_hue_sat_val_map,
+    'rgb_apply_profile_gain_table_map': rgb_apply_profile_gain_table_map,
     'fix_vignette': fix_vignette,
     'warp_rectilinear': warp_rectilinear,
-    'apply_gain_map': apply_gain_map,
-    'apply_gain_map_cfa': apply_gain_map_cfa,
+    'rgb_apply_gain_map': rgb_apply_gain_map,
+    'cfa_apply_gain_map': cfa_apply_gain_map,
     'apply_flat_gain_map': apply_flat_gain_map,
     'map_polynomial': map_polynomial,
-    'fix_bad_pixels_constant': fix_bad_pixels_constant,
+    'cfa_fix_bad_pixels_constant': cfa_fix_bad_pixels_constant,
 }
 
 __all__ = [
     'OPS_BY_NAME',
     'apply_flat_gain_map',
-    'apply_gain_map',
-    'apply_gain_map_cfa',
-    'apply_hue_sat_map',
-    'apply_hue_sat_val_map',
-    'apply_profile_gain_table_map',
-    'bilinear_demosaic',
     'cast_dtype',
-    'clip_and_transform_color',
+    'cfa_apply_gain_map',
+    'cfa_bilinear_demosaic',
+    'cfa_ea_demosaic',
+    'cfa_fix_bad_pixels_constant',
+    'cfa_normalize_raw',
     'convert_dtype',
-    'ea_demosaic',
     'fill',
-    'fix_bad_pixels_constant',
     'fix_vignette',
     'lut',
     'map_polynomial',
-    'matrix_3x3',
     'mono_lut',
     'mul_scalar',
     'normalize_raw',
     'orientation',
     'pad',
+    'rgb_apply_gain_map',
+    'rgb_apply_hue_sat_map',
+    'rgb_apply_hue_sat_val_map',
+    'rgb_apply_profile_gain_table_map',
+    'rgb_clip_and_transform',
+    'rgb_matrix_3x3',
+    'rgb_transform',
     'sub_scalar',
     'tile',
-    'transform_color',
     'view',
     'warp_rectilinear',
 ]

@@ -17,8 +17,6 @@ from .graph import graph_op
 
 
 def _demosaic_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
-    if t.meta.channels != 1:
-        raise ValueError("demosaic_op input must be mono / CFA (1 channel)")
     algorithm = attrs.get("algorithm", "VNG")
     # Working dtype is the algorithm's native output (= input after wrapper pre-convert)
     if algorithm == "RCD":
@@ -30,8 +28,8 @@ def _demosaic_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     return t.meta.copy(dtype=dtype, channels=3)
 
 
-@graph_op(out_meta=_demosaic_out_meta)
-def demosaic_op(
+@graph_op(out_meta=_demosaic_out_meta, is_cfa=True, requires_2d=True)
+def cfa_demosaic_op(
     arr: np.ndarray,
     cfa_pattern: str,
     algorithm: str = "VNG",
@@ -39,25 +37,25 @@ def demosaic_op(
     """Non-bilinear demosaic kernel (ndarray in/out).
 
     Caller (``raw_render.demosaic``) emits pre/post ``convert_type`` neighbors.
-    For bilinear use ``mi.bilinear_demosaic``.
-    For Hamilton–Adams (``EA`` / ``EA_FAST``) use ``mi.ea_demosaic``.
+    For bilinear use ``mi.cfa_bilinear_demosaic``.
+    For Hamilton–Adams (``EA`` / ``EA_FAST``) use ``mi.cfa_ea_demosaic``.
     ``OPENCV_EA`` stays here for quality comparison against the native EA path.
     """
     if algorithm == "BILINEAR":
         raise ValueError(
-            "demosaic_op does not run BILINEAR; "
-            "use mi.bilinear_demosaic"
+            "cfa_demosaic_op does not run BILINEAR; "
+            "use mi.cfa_bilinear_demosaic"
         )
     if algorithm in ("EA", "EA_FAST"):
         raise ValueError(
-            "demosaic_op does not run EA / EA_FAST; "
-            "use mi.ea_demosaic"
+            "cfa_demosaic_op does not run EA / EA_FAST; "
+            "use mi.cfa_ea_demosaic"
         )
 
     if arr.ndim == 3 and arr.shape[2] == 1:
         arr = arr[:, :, 0]
     if arr.ndim != 2:
-        raise ValueError(f"demosaic_op: expected 2D CFA, got shape {arr.shape}")
+        raise ValueError(f"cfa_demosaic_op: expected 2D CFA, got shape {arr.shape}")
 
     if algorithm == "RCD":
         try:
@@ -96,15 +94,15 @@ def demosaic_op(
 
     else:
         raise ValueError(
-            f"demosaic_op: unknown algorithm {algorithm!r}; "
+            f"cfa_demosaic_op: unknown algorithm {algorithm!r}; "
             "expected one of ['VNG', 'RCD', 'OPENCV_EA']"
         )
 
     return out
 
 
-@graph_op
-def channel_luts_op(
+@graph_op(is_rgb=True)
+def rgb_channel_luts_op(
     arr: np.ndarray,
     lut_r: np.ndarray,
     lut_g: np.ndarray,
@@ -112,7 +110,7 @@ def channel_luts_op(
 ) -> np.ndarray:
     """Apply independent 1D LUTs to R, G, B planes (float [0, 1] domain)."""
     if arr.ndim != 3 or arr.shape[2] != 3:
-        raise ValueError(f"channel_luts_op: expected HxWx3, got {arr.shape}")
+        raise ValueError(f"rgb_channel_luts_op: expected HxWx3, got {arr.shape}")
     out = np.empty_like(arr, dtype=np.float32)
     for i, lut in enumerate((lut_r, lut_g, lut_b)):
         lut = np.asarray(lut, dtype=np.float32).reshape(-1)
@@ -123,7 +121,7 @@ def channel_luts_op(
     return out
 
 
-@graph_op
+@graph_op(requires_2d=True)
 def radial_distortion_op(
     arr: np.ndarray,
     k1: float,

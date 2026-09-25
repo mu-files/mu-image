@@ -148,7 +148,7 @@ class CoreEngine:
 
 
 def _engine_timing_op_name(op: str, attrs: Dict) -> str:
-    """Display name for ``--timing ops``. ``ea_demosaic`` + ``fast`` is EA_FAST."""
-    if op == "ea_demosaic" and attrs.get("fast"):
+    """Display name for ``--timing ops``. ``cfa_ea_demosaic`` + ``fast`` is EA_FAST."""
+    if op == "cfa_ea_demosaic" and attrs.get("fast"):
         return "ea_fast_demosaic"
     return op

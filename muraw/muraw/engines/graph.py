@@ -111,9 +111,16 @@ def set_default_engine(engine: Engine) -> None:
 
 @dataclass(frozen=True)
 class OpMeta:
-    """Static catalog facts for an engine op (not dependent on a Array)."""
+    """Static catalog facts for an engine op (not dependent on a Array).
+
+    ``requires_2d``, ``is_cfa`` and ``is_rgb`` are defined in the header of
+    ``engines/catalog/ops.yaml``.
+    """
 
     name: str
+    requires_2d: bool = False
+    is_cfa: bool = False
+    is_rgb: bool = False
 
 
 @dataclass(frozen=True)
@@ -430,8 +437,16 @@ def graph_op(
     /,
     *,
     out_meta: Optional[GraphOutMetaFn] = None,
+    requires_2d: bool = False,
+    is_cfa: bool = False,
+    is_rgb: bool = False,
 ):
     """Decorator: eager ndarray body; Array first-arg attaches a lazy graph node.
+
+    ``requires_2d``, ``is_cfa`` and ``is_rgb`` are the catalog op properties
+    (see the header of ``engines/catalog/ops.yaml``). The decorated function
+    exposes them as ``.meta``. The ``cfa_`` / ``rgb_`` naming rule is not
+    checked here.
 
     Usage::
 
@@ -439,8 +454,8 @@ def graph_op(
         def same_shape(arr, *, scale):
             return arr * scale
 
-        @graph_op(out_meta=my_infer)
-        def scale_op(arr, *, factor):
+        @graph_op(out_meta=my_infer, is_rgb=True)
+        def rgb_scale_op(arr, *, factor):
             return arr * factor
     """
 
@@ -450,11 +465,20 @@ def graph_op(
         if not param_names:
             raise ValueError(f"graph_op {f.__name__!r}: need at least one parameter")
         first_name = param_names[0]
+        meta = OpMeta(
+            name=f.__name__, requires_2d=requires_2d, is_cfa=is_cfa, is_rgb=is_rgb
+        )
 
         @functools.wraps(f)
         def wrapper(image: Any, /, *args: Any, **kwargs: Any) -> Any:
             if not isinstance(image, Array):
                 return f(image, *args, **kwargs)
+            in_channels = 1 if is_cfa else 3 if is_rgb else None
+            if in_channels is not None and image.meta.channels != in_channels:
+                raise ValueError(
+                    f"op {f.__name__!r} input[0]: expected {in_channels} channel(s), "
+                    f"got {image.meta.channels}"
+                )
 
             placeholder = object()
             bound = sig.bind(placeholder, *args, **kwargs)
@@ -474,6 +498,7 @@ def graph_op(
             return Array(_meta=resolved, _node=node)
 
         wrapper.__graph_op__ = True  # type: ignore[attr-defined]
+        wrapper.meta = meta  # type: ignore[attr-defined]
         return wrapper
 
     if fn is not None:

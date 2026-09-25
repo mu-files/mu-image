@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Changed
+- **Op names (breaking, no aliases)**: Ops that need one-channel CFA input start with `cfa_`, and ops that need three-channel RGB input start with `rgb_`. The redundant `_color` suffix is dropped. Renamed:
+  - `bilinear_demosaic` → `cfa_bilinear_demosaic`, `ea_demosaic` → `cfa_ea_demosaic`, `demosaic_op` → `cfa_demosaic_op`
+  - `apply_gain_map_cfa` → `cfa_apply_gain_map`, `fix_bad_pixels_constant` → `cfa_fix_bad_pixels_constant`
+  - `apply_gain_map` → `rgb_apply_gain_map`, `matrix_3x3` → `rgb_matrix_3x3`
+  - `transform_color` → `rgb_transform`, `clip_and_transform_color` → `rgb_clip_and_transform`
+  - `apply_hue_sat_map` → `rgb_apply_hue_sat_map`, `apply_hue_sat_val_map` → `rgb_apply_hue_sat_val_map`
+  - `apply_profile_gain_table_map` → `rgb_apply_profile_gain_table_map`, `channel_luts_op` → `rgb_channel_luts_op`
+- **`normalize_raw` split**: `cfa_normalize_raw` takes one-channel CFA input. `normalize_raw` now takes LinearRaw input with any channel count (monochrome or RGB). Both keep every linearization attribute. The `samples_per_pixel` attribute is removed, because the channel count comes from the input.
+
+### Added
+- **Op properties**: Each op declares `requires_2d`, `is_cfa`, and `is_rgb`, exposed as `op.meta.requires_2d` / `.is_cfa` / `.is_rgb`. The catalog generators and `@graph_op` reject a `cfa_` / `rgb_` name that disagrees with these properties. `@graph_op` also checks the input channel count at call time.
+
 ## [0.1.20260710.1135] - 2026-07-10
 
 ### Changed

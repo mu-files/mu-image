@@ -28,6 +28,10 @@ ENGINES_DIR = Path(__file__).resolve().parents[1]
 YAML_PATH = ENGINES_DIR / "catalog" / "ops.yaml"
 OPS_OUT = ENGINES_DIR / "ops.py"
 
+# Defined in the header of catalog/ops.yaml. The engine's
+# tools/gen_op_catalog.py applies the same rules in validate_op_properties.
+OP_PROPERTIES = ("requires_2d", "is_cfa", "is_rgb")
+
 
 def _parse_scalar(raw: str):
     raw = raw.strip()
@@ -243,8 +247,9 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
             raise ValueError(f"op {name!r}: only single-output ops are supported")
         out_spec = outputs[0]
         attrs_json = json.dumps(attrs, indent=2, sort_keys=True)
+        props = ", ".join(f"{key}={bool(op.get(key, False))}" for key in OP_PROPERTIES)
         lines.append(f"{name} = EngineOp(")
-        lines.append(f"    meta=OpMeta(name={name!r}),")
+        lines.append(f"    meta=OpMeta(name={name!r}, {props}),")
         lines.append(f"    _out_dtype={_out_dtype_expr(out_spec)},")
         lines.append(f"    _out_channels={_out_channels_expr(out_spec)},")
         lines.append(f"    _in_channels={_in_channels_expr(inputs)},")
@@ -296,6 +301,36 @@ def validate_ops(ops: list[dict[str, Any]]) -> None:
         geom = (op["outputs"][0] or {}).get("geometry")
         if geom is not None:
             _infer_meta_expr({"geometry": geom})
+        _validate_op_properties(op)
+
+
+def _validate_op_properties(op: dict[str, Any]) -> None:
+    """Raise ``ValueError`` when the op properties disagree with the name or channels."""
+    name = op["name"]
+    for key in OP_PROPERTIES:
+        if not isinstance(op.get(key, False), bool):
+            raise ValueError(f"op {name!r}: {key} must be true or false")
+    requires_2d = op.get("requires_2d", False)
+    is_cfa = op.get("is_cfa", False)
+    is_rgb = op.get("is_rgb", False)
+    inputs = op["inputs"]
+    in_channels = inputs[0].get("channels", "any") if inputs else "any"
+    if is_cfa and is_rgb:
+        raise ValueError(f"op {name!r}: is_cfa and is_rgb are both true")
+    if is_cfa != name.startswith("cfa_"):
+        raise ValueError(
+            f"op {name!r}: an op is named cfa_... exactly when it sets is_cfa: true"
+        )
+    if is_rgb != name.startswith("rgb_"):
+        raise ValueError(
+            f"op {name!r}: an op is named rgb_... exactly when it sets is_rgb: true"
+        )
+    if is_cfa and not requires_2d:
+        raise ValueError(f"op {name!r}: is_cfa requires requires_2d: true")
+    if is_cfa and in_channels != 1:
+        raise ValueError(f"op {name!r}: is_cfa requires inputs[0].channels: 1")
+    if is_rgb and in_channels != 3:
+        raise ValueError(f"op {name!r}: is_rgb requires inputs[0].channels: 3")
 
 
 def main() -> int:

@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 # Package imports
 import muimage as mi
 from .engines.pyops import (
-    channel_luts_op,
-    demosaic_op,
+    rgb_channel_luts_op,
+    cfa_demosaic_op,
     radial_distortion_op,
 )
 from .array import Array, ElementType
@@ -197,7 +197,7 @@ def convert_colorspace(
     """Convert image between color spaces with optional dtype conversion.
 
     Wrapper: validate arguments and append ops to a deferred compute graph
-    (typically via ``transform_color`` / ``convert_type``). Does not run pixels;
+    (typically via ``rgb_transform`` / ``convert_type``). Does not run pixels;
     call ``.realize()`` on the returned ``Array`` to materialize.
     """
     t = image
@@ -227,7 +227,7 @@ def convert_colorspace(
     if input_lut is None and matrix is None and output_lut is None:
         result = t.convert_type(engine_out)
     else:
-        result = transform_color(
+        result = rgb_transform(
             t,
             input_lut=input_lut,
             matrix=matrix,
@@ -240,7 +240,7 @@ def convert_colorspace(
     return result
 
 
-def transform_color(
+def rgb_transform(
     image: Array,
     input_lut: LUT | np.ndarray | None = None,
     matrix: np.ndarray | None = None,
@@ -268,7 +268,7 @@ def transform_color(
 
     if input_lut is None and matrix is None and output_lut is None:
         raise ValueError(
-            "transform_color requires at least one of: input_lut, matrix, or output_lut"
+            "rgb_transform requires at least one of: input_lut, matrix, or output_lut"
         )
 
     if dest not in (ElementType.UINT8, ElementType.UINT16, ElementType.FLOAT32):
@@ -313,7 +313,7 @@ def transform_color(
             raise ValueError(f"matrix must be (3, 3), got shape {matrix.shape}")
         matrix = np.asarray(matrix, dtype=np.float32)
 
-    return mi.transform_color(
+    return mi.rgb_transform(
         t,
         input_lut=input_lut_array,
         matrix=matrix,
@@ -325,7 +325,7 @@ def transform_color(
     )
 
 
-def clip_and_transform_color(
+def rgb_clip_and_transform(
     image: Array,
     clip_max: np.ndarray,
     matrix: np.ndarray,
@@ -345,7 +345,7 @@ def clip_and_transform_color(
     if matrix.shape != (3, 3):
         raise ValueError(f"Matrix must be (3, 3), got {matrix.shape}")
 
-    return mi.clip_and_transform_color(
+    return mi.rgb_clip_and_transform(
         t,
         clip_max=np.asarray(clip_max, dtype=np.float32),
         matrix=np.asarray(matrix, dtype=np.float32),
@@ -438,12 +438,12 @@ def demosaic(
 
     if algorithm == DemosaicAlgorithm.BILINEAR:
         x = t.convert_type("float32")
-        rgb = mi.bilinear_demosaic(x, cfa_pattern=cfa_pattern)
+        rgb = mi.cfa_bilinear_demosaic(x, cfa_pattern=cfa_pattern)
         return rgb.convert_type(out_dtype, clip_max=clip_max)
 
     if algorithm in (DemosaicAlgorithm.EA, DemosaicAlgorithm.EA_FAST):
         x = t.convert_type("float32")
-        rgb = mi.ea_demosaic(
+        rgb = mi.cfa_ea_demosaic(
             x, cfa_pattern=cfa_pattern, fast=algorithm == DemosaicAlgorithm.EA_FAST
         )
         return rgb.convert_type(out_dtype, clip_max=clip_max)
@@ -461,7 +461,7 @@ def demosaic(
     else:
         raise ValueError(f"Unsupported demosaic algorithm: {algorithm}")
 
-    rgb = demosaic_op(work, cfa_pattern, algorithm.name)
+    rgb = cfa_demosaic_op(work, cfa_pattern, algorithm.name)
     return rgb.convert_type(out_dtype, clip_max=clip_max)
 
 
@@ -1698,7 +1698,7 @@ def apply_opcodes(
                 f"{opcode['gain_values'].max():.4f}]"
             )
             gv = np.asarray(opcode['gain_values'], dtype=np.float32)
-            x = mi.apply_gain_map(
+            x = mi.rgb_apply_gain_map(
                 x,
                 gain_values=gv.reshape(-1),
                 points_v=int(gv.shape[0]), points_h=int(gv.shape[1]),
@@ -1780,7 +1780,7 @@ def apply_opcodes_cfa(
                 f"FixBadPixelsConstant: constant={constant}, "
                 f"bayer_phase={bayer_phase}"
             )
-            x = mi.fix_bad_pixels_constant(
+            x = mi.cfa_fix_bad_pixels_constant(
                 x,
                 constant=int(constant),
                 bayer_phase=int(bayer_phase),
@@ -1801,7 +1801,7 @@ def apply_opcodes_cfa(
                 f"{opcode['gain_values'].max():.4f}]"
             )
             gv = np.asarray(opcode['gain_values'], dtype=np.float32)
-            x = mi.apply_gain_map_cfa(
+            x = mi.cfa_apply_gain_map(
                 x,
                 gain_values=gv.reshape(-1),
                 points_v=int(gv.shape[0]), points_h=int(gv.shape[1]),
@@ -2395,7 +2395,7 @@ def apply_post_rendering_operations(
             size=4096,
             convert_srgb_gamma_to_linear=True,
         )
-        rgb_output = transform_color(
+        rgb_output = rgb_transform(
             rgb_output,
             input_lut=main_curve_lut,
             hue_preserving_input_lut=True,
@@ -2421,7 +2421,7 @@ def apply_post_rendering_operations(
 
     if has_per_channel:
         identity = np.linspace(0.0, 1.0, 4096, dtype=np.float32)
-        rgb_output = channel_luts_op(
+        rgb_output = rgb_channel_luts_op(
             rgb_output,
             lut_r=channel_luts[0] if channel_luts[0] is not None else identity,
             lut_g=channel_luts[1] if channel_luts[1] is not None else identity,
@@ -2696,7 +2696,7 @@ def _linearize(
             src_bits=int(bits_per_sample),
         )
     else:
-        # normalize_raw accepts uint16 or float32 natively;
+        # cfa_normalize_raw / normalize_raw accept uint16 or float32 natively;
         # widen edge-case dtypes via lazy cast (no rescale).
         if x.meta.dtype == "uint8":
             x = x.astype("uint16")
@@ -2705,12 +2705,12 @@ def _linearize(
         lin = None
         if linearization_table is not None and len(linearization_table) > 0:
             lin = np.asarray(linearization_table, dtype=np.int32).reshape(-1)
-        normalized = mi.normalize_raw(
+        normalize_raw = mi.cfa_normalize_raw if is_cfa else mi.normalize_raw
+        normalized = normalize_raw(
             x,
             black_level=np.asarray(black_level, dtype=np.float32).reshape(-1),
             black_repeat_rows=int(black_repeat_rows),
             black_repeat_cols=int(black_repeat_cols),
-            samples_per_pixel=int(samples_per_pixel),
             white_level=np.asarray(white_level, dtype=np.float32).reshape(-1),
             black_delta_h=None if black_delta_h is None else np.asarray(black_delta_h, dtype=np.float32).reshape(-1),
             black_delta_v=None if black_delta_v is None else np.asarray(black_delta_v, dtype=np.float32).reshape(-1),
@@ -3002,7 +3002,7 @@ def _render_camera_rgb(
         # =====================================================================
         # SDK ref: dng_render.cpp lines 912-913
         # fCameraToRGB = ProPhoto.MatrixFromPCS() * CameraToPCS()
-        rgb_prophoto = clip_and_transform_color(
+        rgb_prophoto = rgb_clip_and_transform(
             rgb_camera,
             clip_max=camera_white.astype(np.float32),
             matrix=camera_to_prophoto.astype(np.float32),
@@ -3040,13 +3040,13 @@ def _render_camera_rgb(
             # either way the map is indexed by hue and saturation only.
             map_flat = np.asarray(hue_sat_map, dtype=np.float32).reshape(-1)
             if val_divs < 2:
-                rgb_t = mi.apply_hue_sat_map(
+                rgb_t = mi.rgb_apply_hue_sat_map(
                     rgb_t,
                     map_data=map_flat,
                     hue_divs=int(hue_divs), sat_divs=int(sat_divs),
                 )
             else:
-                rgb_t = mi.apply_hue_sat_val_map(
+                rgb_t = mi.rgb_apply_hue_sat_val_map(
                     rgb_t,
                     map_data=map_flat,
                     hue_divs=int(hue_divs), sat_divs=int(sat_divs),
@@ -3097,7 +3097,7 @@ def _render_camera_rgb(
                     byteorder=system_byteorder,
                 )
                 pgtm_step.close()
-                rgb_t = mi.apply_profile_gain_table_map(
+                rgb_t = mi.rgb_apply_profile_gain_table_map(
                     rgb_t,
                     gains=pgtm["gains"],
                     points_v=int(pgtm["points_v"]),
@@ -3187,21 +3187,21 @@ def _render_camera_rgb(
             # Exposure ramp LUT + look table in one engine segment (deferred).
             # SDK ref: dng_render.cpp dng_function_exposure_ramp lines 50-103
             lut_arr = np.asarray(exposure_ramp_lut, dtype=np.float32).reshape(-1)
-            rgb_ramped = transform_color(
+            rgb_ramped = rgb_transform(
                 rgb_prophoto,
                 input_lut=lut_arr,
                 dst_dtype="float32",
             )
             look_flat = np.asarray(look_table, dtype=np.float32).reshape(-1)
             if look_val_divs < 2:
-                rgb_exposed = mi.apply_hue_sat_map(
+                rgb_exposed = mi.rgb_apply_hue_sat_map(
                     rgb_ramped,
                     map_data=look_flat,
                     hue_divs=int(look_hue_divs),
                     sat_divs=int(look_sat_divs),
                 )
             else:
-                rgb_exposed = mi.apply_hue_sat_val_map(
+                rgb_exposed = mi.rgb_apply_hue_sat_val_map(
                     rgb_ramped,
                     map_data=look_flat,
                     hue_divs=int(look_hue_divs),
@@ -3267,7 +3267,7 @@ def _render_camera_rgb(
         
         if has_post_rendering:
             # Post-rendering exists: apply tone curve first, then post-rendering
-            rgb_toned = transform_color(
+            rgb_toned = rgb_transform(
                 rgb_exposed,
                 input_lut=combined_curve,
                 hue_preserving_input_lut=True,
@@ -3286,7 +3286,7 @@ def _render_camera_rgb(
         # Convert ProPhoto (D50) → sRGB (D65), apply sRGB gamma, convert dtype
         matrix = compute_colorspace_matrix(ColorSpace.PROPHOTO_LINEAR, ColorSpace.SRGB_GAMMA)
         output_lut = ColorSpaceLUT(ColorSpace.SRGB_GAMMA, inverse=False, size=4096)
-        result = transform_color(
+        result = rgb_transform(
             rgb_to_convert,
             input_lut=tone_input_lut,
             matrix=matrix,
