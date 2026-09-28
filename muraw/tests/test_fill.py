@@ -134,6 +134,13 @@ def test_zeros_rejects_zero_size():
         mi.zeros((3, 0))
 
 
+@pytest.mark.parametrize("shape", ["ab", True, (2.5, 3)])
+def test_initializers_reject_non_int_shape(shape):
+    for make in (mi.zeros, mi.ones, lambda s: mi.full(s, 1.0)):
+        with pytest.raises(TypeError, match="sequence of ints"):
+            make(shape)
+
+
 def test_array_rejects_zero_size():
     with pytest.raises(ValueError, match="at least 1"):
         Array(np.zeros((0, 4), dtype=np.float32))

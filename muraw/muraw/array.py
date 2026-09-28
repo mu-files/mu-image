@@ -737,10 +737,28 @@ def flipud(m: "Array") -> "Array":
     return m.view(np.s_[::-1, :], oob_valid=True)
 
 
-def _meta_from_shape(shape: Any, dtype: ElementType) -> ArrayMeta:
+def _as_shape(shape: Any) -> Tuple[int, ...]:
+    """A ``shape`` argument as a tuple of ints. One int is a 1-tuple.
+
+    ``ArrayMeta`` checks the rank and sizes, so every constructor rejects
+    the same shapes with the same messages.
+    """
+    if isinstance(shape, (str, bytes, bool, np.bool_)):
+        raise TypeError(f"shape must be an int or a sequence of ints, got {shape!r}")
+    try:
+        if isinstance(shape, (int, np.integer)):
+            dims = (operator.index(shape),)
+        else:
+            dims = tuple(operator.index(dim) for dim in shape)
+    except TypeError:
+        raise TypeError(f"shape must be an int or a sequence of ints, got {shape!r}") from None
+    ArrayMeta(dtype=ElementType.FLOAT32, shape=dims)
+    return dims
+
+
+def _meta_from_shape(shape: Tuple[int, ...], dtype: ElementType) -> ArrayMeta:
     """Build whole-canvas meta for ``(N,)``, ``(H, W)``, or ``(H, W, C)``."""
-    dims = tuple(shape) if np.iterable(shape) else (shape,)
-    meta = ArrayMeta(dtype=dtype, shape=dims)
+    meta = ArrayMeta(dtype=dtype, shape=tuple(shape))
     return meta.copy(canvas=(0, 0, meta.width, meta.height))
 
 
@@ -750,9 +768,7 @@ def _with_meta(array: "Array", meta: ArrayMeta) -> "Array":
     ``meta`` must describe the same buffer (same ``buffer_shape`` and dtype).
     """
     out = object.__new__(Array)
-    out._meta = meta
-    out._data = array._data
-    out._node = array._node
+    out._take_fields(array, meta)
     return out
 
 
@@ -816,18 +832,18 @@ def _emit_fill(meta: ArrayMeta, fill_value: Any) -> "Array":
 
 def zeros(shape: Any, dtype: ElementTypeLike = ElementType.FLOAT32) -> "Array":
     """Lazy array filled with 0. Same arguments as ``numpy.zeros`` for image rank."""
-    return _emit_fill(_meta_from_shape(shape, ElementType(dtype)), 0)
+    return _emit_fill(_meta_from_shape(_as_shape(shape), ElementType(dtype)), 0)
 
 
 def ones(shape: Any, dtype: ElementTypeLike = ElementType.FLOAT32) -> "Array":
     """Lazy array filled with 1. Same arguments as ``numpy.ones`` for image rank."""
-    return _emit_fill(_meta_from_shape(shape, ElementType(dtype)), 1)
+    return _emit_fill(_meta_from_shape(_as_shape(shape), ElementType(dtype)), 1)
 
 
 def full(shape: Any, fill_value: Any, dtype: ElementTypeLike | None = None) -> "Array":
     """Lazy array filled with a constant. Same arguments as ``numpy.full`` for image rank."""
     et = ElementType(dtype) if dtype is not None else _dtype_from_fill(fill_value)
-    return _emit_fill(_meta_from_shape(shape, et), fill_value)
+    return _emit_fill(_meta_from_shape(_as_shape(shape), et), fill_value)
 
 
 def zeros_like(array: "Array", dtype: ElementTypeLike | None = None) -> "Array":
@@ -846,6 +862,69 @@ def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = N
     """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
     et = array.dtype if dtype is None else ElementType(dtype)
     return full(array.shape, fill_value, dtype=et)
+
+
+def _reshape_layout(array: "Array", shape: Tuple[int, ...]) -> "Array":
+    """The same samples, read as ``shape``.
+
+    A source buffer is ``ndarray.reshape``, which is a view. A lazy array
+    gets its own node, so the producer writes its buffer and the next op
+    binds that buffer reshaped, with no copy.
+    """
+    from types import MappingProxyType
+
+    from .engines.graph import OpNode
+
+    new = _meta_from_shape(shape, array.dtype)
+    if int(np.prod(array.shape)) != int(np.prod(new.shape)):
+        raise ValueError(
+            f"cannot reshape {array.shape} to {new.shape}: the sample count differs"
+        )
+    row, col = array.meta.origin
+    meta = new.copy(origin=array.meta.origin, canvas=(col, row, new.width, new.height))
+    if meta.buffer_shape == array.meta.buffer_shape:
+        return _with_meta(array, meta)
+    if array._node is None:
+        assert array._data is not None
+        return Array(np.reshape(array._data, meta.buffer_shape), origin=array.meta.origin)
+
+    def reshape(samples: np.ndarray, shape: Tuple[int, ...]) -> np.ndarray:
+        return np.reshape(samples, shape)
+
+    node = OpNode(
+        op="reshape",
+        inputs=(array,),
+        attrs=MappingProxyType({"shape": meta.shape}),
+        out_meta=meta,
+        fn=reshape,
+    )
+    return Array(_meta=meta, _node=node)
+
+
+def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...]]]:
+    """Strip axes that repeat one sample, or ``None`` when nothing does.
+
+    An axis longer than 1 with stride 0 is a NumPy broadcast. Index 0 of
+    that axis is the sample, and the axis stays so the rank does not change.
+    The returned counts are the repeat of each axis, 1 where the stride
+    was not 0.
+    """
+    if arr.ndim == 0 or not any(
+        int(length) > 1 and int(stride) == 0
+        for length, stride in zip(arr.shape, arr.strides)
+    ):
+        return None
+    slices = []
+    reps = []
+    for length, stride in zip(arr.shape, arr.strides):
+        length = int(length)
+        if length > 1 and int(stride) == 0:
+            slices.append(slice(0, 1))
+            reps.append(length)
+        else:
+            slices.append(slice(None))
+            reps.append(1)
+    return arr[tuple(slices)], tuple(reps)
 
 
 def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
@@ -870,24 +949,25 @@ def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
 
 
 def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
-    """Repeat ``array`` like ``numpy.tile`` for an image-rank array.
+    """Repeat ``array`` like ``numpy.tile``.
 
-    Unlike NumPy, a count of 0 and ``reps`` longer than the array rank
-    (which would add a leading axis) raise ``ValueError``.
+    A count of 0 raises ``ValueError``. ``reps`` longer than the rank
+    raises too, except 3 counts on a 1D array: NumPy promotes ``(N,)``
+    to ``(1, 1, N)``, so the length becomes the channel count.
     """
     from .engines.graph import op
 
     array = Array(array)
     is_1d = array.meta.is_1d
+    if isinstance(reps, (str, bytes)):
+        raise TypeError(f"tile reps must be an int or a sequence of ints, got {reps!r}")
     if np.iterable(reps):
         reps = tuple(reps)
     reps_count = len(reps) if isinstance(reps, tuple) else 1
     if is_1d and reps_count == 3:
-        raise ValueError(
-            f"tile reps {reps!r} would make a 1D array's length the channel count, "
-            "which is not supported yet"
-        )
-    if is_1d and reps_count == 2:
+        # NumPy promotes (N,) to (1, 1, N), so the length becomes channels.
+        array = _reshape_layout(array, (1, 1, array.shape[0]))
+    elif is_1d and reps_count == 2:
         # NumPy promotes (N,) to (1, N), which is this array's buffer.
         array = _with_meta(array, array.meta.with_size(ndim=2))
     row_reps, col_reps, channel_reps = _tile_reps(array.shape, reps)
@@ -898,6 +978,39 @@ def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
         col_reps=col_reps,
         channel_reps=channel_reps,
     )
+
+
+def broadcast_to(array: "Array | np.ndarray", shape: Any) -> "Array":
+    """Stretch size-1 axes to ``shape``, like ``numpy.broadcast_to``.
+
+    Shapes are right-aligned. A missing leading axis counts as length 1.
+    Each source axis must be 1 or already the destination length. The
+    stretch is ``tile`` with those repeat counts. A source whose axes land
+    on a different height, width, or channel count is reshaped first, as a
+    view of the same samples. ``(8, 8, 3)`` to ``(1080, 1920, 3)`` raises;
+    repeating a patch is ``tile``.
+    """
+    array = Array(array)
+    dest = _as_shape(shape)
+    src = array.shape
+    if len(dest) < len(src):
+        raise ValueError(
+            f"cannot broadcast shape {src} to {dest}: the source has more axes"
+        )
+    padded = (1,) * (len(dest) - len(src)) + src
+    reps = []
+    for src_len, dest_len in zip(padded, dest):
+        if src_len == dest_len:
+            reps.append(1)
+        elif src_len == 1:
+            reps.append(dest_len)
+        else:
+            raise ValueError(f"cannot broadcast shape {src} to {dest}")
+    if padded != src:
+        array = _reshape_layout(array, padded)
+    if all(count == 1 for count in reps):
+        return array
+    return tile(array, tuple(reps))
 
 
 class Array:
@@ -939,6 +1052,12 @@ class Array:
             if _node is not None:
                 raise ValueError("source Array cannot also have an op node")
             arr = np.asarray(data)
+            repeated = _repeated_axes(arr)
+            if repeated is not None:
+                core, reps = repeated
+                stretched = tile(Array(core, origin=origin), reps)
+                self._take_fields(stretched, stretched._meta)
+                return
             meta = meta_from_array(arr)
             if origin is not None:
                 row, col = int(origin[0]), int(origin[1])
@@ -951,23 +1070,19 @@ class Array:
             # are not reshaped, because sealing must mark the caller's array.
             if meta.is_1d:
                 arr = arr.reshape(meta.buffer_shape)
-            data_out: np.ndarray | None
-            if _is_direct_source(arr):
-                data_out, node = _seal_ndarray(arr), None
-            else:
+            if not _is_direct_source(arr):
                 viewed = _view_over_packed(arr)
                 if viewed is not None:
                     _seal_ndarray(arr)
-                    data_out, node = viewed._data, viewed._node
-                else:
-                    # "A" copies a misaligned array too. A one-row array
-                    # can be C-contiguous and still start on a byte that is
-                    # not a multiple of its item size.
-                    packed = np.require(arr, requirements=["C", "A"])
-                    data_out, node = _seal_ndarray(packed), None
+                    self._take_fields(viewed, meta)
+                    return
+                # "A" copies a misaligned array too. A one-row array can be
+                # C-contiguous and still start on a byte that is not a
+                # multiple of its item size.
+                arr = np.require(arr, requirements=["C", "A"])
             self._meta = meta
-            self._data = data_out
-            self._node = node
+            self._data = _seal_ndarray(arr)
+            self._node = None
         elif _meta is not None:
             if origin is not None:
                 raise ValueError("origin= is only valid for source Arrays")
@@ -976,6 +1091,16 @@ class Array:
             self._node = _node
         else:
             raise ValueError("Array requires an ndarray source or _meta=")
+
+    def _take_fields(self, other: "Array", meta: ArrayMeta) -> None:
+        """Make this handle ``other``'s buffer and node, presented with ``meta``.
+
+        Every place that builds one handle from another goes through here,
+        so a new slot is copied in one place.
+        """
+        self._meta = meta
+        self._data = other._data
+        self._node = other._node
 
     @property
     def dtype(self) -> ElementType:

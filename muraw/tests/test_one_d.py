@@ -134,9 +134,11 @@ def test_tile_matches_numpy(reps):
     np.testing.assert_array_equal(out.realize(), expected)
 
 
-def test_tile_three_reps_raises_until_reshape_exists():
-    with pytest.raises(ValueError, match="channel count"):
-        mi.tile(Array(V), (1, 1, 2))
+def test_tile_three_reps_makes_channels():
+    out = mi.tile(Array(V), (1, 1, 2))
+    expected = np.tile(V, (1, 1, 2))
+    assert out.shape == expected.shape
+    np.testing.assert_array_equal(out.realize(), expected)
 
 
 def test_graph_op_sees_numpy_shape_and_may_return_1d():

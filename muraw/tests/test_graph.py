@@ -1117,13 +1117,12 @@ def test_padded_pixel_without_channel_axis_installed_as_view():
     np.testing.assert_array_equal(t.realize(), view)
 
 
-def test_broadcast_and_odd_pad_still_copy_on_ingest():
+def test_broadcast_ingests_as_tile_and_odd_pad_still_copies():
     row = np.arange(8, dtype=np.float32)
     broadcast = np.broadcast_to(row, (4, 8))
     t = Array(broadcast)
-    assert t._node is None
-    assert t._data.strides[1] == t._data.dtype.itemsize
-    assert not np.shares_memory(t._data, broadcast)
+    assert t._node is not None and t._node.op == "tile"
+    assert np.shares_memory(t._node.inputs[0]._data, broadcast)
     np.testing.assert_array_equal(t.realize(), broadcast)
 
     raw = np.arange(2 * 2 * 7, dtype=np.uint8)
@@ -1284,5 +1283,8 @@ def test_ingest_random_layouts_match_numpy():
         arr = _random_layout(rng)
         t = Array(arr)
         np.testing.assert_array_equal(t.realize(), arr)
-        bound = t._data if t._node is None else t._node.inputs[0]._data
-        assert bound.ctypes.data % bound.dtype.itemsize == 0
+        bound = t
+        while bound._node is not None:
+            bound = bound._node.inputs[0]
+        assert bound._data is not None
+        assert bound._data.ctypes.data % bound._data.dtype.itemsize == 0
