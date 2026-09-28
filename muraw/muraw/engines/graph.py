@@ -149,9 +149,9 @@ class EngineOp:
     def infer_out_meta(self, x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         if self._infer_meta is not None:
             return self._infer_meta(x, attrs)
-        return x.meta.copy(
-            dtype=self._out_dtype(x, attrs),
+        return x.meta.with_size(
             channels=self._out_channels(x, attrs),
+            dtype=self._out_dtype(x, attrs),
         )
 
     def __repr__(self) -> str:
@@ -301,7 +301,7 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
                 f"view: src_channels {list(src_channels)} has an index out of bounds "
                 f"for {x.meta.channels} channel(s)"
             )
-    return x.meta.copy(
+    return x.meta.with_size(
         height=height,
         width=width,
         channels=channels,
@@ -339,12 +339,17 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     base_row, base_col = x.meta.origin
     origin = (base_row - top, base_col - left)
     origin_row, origin_col = origin
-    return x.meta.copy(
+    if channel_before or channel_after:
+        ndim = 3
+    elif x.meta.is_1d and (top or bottom):
+        ndim = 2
+    else:
+        ndim = x.meta.ndim
+    return x.meta.with_size(
         height=dest_h,
         width=dest_w,
         channels=x.meta.channels + channel_before + channel_after,
-        channel_axis=x.meta.channel_axis or channel_before + channel_after > 0,
-        is_1d=x.meta.is_1d and not (top or bottom or channel_before or channel_after),
+        ndim=ndim,
         origin=origin,
         canvas=(origin_col, origin_row, dest_w, dest_h),
     )
@@ -367,11 +372,11 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     dest_h = x.meta.height * row_reps
     dest_w = x.meta.width * col_reps
     origin_row, origin_col = x.meta.origin
-    return x.meta.copy(
+    return x.meta.with_size(
         height=dest_h,
         width=dest_w,
         channels=x.meta.channels * channel_reps,
-        is_1d=x.meta.is_1d and row_reps == 1 and channel_reps == 1,
+        ndim=2 if x.meta.is_1d and row_reps > 1 else x.meta.ndim,
         canvas=(origin_col, origin_row, dest_w, dest_h),
     )
 
@@ -419,10 +424,10 @@ def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     cx, cy, cw, ch = x.meta.canvas
     local = (cx - origin_col, cy - origin_row, cw, ch)
     mx, my, mw, mh = _orient_rect(code, local, x.meta.width, x.meta.height)
-    return x.meta.copy(
+    return x.meta.with_size(
         height=height,
         width=width,
-        is_1d=x.meta.is_1d and not swap,
+        ndim=2 if x.meta.is_1d and swap else x.meta.ndim,
         canvas=(mx + origin_col, my + origin_row, mw, mh),
     )
 

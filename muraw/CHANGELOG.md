@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `apply_hue_sat_map` → `rgb_apply_hue_sat_map`, `apply_hue_sat_val_map` → `rgb_apply_hue_sat_val_map`
   - `apply_profile_gain_table_map` → `rgb_apply_profile_gain_table_map`, `channel_luts_op` → `rgb_channel_luts_op`
 - **`normalize_raw` split**: `cfa_normalize_raw` takes one-channel CFA input. `normalize_raw` now takes LinearRaw input with any channel count (monochrome or RGB). Both keep every linearization attribute. The `samples_per_pixel` attribute is removed, because the channel count comes from the input.
+- **`ArrayMeta` stores the shape (breaking)**: `ArrayMeta(dtype=..., shape=...)` takes the NumPy shape `(N,)`, `(H, W)`, or `(H, W, C)`. `height`, `width`, `channels`, `channel_axis`, `is_1d`, `ndim`, and `buffer_shape` are read-only properties computed from it. `meta.with_size(height=, width=, channels=, ndim=)` returns a copy with new sizes or a new rank. `meta.copy()` no longer accepts the size fields.
 
 ### Added
 - **Op properties**: Each op declares `requires_2d`, `is_cfa`, and `is_rgb`, exposed as `op.meta.requires_2d` / `.is_cfa` / `.is_rgb`. The catalog generators reject a `cfa_` / `rgb_` name that disagrees with these properties. `@graph_op` takes the same keywords and checks the input channel count at call time.

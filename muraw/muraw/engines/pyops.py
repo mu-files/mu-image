@@ -25,7 +25,7 @@ def _demosaic_out_meta(t: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         dtype = ElementType.UINT16
     else:
         dtype = t.meta.dtype
-    return t.meta.copy(dtype=dtype, channels=3)
+    return t.meta.with_size(channels=3, dtype=dtype)
 
 
 @graph_op(out_meta=_demosaic_out_meta, is_cfa=True, requires_2d=True)

@@ -13,36 +13,6 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple
 import numpy as np
 
 
-def _hwc_from_shape(shape: Any) -> Tuple[int, int, int, bool]:
-    """Return (height, width, channels, channel_axis) for ``(H, W)`` or ``(H, W, C)``.
-
-    ``C`` must be at least 1. Height and width must be at least 1.
-    ``channel_axis`` is true when the shape is rank 3, including ``(H, W, 1)``.
-    """
-    dims = tuple(int(v) for v in shape)
-    if len(dims) == 2:
-        height, width = dims
-        channels = 1
-        channel_axis = False
-    elif len(dims) == 3:
-        height, width, channels = dims
-        channel_axis = True
-        if channels < 1:
-            raise ValueError(f"unsupported channel count: {channels}")
-    else:
-        raise ValueError("array must be (N,), (H,W) or (H,W,C)")
-    if height < 1 or width < 1:
-        raise ValueError(
-            f"shape height and width must be at least 1, got {(height, width)}"
-        )
-    return height, width, channels, channel_axis
-
-
-def _require_image_ndarray(arr: np.ndarray) -> None:
-    """Accept only (H, W) or (H, W, C) with C at least 1 and size at least 1×1."""
-    _hwc_from_shape(arr.shape)
-
-
 def _is_direct_source(arr: np.ndarray) -> bool:
     """True when the engine can bind ``arr`` itself as a source buffer.
 
@@ -539,28 +509,52 @@ type ElementTypeLike = str | ElementType | np.dtype[Any] | type[np.generic]
 @dataclass(frozen=True)
 class ArrayMeta:
     dtype: ElementType
-    height: int
-    width: int
-    channels: int
+    # The NumPy shape: ``(N,)``, ``(H, W)``, or ``(H, W, C)``. A mono array
+    # can be ``(H, W)`` or ``(H, W, 1)``.
+    shape: Tuple[int, ...]
     # Buffer top-left in the shared canvas coordinate system, as (row, col).
     origin: Tuple[int, int] = (0, 0)
     # Rect in that same system: (x0, y0, width, height). A later view or
     # crop uses it. When this array is the whole canvas, (x0, y0) is
     # (origin col, origin row).
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
-    # True when a rank-2 mono array is presented as ``(H, W, 1)``.
-    # ``channels == 1`` alone stays ``(H, W)``.
-    channel_axis: bool = False
-    # True when the array is NumPy 1D ``(N,)``. The buffer is still one row
-    # ``(1, N)``: height 1, width N, one channel, no channel axis.
-    is_1d: bool = False
+
+    def __post_init__(self) -> None:
+        shape = tuple(int(v) for v in self.shape)
+        if not 1 <= len(shape) <= 3:
+            raise ValueError("array must be (N,), (H,W) or (H,W,C)")
+        if len(shape) == 3 and shape[2] < 1:
+            raise ValueError(f"unsupported channel count: {shape[2]}")
+        if min(shape[:2]) < 1:
+            raise ValueError(f"shape dimensions must be at least 1, got {shape}")
+        object.__setattr__(self, "shape", shape)
 
     @property
-    def shape(self) -> Tuple[int, ...]:
-        """The NumPy shape: ``(N,)``, ``(H, W)``, or ``(H, W, C)``."""
-        if self.is_1d:
-            return (self.width,)
-        return self.buffer_shape
+    def height(self) -> int:
+        """Rows in the buffer. A 1D array is one row."""
+        return 1 if self.is_1d else self.shape[0]
+
+    @property
+    def width(self) -> int:
+        """Columns in the buffer. A 1D array's length is its width."""
+        return self.shape[0] if self.is_1d else self.shape[1]
+
+    @property
+    def channels(self) -> int:
+        return self.shape[2] if self.channel_axis else 1
+
+    @property
+    def channel_axis(self) -> bool:
+        """True when the shape has a channel axis, including ``(H, W, 1)``."""
+        return len(self.shape) == 3
+
+    @property
+    def is_1d(self) -> bool:
+        return len(self.shape) == 1
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
 
     @property
     def buffer_shape(self) -> Tuple[int, ...]:
@@ -568,28 +562,45 @@ class ArrayMeta:
 
         It equals ``shape`` except for a 1D array, whose buffer is ``(1, N)``.
         """
-        if self.channels == 1 and not self.channel_axis:
-            return (self.height, self.width)
-        return (self.height, self.width, self.channels)
-
-    @property
-    def ndim(self) -> int:
-        return len(self.shape)
+        return (1, self.shape[0]) if self.is_1d else self.shape
 
     def copy(self, **changes: Any) -> "ArrayMeta":
         return replace(self, **changes)
 
-    def __post_init__(self) -> None:
-        if self.height < 1 or self.width < 1:
-            raise ValueError(
-                f"shape height and width must be at least 1, got {(self.height, self.width)}"
-            )
-        if self.is_1d and (self.height != 1 or self.channels != 1 or self.channel_axis):
-            raise ValueError(
-                "a 1D array has one row and one channel; got "
-                f"height={self.height}, channels={self.channels}, "
-                f"channel_axis={self.channel_axis}"
-            )
+    def with_size(
+        self,
+        *,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        channels: Optional[int] = None,
+        ndim: Optional[int] = None,
+        **changes: Any,
+    ) -> "ArrayMeta":
+        """A copy with a new height, width, channel count, or rank.
+
+        Each size that is not given keeps this array's value. ``ndim``
+        defaults to this array's rank, except that more than one channel
+        always needs a channel axis. A 1D result must be one row and one
+        channel. ``changes`` sets other fields, as in ``copy``.
+        """
+        height = self.height if height is None else height
+        width = self.width if width is None else width
+        channels = self.channels if channels is None else channels
+        ndim = self.ndim if ndim is None else ndim
+        if channels > 1 and ndim == 2:
+            ndim = 3
+        if ndim == 1:
+            if height != 1 or channels != 1:
+                raise ValueError(
+                    "a 1D array has one row and one channel; got "
+                    f"height={height}, channels={channels}"
+                )
+            shape: Tuple[int, ...] = (width,)
+        elif ndim == 2:
+            shape = (height, width)
+        else:
+            shape = (height, width, channels)
+        return replace(self, shape=shape, **changes)
 
 
 def meta_from_array(arr: np.ndarray) -> ArrayMeta:
@@ -911,10 +922,10 @@ def _view_1d(
     import muimage as mi
 
     cols, leading, trailing = _index_key_1d(region)
-    row = _with_meta(array, array.meta.copy(is_1d=False))
+    row = _with_meta(array, array.meta.with_size(ndim=2))
     out = row.view((slice(None), cols), oob_valid=oob_valid, reset_origin=reset_origin)
     if (leading, trailing) == (0, 0):
-        return _with_meta(out, out.meta.copy(is_1d=True))
+        return _with_meta(out, out.meta.with_size(ndim=1))
     if (leading, trailing) == (1, 0):
         return out
     if (leading, trailing) == (1, 1):
@@ -1002,21 +1013,9 @@ def flipud(m: "Array") -> "Array":
 
 def _meta_from_shape(shape: Any, dtype: ElementType) -> ArrayMeta:
     """Build whole-canvas meta for ``(N,)``, ``(H, W)``, or ``(H, W, C)``."""
-    dims = tuple(int(v) for v in shape) if np.iterable(shape) else (int(shape),)
-    is_1d = len(dims) == 1
-    height, width, channels, channel_axis = _hwc_from_shape(
-        (1, dims[0]) if is_1d else dims
-    )
-    return ArrayMeta(
-        dtype=dtype,
-        height=height,
-        width=width,
-        channels=channels,
-        origin=(0, 0),
-        canvas=(0, 0, width, height),
-        channel_axis=channel_axis,
-        is_1d=is_1d,
-    )
+    dims = tuple(shape) if np.iterable(shape) else (shape,)
+    meta = ArrayMeta(dtype=dtype, shape=dims)
+    return meta.copy(canvas=(0, 0, meta.width, meta.height))
 
 
 def _with_meta(array: "Array", meta: ArrayMeta) -> "Array":
@@ -1040,14 +1039,9 @@ def _retag_channel_axis(array: "Array", channel_axis: bool) -> "Array":
     """
     if array.meta.channel_axis == channel_axis:
         return array
-    meta = array.meta.copy(channel_axis=channel_axis)
+    meta = array.meta.with_size(ndim=3 if channel_axis else 2)
     if array._data is not None and array.meta.channels == 1:
-        shape = (
-            (array.meta.height, array.meta.width, 1)
-            if channel_axis
-            else (array.meta.height, array.meta.width)
-        )
-        return Array(np.reshape(array._data, shape))
+        return Array(np.reshape(array._data, meta.shape))
     return Array(_meta=meta, _node=array._node)
 
 
@@ -1169,7 +1163,7 @@ def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
         )
     if is_1d and reps_count == 2:
         # NumPy promotes (N,) to (1, N), which is this array's buffer.
-        array = _with_meta(array, array.meta.copy(is_1d=False))
+        array = _with_meta(array, array.meta.with_size(ndim=2))
     row_reps, col_reps, channel_reps = _tile_reps(array.shape, reps)
     return op(
         "tile",
@@ -1219,39 +1213,28 @@ class Array:
             if _node is not None:
                 raise ValueError("source Array cannot also have an op node")
             arr = np.asarray(data)
+            meta = meta_from_array(arr)
+            if origin is not None:
+                row, col = int(origin[0]), int(origin[1])
+                meta = meta.copy(
+                    origin=(row, col),
+                    canvas=(col, row, meta.width, meta.height),
+                )
             # A 1D (N,) ndarray is bound as one row. Adding a leading axis of
-            # length 1 is always a view, so this never copies.
-            is_1d = arr.ndim == 1
-            if is_1d:
-                arr = arr.reshape(1, -1)
-            _require_image_ndarray(arr)
-            ElementType(arr.dtype)
+            # length 1 is always a view, so this never copies. Other arrays
+            # are not reshaped, because sealing must mark the caller's array.
+            if meta.is_1d:
+                arr = arr.reshape(meta.buffer_shape)
+            data_out: np.ndarray | None
             if _is_direct_source(arr):
-                sealed = _seal_ndarray(arr)
-                meta = meta_from_array(sealed)
-                data_out: np.ndarray | None = sealed
-                node = None
+                data_out, node = _seal_ndarray(arr), None
             else:
                 viewed = _view_over_packed(arr)
                 if viewed is not None:
                     _seal_ndarray(arr)
-                    meta = viewed.meta
-                    data_out = viewed._data
-                    node = viewed._node
+                    data_out, node = viewed._data, viewed._node
                 else:
-                    sealed = _seal_ndarray(np.ascontiguousarray(arr))
-                    meta = meta_from_array(sealed)
-                    data_out = sealed
-                    node = None
-            if origin is not None:
-                row, col = int(origin[0]), int(origin[1])
-                meta = replace(
-                    meta,
-                    origin=(row, col),
-                    canvas=(col, row, meta.width, meta.height),
-                )
-            if is_1d:
-                meta = meta.copy(is_1d=True)
+                    data_out, node = _seal_ndarray(np.ascontiguousarray(arr)), None
             self._meta = meta
             self._data = data_out
             self._node = node
@@ -1343,7 +1326,7 @@ class Array:
             and out.meta.channel_axis != window.channel_axis
         ):
             out = Array(
-                _meta=out.meta.copy(channel_axis=window.channel_axis),
+                _meta=out.meta.with_size(ndim=3 if window.channel_axis else 2),
                 _node=out._node,
             )
         return out
