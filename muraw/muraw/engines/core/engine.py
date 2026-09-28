@@ -77,7 +77,7 @@ class CoreEngine:
         out_binds: Dict[int, np.ndarray] = {}
         for t in outputs:
             # Kernels write every dest pixel, so do not spend a pass zeroing arr.
-            arr = np.empty(t.meta.shape, dtype=t.meta.dtype.numpy_dtype)
+            arr = np.empty(t.meta.buffer_shape, dtype=t.meta.dtype.numpy_dtype)
             values[id(t)] = arr
             out_binds[id_of[id(t)]] = arr
 
@@ -99,7 +99,9 @@ class CoreEngine:
                 "canvas_width": int(m.canvas[2]),
                 "canvas_height": int(m.canvas[3]),
             }
-            if buffer is not None:
+            # A one-row buffer's row stride is arbitrary in NumPy (it can be 0
+            # or negative). Without "stride" the engine uses the packed pitch.
+            if buffer is not None and buffer.shape[0] > 1:
                 desc["stride"] = int(buffer.strides[0])
             tensor_descs.append(desc)
 

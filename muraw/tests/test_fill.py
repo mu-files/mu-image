@@ -98,7 +98,7 @@ def test_zeros_minus_one_runs():
 
 def test_zeros_rejects_bad_rank():
     with pytest.raises(ValueError, match=r"\(H,W\)"):
-        mi.zeros((2,))
+        mi.zeros((2, 2, 2, 2))
 
 
 def test_zeros_two_channels():

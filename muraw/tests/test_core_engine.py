@@ -90,3 +90,27 @@ def test_execute_graph_rgb_matrix_3x3_identity():
     out = np.zeros_like(inp)
     _engine_load.execute_graph(graph, {0: inp}, {1: out})
     np.testing.assert_allclose(out, inp)
+
+
+_ROW = np.arange(8, dtype=np.float32)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        _ROW[None, :],
+        np.broadcast_to(_ROW, (1, 8)),
+        _ROW[:, None],
+        np.array([1.0, 2.0, 3.0], dtype=np.float32)[None, None, :],
+        np.arange(6, dtype=np.float32).reshape(2, 3)[:, :, None],
+    ],
+    ids=["row_newaxis", "row_broadcast", "column_newaxis", "pixel_newaxis", "channel_newaxis"],
+)
+def test_length_one_axis_binds_without_a_copy(src):
+    """NumPy gives an axis of length 1 an arbitrary stride, often 0."""
+    import muimage as mi
+
+    arr = mi.Array(src)
+    assert arr._node is None
+    assert np.shares_memory(arr.realize(), src)
+    np.testing.assert_array_equal((arr * 2).realize(), src * 2)

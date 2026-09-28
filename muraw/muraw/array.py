@@ -30,7 +30,7 @@ def _hwc_from_shape(shape: Any) -> Tuple[int, int, int, bool]:
         if channels < 1:
             raise ValueError(f"unsupported channel count: {channels}")
     else:
-        raise ValueError("array must be (H,W) or (H,W,C)")
+        raise ValueError("array must be (N,), (H,W) or (H,W,C)")
     if height < 1 or width < 1:
         raise ValueError(
             f"shape height and width must be at least 1, got {(height, width)}"
@@ -48,22 +48,30 @@ def _is_direct_source(arr: np.ndarray) -> bool:
 
     Pixels in a row are adjacent, the data pointer is element-aligned, and
     the row pitch is a positive multiple of a pixel. A negative pitch is a
-    flipped view, not a source buffer.
+    flipped view, not a source buffer. The stride of an axis of length 1 is
+    ignored, as NumPy and the engine binding both do: ``v[None, :]`` has a
+    row stride of 0.
     """
     itemsize = int(arr.dtype.itemsize)
     if int(arr.ctypes.data) % itemsize != 0:
         return False
+
+    def is_packed_axis(axis: int, step_bytes: int) -> bool:
+        return int(arr.shape[axis]) == 1 or int(arr.strides[axis]) == step_bytes
+
     if arr.ndim == 2:
         pixel = itemsize
-        if int(arr.strides[1]) != itemsize:
+        if not is_packed_axis(1, itemsize):
             return False
     elif arr.ndim == 3:
         channels = int(arr.shape[2])
         pixel = itemsize * channels
-        if int(arr.strides[2]) != itemsize or int(arr.strides[1]) != pixel:
+        if not (is_packed_axis(2, itemsize) and is_packed_axis(1, pixel)):
             return False
     else:
         return False
+    if int(arr.shape[0]) == 1:
+        return True
     row_pitch = int(arr.strides[0])
     packed = int(arr.shape[1]) * pixel
     return row_pitch >= packed and row_pitch % pixel == 0
@@ -543,12 +551,30 @@ class ArrayMeta:
     # True when a rank-2 mono array is presented as ``(H, W, 1)``.
     # ``channels == 1`` alone stays ``(H, W)``.
     channel_axis: bool = False
+    # True when the array is NumPy 1D ``(N,)``. The buffer is still one row
+    # ``(1, N)``: height 1, width N, one channel, no channel axis.
+    is_1d: bool = False
 
     @property
     def shape(self) -> Tuple[int, ...]:
+        """The NumPy shape: ``(N,)``, ``(H, W)``, or ``(H, W, C)``."""
+        if self.is_1d:
+            return (self.width,)
+        return self.buffer_shape
+
+    @property
+    def buffer_shape(self) -> Tuple[int, ...]:
+        """The shape of the buffer the engine reads and writes.
+
+        It equals ``shape`` except for a 1D array, whose buffer is ``(1, N)``.
+        """
         if self.channels == 1 and not self.channel_axis:
             return (self.height, self.width)
         return (self.height, self.width, self.channels)
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
 
     def copy(self, **changes: Any) -> "ArrayMeta":
         return replace(self, **changes)
@@ -557,6 +583,12 @@ class ArrayMeta:
         if self.height < 1 or self.width < 1:
             raise ValueError(
                 f"shape height and width must be at least 1, got {(self.height, self.width)}"
+            )
+        if self.is_1d and (self.height != 1 or self.channels != 1 or self.channel_axis):
+            raise ValueError(
+                "a 1D array has one row and one channel; got "
+                f"height={self.height}, channels={self.channels}, "
+                f"channel_axis={self.channel_axis}"
             )
 
 
@@ -586,6 +618,8 @@ def _expand_pad(
     except ValueError:
         if axes == 3:
             detail = "((top, bottom), (left, right), (before, after))"
+        elif axes == 1:
+            detail = "((before, after),)"
         else:
             detail = "((top, bottom), (left, right))"
         raise ValueError(
@@ -832,6 +866,67 @@ def _window_from_key(meta: ArrayMeta, key: Any) -> _Window:
     return window
 
 
+def _index_key_1d(key: Any) -> Tuple[slice, int, int]:
+    """Split a key on a 1D array into its slice and the newaxis counts around it.
+
+    Returns ``(cols, leading, trailing)``: ``leading`` and ``trailing`` are
+    how many ``None`` entries come before and after the one axis. ``v[2:5]``
+    is ``(slice(2, 5), 0, 0)``, ``v[None, :]`` is ``(slice(None), 1, 0)``,
+    and ``v[:, None]`` is ``(slice(None), 0, 1)``.
+    """
+    if key is Ellipsis or key is None or isinstance(key, slice):
+        items: Tuple[Any, ...] = (key,)
+    elif isinstance(key, tuple):
+        items = key
+    else:
+        raise TypeError("region must be a slice or a tuple of slices")
+    n_ellipsis = sum(item is Ellipsis for item in items)
+    if n_ellipsis > 1:
+        raise IndexError("an index can only have a single ellipsis ('...')")
+    explicit = [item for item in items if item is not None and item is not Ellipsis]
+    if len(explicit) > 1:
+        raise IndexError(
+            "too many indices for array: array is 1-dimensional, "
+            f"but {len(explicit)} were indexed"
+        )
+    if explicit:
+        items = tuple(item for item in items if item is not Ellipsis)
+    elif n_ellipsis:
+        items = tuple(slice(None) if item is Ellipsis else item for item in items)
+    else:
+        items = items + (slice(None),)
+    position = next(i for i, item in enumerate(items) if item is not None)
+    cols = items[position]
+    if not isinstance(cols, slice):
+        raise TypeError(
+            "region must be slice objects; integer axes and masks are not supported"
+        )
+    return cols, position, len(items) - position - 1
+
+
+def _view_1d(
+    array: "Array", region: Any, *, oob_valid: bool, reset_origin: bool
+) -> "Array":
+    """NumPy indexing on a 1D array, done as a view of its one-row buffer."""
+    import muimage as mi
+
+    cols, leading, trailing = _index_key_1d(region)
+    row = _with_meta(array, array.meta.copy(is_1d=False))
+    out = row.view((slice(None), cols), oob_valid=oob_valid, reset_origin=reset_origin)
+    if (leading, trailing) == (0, 0):
+        return _with_meta(out, out.meta.copy(is_1d=True))
+    if (leading, trailing) == (1, 0):
+        return out
+    if (leading, trailing) == (1, 1):
+        return out.view(np.s_[:, :, None])
+    if (leading, trailing) == (0, 1):
+        return mi.orientation(out, orientation=5)
+    raise IndexError(
+        "on a 1D array, newaxis is supported as v[None, :], v[:, None], "
+        "or v[None, :, None]"
+    )
+
+
 def _window(
     meta: ArrayMeta,
     region: slice | tuple[Any, ...] | None,
@@ -870,6 +965,8 @@ def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     180° is a canvas-keeping view. Quarter turns still go through
     orientation, because a slice cannot swap height and width.
     """
+    if m.meta.is_1d:
+        raise ValueError(f"Axes={tuple(axes)} out of range for array of ndim=1.")
     if tuple(axes) != (0, 1):
         raise ValueError("Array only supports rot90 in the spatial plane (axes=(0, 1)).")
     turns = int(k) % 4
@@ -888,20 +985,28 @@ def fliplr(m: "Array") -> "Array":
 
     A canvas-keeping view, so a later crop can still reach the parent.
     """
+    if m.meta.is_1d:
+        raise ValueError("Input must be >= 2-d.")
     return m.view(np.s_[:, ::-1], oob_valid=True)
 
 
 def flipud(m: "Array") -> "Array":
-    """Flip up–down. Same as ``numpy.flipud``.
+    """Flip up–down. Same as ``numpy.flipud``: on a 1D array, reverse it.
 
     A canvas-keeping view, so a later crop can still reach the parent.
     """
+    if m.meta.is_1d:
+        return m.view(np.s_[::-1], oob_valid=True)
     return m.view(np.s_[::-1, :], oob_valid=True)
 
 
 def _meta_from_shape(shape: Any, dtype: ElementType) -> ArrayMeta:
-    """Build whole-canvas meta for ``(H, W)`` or ``(H, W, C)``."""
-    height, width, channels, channel_axis = _hwc_from_shape(shape)
+    """Build whole-canvas meta for ``(N,)``, ``(H, W)``, or ``(H, W, C)``."""
+    dims = tuple(int(v) for v in shape) if np.iterable(shape) else (int(shape),)
+    is_1d = len(dims) == 1
+    height, width, channels, channel_axis = _hwc_from_shape(
+        (1, dims[0]) if is_1d else dims
+    )
     return ArrayMeta(
         dtype=dtype,
         height=height,
@@ -910,7 +1015,20 @@ def _meta_from_shape(shape: Any, dtype: ElementType) -> ArrayMeta:
         origin=(0, 0),
         canvas=(0, 0, width, height),
         channel_axis=channel_axis,
+        is_1d=is_1d,
     )
+
+
+def _with_meta(array: "Array", meta: ArrayMeta) -> "Array":
+    """The same buffer or node as ``array``, presented with ``meta``.
+
+    ``meta`` must describe the same buffer (same ``buffer_shape`` and dtype).
+    """
+    out = object.__new__(Array)
+    out._meta = meta
+    out._data = array._data
+    out._node = array._node
+    return out
 
 
 def _retag_channel_axis(array: "Array", channel_axis: bool) -> "Array":
@@ -1015,7 +1133,7 @@ def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
 
     An int is the last axis. Missing leading counts are 1. A longer tuple
     would add an axis. A rank-2 array has no channel axis, so that count
-    stays 1.
+    stays 1. A 1D array has only a column count.
     """
     if np.iterable(reps):
         counts = tuple(operator.index(value) for value in reps)
@@ -1025,6 +1143,8 @@ def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
         raise ValueError(f"tile reps {reps!r} would add an axis on shape {shape}")
     if any(count < 1 for count in counts):
         raise ValueError(f"tile reps must be >= 1, got {reps!r}")
+    if len(shape) == 1:
+        return 1, counts[0], 1
     row, col, channel = (1,) * (len(shape) - len(counts)) + counts + (1,) * (3 - len(shape))
     return row, col, channel
 
@@ -1038,6 +1158,18 @@ def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
     from .engines.graph import op
 
     array = Array(array)
+    is_1d = array.meta.is_1d
+    if np.iterable(reps):
+        reps = tuple(reps)
+    reps_count = len(reps) if isinstance(reps, tuple) else 1
+    if is_1d and reps_count == 3:
+        raise ValueError(
+            f"tile reps {reps!r} would make a 1D array's length the channel count, "
+            "which is not supported yet"
+        )
+    if is_1d and reps_count == 2:
+        # NumPy promotes (N,) to (1, N), which is this array's buffer.
+        array = _with_meta(array, array.meta.copy(is_1d=False))
     row_reps, col_reps, channel_reps = _tile_reps(array.shape, reps)
     return op(
         "tile",
@@ -1087,6 +1219,11 @@ class Array:
             if _node is not None:
                 raise ValueError("source Array cannot also have an op node")
             arr = np.asarray(data)
+            # A 1D (N,) ndarray is bound as one row. Adding a leading axis of
+            # length 1 is always a view, so this never copies.
+            is_1d = arr.ndim == 1
+            if is_1d:
+                arr = arr.reshape(1, -1)
             _require_image_ndarray(arr)
             ElementType(arr.dtype)
             if _is_direct_source(arr):
@@ -1113,6 +1250,8 @@ class Array:
                     origin=(row, col),
                     canvas=(col, row, meta.width, meta.height),
                 )
+            if is_1d:
+                meta = meta.copy(is_1d=True)
             self._meta = meta
             self._data = data_out
             self._node = node
@@ -1166,6 +1305,14 @@ class Array:
         """
         import muimage as mi
 
+        if self._meta.is_1d:
+            if region is None:
+                raise TypeError(
+                    "a 1D array is viewed with a slice, not left, top, width, height"
+                )
+            return _view_1d(
+                self, region, oob_valid=oob_valid, reset_origin=reset_origin
+            )
         window = _window(self._meta, region, left, top, width, height)
         if window.is_full(self._meta):
             if (
@@ -1233,9 +1380,24 @@ class Array:
         A bare int or a two-axis width grows height and width only. On an
         array whose shape is ``(H, W, C)``, a third pair ``(before, after)``
         adds constant channels. That channel pad requires ``mode="constant"``.
+        On a 1D array, ``pad_width`` is one ``(before, after)`` pair, as in NumPy.
         """
         import muimage as mi
 
+        if self._meta.is_1d:
+            left, right = (
+                int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)
+            )
+            consts = [float(v) for v in _expand_pad(constant_values, "constant_values", 1)]
+            return mi.pad(
+                self,
+                top=0,
+                bottom=0,
+                left=left,
+                right=right,
+                mode=mode,
+                constant_values=[0.0, 0.0] + consts,
+            )
         if _pad_width_has_channel_axis(pad_width):
             if len(self.shape) != 3:
                 raise ValueError(
@@ -1280,15 +1442,23 @@ class Array:
 
     def __getitem__(self, key: Any) -> "Array":
         """NumPy spatial slice: a hard crop of this array."""
+        if key is None:
+            # crop reads region=None as "no region given".
+            key = (None,)
         return self.crop(key)
 
     def transpose(self, *axes: Any) -> "Array":
         """Transpose the 2D spatial dimensions of the array.
 
         Accepts optional axes to match NumPy, but enforces 2D spatial remapping.
+        A 1D array is returned unchanged, as in NumPy.
         """
         if len(axes) == 1 and not isinstance(axes[0], (int, np.integer)):
             axes = tuple(axes[0])
+        if self._meta.is_1d:
+            if axes and axes != (0,):
+                raise ValueError("axes don't match array")
+            return self
         if axes and axes != (1, 0) and axes != (1, 0, 2):
             raise ValueError("Array only supports 2D spatial axis transposition.")
         import muimage as mi

@@ -84,6 +84,9 @@ class Engine(Protocol):
     ) -> None:
         """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).
 
+        Every array in ``values`` has its ``meta.buffer_shape``, so a 1D
+        array is a one-row ``(1, N)`` buffer.
+
         At engine timing OPS, record per-op ``{op} (engine)`` children under the
         current ``graph_compute`` step via ``PerfTimer.current()``.
         """
@@ -341,6 +344,7 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         width=dest_w,
         channels=x.meta.channels + channel_before + channel_after,
         channel_axis=x.meta.channel_axis or channel_before + channel_after > 0,
+        is_1d=x.meta.is_1d and not (top or bottom or channel_before or channel_after),
         origin=origin,
         canvas=(origin_col, origin_row, dest_w, dest_h),
     )
@@ -367,6 +371,7 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         height=dest_h,
         width=dest_w,
         channels=x.meta.channels * channel_reps,
+        is_1d=x.meta.is_1d and row_reps == 1 and channel_reps == 1,
         canvas=(origin_col, origin_row, dest_w, dest_h),
     )
 
@@ -417,6 +422,7 @@ def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     return x.meta.copy(
         height=height,
         width=width,
+        is_1d=x.meta.is_1d and not swap,
         canvas=(mx + origin_col, my + origin_row, mw, mh),
     )
 
@@ -473,6 +479,10 @@ def graph_op(
         def wrapper(image: Any, /, *args: Any, **kwargs: Any) -> Any:
             if not isinstance(image, Array):
                 return f(image, *args, **kwargs)
+            if requires_2d and image.meta.is_1d:
+                raise ValueError(
+                    f"op {f.__name__!r} requires a 2D input, got shape {image.shape}"
+                )
             in_channels = 1 if is_cfa else 3 if is_rgb else None
             if in_channels is not None and image.meta.channels != in_channels:
                 raise ValueError(
@@ -576,6 +586,8 @@ def _validate_attrs(
 def emit(engine_op: EngineOp, x: Array, /, **attrs: Any) -> Array:
     """Validate attrs, ask the op for output meta, and build a lazy node."""
     name = engine_op.meta.name
+    if engine_op.meta.requires_2d and x.meta.is_1d:
+        raise ValueError(f"op {name!r} requires a 2D input, got shape {x.shape}")
     if engine_op._in_channels is not None and x.meta.channels != engine_op._in_channels:
         raise ValueError(
             f"op {name!r} input[0]: expected {engine_op._in_channels} channel(s), "
@@ -623,7 +635,8 @@ def _run_python_node(t: Array, values: Dict[int, np.ndarray]) -> None:
     inp = values.get(id(node.inputs[0]))
     if inp is None:
         raise RuntimeError(f"python op {node.op!r}: missing input value")
-    out = node.fn(inp, **node.attrs)
+    # The kernel sees the NumPy shape, as when it is called on an ndarray.
+    out = node.fn(inp.reshape(node.inputs[0].meta.shape), **node.attrs)
     if not isinstance(out, np.ndarray):
         raise TypeError(f"python op {node.op!r}: kernel must return ndarray")
     got = meta_from_array(out)
@@ -637,7 +650,7 @@ def _run_python_node(t: Array, values: Dict[int, np.ndarray]) -> None:
         raise ValueError(
             f"python op {node.op!r}: output meta {got} != inferred {want}"
         )
-    values[id(t)] = out
+    values[id(t)] = out.reshape(want.buffer_shape)
 
 
 def _segment_boundary_outputs(
@@ -699,7 +712,7 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     ``force_recompute`` omits those binds and reruns every op.
     """
     if root._data is not None and not force_recompute:
-        return root._data
+        return _as_numpy_shape(root)
 
     values: Dict[int, np.ndarray] = {}
     op_arrays: List[Array] = []
@@ -735,7 +748,7 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
         done.add(tid)
         stack.pop()
     if not op_arrays:
-        return values[id(root)]
+        return _as_numpy_shape(root)
 
     _run_op_arrays(op_arrays, values, root)
 
@@ -745,5 +758,12 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
         arr = values.get(id(t))
         if arr is not None and (t._data is None or force_recompute):
             t._data = _seal_ndarray(arr)
-    assert root._data is not None
-    return root._data
+    return _as_numpy_shape(root)
+
+
+def _as_numpy_shape(array: Array) -> np.ndarray:
+    """``array``'s cached buffer in its NumPy shape: ``(N,)`` for a 1D array."""
+    assert array._data is not None
+    if array.meta.is_1d:
+        return array._data.reshape(array.meta.shape)
+    return array._data

@@ -17,7 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`normalize_raw` split**: `cfa_normalize_raw` takes one-channel CFA input. `normalize_raw` now takes LinearRaw input with any channel count (monochrome or RGB). Both keep every linearization attribute. The `samples_per_pixel` attribute is removed, because the channel count comes from the input.
 
 ### Added
-- **Op properties**: Each op declares `requires_2d`, `is_cfa`, and `is_rgb`, exposed as `op.meta.requires_2d` / `.is_cfa` / `.is_rgb`. The catalog generators and `@graph_op` reject a `cfa_` / `rgb_` name that disagrees with these properties. `@graph_op` also checks the input channel count at call time.
+- **Op properties**: Each op declares `requires_2d`, `is_cfa`, and `is_rgb`, exposed as `op.meta.requires_2d` / `.is_cfa` / `.is_rgb`. The catalog generators reject a `cfa_` / `rgb_` name that disagrees with these properties. `@graph_op` takes the same keywords and checks the input channel count at call time.
+- **1D arrays**: `Array`, `zeros`, `ones`, `full`, and the `_like` forms accept a NumPy 1D shape `(N,)`. `shape` and `realize()` report `(N,)`, and elementwise ops keep it. Indexing, `flipud`, `transpose` / `.T`, `pad`, and `tile` follow NumPy's 1D rules: `v[None, :]` is `(1, N)`, `v[:, None]` is `(N, 1)`, and `tile(v, (4, 1))` is `(4, N)`. `fliplr` and `rot90` raise, as in NumPy. An op with `requires_2d` raises `ValueError` on a 1D input. `tile` with three reps on a 1D array is not supported yet.
+
+### Fixed
+- **Length-1 axes**: A NumPy array with an axis of length 1 and a stride of 0 on it, such as `v[None, :]`, `v[:, None]`, `rgb[None, None, :]`, or `np.broadcast_to(v, (1, N))`, failed in the engine with "binding array must have a positive row stride" or "must have packed pixels". The stride of a length-1 axis is now ignored, and these arrays bind without a copy.
 
 ## [0.1.20260710.1135] - 2026-07-10
 
