@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `apply_profile_gain_table_map` → `rgb_apply_profile_gain_table_map`, `channel_luts_op` → `rgb_channel_luts_op`
 - **`normalize_raw` split**: `cfa_normalize_raw` takes one-channel CFA input. `normalize_raw` now takes LinearRaw input with any channel count (monochrome or RGB). Both keep every linearization attribute. The `samples_per_pixel` attribute is removed, because the channel count comes from the input.
 - **`ArrayMeta` stores the shape (breaking)**: `ArrayMeta(dtype=..., shape=...)` takes the NumPy shape `(N,)`, `(H, W)`, or `(H, W, C)`. `height`, `width`, `channels`, `channel_axis`, `is_1d`, `ndim`, and `buffer_shape` are read-only properties computed from it. `meta.with_size(height=, width=, channels=, ndim=)` returns a copy with new sizes or a new rank. `meta.copy()` no longer accepts the size fields.
+- **Strided NumPy views**: One decoder, built from the array's own strides, replaces the two that searched the `.base` chain and guessed a packed layout of the memory owner. Column steps, flips, and channel picks with a constant step are still read without a copy, including from a camera buffer with padded rows. Planar and transposed layouts are still copied.
+- **NumPy 2 required**: `numpy>=2`, for both the build and the runtime dependency.
 
 ### Added
 - **Op properties**: Each op declares `requires_2d`, `is_cfa`, and `is_rgb`, exposed as `op.meta.requires_2d` / `.is_cfa` / `.is_rgb`. The catalog generators reject a `cfa_` / `rgb_` name that disagrees with these properties. `@graph_op` takes the same keywords and checks the input channel count at call time.
@@ -23,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - **Length-1 axes**: A NumPy array with an axis of length 1 and a stride of 0 on it, such as `v[None, :]`, `v[:, None]`, `rgb[None, None, :]`, or `np.broadcast_to(v, (1, N))`, failed in the engine with "binding array must have a positive row stride" or "must have packed pixels". The stride of a length-1 axis is now ignored, and these arrays bind without a copy.
+- **Misaligned buffers**: A C-contiguous array that starts on a byte that is not a multiple of its item size, such as `np.frombuffer(data, "<u2", offset=1)`, was bound to the engine as is. It is now copied to an aligned buffer at ingest.
 
 ## [0.1.20260710.1135] - 2026-07-10
 

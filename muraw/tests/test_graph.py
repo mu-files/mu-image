@@ -1139,6 +1139,61 @@ def test_broadcast_and_odd_pad_still_copy_on_ingest():
     np.testing.assert_array_equal(copied.realize(), odd)
 
 
+def _padded_xrgb_frame(height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """An XRGB8888 frame whose rows are 16 bytes longer than its pixels, like a
+    camera buffer. Returns the frame and the flat buffer it reads."""
+    pitch = width * 4 + 16
+    raw = (np.arange(height * pitch) % 251).astype(np.uint8)
+    frame = np.ndarray(
+        shape=(height, width, 4), dtype=np.uint8, buffer=raw, strides=(pitch, 4, 1)
+    )
+    return frame, raw
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        np.s_[..., :3],
+        np.s_[..., 2::-1],
+        np.s_[..., 1],
+        np.s_[:, ::2],
+        np.s_[::-1, :, :3],
+        np.s_[1::2, ::-3, 1:3],
+    ],
+    ids=["rgb", "bgr", "one_channel", "column_step", "row_flip_rgb", "mixed"],
+)
+def test_padded_camera_frame_installed_as_view(key):
+    frame, raw = _padded_xrgb_frame(5, 7)
+    view = frame[key]
+    t = Array(view)
+    assert t._node is not None and t._node.op == "view"
+    assert np.shares_memory(t._node.inputs[0]._data, raw)
+    np.testing.assert_array_equal(t.realize(), view)
+
+
+def test_planar_and_transposed_layouts_copied_on_ingest():
+    chw = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    rgb = np.arange(4 * 5 * 3, dtype=np.float32).reshape(4, 5, 3)
+    for arr in (np.moveaxis(chw, 0, -1), rgb.transpose(1, 0, 2), rgb[:, :, 0].T):
+        t = Array(arr)
+        assert t._node is None
+        assert not np.shares_memory(t._data, arr)
+        np.testing.assert_array_equal(t.realize(), arr)
+
+
+@pytest.mark.parametrize("shape", [(4,), (1, 4), (3, 4)])
+def test_misaligned_buffer_copied_on_ingest(shape):
+    raw = (np.arange(64) % 200).astype(np.uint8)
+    count = int(np.prod(shape))
+    arr = np.frombuffer(raw, dtype="<u2", count=count, offset=1).reshape(shape)
+    assert arr.ctypes.data % arr.dtype.itemsize != 0
+    t = Array(arr)
+    assert t._node is None
+    assert t._data.ctypes.data % t._data.dtype.itemsize == 0
+    assert not np.shares_memory(t._data, raw)
+    np.testing.assert_array_equal(t.realize(), arr)
+
+
 def _random_axis_slice(rng: np.random.Generator, length: int) -> slice:
     """A non-empty slice on an axis of ``length``."""
     for _ in range(32):
@@ -1180,3 +1235,54 @@ def test_ingest_random_views_match_numpy():
         np.testing.assert_array_equal(t.realize(), view)
         src = t._data if t._node is None else t._node.inputs[0]._data
         assert np.shares_memory(src, rgb)
+    frame, raw = _padded_xrgb_frame(9, 11)
+    for _ in range(25):
+        rows = _random_axis_slice(rng, 9)
+        cols = _random_axis_slice(rng, 11)
+        channels = _random_axis_slice(rng, 4)
+        view = frame[rows, cols, channels]
+        t = Array(view)
+        np.testing.assert_array_equal(t.realize(), view)
+        src = t._data if t._node is None else t._node.inputs[0]._data
+        assert np.shares_memory(src, raw)
+
+
+def _random_layout(rng: np.random.Generator) -> np.ndarray:
+    """A random slice of a layout that is sometimes a view and sometimes copied."""
+    dtype = rng.choice([np.uint8, np.uint16, np.float32])
+    height, width, channels = (int(value) for value in rng.integers(1, 7, 3))
+    key = (
+        _random_axis_slice(rng, height),
+        _random_axis_slice(rng, width),
+        _random_axis_slice(rng, channels),
+    )
+    samples = (np.arange(height * width * channels * 2 + 8) % 200).astype(dtype)
+    kind = int(rng.integers(0, 4))
+    if kind == 0:
+        # Row padding that is not a whole number of pixels.
+        pitch = width * channels + 1
+        frame = np.ndarray(
+            shape=(height, width, channels),
+            dtype=dtype,
+            buffer=samples,
+            strides=(pitch * samples.itemsize, channels * samples.itemsize, samples.itemsize),
+        )
+        return frame[key]
+    image = samples[: height * width * channels]
+    if kind == 1:
+        return np.moveaxis(image.reshape(channels, height, width), 0, -1)[key]
+    if kind == 2:
+        return image.reshape(width, height, channels).transpose(1, 0, 2)[key]
+    row = image[: width * channels].reshape(1, width, channels)
+    return np.broadcast_to(row, (height, width, channels))[key]
+
+
+def test_ingest_random_layouts_match_numpy():
+    """Every layout matches NumPy, and anything bound directly is aligned and packed."""
+    rng = np.random.default_rng(20260928)
+    for _ in range(200):
+        arr = _random_layout(rng)
+        t = Array(arr)
+        np.testing.assert_array_equal(t.realize(), arr)
+        bound = t._data if t._node is None else t._node.inputs[0]._data
+        assert bound.ctypes.data % bound.dtype.itemsize == 0

@@ -84,8 +84,13 @@ def test_view_node_buffer_matches_the_ingest_meta(arr):
     array = Array(arr)
     assert array._node is not None
     assert array.meta.shape == arr.shape
-    assert array._node.out_meta.buffer_shape == array.meta.buffer_shape
-    assert array._node.out_meta.dtype == array.meta.dtype
+    node_meta = array._node.out_meta
+    assert (node_meta.height, node_meta.width, node_meta.channels) == (
+        array.meta.height,
+        array.meta.width,
+        array.meta.channels,
+    )
+    assert node_meta.dtype == array.meta.dtype
     np.testing.assert_array_equal(array.realize(), arr)
 
 

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 mu-files
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "numpy"]
+requires = ["setuptools>=61.0", "wheel", "numpy>=2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -39,7 +39,7 @@ dependencies = [
     "click",                            # 122 KB
     "defusedxml",                       # 25 KB
     "imagecodecs>=2026.3.6",            # 13 MB
-    "numpy",                            # 5.1 MB
+    "numpy>=2",                         # 5.1 MB
     "opencv-python-headless",           # 46 MB
     "setproctitle",                     # 13 KB
     "tifffile>=2026.6.1",               # 267 KB

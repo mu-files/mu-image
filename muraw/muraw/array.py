@@ -11,6 +11,7 @@ from math import gcd
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import numpy as np
+from numpy.lib.array_utils import byte_bounds
 
 
 def _is_direct_source(arr: np.ndarray) -> bool:
@@ -68,398 +69,123 @@ def _seal_ndarray(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-@dataclass(frozen=True)
-class _PackedWindow:
-    """A NumPy image expressed as a view of a packed parent.
+class _Memory:
+    """Presents ``interface`` to NumPy as an array and keeps ``base`` alive.
 
-    ``src_channels`` is ``None`` when dest channel ``i`` reads parent
-    channel ``i``. ``newaxis`` adds a last axis of length 1. ``rank_drop``
-    selects one parent channel and presents rank 2.
+    ``interface`` is a NumPy array interface that points into memory
+    ``base`` reads.
     """
 
-    parent: np.ndarray
-    top: int
-    left: int
-    height: int
-    width: int
-    row_step: int
-    col_step: int
-    src_channels: Optional[list[int]]
-    newaxis: bool = False
-    rank_drop: bool = False
-
-
-def _positive_divisors(value: int) -> list[int]:
-    """Positive divisors of ``value``, smallest first."""
-    number = abs(value)
-    small: list[int] = []
-    large: list[int] = []
-    divisor = 1
-    while divisor * divisor <= number:
-        if number % divisor == 0:
-            small.append(divisor)
-            if divisor * divisor != number:
-                large.append(number // divisor)
-        divisor += 1
-    return small + large[::-1]
-
-
-def _element_steps(arr: np.ndarray) -> Optional[Tuple[int, ...]]:
-    """Strides in elements. ``None`` when a stride is not a whole element."""
-    itemsize = int(arr.dtype.itemsize)
-    steps: list[int] = []
-    for stride in arr.strides:
-        stride = int(stride)
-        if stride % itemsize != 0:
-            return None
-        steps.append(stride // itemsize)
-    return tuple(steps)
-
-
-def _box_inside(start: int, count: int, step: int, length: int) -> bool:
-    """True when every index ``start + i * step`` lies in ``0 .. length - 1``."""
-    if step == 0 or count < 1:
-        return False
-    last = start + (count - 1) * step
-    low = min(start, last)
-    high = max(start, last)
-    return low >= 0 and high < length
-
-
-def _span_to_slice(start: int, count: int, step: int) -> slice:
-    """Slice whose first sample is ``start`` and whose step is ``step``.
-
-    A negative step that runs through index 0 uses ``None`` as the stop.
-    ``slice.indices`` would wrap a negative stop and drop those samples.
-    """
-    stop = start + count * step
-    if stop < 0:
-        return slice(start, None, step)
-    return slice(start, stop, step)
-
-
-def _contiguous_owner(arr: np.ndarray) -> Optional[np.ndarray]:
-    """C-contiguous ndarray that owns the bytes ``arr`` reads, if there is one."""
-    owner = _base_chain(arr)[-1]
-    if owner.flags.c_contiguous and owner.dtype == arr.dtype and owner.size >= 1:
-        return owner
-    return None
-
-
-def _decode_against_parent(
-    arr: np.ndarray, parent: np.ndarray
-) -> Optional[_PackedWindow]:
-    """Read ``arr`` as a constant step through packed ``parent``.
-
-    ``parent`` must already be a direct source of the same dtype. The view
-    pointer is ``top`` rows, ``left`` columns, and a first channel into
-    that parent. Each view stride must be a whole number of parent pixels
-    (or one channel, for the last axis).
-    """
-    if arr.dtype != parent.dtype or not _is_direct_source(parent):
-        return None
-    if _element_steps(arr) is None:
-        return None
-    itemsize = int(arr.dtype.itemsize)
-    byte_offset = int(arr.ctypes.data) - int(parent.ctypes.data)
-    if byte_offset < 0 or byte_offset % itemsize != 0:
-        return None
-    parent_height = int(parent.shape[0])
-    parent_width = int(parent.shape[1])
-    if parent.ndim == 2:
-        parent_channels = 1
-        channel_stride = itemsize
-        column_stride = int(parent.strides[1])
-    else:
-        parent_channels = int(parent.shape[2])
-        channel_stride = int(parent.strides[2])
-        column_stride = int(parent.strides[1])
-    row_stride = int(parent.strides[0])
-    if row_stride <= 0 or column_stride <= 0 or channel_stride <= 0:
-        return None
-    if (
-        row_stride % itemsize != 0
-        or column_stride % itemsize != 0
-        or channel_stride != itemsize
-    ):
-        return None
-
-    row_bytes, column_bytes = int(arr.strides[0]), int(arr.strides[1])
-    if row_bytes % row_stride != 0 or column_bytes % column_stride != 0:
-        return None
-    row_step = row_bytes // row_stride
-    col_step = column_bytes // column_stride
-    if row_step == 0 or col_step == 0:
-        return None
-
-    top, remainder = divmod(byte_offset, row_stride)
-    left, channel_bytes = divmod(remainder, column_stride)
-    if channel_bytes % itemsize != 0:
-        return None
-    first_channel = channel_bytes // itemsize
-    view_height = int(arr.shape[0])
-    view_width = int(arr.shape[1])
-    if not _box_inside(top, view_height, row_step, parent_height):
-        return None
-    if not _box_inside(left, view_width, col_step, parent_width):
-        return None
-
-    if arr.ndim == 2:
-        view_channels = 1
-        channel_step = 0
-    elif arr.ndim == 3:
-        view_channels = int(arr.shape[2])
-        channel_bytes_step = int(arr.strides[2])
-        if view_channels == 1 and channel_bytes_step == 0:
-            channel_step = 0
-        else:
-            if channel_bytes_step % itemsize != 0:
-                return None
-            channel_step = channel_bytes_step // itemsize
-            if channel_step == 0 or parent.ndim != 3:
-                return None
-    else:
-        return None
-    src_channels = [
-        first_channel + index * channel_step for index in range(view_channels)
-    ]
-    if any(channel < 0 or channel >= parent_channels for channel in src_channels):
-        return None
-    newaxis = arr.ndim == 3 and channel_step == 0 and parent.ndim == 2
-    rank_drop = arr.ndim == 2 and parent.ndim == 3
-    if newaxis or (not rank_drop and src_channels == list(range(parent_channels))):
-        src_channels = None
-
-    return _PackedWindow(
-        parent=parent,
-        top=top,
-        left=left,
-        height=view_height,
-        width=view_width,
-        row_step=row_step,
-        col_step=col_step,
-        src_channels=src_channels,
-        newaxis=newaxis,
-        rank_drop=rank_drop,
-    )
-
-
-def _decode_against_owner(arr: np.ndarray) -> Optional[_PackedWindow]:
-    """View ``arr`` through a packed reshape of its C-contiguous owner.
-
-    A slice's ``.base`` is often the flat allocation, not the image it was
-    cut from. Several packed shapes can address the same samples; the first
-    shape whose sample box lies inside the allocation is used.
-    """
-    steps = _element_steps(arr)
-    if steps is None or arr.ndim not in (2, 3):
-        return None
-    owner = _contiguous_owner(arr)
-    if owner is None:
-        return None
-    itemsize = int(arr.dtype.itemsize)
-    byte_offset = int(arr.ctypes.data) - int(owner.ctypes.data)
-    if byte_offset < 0 or byte_offset % itemsize != 0:
-        return None
-    offset = byte_offset // itemsize
-    count = int(owner.size)
-    if offset >= count:
-        return None
-
-    row_elements, column_elements = steps[0], steps[1]
-    if row_elements == 0 or column_elements == 0:
-        return None
-    view_height = int(arr.shape[0])
-    view_width = int(arr.shape[1])
-    newaxis = arr.ndim == 3 and int(arr.shape[2]) == 1 and steps[2] == 0
-    if arr.ndim == 2 or newaxis:
-        return _mono_window_over_owner(
-            owner,
-            offset,
-            count,
-            row_elements,
-            column_elements,
-            view_height,
-            view_width,
-            newaxis,
-        )
-    return _channel_window_over_owner(
-        owner,
-        offset,
-        count,
-        row_elements,
-        column_elements,
-        steps[2],
-        view_height,
-        view_width,
-        int(arr.shape[2]),
-    )
-
-
-def _spatial_lattice(
-    pixel_offset: int,
-    pixel_count: int,
-    row_pixels: int,
-    col_step: int,
-    view_height: int,
-    view_width: int,
-) -> Optional[Tuple[int, int, int, int, int]]:
-    """Fit samples on a packed ``(height, width)`` grid.
-
-    Returns ``(top, left, height, width, row_step)`` when the box sits
-    inside that grid.
-    """
-    if col_step == 0 or row_pixels == 0:
-        return None
-    for width in reversed(_positive_divisors(abs(row_pixels))):
-        if pixel_count % width != 0 or row_pixels % width != 0:
-            continue
-        height = pixel_count // width
-        row_step = row_pixels // width
-        if row_step == 0:
-            continue
-        top, left = divmod(pixel_offset, width)
-        if not _box_inside(top, view_height, row_step, height):
-            continue
-        if not _box_inside(left, view_width, col_step, width):
-            continue
-        return top, left, height, width, row_step
-    return None
-
-
-def _mono_window_over_owner(
-    owner: np.ndarray,
-    offset: int,
-    count: int,
-    row_elements: int,
-    column_elements: int,
-    view_height: int,
-    view_width: int,
-    newaxis: bool,
-) -> Optional[_PackedWindow]:
-    """Rank-2 lattice, optionally with a new last axis of length 1."""
-    lattice = _spatial_lattice(
-        offset, count, row_elements, column_elements, view_height, view_width
-    )
-    if lattice is None:
-        return None
-    top, left, height, width, row_step = lattice
-    parent = np.ndarray(
-        shape=(height, width),
-        dtype=owner.dtype,
-        buffer=owner,
-        offset=0,
-        strides=(width * int(owner.dtype.itemsize), int(owner.dtype.itemsize)),
-    )
-    return _PackedWindow(
-        parent=parent,
-        top=top,
-        left=left,
-        height=view_height,
-        width=view_width,
-        row_step=row_step,
-        col_step=column_elements,
-        src_channels=None,
-        newaxis=newaxis,
-    )
-
-
-def _channel_window_over_owner(
-    owner: np.ndarray,
-    offset: int,
-    count: int,
-    row_elements: int,
-    column_elements: int,
-    channel_elements: int,
-    view_height: int,
-    view_width: int,
-    view_channels: int,
-) -> Optional[_PackedWindow]:
-    """Rank-3 lattice: a channel step inside a packed pixel, plus a spatial step."""
-    if channel_elements == 0 or view_channels < 1:
-        return None
-    common = gcd(gcd(abs(column_elements), abs(row_elements)), count)
-    for channels in _positive_divisors(common):
-        if column_elements % channels != 0 or row_elements % channels != 0:
-            continue
-        if count % channels != 0:
-            continue
-        col_step = column_elements // channels
-        row_pixels = row_elements // channels
-        first_channel = offset % channels
-        src_channels = [
-            first_channel + index * channel_elements for index in range(view_channels)
-        ]
-        if any(channel < 0 or channel >= channels for channel in src_channels):
-            continue
-        lattice = _spatial_lattice(
-            offset // channels,
-            count // channels,
-            row_pixels,
-            col_step,
-            view_height,
-            view_width,
-        )
-        if lattice is None:
-            continue
-        top, left, height, width, row_step = lattice
-        itemsize = int(owner.dtype.itemsize)
-        parent = np.ndarray(
-            shape=(height, width, channels),
-            dtype=owner.dtype,
-            buffer=owner,
-            offset=0,
-            strides=(
-                width * channels * itemsize,
-                channels * itemsize,
-                itemsize,
-            ),
-        )
-        return _PackedWindow(
-            parent=parent,
-            top=top,
-            left=left,
-            height=view_height,
-            width=view_width,
-            row_step=row_step,
-            col_step=col_step,
-            src_channels=src_channels,
-        )
-    return None
-
-
-def _window_key(window: _PackedWindow) -> tuple[Any, ...]:
-    """Slice key that ``Array.view`` turns back into ``window``."""
-    rows = _span_to_slice(window.top, window.height, window.row_step)
-    cols = _span_to_slice(window.left, window.width, window.col_step)
-    if window.newaxis:
-        return (rows, cols, None)
-    if window.rank_drop and window.src_channels is not None:
-        return (rows, cols, window.src_channels[0])
-    if window.src_channels is not None:
-        return (rows, cols, window.src_channels)
-    return (rows, cols)
+    def __init__(self, base: np.ndarray, interface: dict[str, Any]):
+        self.base = base
+        self.__array_interface__ = interface
 
 
 def _view_over_packed(arr: np.ndarray) -> Optional["Array"]:
-    """An Array that reads ``arr`` from a packed parent, or ``None`` to copy.
+    """An Array that reads ``arr`` as a view of a packed parent, or ``None`` to copy.
+
+    ``arr`` is ``(H, W)`` or ``(H, W, C)``. The parent is built over the same
+    memory from ``arr``'s strides, so it works whatever layout ``arr`` was
+    sliced from. Each parent pixel is ``pixel_size`` consecutive elements
+    and holds every channel ``arr`` reads at one position. Parent rows are
+    one ``arr`` row stride apart. The view reads every parent row and every
+    ``col_step``-th parent pixel, reverses each axis whose stride is
+    negative, and picks ``arr``'s channels out of each parent pixel.
+
+    ``None`` when a stride is not a whole number of elements, an axis longer
+    than 1 has stride 0, rows overlap, or the parent would reach outside the
+    memory ``arr`` belongs to.
 
     The result is the slice: origin ``(0, 0)`` and a canvas the size of
     ``arr``. Later crops do not reach samples outside that slice.
     """
-    window: Optional[_PackedWindow] = None
-    for base in _base_chain(arr)[1:]:
-        window = _decode_against_parent(arr, base)
-        if window is not None:
-            break
-    if window is None:
-        window = _decode_against_owner(arr)
-    if window is None:
+    itemsize = int(arr.dtype.itemsize)
+    if any(int(stride) % itemsize for stride in arr.strides):
         return None
-    source = Array(window.parent)
-    return source.view(
-        _window_key(window), oob_valid=False, reset_origin=True
+    height, width = int(arr.shape[0]), int(arr.shape[1])
+    channels = int(arr.shape[2]) if arr.ndim == 3 else 1
+    # An axis of length 1 is never stepped along, so its stride is ignored.
+    # 0 below means "any step".
+    row_elements = abs(int(arr.strides[0])) // itemsize if height > 1 else 0
+    col_elements = abs(int(arr.strides[1])) // itemsize if width > 1 else 0
+    channel_elements = abs(int(arr.strides[2])) // itemsize if channels > 1 else 1
+    if (
+        (height > 1 and row_elements == 0)
+        or (width > 1 and col_elements == 0)
+        or channel_elements == 0
+    ):
+        return None
+
+    # The pixel size must divide both steps, because the engine needs the
+    # row pitch to be a whole number of pixels. gcd(n, 0) is n.
+    channel_span = (channels - 1) * channel_elements + 1
+    common = gcd(row_elements, col_elements)
+    if common == 0:
+        pixel_size = channel_span
+    else:
+        pixel_size = next(
+            (size for size in range(channel_span, common + 1) if common % size == 0),
+            0,
+        )
+        if pixel_size == 0:
+            return None
+    col_step = col_elements // pixel_size if col_elements else 1
+    parent_width = (width - 1) * col_step + 1
+    row_pitch = row_elements if row_elements else parent_width * pixel_size
+    if row_pitch < parent_width * pixel_size:
+        return None
+
+    # ``lowest`` reads the same samples with every stride non-negative, so its
+    # data pointer is the lowest address ``arr`` reads.
+    flipped = [int(stride) < 0 for stride in arr.strides]
+    lowest = arr[tuple(slice(None, None, -1) if flip else slice(None) for flip in flipped)]
+    owner_low, owner_high = byte_bounds(_base_chain(arr)[-1])
+    extent = ((height - 1) * row_pitch + parent_width * pixel_size) * itemsize
+    # ``first_channel`` is where ``arr``'s first channel sits in a parent
+    # pixel. Any position works if the parent stays inside the owner.
+    for first_channel in range(pixel_size - channel_span + 1):
+        parent_start = int(lowest.ctypes.data) - first_channel * itemsize
+        if owner_low <= parent_start and parent_start + extent <= owner_high:
+            break
+    else:
+        return None
+
+    if pixel_size == 1:
+        shape: Tuple[int, ...] = (height, parent_width)
+        strides: Tuple[int, ...] = (row_pitch * itemsize, itemsize)
+    else:
+        shape = (height, parent_width, pixel_size)
+        strides = (row_pitch * itemsize, pixel_size * itemsize, itemsize)
+    parent = np.asarray(
+        _Memory(
+            arr,
+            {
+                "version": 3,
+                "shape": shape,
+                "typestr": arr.dtype.str,
+                "data": (parent_start, True),
+                "strides": strides,
+            },
+        )
     )
+    if not _is_direct_source(parent):
+        return None
+
+    rows = slice(None, None, -1) if flipped[0] else slice(None)
+    cols = slice(None, None, -col_step) if flipped[1] else slice(None, None, col_step)
+    if pixel_size == 1:
+        key: tuple[Any, ...] = (rows, cols) if arr.ndim == 2 else (rows, cols, None)
+    else:
+        src_channels = [first_channel + i * channel_elements for i in range(channels)]
+        if flipped[2]:
+            src_channels.reverse()
+        if src_channels == list(range(pixel_size)):
+            key = (rows, cols)
+        else:
+            key = (rows, cols, src_channels)
+    return Array(parent).view(key, oob_valid=False, reset_origin=True)
+
+
 
 if TYPE_CHECKING:
     from .engines.graph import OpNode
@@ -1234,7 +960,11 @@ class Array:
                     _seal_ndarray(arr)
                     data_out, node = viewed._data, viewed._node
                 else:
-                    data_out, node = _seal_ndarray(np.ascontiguousarray(arr)), None
+                    # "A" copies a misaligned array too. A one-row array
+                    # can be C-contiguous and still start on a byte that is
+                    # not a multiple of its item size.
+                    packed = np.require(arr, requirements=["C", "A"])
+                    data_out, node = _seal_ndarray(packed), None
             self._meta = meta
             self._data = data_out
             self._node = node
