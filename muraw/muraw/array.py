@@ -798,6 +798,52 @@ def moveaxis(a: ArrayLike, source: Any, destination: Any) -> "Array":
     return _permute(a, tuple(order), "moveaxis")
 
 
+def expand_dims(a: ArrayLike, axis: Any) -> "Array":
+    """Insert axes of length 1. Same arguments as ``numpy.expand_dims``.
+
+    Adding a length-1 axis keeps the samples in the same order, so the
+    result reads the same buffer. A result with more than 3 axes raises.
+    """
+    a = Array(a)
+    axes = tuple(axis) if isinstance(axis, (tuple, list)) else (axis,)
+    out_ndim = len(axes) + a.meta.ndim
+    new_axes = normalize_axis_tuple(axes, out_ndim)
+    sizes = iter(a.shape)
+    shape = tuple(1 if position in new_axes else next(sizes) for position in range(out_ndim))
+    if len(shape) > 3:
+        raise ValueError(
+            f"expand_dims of shape {a.shape} gives {len(shape)} axes; an Array has at most 3"
+        )
+    return _reshape_layout(a, shape)
+
+
+def squeeze(a: ArrayLike, axis: Any = None) -> "Array":
+    """Remove axes of length 1. Same arguments as ``numpy.squeeze``.
+
+    Removing a length-1 axis keeps the samples in the same order, so the
+    result reads the same buffer. Squeezing every axis away raises, because
+    an ``Array`` has at least one axis.
+    """
+    a = Array(a)
+    if axis is None:
+        removed = {position for position, size in enumerate(a.shape) if size == 1}
+    else:
+        if not isinstance(axis, (tuple, list)):
+            axis = operator.index(axis)
+        axes = normalize_axis_tuple(axis, a.meta.ndim, allow_duplicate=True)
+        if len(set(axes)) != len(axes):
+            raise ValueError("duplicate value in 'axis'")
+        if any(a.shape[position] != 1 for position in axes):
+            raise ValueError(
+                "cannot select an axis to squeeze out which has size not equal to one"
+            )
+        removed = set(axes)
+    shape = tuple(size for position, size in enumerate(a.shape) if position not in removed)
+    if not shape:
+        raise ValueError(f"squeeze of shape {a.shape} would leave no axes")
+    return _reshape_layout(a, shape)
+
+
 def _as_shape(shape: Any) -> Tuple[int, ...]:
     """A ``shape`` argument as a tuple of ints. One int is a 1-tuple.
 
@@ -1090,7 +1136,7 @@ def _reshape_layout(array: "Array", shape: Tuple[int, ...]) -> "Array":
     meta = new.copy(origin=old.origin, canvas=(col, row, new.width, new.height))
     if array._node is None:
         assert array._data is not None
-        return Array(np.reshape(array._data, meta.buffer_shape), origin=array.meta.origin)
+        return Array(np.reshape(array._data, meta.shape), origin=array.meta.origin)
 
     def reshape(samples: np.ndarray, shape: Tuple[int, ...]) -> np.ndarray:
         return np.reshape(samples, shape)
@@ -1539,6 +1585,10 @@ class Array:
     def swapaxes(self, axis1: int, axis2: int) -> "Array":
         """Swap two axes, as ``ndarray.swapaxes``."""
         return swapaxes(self, axis1, axis2)
+
+    def squeeze(self, axis: Any = None) -> "Array":
+        """Remove axes of length 1, as ``ndarray.squeeze``."""
+        return squeeze(self, axis)
 
     @property
     def T(self) -> "Array":

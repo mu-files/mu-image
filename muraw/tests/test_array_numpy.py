@@ -199,6 +199,99 @@ def test_ops_before_and_after_swapaxes_match_numpy(src):
     np.testing.assert_array_equal(got.realize(), want)
 
 
+_SIZE_ONE_CASES = [
+    ("expand_1d_front", _V, lambda m, a: m.expand_dims(a, 0)),
+    ("expand_1d_back", _V, lambda m, a: m.expand_dims(a, 1)),
+    ("expand_1d_negative", _V, lambda m, a: m.expand_dims(a, -1)),
+    ("expand_1d_two", _V, lambda m, a: m.expand_dims(a, (0, 1))),
+    ("expand_mono_channel", _mono(), lambda m, a: m.expand_dims(a, -1)),
+    ("expand_mono_front", _mono(), lambda m, a: m.expand_dims(a, 0)),
+    ("expand_mono_middle", _mono(), lambda m, a: m.expand_dims(a, 1)),
+    ("squeeze_row", _V[None, :], lambda m, a: m.squeeze(a)),
+    ("squeeze_column", _V[:, None], lambda m, a: m.squeeze(a, axis=1)),
+    ("squeeze_channel", _mono()[..., None], lambda m, a: m.squeeze(a, -1)),
+    ("squeeze_pixel_rgb", _rgb()[:1, :1], lambda m, a: m.squeeze(a)),
+    ("squeeze_column_rgb", _rgb()[:, :1], lambda m, a: m.squeeze(a, 1)),
+    ("squeeze_nothing", _mono(), lambda m, a: m.squeeze(a)),
+]
+
+
+@pytest.mark.parametrize("src, call", [(s, c) for _, s, c in _SIZE_ONE_CASES], ids=[n for n, _, _ in _SIZE_ONE_CASES])
+@pytest.mark.parametrize("lazy", [False, True], ids=["source", "lazy"])
+def test_expand_dims_and_squeeze_match_numpy(src, call, lazy):
+    import muimage as mi
+
+    want = call(np, src * 2.0 if lazy else src)
+    got = call(mi, Array(src) * 2.0 if lazy else Array(src))
+    assert got.shape == want.shape
+    np.testing.assert_array_equal(got.realize(), want)
+
+
+def test_squeeze_method_matches_numpy():
+    src = _mono()[..., None]
+    np.testing.assert_array_equal(Array(src).squeeze().realize(), src.squeeze())
+
+
+def test_size_one_axis_on_the_same_buffer_sizes_keeps_the_node():
+    import muimage as mi
+
+    mono = Array(_mono()) * 2.0
+    assert mi.expand_dims(mono, -1)._node is mono._node
+    assert mi.squeeze(mi.expand_dims(mono, -1))._node is mono._node
+    line = Array(_V) * 2.0
+    assert mi.expand_dims(line, 0)._node is line._node
+    assert mi.squeeze(mono) is mono
+
+
+def test_squeeze_of_a_source_column_shares_memory():
+    import muimage as mi
+
+    src = _V[:, None].copy()
+    got = mi.squeeze(src)
+    assert got._node is None
+    assert np.shares_memory(got._data, src)
+
+
+@pytest.mark.parametrize(
+    "src, call",
+    [
+        (_mono(), lambda m, a: m.squeeze(a, 0)),
+        (_mono(), lambda m, a: m.expand_dims(a, 3)),
+        (_mono(), lambda m, a: m.expand_dims(a, (0, 0))),
+        (_rgb(), lambda m, a: m.squeeze(a, 5)),
+        (_rgb()[:1, :1], lambda m, a: m.squeeze(a, (0, 0))),
+        (_mono()[:1], lambda m, a: m.squeeze(a, 1.0)),
+    ],
+    ids=[
+        "squeeze_not_one",
+        "expand_out_of_range",
+        "expand_repeated",
+        "squeeze_out_of_range",
+        "squeeze_repeated",
+        "squeeze_float_axis",
+    ],
+)
+def test_expand_dims_and_squeeze_errors_match_numpy(src, call):
+    import muimage as mi
+
+    with pytest.raises(Exception) as want:
+        call(np, src)
+    with pytest.raises(type(want.value)) as got:
+        call(mi, Array(src))
+    assert str(got.value) == str(want.value)
+
+
+def test_squeeze_to_no_axes_and_expand_past_three_axes_raise():
+    import muimage as mi
+
+    with pytest.raises(ValueError, match="would leave no axes"):
+        mi.squeeze(np.zeros((1, 1), np.float32))
+    with pytest.raises(ValueError, match="would leave no axes"):
+        mi.squeeze(np.zeros((1, 1, 1), np.float32))
+    with pytest.raises(ValueError, match="at most 3"):
+        mi.expand_dims(_rgb(), 0)
+
+
 def test_ndarray_input_is_ingested():
     import muimage as mi
 
