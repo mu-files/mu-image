@@ -13,7 +13,7 @@ from muraw.engines.core import CoreEngine
 from muraw.engines.graph import EngineOp, flush, graph_op
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
-from muraw.array import Array, ArrayMeta, ElementType
+from muraw.array import Array, ArrayMeta, ElementType, rot90
 from conftest import generate_rgb_ramp
 
 
@@ -1097,13 +1097,119 @@ def test_strided_numpy_crop_ported_and_image_op():
     np.testing.assert_array_equal(identity, crop)
 
 
-def test_fortran_array_copied_on_ingest():
-    arr = np.asfortranarray(np.arange(16, dtype=np.float32).reshape(4, 4))
+def _op_chain(t: Array) -> list[str]:
+    """Op names from ``t`` back to its source, following input 0."""
+    names = []
+    while t._node is not None:
+        names.append(t._node.op)
+        t = t._node.inputs[0]
+    return names
+
+
+def _source_buffer(t: Array) -> np.ndarray:
+    """The bound buffer at the end of ``t``'s input-0 chain."""
+    while t._node is not None:
+        t = t._node.inputs[0]
+    return t._data
+
+
+def test_fortran_array_ingested_as_transpose():
+    arr = np.asfortranarray(np.arange(4 * 6, dtype=np.float32).reshape(4, 6))
     t = Array(arr)
-    assert t._node is None
-    assert t._data.strides[1] == t._data.dtype.itemsize
-    assert not np.shares_memory(t._data, arr)
-    np.testing.assert_array_equal((t - 0.0).realize(), arr)
+    assert _op_chain(t) == ["orientation"]
+    assert np.shares_memory(_source_buffer(t), arr)
+    np.testing.assert_array_equal(t.realize(), arr)
+    np.testing.assert_array_equal((t - 1.0).realize(), arr - 1.0)
+
+
+_MONO_4X6 = np.arange(4 * 6, dtype=np.float32).reshape(4, 6)
+_RGB_4X6 = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
+
+
+@pytest.mark.parametrize(
+    ("arr", "chain"),
+    [
+        (_MONO_4X6.T, ["orientation"]),
+        (_RGB_4X6.transpose(1, 0, 2), ["orientation"]),
+        (np.swapaxes(_RGB_4X6, 0, 1), ["orientation"]),
+        (np.rot90(_MONO_4X6), ["orientation"]),
+        (np.rot90(_MONO_4X6, 3), ["orientation"]),
+        (np.rot90(_RGB_4X6), ["orientation"]),
+        (_RGB_4X6[:, :, 1].T, ["orientation", "view"]),
+        (_RGB_4X6[::2, 1:].transpose(1, 0, 2), ["orientation"]),
+    ],
+    ids=[
+        "mono_T",
+        "rgb_transpose",
+        "swapaxes",
+        "rot90",
+        "rot90_k3",
+        "rot90_rgb",
+        "channel_T",
+        "stepped_transpose",
+    ],
+)
+def test_transposed_view_ingested_without_copy(arr, chain):
+    t = Array(arr)
+    assert _op_chain(t) == chain
+    owner = arr.base if arr.base is not None else arr
+    assert np.shares_memory(_source_buffer(t), owner)
+    assert t.shape == arr.shape
+    np.testing.assert_array_equal(t.realize(), arr)
+    np.testing.assert_array_equal((t * 2.0).realize(), arr.astype(np.float32) * 2.0)
+
+
+def test_transposed_ingest_matches_array_transpose():
+    assert _op_chain(Array(_MONO_4X6.T)) == _op_chain(Array(_MONO_4X6).T)
+    np.testing.assert_array_equal(Array(_MONO_4X6.T).realize(), Array(_MONO_4X6).T.realize())
+
+
+@pytest.mark.parametrize(
+    ("arr", "code"),
+    [
+        (_MONO_4X6.T, 5),
+        (np.rot90(_MONO_4X6, 3), 6),
+        (_MONO_4X6.T[::-1, ::-1], 7),
+        (np.rot90(_MONO_4X6), 8),
+        (np.rot90(_RGB_4X6[::2, 1:]), 8),
+    ],
+    ids=["transpose", "rot90_k3", "transverse", "rot90", "rot90_of_stepped_slice"],
+)
+def test_transposed_ingest_folds_flips_into_one_orientation(arr, code):
+    t = Array(arr)
+    assert t._node.op == "orientation"
+    assert t._node.attrs["orientation"] == code
+    assert t._node.inputs[0]._node is None
+    np.testing.assert_array_equal(t.realize(), arr)
+
+
+@pytest.mark.parametrize("k", [1, 3])
+def test_rot90_ingest_builds_the_same_graph_as_array_rot90(k):
+    ingested = Array(np.rot90(_RGB_4X6, k))
+    rotated = rot90(Array(_RGB_4X6), k)
+    assert ingested._node.op == rotated._node.op == "orientation"
+    assert ingested._node.attrs["orientation"] == rotated._node.attrs["orientation"]
+    assert ingested._node.inputs[0]._data is not None
+    np.testing.assert_array_equal(ingested.realize(), rotated.realize())
+
+
+def test_rot90_of_padded_camera_frame_not_copied():
+    frame, raw = _padded_xrgb_frame(5, 7)
+    for k in (1, 3):
+        rotated = np.rot90(frame[..., :3], k)
+        t = Array(rotated)
+        assert _op_chain(t)[0] == "orientation"
+        assert np.shares_memory(_source_buffer(t), raw)
+        np.testing.assert_array_equal(t.realize(), rotated)
+
+
+def test_one_row_and_one_column_transposes_are_not_transposed():
+    row = np.arange(6, dtype=np.float32)[None, :]
+    col = np.arange(6, dtype=np.float32)[:, None]
+    for arr in (row.T, col.T):
+        t = Array(arr)
+        assert "orientation" not in _op_chain(t)
+        np.testing.assert_array_equal(t.realize(), arr)
 
 
 def test_stepped_slice_installed_as_view():
@@ -1243,10 +1349,9 @@ def test_padded_camera_frame_installed_as_view(key):
     np.testing.assert_array_equal(t.realize(), view)
 
 
-def test_planar_and_transposed_layouts_copied_on_ingest():
+def test_planar_layouts_copied_on_ingest():
     chw = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
-    rgb = np.arange(4 * 5 * 3, dtype=np.float32).reshape(4, 5, 3)
-    for arr in (np.moveaxis(chw, 0, -1), rgb.transpose(1, 0, 2), rgb[:, :, 0].T):
+    for arr in (np.moveaxis(chw, 0, -1), np.moveaxis(chw, 0, -1).transpose(1, 0, 2)):
         t = Array(arr)
         assert t._node is None
         assert not np.shares_memory(t._data, arr)
@@ -1317,6 +1422,32 @@ def test_ingest_random_views_match_numpy():
         np.testing.assert_array_equal(t.realize(), view)
         src = t._data if t._node is None else t._node.inputs[0]._data
         assert np.shares_memory(src, raw)
+
+
+def test_ingest_random_transposed_views_are_not_copied():
+    """The transpose of a packed-parent slice reads the parent, never a copy."""
+    rng = np.random.default_rng(20260929)
+    mono = np.arange(16 * 20, dtype=np.float32).reshape(16, 20)
+    rgb = np.arange(12 * 15 * 4, dtype=np.uint8).reshape(12, 15, 4)
+    frame, raw = _padded_xrgb_frame(9, 11)
+    for _ in range(25):
+        slices = [
+            (mono[_random_axis_slice(rng, 16), _random_axis_slice(rng, 20)], mono),
+            (rgb[_random_axis_slice(rng, 12), _random_axis_slice(rng, 15), :3], rgb),
+            (
+                frame[
+                    _random_axis_slice(rng, 9),
+                    _random_axis_slice(rng, 11),
+                    _random_axis_slice(rng, 4),
+                ],
+                raw,
+            ),
+        ]
+        for view, owner in slices:
+            transposed = view.swapaxes(0, 1)
+            t = Array(transposed)
+            np.testing.assert_array_equal(t.realize(), transposed)
+            assert np.shares_memory(_source_buffer(t), owner)
 
 
 def _random_layout(rng: np.random.Generator) -> np.ndarray:

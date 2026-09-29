@@ -186,6 +186,46 @@ def _view_over_packed(arr: np.ndarray) -> Optional["Array"]:
     return Array(parent).view(key, oob_valid=False, reset_origin=True)
 
 
+# Orientation code that transposes a source whose (rows, columns) were
+# reversed: 5 is a plain transpose, 6 is np.rot90(m, 3), 7 is the
+# transverse, and 8 is np.rot90(m).
+_TRANSPOSE_ORIENTATION = {
+    (False, False): 5,
+    (True, False): 6,
+    (True, True): 7,
+    (False, True): 8,
+}
+
+
+def _transposed_source(arr: np.ndarray) -> Optional["Array"]:
+    """``arr`` read as an orientation of its row/column swap, or ``None`` to copy.
+
+    ``img.T``, ``img.transpose(1, 0, 2)``, ``np.rot90(img)`` and Fortran-order
+    arrays swap the row and column strides. ``arr.swapaxes(0, 1)`` with its
+    row and column flips undone is read as a direct source or a view, and
+    one orientation op transposes it back and applies those flips, so
+    ``Array(np.rot90(m))`` builds the same graph as ``mi.rot90(Array(m))``.
+    An array with one row or one column is never transposed.
+    """
+    if int(arr.shape[0]) == 1 or int(arr.shape[1]) == 1:
+        return None
+    swapped = arr.swapaxes(0, 1)
+    flipped = (int(swapped.strides[0]) < 0, int(swapped.strides[1]) < 0)
+    unflipped = swapped[
+        slice(None, None, -1) if flipped[0] else slice(None),
+        slice(None, None, -1) if flipped[1] else slice(None),
+    ]
+    if _is_direct_source(unflipped):
+        inner: Optional[Array] = Array(unflipped)
+    else:
+        inner = _view_over_packed(unflipped)
+    if inner is None:
+        return None
+    import muimage as mi
+
+    return mi.orientation(inner, orientation=_TRANSPOSE_ORIENTATION[flipped])
+
+
 
 if TYPE_CHECKING:
     from .engines.graph import OpNode
@@ -1142,6 +1182,11 @@ class Array:
                 if viewed is not None:
                     _seal_ndarray(arr)
                     self._take_fields(viewed, meta)
+                    return
+                transposed = _transposed_source(arr)
+                if transposed is not None:
+                    _seal_ndarray(arr)
+                    self._take_fields(transposed, meta)
                     return
                 # "A" copies a misaligned array too. A one-row array can be
                 # C-contiguous and still start on a byte that is not a
