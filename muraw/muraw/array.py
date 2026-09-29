@@ -11,7 +11,7 @@ from math import ceil
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import numpy as np
-from numpy.lib.array_utils import byte_bounds
+from numpy.lib.array_utils import byte_bounds, normalize_axis_index, normalize_axis_tuple
 
 
 def _is_direct_source(arr: np.ndarray) -> bool:
@@ -292,6 +292,9 @@ class ElementType(StrEnum):
 
 
 type ElementTypeLike = str | ElementType | np.dtype[Any] | type[np.generic]
+
+# An array argument: an ``Array``, or an ndarray that is ingested with ``Array(...)``.
+type ArrayLike = Array | np.ndarray
 
 
 @dataclass(frozen=True)
@@ -682,12 +685,13 @@ def _window_from_rect(
     return _Window(left=left_i, top=top_i, width=width_i, height=height_i)
 
 
-def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
+def rot90(m: ArrayLike, k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     """Rotate in the spatial plane. Same arguments as ``numpy.rot90``.
 
     180° is a canvas-keeping view. Quarter turns still go through
     orientation, because a slice cannot swap height and width.
     """
+    m = Array(m)
     if m.meta.is_1d:
         raise ValueError(f"Axes={tuple(axes)} out of range for array of ndim=1.")
     if tuple(axes) != (0, 1):
@@ -703,24 +707,95 @@ def rot90(m: "Array", k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     return mi.orientation(m, orientation={1: 8, 3: 6}[turns])
 
 
-def fliplr(m: "Array") -> "Array":
+def fliplr(m: ArrayLike) -> "Array":
     """Flip left–right. Same as ``numpy.fliplr``.
 
     A canvas-keeping view, so a later crop can still reach the parent.
     """
+    m = Array(m)
     if m.meta.is_1d:
         raise ValueError("Input must be >= 2-d.")
     return m.view(np.s_[:, ::-1], oob_valid=True)
 
 
-def flipud(m: "Array") -> "Array":
+def flipud(m: ArrayLike) -> "Array":
     """Flip up–down. Same as ``numpy.flipud``: on a 1D array, reverse it.
 
     A canvas-keeping view, so a later crop can still reach the parent.
     """
+    m = Array(m)
     if m.meta.is_1d:
         return m.view(np.s_[::-1], oob_valid=True)
     return m.view(np.s_[::-1, :], oob_valid=True)
+
+
+def _permute(array: "Array", order: Tuple[int, ...], name: str) -> "Array":
+    """``array`` with its axes in ``order``: axis ``i`` of the result is axis
+    ``order[i]`` of ``array``, as in ``numpy.transpose``.
+
+    The identity returns ``array``. A swap of the two spatial axes is
+    ``orientation`` 5. A permutation that moves the channel axis raises
+    ``NotImplementedError``.
+    """
+    ndim = array.meta.ndim
+    if order == tuple(range(ndim)):
+        return array
+    if ndim == 3 and order[2] != 2:
+        raise NotImplementedError(
+            f"{name}: moving the channel axis (axes {order} of shape {array.shape}) "
+            "is not supported yet"
+        )
+    import muimage as mi
+
+    return mi.orientation(array, orientation=5)
+
+
+def transpose(a: ArrayLike, axes: Any = None) -> "Array":
+    """Permute the axes. Same arguments as ``numpy.transpose``.
+
+    ``axes=None`` reverses the axes. On a 3D array that moves the channel
+    axis, which is not supported yet.
+    """
+    a = Array(a)
+    if axes is None:
+        return _permute(a, tuple(reversed(range(a.meta.ndim))), "transpose")
+    axes = tuple(axes)
+    if len(axes) != a.meta.ndim:
+        raise ValueError("axes don't match array")
+    order = normalize_axis_tuple(axes, a.meta.ndim, allow_duplicate=True)
+    if len(set(order)) != len(order):
+        raise ValueError("repeated axis in transpose")
+    return _permute(a, order, "transpose")
+
+
+def permute_dims(a: ArrayLike, axes: Any = None) -> "Array":
+    """NumPy 2's array API name for ``transpose``."""
+    return transpose(a, axes)
+
+
+def swapaxes(a: ArrayLike, axis1: int, axis2: int) -> "Array":
+    """Swap two axes. Same arguments as ``numpy.swapaxes``."""
+    a = Array(a)
+    first = normalize_axis_index(int(axis1), a.meta.ndim, "axis1")
+    second = normalize_axis_index(int(axis2), a.meta.ndim, "axis2")
+    order = list(range(a.meta.ndim))
+    order[first], order[second] = order[second], order[first]
+    return _permute(a, tuple(order), "swapaxes")
+
+
+def moveaxis(a: ArrayLike, source: Any, destination: Any) -> "Array":
+    """Move axes to new positions. Same arguments as ``numpy.moveaxis``."""
+    a = Array(a)
+    sources = normalize_axis_tuple(source, a.meta.ndim, "source")
+    destinations = normalize_axis_tuple(destination, a.meta.ndim, "destination")
+    if len(sources) != len(destinations):
+        raise ValueError(
+            "`source` and `destination` arguments must have the same number of elements"
+        )
+    order = [axis for axis in range(a.meta.ndim) if axis not in sources]
+    for dest, src in sorted(zip(destinations, sources)):
+        order.insert(dest, src)
+    return _permute(a, tuple(order), "moveaxis")
 
 
 def _as_shape(shape: Any) -> Tuple[int, ...]:
@@ -1077,7 +1152,7 @@ def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
     return row, col, channel
 
 
-def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
+def tile(array: ArrayLike, reps: Any) -> "Array":
     """Repeat ``array`` like ``numpy.tile``.
 
     A count of 0 raises ``ValueError``. ``reps`` longer than the rank
@@ -1109,7 +1184,7 @@ def tile(array: "Array | np.ndarray", reps: Any) -> "Array":
     )
 
 
-def broadcast_to(array: "Array | np.ndarray", shape: Any) -> "Array":
+def broadcast_to(array: ArrayLike, shape: Any) -> "Array":
     """Stretch size-1 axes to ``shape``, like ``numpy.broadcast_to``.
 
     Shapes are right-aligned. A missing leading axis counts as length 1.
@@ -1444,22 +1519,26 @@ class Array:
         return self.crop(key)
 
     def transpose(self, *axes: Any) -> "Array":
-        """Transpose the 2D spatial dimensions of the array.
+        """Permute the axes, as ``ndarray.transpose``: ``a.transpose(1, 0, 2)``
+        or ``a.transpose((1, 0, 2))``.
 
-        Accepts optional axes to match NumPy, but enforces 2D spatial remapping.
+        With no axes, a 3D array swaps only its two spatial axes, giving
+        ``(W, H, C)``. NumPy reverses every axis there, giving ``(C, W, H)``.
         A 1D array is returned unchanged, as in NumPy.
         """
-        if len(axes) == 1 and not isinstance(axes[0], (int, np.integer)):
-            axes = tuple(axes[0])
+        if len(axes) == 1 and (axes[0] is None or not isinstance(axes[0], (int, np.integer))):
+            axes = () if axes[0] is None else tuple(axes[0])
+        if axes:
+            return transpose(self, axes)
         if self._meta.is_1d:
-            if axes and axes != (0,):
-                raise ValueError("axes don't match array")
             return self
-        if axes and axes != (1, 0) and axes != (1, 0, 2):
-            raise ValueError("Array only supports 2D spatial axis transposition.")
         import muimage as mi
 
         return mi.orientation(self, orientation=5)
+
+    def swapaxes(self, axis1: int, axis2: int) -> "Array":
+        """Swap two axes, as ``ndarray.swapaxes``."""
+        return swapaxes(self, axis1, axis2)
 
     @property
     def T(self) -> "Array":
