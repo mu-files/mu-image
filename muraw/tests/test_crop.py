@@ -207,6 +207,43 @@ def test_newaxis_lifts_mono_to_rank3():
     np.testing.assert_array_equal(dropped.realize(), np.zeros((2, 3), dtype=np.float32))
 
 
+_VECTOR = np.arange(6, dtype=np.float32)
+_MONO = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+_RGB = np.arange(4 * 5 * 3, dtype=np.float32).reshape(4, 5, 3)
+
+
+@pytest.mark.parametrize(
+    ("src", "key"),
+    [
+        (_VECTOR, np.s_[None]),
+        (_VECTOR, np.s_[:, None]),
+        (_VECTOR, np.s_[2:5, None]),
+        (_VECTOR, np.s_[None, ::-1, None]),
+        (_MONO, np.s_[None]),
+        (_MONO, np.s_[None, ...]),
+        (_MONO, np.s_[:, None]),
+        (_MONO, np.s_[1:3, None, ::2]),
+        (_MONO, np.s_[..., None]),
+        (_RGB, np.s_[:, :, 0, None]),
+        (_RGB, np.s_[None, :, :, 1]),
+    ],
+)
+def test_newaxis_anywhere_matches_numpy(src, key):
+    expected = src[key]
+    for array in (Array(src), Array(src) * 2):
+        out = array[key]
+        assert out.shape == expected.shape
+        scale = 1 if array._node is None else 2
+        np.testing.assert_array_equal(out.realize(), expected * scale)
+
+
+def test_newaxis_past_three_axes_raises():
+    with pytest.raises(IndexError, match="newaxis"):
+        Array(_MONO)[None, :, :, None]
+    with pytest.raises(IndexError, match="newaxis"):
+        Array(_RGB)[None]
+
+
 def test_slice_rejects_step_and_mixed_args():
     t = Array(np.zeros((4, 6), dtype=np.float32))
     with pytest.raises(TypeError, match="slice indices must be integers"):

@@ -40,6 +40,9 @@ enums:
     - edge
     - symmetric
     - reflect
+  ramp_along:
+    - columns
+    - rows
 
 ops:
   - name: sub_scalar
@@ -71,6 +74,30 @@ ops:
       - key: value
         type: f32_array
         count: 0
+
+  # start + index * step, computed in float32 and then stored as the dest
+  # dtype. No input. along=columns: one row, one component, the index
+  # is the column. along=rows: one component per column, the index is the
+  # row. stop, when set, replaces the last sample on that axis.
+  - name: ramp
+    inputs: []
+    outputs:
+      - channels: same
+    attrs:
+      - key: along
+        type: string
+        count: 1
+        enum: ramp_along
+      - key: start
+        type: f32_array
+        count: 0
+      - key: step
+        type: f32_array
+        count: 0
+      - key: stop
+        type: f32_array
+        count: 0
+        optional: true
 
   # ROI view: emit meta via geometry: view (_out_meta_view); native span execute.
   - name: view

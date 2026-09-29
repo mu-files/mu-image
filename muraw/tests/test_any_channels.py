@@ -114,13 +114,12 @@ def test_view_rejects_spatial_fancy_and_mono_channel():
         t.view(([0, 1], slice(None), slice(None)))
     with pytest.raises(TypeError, match="slice objects"):
         Array(_hwc(3))[[0, 1], :, :]
-    mono = Array(np.zeros((4, 6), dtype=np.float32))
+    mono_np = np.zeros((4, 6), dtype=np.float32)
+    mono = Array(mono_np)
     with pytest.raises(IndexError, match="too many indices"):
         mono[:, :, 0]
-    with pytest.raises(IndexError, match="newaxis"):
-        mono[None, :, :]
-    with pytest.raises(IndexError, match="newaxis"):
-        mono[:, None, :]
+    np.testing.assert_array_equal(mono[None, :, :].realize(), mono_np[None, :, :])
+    np.testing.assert_array_equal(mono[:, None, :].realize(), mono_np[:, None, :])
     with pytest.raises(IndexError, match="newaxis"):
         Array(np.zeros((2, 3, 1), dtype=np.float32))[:, :, None]
     with pytest.raises(ValueError, match="empty"):

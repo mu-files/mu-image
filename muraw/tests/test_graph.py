@@ -1000,6 +1000,79 @@ def test_realize_caches_and_force_recompute():
         set_default_engine(prev)
 
 
+def _upstream_op_arrays(root: Array) -> List[Array]:
+    """Every op result ``root`` reads, directly or through other ops."""
+    found: List[Array] = []
+    seen: set[int] = set()
+    stack = list(root._node.inputs) if root._node is not None else []
+    while stack:
+        array = stack.pop()
+        if id(array) in seen or array._node is None:
+            continue
+        seen.add(id(array))
+        found.append(array)
+        stack.extend(array._node.inputs)
+    return found
+
+
+def _two_segments_through_a_python_op() -> Array:
+    src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    return _fence_cast(Array(src) - 1.0, "float32") * 2.0
+
+
+def _two_segments_through_a_reshape() -> Array:
+    src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    return (Array(src) - 1.0)[None, ...] * 2.0
+
+
+def _one_segment_chain() -> Array:
+    src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    return ((Array(src) - 1.0) * 2.0) - 3.0
+
+
+def _ramp_reshaped_and_broadcast() -> Array:
+    ramp = mi.linspace(np.zeros(3, np.float32), np.ones(3, np.float32), 5) * 0.5
+    return mi.broadcast_to(ramp[None, ...], (4, 5, 3))
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        _two_segments_through_a_python_op,
+        _two_segments_through_a_reshape,
+        _one_segment_chain,
+        _ramp_reshaped_and_broadcast,
+    ],
+)
+@pytest.mark.parametrize("force_recompute", [False, True])
+def test_realize_keeps_pixels_only_on_the_realized_array(build, force_recompute):
+    """realize() must not leave buffers on intermediate arrays: an
+    intermediate that is kept alive would hold its full buffer forever."""
+    root = build()
+    upstream = _upstream_op_arrays(root)
+    assert upstream
+    root.realize(force_recompute=force_recompute)
+    assert root._data is not None
+    holding = [array._node.op for array in upstream if array._data is not None]
+    assert holding == []
+
+
+def test_realize_reuses_an_array_the_caller_realized_and_adds_no_others():
+    src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    pinned = _fence_cast(Array(src) - 1.0, "float32")
+    pinned_pixels = pinned.realize()
+    root = (pinned * 2.0) - 3.0
+    out = root.realize()
+    np.testing.assert_array_equal(out, (src - 1.0) * 2.0 - 3.0)
+    assert pinned._data is pinned_pixels
+    others = [
+        array._node.op
+        for array in _upstream_op_arrays(root)
+        if array is not pinned and array._data is not None
+    ]
+    assert others == []
+
+
 def test_op_node_is_frozen():
     x = Array(np.ones((2, 2), dtype=np.float32)) - 1.0
     assert x._node is not None

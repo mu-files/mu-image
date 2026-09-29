@@ -712,9 +712,13 @@ def _run_op_arrays(
 def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     """Run the graph if needed and return ``root``'s pixels.
 
-    Cached ``_data`` is handed to the engine as an extra bind. The engine
-    skips a producer when that buffer covers the array's canvas.
-    ``force_recompute`` omits those binds and reruns every op.
+    Only ``root`` keeps its pixels. Buffers for other arrays, such as the
+    outputs that pass between engine segments, are dropped on return.
+
+    An array the caller realized earlier has ``_data``, which is handed to
+    the engine as an extra bind. The engine skips a producer when that
+    buffer covers the array's canvas. ``force_recompute`` omits those binds
+    and reruns every op.
     """
     if root._data is not None and not force_recompute:
         return _as_numpy_shape(root)
@@ -757,12 +761,10 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
 
     _run_op_arrays(op_arrays, values, root)
 
-    if id(root) not in values:
+    root_pixels = values.get(id(root))
+    if root_pixels is None:
         raise RuntimeError("realize finished without materializing root")
-    for t in op_arrays:
-        arr = values.get(id(t))
-        if arr is not None and (t._data is None or force_recompute):
-            t._data = _seal_ndarray(arr)
+    root._data = _seal_ndarray(root_pixels)
     return _as_numpy_shape(root)
 
 

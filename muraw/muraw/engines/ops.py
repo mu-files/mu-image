@@ -55,6 +55,42 @@ fill = EngineOp(
     _infer_meta=None,
 )
 
+ramp = EngineOp(
+    meta=OpMeta(name='ramp', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _n_inputs=0,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 1,
+    "key": "along",
+    "type": "string",
+    "values": [
+      "columns",
+      "rows"
+    ]
+  },
+  {
+    "count": 0,
+    "key": "start",
+    "type": "f32_array"
+  },
+  {
+    "count": 0,
+    "key": "step",
+    "type": "f32_array"
+  },
+  {
+    "count": 0,
+    "key": "stop",
+    "optional": true,
+    "type": "f32_array"
+  }
+]''')),
+    _infer_meta=None,
+)
+
 view = EngineOp(
     meta=OpMeta(name='view', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1030,6 +1066,7 @@ OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
     'fill': fill,
+    'ramp': ramp,
     'view': view,
     'pad': pad,
     'tile': tile,
@@ -1076,6 +1113,7 @@ __all__ = [
     'normalize_raw',
     'orientation',
     'pad',
+    'ramp',
     'rgb_apply_gain_map',
     'rgb_apply_hue_sat_map',
     'rgb_apply_hue_sat_val_map',

@@ -7,7 +7,7 @@ from __future__ import annotations
 import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from math import gcd
+from math import ceil, gcd
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import numpy as np
@@ -475,25 +475,24 @@ def _src_channels_from_last_axis(
     return src_channels, None
 
 
-def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], bool]:
-    """Expand a slice key to one entry per axis, plus a last-axis newaxis flag.
+def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], Tuple[int, ...]]:
+    """Split an index key into one entry per existing axis and the new axes.
 
-    Mono arrays are rank 2 ``(H, W)`` unless ``channel_axis`` is set, in
-    which case they are ``(H, W, 1)``. Multi-channel arrays are rank 3
-    ``(H, W, C)``. At most one Ellipsis is replaced with ``slice(None)``.
-    ``None`` (``np.newaxis``) counts as a new axis, not an existing one.
-    A trailing Ellipsis that fills no axes is dropped, as in NumPy
-    (``arr[:, :, ...]`` on a 2-d array is ``arr[:, :]``). A short key such
-    as ``t[:]`` or ``t[10:90]`` is padded on the right with ``slice(None)``.
+    ``ndim`` is the NumPy rank: 1 for ``(N,)``, 2 for ``(H, W)``, 3 for
+    ``(H, W, C)``. At most one Ellipsis is replaced with ``slice(None)``,
+    and a short key such as ``t[:]`` or ``t[10:90]`` is padded on the right
+    with ``slice(None)``, as in NumPy.
 
-    H and W must be slices. The last axis of a rank-3 array may be an int,
-    a slice, or a sequence of ints. ``newaxis`` is only a new last axis on
-    a rank-2 array (``t[:, :, None]``).
+    Each ``None`` (``np.newaxis``) adds an axis of length 1. The second
+    value is the position of each new axis in the result's shape, so
+    ``(H, W)[:, None, :]`` gives ``(1,)`` and ``(N,)[None, :, None]`` gives
+    ``(0, 2)``. The result may have at most 3 axes.
+
+    The spatial axes must be slices. The last axis of a rank-3 array may be
+    an int (which drops that axis), a slice, or a sequence of ints.
     """
-    if key is Ellipsis:
-        items: Tuple[Any, ...] = (Ellipsis,)
-    elif isinstance(key, slice):
-        items = (key,)
+    if key is Ellipsis or key is None or isinstance(key, slice):
+        items: Tuple[Any, ...] = (key,)
     elif isinstance(key, tuple):
         items = key
     else:
@@ -502,38 +501,40 @@ def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], bool]:
     n_ellipsis = sum(item is Ellipsis for item in items)
     if n_ellipsis > 1:
         raise IndexError("an index can only have a single ellipsis ('...')")
+    n_explicit = sum(item is not Ellipsis and item is not None for item in items)
+    if n_explicit > ndim:
+        raise IndexError(
+            f"too many indices for array: array is {ndim}-dimensional, "
+            f"but {n_explicit} were indexed"
+        )
+    fill = (slice(None),) * (ndim - n_explicit)
     if n_ellipsis == 1:
         ellipsis_at = items.index(Ellipsis)
-        n_explicit = sum(item is not Ellipsis and item is not None for item in items)
-        n_fill = ndim - n_explicit
-        if n_fill < 0:
-            raise IndexError(f"too many indices for an array: {n_explicit}")
-        items = items[:ellipsis_at] + (slice(None),) * n_fill + items[ellipsis_at + 1 :]
-
-    newaxis = False
-    if any(item is None for item in items):
-        if (
-            sum(item is None for item in items) != 1
-            or items[-1] is not None
-            or len(items) - 1 != ndim
-            or ndim != 2
-        ):
-            raise IndexError(
-                "newaxis is only supported as a new last axis on a (H, W) array"
-            )
-        items = items[:-1]
-        newaxis = True
+        items = items[:ellipsis_at] + fill + items[ellipsis_at + 1 :]
     else:
-        if len(items) > ndim:
-            raise IndexError(f"too many indices for an array: {len(items)}")
-        if len(items) < ndim:
-            items = items + (slice(None),) * (ndim - len(items))
-    spatial_end = len(items) - 1 if ndim == 3 else len(items)
-    if any(not isinstance(items[axis], slice) for axis in range(spatial_end)):
+        items = items + fill
+
+    axes = []
+    new_axes = []
+    rank = 0
+    for item in items:
+        if item is None:
+            new_axes.append(rank)
+            rank += 1
+            continue
+        axes.append(item)
+        if not isinstance(item, (int, np.integer)):
+            rank += 1
+    if rank > 3:
+        raise IndexError(
+            f"newaxis would give {rank} axes; an array has at most 3 (H, W, C)"
+        )
+    spatial = axes if ndim < 3 else axes[:2]
+    if any(not isinstance(item, slice) for item in spatial):
         raise TypeError(
             "region must be slice objects; integer axes and masks are not supported"
         )
-    return items, newaxis
+    return tuple(axes), tuple(new_axes)
 
 
 @dataclass(frozen=True)
@@ -594,94 +595,17 @@ def _window_from_slices(
     )
 
 
-def _window_from_key(meta: ArrayMeta, key: Any) -> _Window:
-    items, newaxis = _expand_index_key(key, len(meta.shape))
-    rows, cols, *rest = items
-    window = _window_from_slices(meta, rows, cols, rest[0] if rest else None)
-    if newaxis:
-        return replace(window, channel_axis=True)
-    return window
-
-
-def _index_key_1d(key: Any) -> Tuple[slice, int, int]:
-    """Split a key on a 1D array into its slice and the newaxis counts around it.
-
-    Returns ``(cols, leading, trailing)``: ``leading`` and ``trailing`` are
-    how many ``None`` entries come before and after the one axis. ``v[2:5]``
-    is ``(slice(2, 5), 0, 0)``, ``v[None, :]`` is ``(slice(None), 1, 0)``,
-    and ``v[:, None]`` is ``(slice(None), 0, 1)``.
-    """
-    if key is Ellipsis or key is None or isinstance(key, slice):
-        items: Tuple[Any, ...] = (key,)
-    elif isinstance(key, tuple):
-        items = key
-    else:
-        raise TypeError("region must be a slice or a tuple of slices")
-    n_ellipsis = sum(item is Ellipsis for item in items)
-    if n_ellipsis > 1:
-        raise IndexError("an index can only have a single ellipsis ('...')")
-    explicit = [item for item in items if item is not None and item is not Ellipsis]
-    if len(explicit) > 1:
-        raise IndexError(
-            "too many indices for array: array is 1-dimensional, "
-            f"but {len(explicit)} were indexed"
-        )
-    if explicit:
-        items = tuple(item for item in items if item is not Ellipsis)
-    elif n_ellipsis:
-        items = tuple(slice(None) if item is Ellipsis else item for item in items)
-    else:
-        items = items + (slice(None),)
-    position = next(i for i, item in enumerate(items) if item is not None)
-    cols = items[position]
-    if not isinstance(cols, slice):
-        raise TypeError(
-            "region must be slice objects; integer axes and masks are not supported"
-        )
-    return cols, position, len(items) - position - 1
-
-
-def _view_1d(
-    array: "Array", region: Any, *, oob_valid: bool, reset_origin: bool
-) -> "Array":
-    """NumPy indexing on a 1D array, done as a view of its one-row buffer."""
-    import muimage as mi
-
-    cols, leading, trailing = _index_key_1d(region)
-    row = _with_meta(array, array.meta.with_size(ndim=2))
-    out = row.view((slice(None), cols), oob_valid=oob_valid, reset_origin=reset_origin)
-    if (leading, trailing) == (0, 0):
-        return _with_meta(out, out.meta.with_size(ndim=1))
-    if (leading, trailing) == (1, 0):
-        return out
-    if (leading, trailing) == (1, 1):
-        return out.view(np.s_[:, :, None])
-    if (leading, trailing) == (0, 1):
-        return mi.orientation(out, orientation=5)
-    raise IndexError(
-        "on a 1D array, newaxis is supported as v[None, :], v[:, None], "
-        "or v[None, :, None]"
-    )
-
-
-def _window(
-    meta: ArrayMeta,
-    region: slice | tuple[Any, ...] | None,
+def _window_from_rect(
     left: int | None,
     top: int | None,
     width: int | None,
     height: int | None,
 ) -> _Window:
-    """Normalize a slice region or a keyword rect to a spatial box plus channels.
+    """The box given as ``left``, ``top``, ``width``, ``height`` keywords.
 
     ``width`` and ``height`` must be at least 1.
     """
     rect = (left, top, width, height)
-    has_rect = any(v is not None for v in rect)
-    if region is not None:
-        if has_rect:
-            raise TypeError("cannot mix a slice region with left, top, width, height")
-        return _window_from_key(meta, region)
     if any(v is None for v in rect):
         raise TypeError("view requires a slice region or left, top, width, and height")
     left_i = _as_axis_int(left, "left")
@@ -772,21 +696,6 @@ def _with_meta(array: "Array", meta: ArrayMeta) -> "Array":
     return out
 
 
-def _retag_channel_axis(array: "Array", channel_axis: bool) -> "Array":
-    """Present the same pixels with or without a size-1 channel axis.
-
-    A source buffer is reshaped. A lazy array shares its node; realize
-    allocates ``(H, W, 1)`` or ``(H, W)`` and the engine still writes one
-    channel.
-    """
-    if array.meta.channel_axis == channel_axis:
-        return array
-    meta = array.meta.with_size(ndim=3 if channel_axis else 2)
-    if array._data is not None and array.meta.channels == 1:
-        return Array(np.reshape(array._data, meta.shape))
-    return Array(_meta=meta, _node=array._node)
-
-
 def _dtype_from_fill(fill_value: Any) -> ElementType:
     """Element type of ``fill_value`` when ``full(..., dtype=None)``."""
     if isinstance(fill_value, bool):
@@ -858,6 +767,151 @@ def ones_like(array: "Array", dtype: ElementTypeLike | None = None) -> "Array":
     return ones(array.shape, dtype=et)
 
 
+def _emit_ramp(
+    meta: ArrayMeta,
+    start: list[float],
+    step: list[float],
+    stop: list[float] | None,
+) -> "Array":
+    """A 1D ``meta`` ramps along its columns; a 2D one down its rows."""
+    from .engines.graph import op
+
+    along = "columns" if len(meta.shape) == 1 else "rows"
+    attrs: dict[str, Any] = {"along": along, "start": start, "step": step}
+    if stop is not None:
+        attrs["stop"] = stop
+    return op("ramp", Array(_meta=meta), **attrs)
+
+
+def arange(
+    start: Any,
+    stop: Any = None,
+    step: Any = 1,
+    *,
+    dtype: ElementTypeLike = ElementType.FLOAT32,
+) -> "Array":
+    """Samples ``start + i * step`` for ``i`` below ``ceil((stop - start) / step)``.
+
+    One argument is the stop, with start 0 and step 1, as in ``numpy.arange``.
+    The samples are computed in float32, so they can differ from NumPy's
+    float64 by a few float32 rounding steps. ``uint8`` and ``uint16``
+    saturate where NumPy wraps. A step of 0 raises. An empty range raises:
+    there are no empty images.
+    """
+
+    def require_number(value: Any, name: str) -> float:
+        """A real Python or NumPy number. A sequence raises."""
+        if isinstance(value, (bool, np.bool_, str, bytes)):
+            raise TypeError(f"arange {name} must be a number")
+        arr = np.asarray(value)
+        if arr.ndim != 0 or arr.dtype.kind not in "iuf":
+            raise TypeError(f"arange {name} must be a number")
+        return float(arr)
+
+    if stop is None:
+        stop = start
+        start = 0
+    start_v = require_number(start, "start")
+    stop_v = require_number(stop, "stop")
+    step_v = require_number(step, "step")
+    if step_v == 0.0:
+        raise ZeroDivisionError("arange step must not be 0")
+    count = ceil((stop_v - start_v) / step_v)
+    if count < 1:
+        raise ValueError(f"arange({start}, {stop}, {step}) is empty")
+    element_type = ElementType(dtype)
+    numpy_dtype = np.dtype(element_type.value)
+    if np.issubdtype(numpy_dtype, np.integer):
+        # NumPy stores start and start + step as the integer dtype, then
+        # steps by their difference, so the step is an integer too.
+        first, second = np.array([start_v, start_v + step_v]).astype(numpy_dtype)
+        start_v = float(first)
+        step_v = float(second) - start_v
+    meta = _meta_from_shape((count,), element_type)
+    return _emit_ramp(meta, [start_v], [step_v], None)
+
+
+def _linspace_components(start: Any, stop: Any) -> Tuple[np.ndarray, np.ndarray]:
+    """Broadcast ``start`` and ``stop`` to one float64 vector each.
+
+    Two scalars come back with shape ``(1,)`` and the caller still reports
+    ``(N,)``. A length-1 sequence stays length 1 so the result is ``(N, 1)``.
+    """
+    if isinstance(start, (bool, np.bool_)) or isinstance(stop, (bool, np.bool_)):
+        raise TypeError("linspace start and stop must be numbers")
+    start_arr = np.asarray(start)
+    stop_arr = np.asarray(stop)
+    if start_arr.dtype.kind not in "iuf" or stop_arr.dtype.kind not in "iuf":
+        raise TypeError("linspace start and stop must be numbers")
+    if start_arr.ndim > 1 or stop_arr.ndim > 1:
+        raise ValueError("linspace start and stop must be scalars or 1D")
+    try:
+        start_b, stop_b = np.broadcast_arrays(start_arr, stop_arr)
+    except ValueError as exc:
+        raise ValueError("linspace start and stop must be the same length") from exc
+    if start_b.ndim == 0:
+        start_b = start_b.reshape(1)
+        stop_b = stop_b.reshape(1)
+    return (
+        np.ascontiguousarray(start_b, dtype=np.float64),
+        np.ascontiguousarray(stop_b, dtype=np.float64),
+    )
+
+
+def linspace(
+    start: Any,
+    stop: Any,
+    num: Any = 50,
+    *,
+    endpoint: bool = True,
+    dtype: ElementTypeLike = ElementType.FLOAT32,
+    axis: int = 0,
+) -> "Array":
+    """``num`` samples from ``start`` to ``stop``, like ``numpy.linspace``.
+
+    A scalar ``start`` and ``stop`` return ``(num,)``. A length-``C`` pair
+    returns ``(num, C)``: row ``y``, column ``c`` runs from ``start[c]`` to
+    ``stop[c]``. ``endpoint`` true writes ``stop`` into the last sample.
+    ``num`` of 1 is ``start``. ``axis`` other than 0 raises. The samples are
+    computed in float32, so they can differ from NumPy by a few float32
+    rounding steps.
+    """
+    if isinstance(num, bool) or isinstance(axis, bool):
+        raise TypeError("linspace num and axis must be ints")
+    try:
+        count = operator.index(num)
+        axis_i = operator.index(axis)
+    except TypeError as exc:
+        raise TypeError("linspace num and axis must be ints") from exc
+    if count < 1:
+        raise ValueError(f"linspace num must be >= 1, got {count}")
+    if axis_i != 0:
+        raise ValueError(f"linspace axis must be 0, got {axis_i}")
+    if not isinstance(endpoint, (bool, np.bool_)):
+        raise TypeError("linspace endpoint must be a bool")
+    start_v, stop_v = _linspace_components(start, stop)
+    scalar = np.ndim(start) == 0 and np.ndim(stop) == 0
+    if count == 1:
+        step_v = np.zeros_like(start_v)
+        stop_arg = None
+    elif endpoint:
+        step_v = (stop_v - start_v) / (count - 1)
+        stop_arg = [float(value) for value in stop_v]
+    else:
+        step_v = (stop_v - start_v) / count
+        stop_arg = None
+    if scalar:
+        meta = _meta_from_shape((count,), ElementType(dtype))
+    else:
+        meta = _meta_from_shape((count, int(start_v.shape[0])), ElementType(dtype))
+    return _emit_ramp(
+        meta,
+        [float(value) for value in start_v],
+        [float(value) for value in step_v],
+        stop_arg,
+    )
+
+
 def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = None) -> "Array":
     """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
     et = array.dtype if dtype is None else ElementType(dtype)
@@ -867,23 +921,36 @@ def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = N
 def _reshape_layout(array: "Array", shape: Tuple[int, ...]) -> "Array":
     """The same samples, read as ``shape``.
 
-    A source buffer is ``ndarray.reshape``, which is a view. A lazy array
-    gets its own node, so the producer writes its buffer and the next op
-    binds that buffer reshaped, with no copy.
+    When the height, width, and channel count stay the same, only the NumPy
+    shape changes (``(N,)`` and ``(1, N)``, or ``(H, W)`` and
+    ``(H, W, 1)``). The result shares this array's node and canvas, and a
+    cached buffer is reshaped.
+
+    Otherwise the engine sees new sizes. A source buffer is
+    ``ndarray.reshape``, which is a view. A lazy array gets its own node, so
+    the producer writes its buffer and the next op binds that buffer
+    reshaped, with no copy.
     """
     from types import MappingProxyType
 
     from .engines.graph import OpNode
 
+    if tuple(shape) == array.shape:
+        return array
     new = _meta_from_shape(shape, array.dtype)
     if int(np.prod(array.shape)) != int(np.prod(new.shape)):
         raise ValueError(
             f"cannot reshape {array.shape} to {new.shape}: the sample count differs"
         )
-    row, col = array.meta.origin
-    meta = new.copy(origin=array.meta.origin, canvas=(col, row, new.width, new.height))
-    if meta.buffer_shape == array.meta.buffer_shape:
-        return _with_meta(array, meta)
+    old = array.meta
+    if (new.height, new.width, new.channels) == (old.height, old.width, old.channels):
+        out = object.__new__(Array)
+        out._take_fields(array, old.copy(shape=new.shape))
+        if out._data is not None:
+            out._data = np.reshape(out._data, out.meta.buffer_shape)
+        return out
+    row, col = old.origin
+    meta = new.copy(origin=old.origin, canvas=(col, row, new.width, new.height))
     if array._node is None:
         assert array._data is not None
         return Array(np.reshape(array._data, meta.buffer_shape), origin=array.meta.origin)
@@ -1140,25 +1207,51 @@ class Array:
         """Window into this array.
 
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
+        A ``None`` in ``region`` adds an axis of length 1, as in NumPy.
         """
-        import muimage as mi
-
-        if self._meta.is_1d:
-            if region is None:
+        if region is None:
+            if self._meta.is_1d:
                 raise TypeError(
                     "a 1D array is viewed with a slice, not left, top, width, height"
                 )
-            return _view_1d(
-                self, region, oob_valid=oob_valid, reset_origin=reset_origin
+            window = _window_from_rect(left, top, width, height)
+            return self._view_window(
+                window, oob_valid=oob_valid, reset_origin=reset_origin
             )
-        window = _window(self._meta, region, left, top, width, height)
+        if any(v is not None for v in (left, top, width, height)):
+            raise TypeError("cannot mix a slice region with left, top, width, height")
+        axes, new_axes = _expand_index_key(region, self._meta.ndim)
+        if self._meta.is_1d:
+            row = _reshape_layout(self, (1, self._meta.width))
+            window = _window_from_slices(row._meta, slice(None), axes[0])
+            viewed = row._view_window(
+                window, oob_valid=oob_valid, reset_origin=reset_origin
+            )
+            shape = [viewed.meta.width]
+        else:
+            window = _window_from_slices(self._meta, *axes)
+            viewed = self._view_window(
+                window, oob_valid=oob_valid, reset_origin=reset_origin
+            )
+            shape = list(viewed.shape)
+        for position in new_axes:
+            shape.insert(position, 1)
+        return _reshape_layout(viewed, tuple(shape))
+
+    def _view_window(
+        self, window: _Window, *, oob_valid: bool, reset_origin: bool
+    ) -> "Array":
+        """The ``view`` op for ``window``, or this array when it is all of it."""
+        import muimage as mi
+
         if window.is_full(self._meta):
             if (
                 window.channel_axis is None
                 or window.channel_axis == self._meta.channel_axis
             ):
                 return self
-            return _retag_channel_axis(self, window.channel_axis)
+            ndim = 3 if window.channel_axis else 2
+            return _reshape_layout(self, self._meta.with_size(ndim=ndim).shape)
 
         attrs: dict[str, Any] = {
             "left": window.left,
@@ -1180,10 +1273,8 @@ class Array:
             window.channel_axis is not None
             and out.meta.channel_axis != window.channel_axis
         ):
-            out = Array(
-                _meta=out.meta.with_size(ndim=3 if window.channel_axis else 2),
-                _node=out._node,
-            )
+            ndim = 3 if window.channel_axis else 2
+            out = _reshape_layout(out, out.meta.with_size(ndim=ndim).shape)
         return out
 
     def crop(
