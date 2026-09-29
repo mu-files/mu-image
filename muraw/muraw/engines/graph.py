@@ -177,10 +177,7 @@ def _out_dtype_from_attr(key: str) -> OutMetaFn:
         try:
             return ElementType(val)
         except ValueError as e:
-            raise ValueError(
-                f"attr {key!r} must be a dtype "
-                f"(one of {[d.value for d in ElementType]}), got {val!r}"
-            ) from e
+            raise ValueError(f"attr {key!r}: {e}") from e
 
     return _fn
 

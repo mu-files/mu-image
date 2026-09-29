@@ -1556,3 +1556,46 @@ def test_ingest_random_layouts_match_numpy():
             bound = bound._node.inputs[0]
         assert bound._data is not None
         assert bound._data.ctypes.data % bound._data.dtype.itemsize == 0
+
+
+@pytest.mark.parametrize(
+    "dtype, message",
+    [
+        (np.float64, r"float64 is not supported.*arr\.astype\(np\.float32\)"),
+        (">f8", r"float64 is not supported.*arr\.astype\(np\.float32\)"),
+        (">u2", r"big-endian >u2 is not supported.*newbyteorder"),
+        (">f4", r"big-endian >f4 is not supported.*newbyteorder"),
+        (np.int32, r"dtype int32 is not supported\. Supported dtypes: float32, float16, uint8, uint16"),
+        (np.bool_, r"dtype bool is not supported\. Supported dtypes"),
+    ],
+    ids=["float64", "float64_big_endian", "uint16_big_endian", "float32_big_endian", "int32", "bool"],
+)
+def test_unsupported_dtype_ingest_names_the_fix(dtype, message):
+    with pytest.raises(ValueError, match=message):
+        Array(np.zeros((2, 3, 3), dtype=dtype))
+
+
+def test_suggested_conversion_ingests():
+    for dtype in (">u2", ">f4"):
+        arr = np.arange(18, dtype=dtype).reshape(2, 3, 3)
+        native = arr.astype(arr.dtype.newbyteorder("="))
+        np.testing.assert_array_equal(Array(native).realize(), arr)
+    arr = np.linspace(0.0, 1.0, 18).reshape(2, 3, 3)
+    np.testing.assert_array_equal(Array(arr.astype(np.float32)).realize(), arr.astype(np.float32))
+
+
+def test_unsupported_dtype_argument_names_the_fix():
+    with pytest.raises(ValueError, match="float64 is not supported"):
+        mi.zeros((2, 2), dtype="float64")
+    with pytest.raises(ValueError, match="float64 is not supported"):
+        Array(np.zeros((2, 2), np.float32)).astype(np.float64)
+    with pytest.raises(ValueError, match="dtype int64 is not supported"):
+        mi.full((2, 2), 1, dtype=int)
+    with pytest.raises(ValueError, match="'rgb8' is not a dtype"):
+        mi.zeros((2, 2), dtype="rgb8")
+
+
+def test_dtype_strings_and_types_map_to_element_type():
+    assert ElementType("f4") is ElementType.FLOAT32
+    assert ElementType(np.uint16) is ElementType.UINT16
+    assert ElementType(np.dtype("<f2")) is ElementType.FLOAT16

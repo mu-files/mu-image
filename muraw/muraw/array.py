@@ -251,17 +251,34 @@ class ElementType(StrEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> ElementType | None:
-        """Map a NumPy dtype or scalar type. Strings use the StrEnum values."""
-        if isinstance(value, str):
-            return None
-        try:
-            dtype = np.dtype(value)
-            return next(
-                (member for member in cls if dtype == np.dtype(member.value)),
-                None,
+        """Map a NumPy dtype, scalar type, or dtype string such as ``"f4"``.
+
+        An unsupported dtype raises ``ValueError`` with a message that says
+        how to convert the input. No input is converted automatically.
+        """
+        supported = ", ".join(member.value for member in cls)
+        dtype = None
+        if value is not None:
+            try:
+                dtype = np.dtype(value)
+            except TypeError:
+                pass
+        if dtype is None:
+            raise ValueError(f"{value!r} is not a dtype. Supported dtypes: {supported}.")
+        member = next((member for member in cls if dtype == np.dtype(member.value)), None)
+        if member is not None:
+            return member
+        if dtype.kind == "f" and dtype.itemsize == 8:
+            raise ValueError(
+                "float64 is not supported; muimage computes in float32. "
+                "Convert with arr.astype(np.float32)."
             )
-        except (TypeError, ValueError):
-            return None
+        if not dtype.isnative and dtype.newbyteorder("=").name in supported.split(", "):
+            raise ValueError(
+                f"big-endian {dtype.str} is not supported. Convert to native byte order "
+                'with arr.astype(arr.dtype.newbyteorder("=")).'
+            )
+        raise ValueError(f"dtype {dtype} is not supported. Supported dtypes: {supported}.")
 
     @property
     def numpy_dtype(self) -> type:
