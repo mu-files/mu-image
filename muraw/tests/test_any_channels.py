@@ -28,9 +28,14 @@ def _realize_graph(monkeypatch, array: Array) -> tuple[np.ndarray, dict]:
     return out, calls[0]
 
 
+def _desc_channels(desc: dict) -> int:
+    shape = desc["shape"]
+    return shape[2] if len(shape) == 3 else 1
+
+
 def _assert_graph_channels(graph: dict, channels: int, op: str) -> None:
     assert [node["op"] for node in graph["nodes"]] == [op]
-    assert {desc["channels"] for desc in graph["tensor_descs"]} == {channels}
+    assert {_desc_channels(desc) for desc in graph["tensor_descs"]} == {channels}
 
 
 @pytest.mark.parametrize("channels", [2, 5])
@@ -63,7 +68,7 @@ def test_view_pad_orientation_any_channels(channels, monkeypatch):
 def _assert_gather_channels(graph: dict, src_channels: int, dest_channels: int) -> None:
     assert [node["op"] for node in graph["nodes"]] == ["view"]
     node = graph["nodes"][0]
-    by_id = {desc["id"]: desc["channels"] for desc in graph["tensor_descs"]}
+    by_id = {desc["id"]: _desc_channels(desc) for desc in graph["tensor_descs"]}
     assert by_id[node["inputs"][0]] == src_channels
     assert by_id[node["outputs"][0]] == dest_channels
 

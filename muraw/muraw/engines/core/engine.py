@@ -85,13 +85,10 @@ class CoreEngine:
         for t in all_arrays:
             m = t.meta
             origin_row, origin_col = m.origin
-            buffer = out_binds.get(id_of[id(t)], in_binds.get(id_of[id(t)]))
             desc = {
                 "id": id_of[id(t)],
                 "dtype": m.dtype.value,
-                "height": m.height,
-                "width": m.width,
-                "channels": m.channels,
+                "shape": list(m.buffer_shape),
                 "origin_y": int(origin_row),
                 "origin_x": int(origin_col),
                 "canvas_x0": int(m.canvas[0]),
@@ -99,10 +96,6 @@ class CoreEngine:
                 "canvas_width": int(m.canvas[2]),
                 "canvas_height": int(m.canvas[3]),
             }
-            # A one-row buffer's row stride is arbitrary in NumPy (it can be 0
-            # or negative). Without "stride" the engine uses the packed pitch.
-            if buffer is not None and buffer.shape[0] > 1:
-                desc["stride"] = int(buffer.strides[0])
             tensor_descs.append(desc)
 
         graph_nodes = []
