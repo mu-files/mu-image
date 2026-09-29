@@ -7,7 +7,7 @@ from __future__ import annotations
 import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from math import ceil, gcd
+from math import ceil
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import numpy as np
@@ -18,7 +18,9 @@ def _is_direct_source(arr: np.ndarray) -> bool:
     """True when the engine can bind ``arr`` itself as a source buffer.
 
     Pixels in a row are adjacent, the data pointer is element-aligned, and
-    the row pitch is a positive multiple of a pixel. A negative pitch is a
+    the row pitch is a whole number of elements that holds one packed row.
+    It need not be a whole number of pixels: a padded RGB888 camera buffer
+    can have a pitch that is not a multiple of 3 bytes. A negative pitch is a
     flipped view, not a source buffer. The stride of an axis of length 1 is
     ignored, as NumPy and the engine binding both do: ``v[None, :]`` has a
     row stride of 0.
@@ -45,7 +47,7 @@ def _is_direct_source(arr: np.ndarray) -> bool:
         return True
     row_pitch = int(arr.strides[0])
     packed = int(arr.shape[1]) * pixel
-    return row_pitch >= packed and row_pitch % pixel == 0
+    return row_pitch >= packed and row_pitch % itemsize == 0
 
 
 def _base_chain(arr: np.ndarray) -> list[np.ndarray]:
@@ -116,15 +118,18 @@ def _view_over_packed(arr: np.ndarray) -> Optional["Array"]:
     ):
         return None
 
-    # The pixel size must divide both steps, because the engine needs the
-    # row pitch to be a whole number of pixels. gcd(n, 0) is n.
+    # The pixel size must divide the column step so the view reads whole
+    # parent pixels. The row pitch only has to be a whole number of elements.
     channel_span = (channels - 1) * channel_elements + 1
-    common = gcd(row_elements, col_elements)
-    if common == 0:
+    if col_elements == 0:
         pixel_size = channel_span
     else:
         pixel_size = next(
-            (size for size in range(channel_span, common + 1) if common % size == 0),
+            (
+                size
+                for size in range(channel_span, col_elements + 1)
+                if col_elements % size == 0
+            ),
             0,
         )
         if pixel_size == 0:
@@ -221,8 +226,8 @@ def _transposed_source(arr: np.ndarray) -> Optional["Array"]:
         inner = _view_over_packed(unflipped)
     if inner is None:
         return None
-    import muimage as mi
 
+    import muimage as mi
     return mi.orientation(inner, orientation=_TRANSPOSE_ORIENTATION[flipped])
 
 

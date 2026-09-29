@@ -1450,6 +1450,70 @@ def test_ingest_random_transposed_views_are_not_copied():
             assert np.shares_memory(_source_buffer(t), owner)
 
 
+def _padded_rgb888_frame(height: int, width: int, pitch: int) -> tuple[np.ndarray, np.ndarray]:
+    """A packed RGB888 frame whose rows are ``pitch`` bytes apart, like a camera
+    buffer whose row alignment is not a multiple of 3. Returns the frame and
+    the flat buffer it reads."""
+    raw = (np.arange(height * pitch) % 251).astype(np.uint8)
+    frame = np.ndarray(shape=(height, width, 3), dtype=np.uint8, buffer=raw, strides=(pitch, 3, 1))
+    return frame, raw
+
+
+@pytest.mark.parametrize(
+    "key",
+    [np.s_[:], np.s_[1:3, 2:9], np.s_[:, ::2], np.s_[::-1], np.s_[..., ::-1], np.s_[..., 1]],
+    ids=["whole", "crop", "column_step", "row_flip", "bgr", "one_channel"],
+)
+def test_padded_rgb888_frame_is_not_copied(key):
+    frame, raw = _padded_rgb888_frame(4, 1000, 3008)
+    view = frame[key]
+    t = Array(view)
+    assert np.shares_memory(_source_buffer(t), raw)
+    np.testing.assert_array_equal(t.realize(), view)
+    np.testing.assert_array_equal(
+        (t.astype("float32") * 0.5).realize(), view.astype(np.float32) * 0.5
+    )
+
+
+def test_padded_rgb888_frame_is_bound_directly():
+    frame, raw = _padded_rgb888_frame(4, 1000, 3008)
+    t = Array(frame)
+    assert t._node is None
+    assert np.shares_memory(t._data, raw)
+
+
+def test_transposed_padded_rgb888_frame_is_not_copied():
+    frame, raw = _padded_rgb888_frame(4, 10, 32)
+    for arr in (frame.transpose(1, 0, 2), np.rot90(frame)):
+        t = Array(arr)
+        assert t._node.op == "orientation"
+        assert np.shares_memory(_source_buffer(t), raw)
+        np.testing.assert_array_equal(t.realize(), arr)
+
+
+def test_xrgb_frame_with_odd_pitch_reads_rgb_as_view():
+    height, width, pitch = 4, 1000, 4010
+    raw = (np.arange(height * pitch) % 251).astype(np.uint8)
+    frame = np.ndarray(shape=(height, width, 4), dtype=np.uint8, buffer=raw, strides=(pitch, 4, 1))
+    rgb = frame[..., :3]
+    t = Array(rgb)
+    assert _op_chain(t) == ["view"]
+    assert np.shares_memory(_source_buffer(t), raw)
+    np.testing.assert_array_equal(t.realize(), rgb)
+
+
+def test_padded_uint16_rgb_is_bound_directly():
+    height, width, pitch_elements = 3, 10, 31
+    raw = np.arange(height * pitch_elements, dtype=np.uint16)
+    frame = np.ndarray(
+        shape=(height, width, 3), dtype=np.uint16, buffer=raw, strides=(pitch_elements * 2, 6, 2)
+    )
+    t = Array(frame)
+    assert t._node is None
+    assert np.shares_memory(t._data, raw)
+    np.testing.assert_array_equal((t * 1.0).realize(), frame.astype(np.float32))
+
+
 def _random_layout(rng: np.random.Generator) -> np.ndarray:
     """A random slice of a layout that is sometimes a view and sometimes copied."""
     dtype = rng.choice([np.uint8, np.uint16, np.float32])
