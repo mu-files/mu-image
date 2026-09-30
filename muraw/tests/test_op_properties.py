@@ -55,7 +55,7 @@ def test_gen_ops_accepts_consistent_properties():
     [
         ("cfa_ea_demosaic", True, True, False),
         ("cfa_normalize_raw", True, True, False),
-        ("normalize_raw", True, False, False),
+        ("rgb_normalize_raw", True, False, True),
         ("rgb_transform", False, False, True),
         ("warp_rectilinear", True, False, False),
         ("apply_flat_gain_map", True, False, False),
@@ -102,16 +102,17 @@ def _normalize_attrs(channels):
 
 
 @pytest.mark.parametrize(
-    "src",
+    ("op_name", "src"),
     [
-        np.array([[[100, 600, 1100], [350, 850, 1600]]], dtype=np.uint16),
-        np.array([[100, 600], [1100, 1600]], dtype=np.uint16),
+        ("rgb_normalize_raw", np.array([[[100, 600, 1100], [350, 850, 1600]]], dtype=np.uint16)),
+        ("cfa_normalize_raw", np.array([[100, 600], [1100, 1600]], dtype=np.uint16)),
     ],
     ids=["rgb", "mono"],
 )
-def test_normalize_raw_matches_numpy(src):
+def test_normalize_raw_matches_numpy(op_name, src):
     channels = src.shape[2] if src.ndim == 3 else 1
-    out = mi.normalize_raw(Array(src), **_normalize_attrs(channels)).realize()
+    normalize_raw = getattr(mi, op_name)
+    out = normalize_raw(Array(src), **_normalize_attrs(channels)).realize()
     expected = np.clip((src.astype(np.float32) - 100.0) / 1000.0, 0.0, 1.0)
     np.testing.assert_allclose(np.asarray(out).reshape(src.shape), expected, atol=1e-6)
 
@@ -120,4 +121,11 @@ def test_cfa_normalize_raw_rejects_three_channels():
     with pytest.raises(ValueError, match="expected 1 channel"):
         mi.cfa_normalize_raw(
             Array(np.zeros((2, 2, 3), dtype=np.uint16)), **_normalize_attrs(1)
+        )
+
+
+def test_rgb_normalize_raw_rejects_one_channel():
+    with pytest.raises(ValueError, match="expected 3 channel"):
+        mi.rgb_normalize_raw(
+            Array(np.zeros((2, 2), dtype=np.uint16)), **_normalize_attrs(3)
         )

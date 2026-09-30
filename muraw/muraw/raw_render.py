@@ -2696,7 +2696,7 @@ def _linearize(
             src_bits=int(bits_per_sample),
         )
     else:
-        # cfa_normalize_raw / normalize_raw accept uint16 or float32 natively;
+        # cfa_normalize_raw / rgb_normalize_raw accept uint16 or float32 natively;
         # widen edge-case dtypes via lazy cast (no rescale).
         if x.meta.dtype == "uint8":
             x = x.astype("uint16")
@@ -2705,7 +2705,14 @@ def _linearize(
         lin = None
         if linearization_table is not None and len(linearization_table) > 0:
             lin = np.asarray(linearization_table, dtype=np.int32).reshape(-1)
-        normalize_raw = mi.cfa_normalize_raw if is_cfa else mi.normalize_raw
+        if samples_per_pixel == 1:
+            normalize_raw = mi.cfa_normalize_raw
+        elif samples_per_pixel == 3:
+            normalize_raw = mi.rgb_normalize_raw
+        else:
+            raise ValueError(
+                f"normalize: expected 1 or 3 samples per pixel, got {samples_per_pixel}"
+            )
         normalized = normalize_raw(
             x,
             black_level=np.asarray(black_level, dtype=np.float32).reshape(-1),

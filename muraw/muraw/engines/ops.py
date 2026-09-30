@@ -525,11 +525,11 @@ cfa_normalize_raw = EngineOp(
     _infer_meta=None,
 )
 
-normalize_raw = EngineOp(
-    meta=OpMeta(name='normalize_raw', requires_2d=True, is_cfa=False, is_rgb=False),
+rgb_normalize_raw = EngineOp(
+    meta=OpMeta(name='rgb_normalize_raw', requires_2d=True, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
-    _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _out_channels=graph._out_channels_const(3),
+    _in_channels=3,
     _n_inputs=1,
     _attr_specs=tuple(json.loads(r'''[
   {
@@ -1081,7 +1081,7 @@ OPS_BY_NAME = {
     'rgb_transform': rgb_transform,
     'rgb_clip_and_transform': rgb_clip_and_transform,
     'cfa_normalize_raw': cfa_normalize_raw,
-    'normalize_raw': normalize_raw,
+    'rgb_normalize_raw': rgb_normalize_raw,
     'rgb_apply_hue_sat_map': rgb_apply_hue_sat_map,
     'rgb_apply_hue_sat_val_map': rgb_apply_hue_sat_val_map,
     'rgb_apply_profile_gain_table_map': rgb_apply_profile_gain_table_map,
@@ -1110,7 +1110,6 @@ __all__ = [
     'map_polynomial',
     'mono_lut',
     'mul_scalar',
-    'normalize_raw',
     'orientation',
     'pad',
     'ramp',
@@ -1120,6 +1119,7 @@ __all__ = [
     'rgb_apply_profile_gain_table_map',
     'rgb_clip_and_transform',
     'rgb_matrix_3x3',
+    'rgb_normalize_raw',
     'rgb_transform',
     'sub_scalar',
     'tile',
