@@ -43,12 +43,26 @@ def test_pad_matches_numpy(mode, pad_width):
     np.testing.assert_array_equal(t, expect)
 
 
-def test_pad_rgb_does_not_pad_channels():
+def test_pad_rgb_spatial_only_with_a_zero_channel_pair():
     rng = np.random.default_rng(1)
     src = rng.random((4, 6, 3), dtype=np.float32)
-    out = Array(src).pad(1, mode="edge").realize()
-    expect = np.pad(src, ((1, 1), (1, 1), (0, 0)), mode="edge")
-    np.testing.assert_array_equal(out, expect)
+    widths = ((1, 1), (1, 1), (0, 0))
+    out = Array(src).pad(widths, mode="edge").realize()
+    np.testing.assert_array_equal(out, np.pad(src, widths, mode="edge"))
+
+
+@pytest.mark.parametrize("pad_width", [1, (1, 2)], ids=["int", "pair"])
+def test_pad_rgb_shorthand_pads_every_axis_like_numpy(pad_width):
+    rng = np.random.default_rng(2)
+    src = rng.random((4, 6, 3), dtype=np.float32)
+    out = Array(src).pad(pad_width, constant_values=0.5).realize()
+    np.testing.assert_array_equal(out, np.pad(src, pad_width, constant_values=0.5))
+
+
+def test_pad_rgb_shorthand_in_edge_mode_rejects_the_channel_pad():
+    src = np.zeros((4, 6, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="channel pad requires mode 'constant'"):
+        Array(src).pad(1, mode="edge")
 
 
 def test_pad_constant_values():
@@ -129,7 +143,7 @@ def test_pad_channel_requires_constant_mode():
 
 def test_pad_channel_width_rejected_on_mono():
     src = np.zeros((2, 2), dtype=np.float32)
-    with pytest.raises(ValueError, match="3 axes"):
+    with pytest.raises(ValueError, match=r"pad_width: expected an int, a pair"):
         Array(src).pad(((0, 0), (0, 0), (0, 1)))
 
 

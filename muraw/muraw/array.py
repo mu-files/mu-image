@@ -478,22 +478,6 @@ def _engine_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
     return False, (shape[0], shape[1], shape[2] if len(shape) == 3 else 1)
 
 
-# Temporary. Remove this check once indexing, pad, tile, and rot90 read
-# NumPy's axes through channel_axis.
-def _require_channels_last(array: "Array", name: str) -> None:
-    """Raise when ``array``'s channel axis is not its last axis.
-
-    ``name`` reads NumPy's axes as rows, columns, and channels in that
-    order, so another channel axis would act on the wrong axes.
-    """
-    axis = array.meta.channel_axis
-    if axis is not None and axis != 2:
-        raise NotImplementedError(
-            f"{name} of shape {array.shape} with channel_axis {axis} is not supported "
-            f"yet; move the channels last with mi.moveaxis(x, {axis}, -1)"
-        )
-
-
 def _require_scalar(value: Any, op: str) -> float:
     if isinstance(value, Array):
         raise TypeError(f"{op}: array–array arithmetic not supported")
@@ -515,7 +499,7 @@ def _expand_pad(
         pairs = np.broadcast_to(np.asarray(value), (axes, 2))
     except ValueError:
         if axes == 3:
-            detail = "((top, bottom), (left, right), (before, after))"
+            detail = "one (before, after) pair per axis"
         elif axes == 1:
             detail = "((before, after),)"
         else:
@@ -527,37 +511,6 @@ def _expand_pad(
     if nonneg and any(side < 0 for side in sides):
         raise ValueError(f"{name}: values must be non-negative; got {sides}")
     return sides
-
-
-def _expand_spatial_pad(value: Any, name: str, *, nonneg: bool = False) -> list[int] | list[float]:
-    """``[top, bottom, left, right]``. Channel axes are never included."""
-    return _expand_pad(value, name, 2, nonneg=nonneg)
-
-
-def _pad_width_has_channel_axis(pad_width: Any) -> bool:
-    """True when ``pad_width`` is three ``(before, after)`` pairs.
-
-    A bare int and a single pair stay spatial even on a rank-3 array.
-    """
-    if isinstance(pad_width, bool) or isinstance(
-        pad_width, (int, np.integer, float, np.floating)
-    ):
-        return False
-    if (
-        isinstance(pad_width, (tuple, list))
-        and len(pad_width) == 2
-        and all(
-            isinstance(side, (int, np.integer, float, np.floating))
-            and not isinstance(side, bool)
-            for side in pad_width
-        )
-    ):
-        return False
-    try:
-        arr = np.asarray(pad_width)
-    except (ValueError, TypeError):
-        return False
-    return arr.shape == (3, 2)
 
 
 def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, int]:
@@ -580,22 +533,24 @@ def _as_axis_int(value: Any, name: str) -> int:
     return int(value)
 
 
-def _wrap_channel_index(value: Any, channels: int) -> int:
-    """NumPy wrap of one last-axis index into ``0 .. channels-1``."""
+def _wrap_channel_index(value: Any, channels: int, axis: int) -> int:
+    """NumPy wrap of one index on the channel axis ``axis`` into ``0 .. channels-1``."""
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
         raise TypeError("channel index must be an int")
     raw = int(value)
     index = raw + channels if raw < 0 else raw
     if index < 0 or index >= channels:
         raise IndexError(
-            f"index {value} is out of bounds for axis 2 with size {channels}"
+            f"index {value} is out of bounds for axis {axis} with size {channels}"
         )
     return index
 
 
-def _channel_key(key: Any, channels: int) -> Tuple[Optional[list[int]], bool]:
-    """The source channels a last-axis index ``key`` reads, and whether it
-    drops the channel axis.
+def _channel_key(
+    key: Any, channels: int, axis: int
+) -> Tuple[Optional[list[int]], bool]:
+    """The source channels that ``key``, the index on the channel axis
+    ``axis``, reads, and whether it drops that axis.
 
     The list is ``None`` when it is identity ``0..C-1``. An integer index
     drops the axis, as in NumPy; a slice or a sequence keeps it, even for
@@ -624,17 +579,19 @@ def _channel_key(key: Any, channels: int) -> Tuple[Optional[list[int]], bool]:
             )
         if not values:
             raise ValueError("channels: empty index")
-        src_channels = [_wrap_channel_index(value, channels) for value in values]
+        src_channels = [_wrap_channel_index(value, channels, axis) for value in values]
     if src_channels == list(range(channels)):
         return None, rank_drop
     return src_channels, rank_drop
 
 
-def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], Tuple[int, ...]]:
-    """Split an index key into one entry per existing axis and the new axes.
+def _expand_index_key(
+    key: Any, meta: ArrayMeta
+) -> Tuple[Tuple[Any, ...], Tuple[int, ...]]:
+    """Split an index key into one entry per axis of ``meta.shape`` and the
+    new axes.
 
-    ``ndim`` is the NumPy rank: 1 for ``(N,)``, 2 for ``(H, W)``, 3 for
-    ``(H, W, C)``. At most one Ellipsis is replaced with ``slice(None)``,
+    At most one Ellipsis is replaced with ``slice(None)``,
     and a short key such as ``t[:]`` or ``t[10:90]`` is padded on the right
     with ``slice(None)``, as in NumPy.
 
@@ -643,15 +600,11 @@ def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], Tuple[int, 
     ``(H, W)[:, None, :]`` gives ``(1,)`` and ``(N,)[None, :, None]`` gives
     ``(0, 2)``. The result may have at most 3 axes.
 
-    The spatial axes must be slices. The last axis of a rank-3 array may be
-    an int (which drops that axis), a slice, or a sequence of ints.
+    The rows and the columns must be slices. The channel axis may be an int
+    (which drops that axis), a slice, or a sequence of ints.
     """
-    if key is Ellipsis or key is None or isinstance(key, slice):
-        items: Tuple[Any, ...] = (key,)
-    elif isinstance(key, tuple):
-        items = key
-    else:
-        raise TypeError("region must be a spatial slice or a tuple of slices")
+    ndim = meta.ndim
+    items: Tuple[Any, ...] = key if isinstance(key, tuple) else (key,)
 
     n_ellipsis = sum(item is Ellipsis for item in items)
     if n_ellipsis > 1:
@@ -684,7 +637,7 @@ def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], Tuple[int, 
         raise IndexError(
             f"newaxis would give {rank} axes; an array has at most 3 (H, W, C)"
         )
-    spatial = axes if ndim < 3 else axes[:2]
+    spatial = axes if ndim < 3 else [axes[axis] for axis in meta.spatial_axes]
     if any(not isinstance(item, slice) for item in spatial):
         raise TypeError(
             "region must be slice objects; integer axes and masks are not supported"
@@ -732,7 +685,9 @@ def _window_from_slices(
     if channels is not None:
         if len(meta.shape) < 3:
             raise IndexError("too many indices for a (H, W) array")
-        src_channels, drops_channel_axis = _channel_key(channels, meta.channels)
+        src_channels, drops_channel_axis = _channel_key(
+            channels, meta.channels, meta.channel_axis
+        )
     top, height, row_step = _slice_span(rows, meta.height, "rows")
     left, width, col_step = _slice_span(cols, meta.width, "cols")
     return _Window(
@@ -779,7 +734,13 @@ def rot90(m: ArrayLike, k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     orientation, because a slice cannot swap height and width.
     """
     m = Array(m)
-    _require_channels_last(m, "rot90")
+    # Temporary. Remove once rot90 accepts any pair of axes.
+    channel_axis = m.meta.channel_axis
+    if channel_axis is not None and channel_axis != 2:
+        raise NotImplementedError(
+            f"rot90 of shape {m.shape} with channel_axis {channel_axis} is not "
+            f"supported yet; move the channels last with mi.moveaxis(x, {channel_axis}, -1)"
+        )
     if m.meta.is_1d:
         raise ValueError(f"Axes={tuple(axes)} out of range for array of ndim=1.")
     if tuple(axes) != (0, 1):
@@ -1309,13 +1270,14 @@ def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...
     return arr[tuple(slices)], tuple(reps)
 
 
-def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
-    """Right-align ``reps`` onto ``shape`` and return ``(row, col, channel)``.
+def _tile_reps(meta: ArrayMeta, reps: Any) -> tuple[int, int, int]:
+    """Right-align ``reps`` onto ``meta.shape`` and return ``(row, col, channel)``.
 
     An int is the last axis. Missing leading counts are 1. A longer tuple
     would add an axis. A rank-2 array has no channel axis, so that count
     stays 1. A 1D array has only a column count.
     """
+    shape = meta.shape
     if np.iterable(reps):
         counts = tuple(operator.index(value) for value in reps)
     else:
@@ -1326,8 +1288,11 @@ def _tile_reps(shape: Tuple[int, ...], reps: Any) -> tuple[int, int, int]:
         raise ValueError(f"tile reps must be >= 1, got {reps!r}")
     if len(shape) == 1:
         return 1, counts[0], 1
-    row, col, channel = (1,) * (len(shape) - len(counts)) + counts + (1,) * (3 - len(shape))
-    return row, col, channel
+    counts = (1,) * (len(shape) - len(counts)) + counts
+    if meta.channel_axis is None:
+        return counts[0], counts[1], 1
+    rows_axis, cols_axis = meta.spatial_axes
+    return counts[rows_axis], counts[cols_axis], counts[meta.channel_axis]
 
 
 def tile(array: ArrayLike, reps: Any) -> "Array":
@@ -1340,7 +1305,6 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
     from .engines.graph import op
 
     array = Array(array)
-    _require_channels_last(array, "tile")
     is_1d = array.meta.is_1d
     if isinstance(reps, (str, bytes)):
         raise TypeError(f"tile reps must be an int or a sequence of ints, got {reps!r}")
@@ -1353,7 +1317,7 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
     elif is_1d and reps_count == 2:
         # NumPy promotes (N,) to (1, N), which is this array's buffer.
         array = _with_meta(array, array.meta.with_size(ndim=2))
-    row_reps, col_reps, channel_reps = _tile_reps(array.shape, reps)
+    row_reps, col_reps, channel_reps = _tile_reps(array.meta, reps)
     return op(
         "tile",
         array,
@@ -1445,9 +1409,11 @@ class Array:
             arr = np.asarray(data)
             meta = meta_from_array(arr, channel_axis)
             repeated = _repeated_axes(arr)
-            if repeated is not None and meta.channel_axis in (None, 2):
+            if repeated is not None and meta.channel_axis != 1:
                 core, reps = repeated
-                stretched = tile(Array(core, origin=origin), reps)
+                stretched = tile(
+                    Array(core, origin=origin, channel_axis=meta.channel_axis), reps
+                )
                 self._take_fields(stretched, stretched._meta)
                 return
             if origin is not None:
@@ -1541,7 +1507,6 @@ class Array:
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
         A ``None`` in ``region`` adds an axis of length 1, as in NumPy.
         """
-        _require_channels_last(self, "indexing")
         if region is None:
             if self._meta.is_1d:
                 raise TypeError(
@@ -1553,7 +1518,7 @@ class Array:
             )
         if any(v is not None for v in (left, top, width, height)):
             raise TypeError("cannot mix a slice region with left, top, width, height")
-        axes, new_axes = _expand_index_key(region, self._meta.ndim)
+        axes, new_axes = _expand_index_key(region, self._meta)
         if self._meta.is_1d:
             row = _reshape_layout(self, (1, self._meta.width))
             window = _window_from_slices(row._meta, slice(None), axes[0])
@@ -1562,7 +1527,16 @@ class Array:
             )
             shape = [viewed.meta.width]
         else:
-            window = _window_from_slices(self._meta, *axes)
+            if self._meta.channel_axis is None:
+                window = _window_from_slices(self._meta, *axes)
+            else:
+                rows_axis, cols_axis = self._meta.spatial_axes
+                window = _window_from_slices(
+                    self._meta,
+                    axes[rows_axis],
+                    axes[cols_axis],
+                    axes[self._meta.channel_axis],
+                )
             viewed = self._view_window(
                 window, oob_valid=oob_valid, reset_origin=reset_origin
             )
@@ -1631,14 +1605,14 @@ class Array:
     ) -> "Array":
         """Grow the array. ``pad_width`` and ``constant_values`` follow ``numpy.pad``.
 
-        A bare int or a two-axis width grows height and width only. On an
-        array whose shape is ``(H, W, C)``, a third pair ``(before, after)``
-        adds constant channels. That channel pad requires ``mode="constant"``.
-        On a 1D array, ``pad_width`` is one ``(before, after)`` pair, as in NumPy.
+        As in NumPy, an int or a single ``(before, after)`` pair pads every
+        axis, channels included; ``((0, 0), (1, 1), (1, 1))`` pads only the
+        rows and columns of a CHW array. The pair on the channel axis adds
+        channels. On a CHW array that pad adds planes in any ``mode``; with
+        the channels on another axis it requires ``mode="constant"``.
         """
         import muimage as mi
 
-        _require_channels_last(self, "pad")
         if self._meta.is_1d:
             left, right = (
                 int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)
@@ -1653,47 +1627,28 @@ class Array:
                 mode=mode,
                 constant_values=[0.0, 0.0] + consts,
             )
-        if _pad_width_has_channel_axis(pad_width):
-            if len(self.shape) != 3:
-                raise ValueError(
-                    f"pad_width has 3 axes but array shape is {self.shape}"
-                )
-            sides = _expand_pad(pad_width, "pad_width", 3, nonneg=True)
-            top, bottom, left, right, channel_before, channel_after = (
-                int(v) for v in sides
-            )
-            consts = [
-                float(v) for v in _expand_pad(constant_values, "constant_values", 3)
-            ]
-            if (channel_before or channel_after) and mode != "constant":
-                raise ValueError(
-                    f"pad: a channel pad requires mode 'constant', got {mode!r}"
-                )
-            attrs: dict[str, Any] = {
-                "top": top,
-                "bottom": bottom,
-                "left": left,
-                "right": right,
-                "channel_before": channel_before,
-                "channel_after": channel_after,
-                "mode": mode,
-                "constant_values": consts,
-            }
-            return mi.pad(self, **attrs)
+        # The engine takes the sides as rows, columns, then channels.
+        if self._meta.channel_axis is None:
+            axis_order: Tuple[int, ...] = (0, 1)
+        else:
+            rows_axis, cols_axis = self._meta.spatial_axes
+            axis_order = (rows_axis, cols_axis, self._meta.channel_axis)
 
-        top, bottom, left, right = (
-            int(v) for v in _expand_spatial_pad(pad_width, "pad_width", nonneg=True)
-        )
-        consts = [float(v) for v in _expand_spatial_pad(constant_values, "constant_values")]
-        attrs = {
-            "top": top,
-            "bottom": bottom,
-            "left": left,
-            "right": right,
-            "mode": mode,
-            "constant_values": consts,
-        }
-        return mi.pad(self, **attrs)
+        def by_engine_side(values: list[Any]) -> list[Any]:
+            return [values[2 * axis + side] for axis in axis_order for side in (0, 1)]
+
+        ndim = self._meta.ndim
+        sides = [
+            int(v) for v in by_engine_side(_expand_pad(pad_width, "pad_width", ndim, nonneg=True))
+        ]
+        consts = [
+            float(v)
+            for v in by_engine_side(_expand_pad(constant_values, "constant_values", ndim))
+        ]
+        attrs: dict[str, Any] = dict(zip(("top", "bottom", "left", "right"), sides))
+        if ndim == 3:
+            attrs["channel_before"], attrs["channel_after"] = sides[4:]
+        return mi.pad(self, mode=mode, constant_values=consts, **attrs)
 
     def __getitem__(self, key: Any) -> "Array":
         """NumPy spatial slice: a hard crop of this array."""

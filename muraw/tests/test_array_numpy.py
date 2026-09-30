@@ -256,21 +256,6 @@ def test_swapping_rows_and_columns_of_a_chw_array_runs_per_plane():
     np.testing.assert_array_equal((got * 2.0).realize(), np.swapaxes(chw, 1, 2) * 2.0)
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda a: a[1:3],
-        lambda a: a.pad(1),
-        lambda a: rot90(a),
-        lambda a: fliplr(a),
-    ],
-    ids=["index", "pad", "rot90", "fliplr"],
-)
-def test_numpy_axis_functions_on_a_chw_array_not_supported_yet(call):
-    chw = Array(np.zeros((3, 5, 7), np.float32), channel_axis=0)
-    with pytest.raises(NotImplementedError, match=r"mi\.moveaxis\(x, 0, -1\)"):
-        call(chw)
-
 
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
 def test_ops_before_and_after_swapaxes_match_numpy(src):

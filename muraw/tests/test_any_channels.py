@@ -50,7 +50,7 @@ def test_view_pad_orientation_any_channels(channels, monkeypatch):
     np.testing.assert_array_equal(viewed, src[1:3, 1:4])
 
     padded, pad_graph = _realize_graph(
-        monkeypatch, t.pad(1, mode="constant", constant_values=9)
+        monkeypatch, t.pad(((1, 1), (1, 1), (0, 0)), mode="constant", constant_values=9)
     )
     _assert_graph_channels(pad_graph, channels, "pad")
     expect_pad = np.pad(

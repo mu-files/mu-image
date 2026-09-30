@@ -342,9 +342,10 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
             "must be non-negative"
         )
     mode = attrs.get("mode", "constant")
-    if (channel_before or channel_after) and mode != "constant":
+    if (channel_before or channel_after) and mode != "constant" and x.meta.channel_axis != 0:
         raise ValueError(
-            f"pad: a channel pad requires mode 'constant', got {mode!r}"
+            f"pad: a channel pad requires mode 'constant' unless the channels are "
+            f"on axis 0, got {mode!r}"
         )
     dest_h = x.meta.height + top + bottom
     dest_w = x.meta.width + left + right
@@ -483,6 +484,35 @@ class OpNode:
     fn: Optional[Callable[..., np.ndarray]] = None
 
 
+def _check_input(op_meta: OpMeta, in_channels: Optional[int], x: Array) -> None:
+    """Raise when ``x`` is not an input the op ``op_meta`` reads.
+
+    An ``rgb_`` op mixes the channels of each pixel, so it needs them on the
+    last axis. A ``cfa_`` op reads a mono mosaic, ``(H, W)`` or ``(H, W, 1)``.
+    ``in_channels`` is the channel count the op needs, or ``None`` for any.
+    """
+    name = op_meta.name
+    channel_axis = x.meta.channel_axis
+    if op_meta.requires_2d and x.meta.is_1d:
+        raise ValueError(f"op {name!r} requires a 2D input, got shape {x.shape}")
+    if op_meta.is_rgb and channel_axis not in (None, 2):
+        raise ValueError(
+            f"op {name!r} needs the channels on the last axis, as (H, W, 3); got "
+            f"shape {x.shape} with channel_axis {channel_axis}. Move them with "
+            f"mi.moveaxis(x, {channel_axis}, -1)"
+        )
+    if op_meta.is_cfa and channel_axis not in (None, 2):
+        raise ValueError(
+            f"op {name!r} needs a mono (H, W) or (H, W, 1) array; got shape {x.shape} "
+            f"with channel_axis {channel_axis}"
+        )
+    if in_channels is not None and x.meta.channels != in_channels:
+        raise ValueError(
+            f"op {name!r} input[0]: expected {in_channels} channel(s), "
+            f"got {x.meta.channels}"
+        )
+
+
 def graph_op(
     fn: Optional[Callable[..., np.ndarray]] = None,
     /,
@@ -524,16 +554,7 @@ def graph_op(
         def wrapper(image: Any, /, *args: Any, **kwargs: Any) -> Any:
             if not isinstance(image, Array):
                 return f(image, *args, **kwargs)
-            if requires_2d and image.meta.is_1d:
-                raise ValueError(
-                    f"op {f.__name__!r} requires a 2D input, got shape {image.shape}"
-                )
-            in_channels = 1 if is_cfa else 3 if is_rgb else None
-            if in_channels is not None and image.meta.channels != in_channels:
-                raise ValueError(
-                    f"op {f.__name__!r} input[0]: expected {in_channels} channel(s), "
-                    f"got {image.meta.channels}"
-                )
+            _check_input(meta, 1 if is_cfa else 3 if is_rgb else None, image)
 
             placeholder = object()
             bound = sig.bind(placeholder, *args, **kwargs)
@@ -631,13 +652,7 @@ def _validate_attrs(
 def emit(engine_op: EngineOp, x: Array, /, **attrs: Any) -> Array:
     """Validate attrs, ask the op for output meta, and build a lazy node."""
     name = engine_op.meta.name
-    if engine_op.meta.requires_2d and x.meta.is_1d:
-        raise ValueError(f"op {name!r} requires a 2D input, got shape {x.shape}")
-    if engine_op._in_channels is not None and x.meta.channels != engine_op._in_channels:
-        raise ValueError(
-            f"op {name!r} input[0]: expected {engine_op._in_channels} channel(s), "
-            f"got {x.meta.channels}"
-        )
+    _check_input(engine_op.meta, engine_op._in_channels, x)
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
     out_meta = engine_op.infer_out_meta(x, coerced)
     node = OpNode(
