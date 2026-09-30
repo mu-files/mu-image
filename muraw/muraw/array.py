@@ -9,7 +9,7 @@ import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import ceil
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
 import numpy as np
 from numpy.lib.array_utils import byte_bounds, normalize_axis_index, normalize_axis_tuple
@@ -728,54 +728,71 @@ def _window_from_rect(
 
 
 def rot90(m: ArrayLike, k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
-    """Rotate in the spatial plane. Same arguments as ``numpy.rot90``.
+    """Rotate by 90° ``k`` times, from the first of ``axes`` toward the
+    second. Same arguments as ``numpy.rot90``.
 
-    180° is a canvas-keeping view. Quarter turns still go through
-    orientation, because a slice cannot swap height and width.
+    A half turn is a canvas-keeping flip. A quarter turn in the plane of the
+    rows and the columns is ``orientation``, per plane on a CHW array. Any
+    other quarter turn, and every quarter turn of a ``(H, C, W)`` array, is
+    a flip and a permutation.
     """
     m = Array(m)
-    # Temporary. Remove once rot90 accepts any pair of axes.
-    channel_axis = m.meta.channel_axis
-    if channel_axis is not None and channel_axis != 2:
-        raise NotImplementedError(
-            f"rot90 of shape {m.shape} with channel_axis {channel_axis} is not "
-            f"supported yet; move the channels last with mi.moveaxis(x, {channel_axis}, -1)"
-        )
-    if m.meta.is_1d:
-        raise ValueError(f"Axes={tuple(axes)} out of range for array of ndim=1.")
-    if tuple(axes) != (0, 1):
-        raise ValueError("Array only supports rot90 in the spatial plane (axes=(0, 1)).")
+    axes = tuple(axes)
+    ndim = m.meta.ndim
+    if len(axes) != 2:
+        raise ValueError("len(axes) must be 2.")
+    if axes[0] == axes[1] or abs(axes[0] - axes[1]) == ndim:
+        raise ValueError("Axes must be different.")
+    if not all(-ndim <= axis < ndim for axis in axes):
+        raise ValueError(f"Axes={axes} out of range for array of ndim={ndim}.")
+    first, second = (axis % ndim for axis in axes)
     turns = int(k) % 4
     if turns == 0:
         return m
     if turns == 2:
-        return m.view(np.s_[::-1, ::-1], oob_valid=True)
-    import muimage as mi
+        return flip(m, (first, second))
+    rows_axis, cols_axis = m.meta.spatial_axes
+    if m.meta.channel_axis != 1 and {first, second} == {rows_axis, cols_axis}:
+        import muimage as mi
 
-    # k=1 is 90° CCW (TIFF 8); k=3 is 90° CW (6).
-    return mi.orientation(m, orientation={1: 8, 3: 6}[turns])
+        # A quarter turn from the rows toward the columns is 90° CCW, TIFF
+        # orientation 8. The other direction is 90° CW, orientation 6.
+        counterclockwise = (turns == 1) == (first == rows_axis)
+        return mi.orientation(m, orientation=8 if counterclockwise else 6)
+    order = list(range(ndim))
+    order[first], order[second] = second, first
+    if turns == 1:
+        return _permute(flip(m, second), tuple(order))
+    return flip(_permute(m, tuple(order)), second)
+
+
+def flip(m: ArrayLike, axis: Any = None) -> "Array":
+    """Reverse the samples along ``axis``. Same arguments as ``numpy.flip``.
+
+    ``axis=None`` flips every axis. A canvas-keeping view, so a later crop
+    can still reach the parent.
+    """
+    m = Array(m)
+    ndim = m.meta.ndim
+    flipped = range(ndim) if axis is None else normalize_axis_tuple(axis, ndim)
+    key = tuple(
+        slice(None, None, -1) if position in flipped else slice(None)
+        for position in range(ndim)
+    )
+    return m.view(key, oob_valid=True)
 
 
 def fliplr(m: ArrayLike) -> "Array":
-    """Flip left–right. Same as ``numpy.fliplr``.
-
-    A canvas-keeping view, so a later crop can still reach the parent.
-    """
+    """Flip axis 1. Same as ``numpy.fliplr``."""
     m = Array(m)
     if m.meta.is_1d:
         raise ValueError("Input must be >= 2-d.")
-    return m.view(np.s_[:, ::-1], oob_valid=True)
+    return flip(m, 1)
 
 
 def flipud(m: ArrayLike) -> "Array":
-    """Flip up–down. Same as ``numpy.flipud``: on a 1D array, reverse it.
-
-    A canvas-keeping view, so a later crop can still reach the parent.
-    """
-    m = Array(m)
-    if m.meta.is_1d:
-        return m.view(np.s_[::-1], oob_valid=True)
-    return m.view(np.s_[::-1, :], oob_valid=True)
+    """Flip axis 0. Same as ``numpy.flipud``: on a 1D array, reverse it."""
+    return flip(m, 0)
 
 
 def _node_permutation(array: "Array") -> Optional[Tuple[int, ...]]:
@@ -875,6 +892,21 @@ def moveaxis(a: ArrayLike, source: Any, destination: Any) -> "Array":
     for dest, src in sorted(zip(destinations, sources)):
         order.insert(dest, src)
     return _permute(a, tuple(order))
+
+
+def _on_channels_last(array: "Array", run: Callable[["Array"], "Array"]) -> "Array":
+    """``run(array)``, except that a ``(H, C, W)`` array runs as ``(H, W, C)``
+    and a result with a channel axis is moved back to ``(H, C, W)``.
+
+    The engine reads a ``(H, C, W)`` array packed, with C as its columns, so
+    an op on the rows and the columns needs the channels last. When the
+    array came from moving the channels of ``(H, W, C)``, the two moves
+    cancel. ``run`` gets its per-axis arguments in ``(H, W, C)`` order.
+    """
+    if array.meta.channel_axis != 1:
+        return run(array)
+    result = run(moveaxis(array, 1, -1))
+    return moveaxis(result, -1, 1) if result.meta.channel_axis == 2 else result
 
 
 def expand_dims(a: ArrayLike, axis: Any) -> "Array":
@@ -1318,12 +1350,15 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
         # NumPy promotes (N,) to (1, N), which is this array's buffer.
         array = _with_meta(array, array.meta.with_size(ndim=2))
     row_reps, col_reps, channel_reps = _tile_reps(array.meta, reps)
-    return op(
-        "tile",
+    return _on_channels_last(
         array,
-        row_reps=row_reps,
-        col_reps=col_reps,
-        channel_reps=channel_reps,
+        lambda packed: op(
+            "tile",
+            packed,
+            row_reps=row_reps,
+            col_reps=col_reps,
+            channel_reps=channel_reps,
+        ),
     )
 
 
@@ -1409,7 +1444,7 @@ class Array:
             arr = np.asarray(data)
             meta = meta_from_array(arr, channel_axis)
             repeated = _repeated_axes(arr)
-            if repeated is not None and meta.channel_axis != 1:
+            if repeated is not None:
                 core, reps = repeated
                 stretched = tile(
                     Array(core, origin=origin, channel_axis=meta.channel_axis), reps
@@ -1507,6 +1542,27 @@ class Array:
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
         A ``None`` in ``region`` adds an axis of length 1, as in NumPy.
         """
+        if self._meta.channel_axis == 1:
+            new_axes: Tuple[int, ...] = ()
+            if region is not None:
+                axes, new_axes = _expand_index_key(region, self._meta)
+                region = (axes[0], axes[2], axes[1])
+            viewed = _on_channels_last(
+                self,
+                lambda packed: packed.view(
+                    region,
+                    left=left,
+                    top=top,
+                    width=width,
+                    height=height,
+                    oob_valid=oob_valid,
+                    reset_origin=reset_origin,
+                ),
+            )
+            shape = list(viewed.shape)
+            for position in new_axes:
+                shape.insert(position, 1)
+            return _reshape_layout(viewed, tuple(shape))
         if region is None:
             if self._meta.is_1d:
                 raise TypeError(
@@ -1648,7 +1704,34 @@ class Array:
         attrs: dict[str, Any] = dict(zip(("top", "bottom", "left", "right"), sides))
         if ndim == 3:
             attrs["channel_before"], attrs["channel_after"] = sides[4:]
-        return mi.pad(self, mode=mode, constant_values=consts, **attrs)
+        # NumPy pads W after C on a (H, C, W) array, so W's constants fill the
+        # corners the two pads share. One engine pad would fill them with C's.
+        columns_after_channels = (
+            self._meta.channel_axis == 1 and any(sides[2:4]) and any(sides[4:])
+        )
+
+        def run(packed: "Array") -> "Array":
+            if not columns_after_channels:
+                return mi.pad(packed, mode=mode, constant_values=consts, **attrs)
+            without_columns = mi.pad(
+                packed,
+                mode=mode,
+                constant_values=consts[:2] + [0.0, 0.0] + consts[4:],
+                **{**attrs, "left": 0, "right": 0},
+            )
+            return mi.pad(
+                without_columns,
+                mode=mode,
+                constant_values=[0.0, 0.0] + consts[2:4] + [0.0, 0.0],
+                top=0,
+                bottom=0,
+                left=sides[2],
+                right=sides[3],
+                channel_before=0,
+                channel_after=0,
+            )
+
+        return _on_channels_last(self, run)
 
     def __getitem__(self, key: Any) -> "Array":
         """NumPy spatial slice: a hard crop of this array."""

@@ -1,4 +1,4 @@
-"""Array rot90 / fliplr / flipud / transpose match the same NumPy calls."""
+"""Array rot90 / flip / fliplr / flipud / transpose match the same NumPy calls."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import itertools
 import numpy as np
 import pytest
 
-from muraw.array import Array, fliplr, flipud, rot90
+from muraw.array import Array, flip, fliplr, flipud, rot90
 
 
 def _mono() -> np.ndarray:
@@ -26,10 +26,48 @@ def test_rot90_matches_numpy(src, k):
     np.testing.assert_array_equal(rot90(Array(src), k), np.rot90(src, k))
 
 
-def test_rot90_rejects_non_spatial_axes():
-    t = Array(_mono())
-    with pytest.raises(ValueError, match="spatial plane"):
-        rot90(t, 1, axes=(1, 0))
+_AXIS_PAIRS_3D = list(itertools.permutations(range(3), 2)) + [(-1, 0)]
+
+
+@pytest.mark.parametrize("channel_axis", [0, 1, 2])
+@pytest.mark.parametrize("axes", _AXIS_PAIRS_3D, ids=str)
+@pytest.mark.parametrize("k", [1, 2, 3])
+def test_rot90_any_axes_matches_numpy(channel_axis, axes, k):
+    src = np.moveaxis(_rgb(), -1, channel_axis).copy()
+    got = rot90(Array(src, channel_axis=channel_axis), k, axes)
+    np.testing.assert_array_equal(got.realize(), np.rot90(src, k, axes))
+
+
+@pytest.mark.parametrize("k", [1, 3])
+def test_rot90_reversed_spatial_axes_matches_numpy(k):
+    src = _mono()
+    got = rot90(Array(src), k, axes=(1, 0))
+    assert got._node.op == "orientation"
+    np.testing.assert_array_equal(got.realize(), np.rot90(src, k, axes=(1, 0)))
+
+
+def test_chw_rot90_in_the_spatial_plane_is_orientation():
+    src = np.moveaxis(_rgb(), -1, 0).copy()
+    got = rot90(Array(src, channel_axis=0), 1, axes=(1, 2))
+    assert got._node.op == "orientation"
+    np.testing.assert_array_equal(got.realize(), np.rot90(src, 1, axes=(1, 2)))
+
+
+@pytest.mark.parametrize(
+    ("axes", "message"),
+    [
+        ((0,), r"len\(axes\) must be 2"),
+        ((1, 1), "Axes must be different"),
+        ((0, 2), "Axes must be different"),
+        ((0, 3), r"Axes=\(0, 3\) out of range for array of ndim=2"),
+    ],
+    ids=["one_axis", "same_axis", "same_axis_wrapped", "out_of_range"],
+)
+def test_rot90_rejects_bad_axes_like_numpy(axes, message):
+    with pytest.raises(ValueError, match=message):
+        np.rot90(_mono(), 1, axes)
+    with pytest.raises(ValueError, match=message):
+        rot90(Array(_mono()), 1, axes)
 
 
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
@@ -40,6 +78,22 @@ def test_fliplr_matches_numpy(src):
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
 def test_flipud_matches_numpy(src):
     np.testing.assert_array_equal(flipud(Array(src)), np.flipud(src))
+
+
+@pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
+@pytest.mark.parametrize("axis", [None, 0, 1, -1, (0, 1)], ids=str)
+def test_flip_matches_numpy(src, axis):
+    np.testing.assert_array_equal(flip(Array(src), axis).realize(), np.flip(src, axis))
+
+
+def test_flip_of_the_channel_axis_matches_numpy():
+    src = _rgb()
+    np.testing.assert_array_equal(flip(Array(src), 2).realize(), np.flip(src, 2))
+
+
+def test_flip_rejects_an_axis_out_of_range_like_numpy():
+    with pytest.raises(np.exceptions.AxisError):
+        flip(Array(_mono()), 2)
 
 
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
@@ -108,12 +162,6 @@ def test_transpose_spatial_matches_numpy_rgb():
     np.testing.assert_array_equal(t.transpose(), src.T)
     np.testing.assert_array_equal(t.T, src.T)
     np.testing.assert_array_equal(t.transpose(1, 0, 2), src.transpose(1, 0, 2))
-
-
-def test_rot90_rejects_channel_axis():
-    t = Array(_rgb())
-    with pytest.raises(ValueError, match="spatial plane"):
-        rot90(t, 1, axes=(0, 2))
 
 
 def _op_names(t: Array) -> list[str]:
