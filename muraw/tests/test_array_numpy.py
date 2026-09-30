@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -101,23 +103,17 @@ def test_transpose_and_T_match_numpy_2d():
 
 def test_transpose_spatial_matches_numpy_rgb():
     src = _rgb()
-    want = src.transpose(1, 0, 2)
     t = Array(src)
-    np.testing.assert_array_equal(t.transpose(), want)
-    np.testing.assert_array_equal(t.T, want)
-    np.testing.assert_array_equal(t.transpose(1, 0, 2), want)
+    assert t.T.shape == (3, 7, 5)
+    np.testing.assert_array_equal(t.transpose(), src.T)
+    np.testing.assert_array_equal(t.T, src.T)
+    np.testing.assert_array_equal(t.transpose(1, 0, 2), src.transpose(1, 0, 2))
 
 
 def test_rot90_rejects_channel_axis():
     t = Array(_rgb())
     with pytest.raises(ValueError, match="spatial plane"):
         rot90(t, 1, axes=(0, 2))
-
-
-def test_transpose_that_moves_the_channel_axis_not_supported_yet():
-    t = Array(_rgb())
-    with pytest.raises(NotImplementedError, match="moving the channel axis"):
-        t.transpose(2, 1, 0)
 
 
 def _op_names(t: Array) -> list[str]:
@@ -138,7 +134,7 @@ _SPATIAL_CALLS = [
     ("transpose_3d", lambda m, a, ndim: m.transpose(a, (1, 0, 2)) if ndim == 3 else None),
     ("transpose_negative", lambda m, a, ndim: m.transpose(a, (-2, -3, -1)) if ndim == 3 else None),
     ("transpose_identity", lambda m, a, ndim: m.transpose(a, tuple(range(ndim)))),
-    ("transpose_none", lambda m, a, ndim: m.transpose(a) if ndim < 3 else None),
+    ("transpose_none", lambda m, a, ndim: m.transpose(a)),
     ("permute_dims", lambda m, a, ndim: m.permute_dims(a, (1, 0, 2)) if ndim == 3 else None),
     ("swapaxes", lambda m, a, ndim: m.swapaxes(a, 0, 1) if ndim >= 2 else None),
     ("swapaxes_negative", lambda m, a, ndim: m.swapaxes(a, -2, 0) if ndim == 2 else None),
@@ -184,10 +180,96 @@ def test_spatial_permutations_emit_one_orientation():
         mi.moveaxis(t, 1, 0),
         t.transpose(1, 0, 2),
         t.swapaxes(1, 0),
-        t.T,
     ):
         assert _op_names(got) == ["orientation"]
         assert got._node.attrs["orientation"] == 5
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
+def test_each_permutation_emits_one_node_and_realizes_c_contiguous(order):
+    import muimage as mi
+
+    src = _rgb()
+    t = Array(src)
+    got = mi.transpose(t, order)
+    if order == (0, 1, 2):
+        assert got is t
+    elif order == (1, 0, 2):
+        assert _op_names(got) == ["orientation"]
+    else:
+        assert _op_names(got) == ["transpose"]
+        assert list(got._node.attrs["axes"]) == list(order)
+    assert got.meta.channel_axis == order.index(2)
+    out = got.realize()
+    assert out.flags.c_contiguous
+    np.testing.assert_array_equal(out, src.transpose(order))
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
+def test_a_permutation_and_its_inverse_emit_nothing(order):
+    import muimage as mi
+
+    lazy = Array(_rgb()) * 2.0
+    inverse = tuple(int(axis) for axis in np.argsort(order))
+    assert mi.transpose(mi.transpose(lazy, order), inverse) is lazy
+
+
+def test_permutations_compose_into_one_node():
+    import muimage as mi
+
+    t = Array(_rgb())
+    got = mi.swapaxes(mi.moveaxis(t, -1, 0), 1, 2)
+    assert _op_names(got) == ["transpose"]
+    assert list(got._node.attrs["axes"]) == [2, 1, 0]
+    np.testing.assert_array_equal(got.realize(), np.swapaxes(np.moveaxis(_rgb(), -1, 0), 1, 2))
+
+
+def test_channel_axis_follows_the_channels():
+    import muimage as mi
+
+    chw = np.ascontiguousarray(np.moveaxis(_rgb(), -1, 0))
+    bound = Array(chw, channel_axis=0)
+    assert bound._node is None and np.shares_memory(bound._data, chw)
+    assert bound.meta.channel_axis == 0
+    assert (bound.meta.height, bound.meta.width, bound.meta.channels) == (5, 7, 3)
+    moved = mi.moveaxis(Array(_rgb()), -1, 0)
+    assert moved.meta.channel_axis == 0
+    assert mi.moveaxis(moved, 1, 2).meta.channel_axis == 0
+    assert mi.moveaxis(Array(_rgb()), 1, 2).meta.channel_axis == 1
+
+
+def test_channel_axis_keyword_is_checked():
+    chw = np.zeros((3, 5, 7), np.float32)
+    with pytest.raises(np.exceptions.AxisError, match="channel_axis"):
+        Array(chw, channel_axis=3)
+    with pytest.raises(ValueError, match="only valid when ingesting"):
+        Array(Array(chw), channel_axis=0)
+    assert Array(_mono(), channel_axis=0).meta.channel_axis is None
+
+
+def test_swapping_rows_and_columns_of_a_chw_array_runs_per_plane():
+    import muimage as mi
+
+    chw = np.ascontiguousarray(np.moveaxis(_rgb(), -1, 0))
+    got = mi.swapaxes(Array(chw, channel_axis=0), 1, 2)
+    assert _op_names(got) == ["orientation"]
+    np.testing.assert_array_equal((got * 2.0).realize(), np.swapaxes(chw, 1, 2) * 2.0)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda a: a[1:3],
+        lambda a: a.pad(1),
+        lambda a: rot90(a),
+        lambda a: fliplr(a),
+    ],
+    ids=["index", "pad", "rot90", "fliplr"],
+)
+def test_numpy_axis_functions_on_a_chw_array_not_supported_yet(call):
+    chw = Array(np.zeros((3, 5, 7), np.float32), channel_axis=0)
+    with pytest.raises(NotImplementedError, match=r"mi\.moveaxis\(x, 0, -1\)"):
+        call(chw)
 
 
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
@@ -241,6 +323,19 @@ def test_size_one_axis_on_the_same_buffer_sizes_keeps_the_node():
     line = Array(_V) * 2.0
     assert mi.expand_dims(line, 0)._node is line._node
     assert mi.squeeze(mono) is mono
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["source", "lazy"])
+def test_the_axis_expand_dims_adds_to_a_2d_array_is_the_channel_axis(lazy):
+    import muimage as mi
+
+    mono = Array(_mono()) * 2.0 if lazy else Array(_mono())
+    for axis in (0, 1, 2):
+        expanded = mi.expand_dims(mono, axis)
+        assert expanded.meta.channel_axis == axis
+        assert (expanded.meta.height, expanded.meta.width) == (5, 7)
+        assert mi.squeeze(expanded, axis).meta.channel_axis is None
+    assert Array(_rgb())[:, :, 0].meta.channel_axis is None
 
 
 def test_squeeze_of_a_source_column_shares_memory():
@@ -343,11 +438,15 @@ def test_1d_transpose_with_bad_axis_raises_like_numpy():
     ],
     ids=["transpose_none", "transpose_chw", "moveaxis_chw", "swapaxes_hcw", "permute_dims"],
 )
-def test_moving_the_channel_axis_not_supported_yet(call):
+def test_moving_the_channel_axis_matches_numpy(call):
     import muimage as mi
 
-    with pytest.raises(NotImplementedError, match="moving the channel axis"):
-        call(mi, Array(_rgb()))
+    want = call(np, _rgb())
+    got = call(mi, Array(_rgb()))
+    assert got.shape == want.shape
+    out = got.realize()
+    assert out.flags.c_contiguous
+    np.testing.assert_array_equal(out, want)
 
 
 def test_astype_is_numeric_cast():

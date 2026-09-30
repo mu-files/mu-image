@@ -1349,13 +1349,28 @@ def test_padded_camera_frame_installed_as_view(key):
     np.testing.assert_array_equal(t.realize(), view)
 
 
-def test_planar_layouts_copied_on_ingest():
-    chw = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
-    for arr in (np.moveaxis(chw, 0, -1), np.moveaxis(chw, 0, -1).transpose(1, 0, 2)):
-        t = Array(arr)
-        assert t._node is None
-        assert not np.shares_memory(t._data, arr)
-        np.testing.assert_array_equal(t.realize(), arr)
+_CHW = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+
+
+@pytest.mark.parametrize(
+    "arr, axes",
+    [
+        (np.moveaxis(_CHW, 0, -1), [1, 2, 0]),
+        (np.moveaxis(_CHW, 0, -1).transpose(1, 0, 2), [2, 1, 0]),
+        (np.asfortranarray(np.moveaxis(_CHW, 0, -1)), [2, 1, 0]),
+    ],
+    ids=["moveaxis", "moveaxis_transposed", "fortran"],
+)
+def test_planar_layouts_bound_on_ingest(arr, axes):
+    t = Array(arr)
+    assert _op_chain(t) == ["transpose"]
+    assert list(t._node.attrs["axes"]) == axes
+    bound = t._node.inputs[0]
+    assert bound.meta.channel_axis == 0
+    assert np.shares_memory(bound._data, arr)
+    out = (t * 2.0).realize()
+    assert out.flags.c_contiguous
+    np.testing.assert_array_equal(out, arr * 2.0)
 
 
 @pytest.mark.parametrize("shape", [(4,), (1, 4), (3, 4)])

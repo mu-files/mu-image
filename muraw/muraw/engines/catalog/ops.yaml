@@ -28,7 +28,8 @@
 #   layout.
 #   needs_plane_index: on a planar tensor (3 axes with channel_axis 0), the
 #     op must know which plane it is writing. The engine runs every op on a
-#     planar tensor one plane at a time, as a one-channel image. Most ops
+#     planar tensor one plane at a time, as a one-channel image, except
+#     transpose, which takes every plane in one call. Most ops
 #     treat every plane the same; an op with this property instead has
 #     per-plane attrs, or reads a different source plane than it writes.
 #     Excludes is_cfa and is_rgb, which never run on a planar tensor.
@@ -227,6 +228,22 @@ ops:
       - key: orientation
         type: i32
         count: 1
+
+  # Permute the three axes, as np.transpose(x, axes): output axis i is input
+  # axis axes[i]. Input and output may differ in channel_axis, so this is
+  # the op that moves a tensor between planar and packed. Only the graph
+  # builder emits it: identity emits nothing, and the permutations that are
+  # an orientation or a view emit those ops.
+  - name: transpose
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: transpose
+    attrs:
+      - key: axes
+        type: i32_array
+        count: 3
 
   - name: cfa_bilinear_demosaic
     is_cfa: true

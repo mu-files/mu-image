@@ -89,6 +89,7 @@ class CoreEngine:
                 "id": id_of[id(t)],
                 "dtype": m.dtype.value,
                 "shape": list(m.buffer_shape),
+                "channel_axis": -1 if m.channel_axis is None else m.channel_axis,
                 "origin_y": int(origin_row),
                 "origin_x": int(origin_col),
                 "canvas_x0": int(m.canvas[0]),

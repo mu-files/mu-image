@@ -255,6 +255,22 @@ orientation = EngineOp(
     _infer_meta=graph._out_meta_orientation,
 )
 
+transpose = EngineOp(
+    meta=OpMeta(name='transpose', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=None,
+    _n_inputs=1,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 3,
+    "key": "axes",
+    "type": "i32_array"
+  }
+]''')),
+    _infer_meta=graph._out_meta_transpose,
+)
+
 cfa_bilinear_demosaic = EngineOp(
     meta=OpMeta(name='cfa_bilinear_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1071,6 +1087,7 @@ OPS_BY_NAME = {
     'pad': pad,
     'tile': tile,
     'orientation': orientation,
+    'transpose': transpose,
     'cfa_bilinear_demosaic': cfa_bilinear_demosaic,
     'cfa_ea_demosaic': cfa_ea_demosaic,
     'rgb_matrix_3x3': rgb_matrix_3x3,
@@ -1123,6 +1140,7 @@ __all__ = [
     'rgb_transform',
     'sub_scalar',
     'tile',
+    'transpose',
     'view',
     'warp_rectilinear',
 ]

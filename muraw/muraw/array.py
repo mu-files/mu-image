@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import itertools
 import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -14,7 +15,7 @@ import numpy as np
 from numpy.lib.array_utils import byte_bounds, normalize_axis_index, normalize_axis_tuple
 
 
-def _is_direct_source(arr: np.ndarray) -> bool:
+def _is_direct_source(arr: np.ndarray, channel_axis: Optional[int] = None) -> bool:
     """True when the engine can bind ``arr`` itself as a source buffer.
 
     Pixels in a row are adjacent, the data pointer is element-aligned, and
@@ -24,6 +25,12 @@ def _is_direct_source(arr: np.ndarray) -> bool:
     flipped view, not a source buffer. The stride of an axis of length 1 is
     ignored, as NumPy and the engine binding both do: ``v[None, :]`` has a
     row stride of 0.
+
+    ``channel_axis`` is as in ``ArrayMeta``. The engine reads a 3-axis
+    ``arr`` whose channel axis is 0 as planes, rows, and columns. Each
+    plane must then be a source buffer on its own, and the plane pitch a
+    whole number of elements that holds one plane, so planes do not
+    overlap. Every other ``arr`` is read packed in axis order.
     """
     itemsize = int(arr.dtype.itemsize)
     if int(arr.ctypes.data) % itemsize != 0:
@@ -32,6 +39,18 @@ def _is_direct_source(arr: np.ndarray) -> bool:
     def is_packed_axis(axis: int, step_bytes: int) -> bool:
         return int(arr.shape[axis]) == 1 or int(arr.strides[axis]) == step_bytes
 
+    def pitch_holds(axis: int, span_bytes: int) -> bool:
+        stride = int(arr.strides[axis])
+        return int(arr.shape[axis]) == 1 or (stride >= span_bytes and stride % itemsize == 0)
+
+    if arr.ndim == 3 and channel_axis == 0:
+        if not is_packed_axis(2, itemsize):
+            return False
+        row_bytes = int(arr.shape[2]) * itemsize
+        if not pitch_holds(1, row_bytes):
+            return False
+        row_pitch = int(arr.strides[1]) if int(arr.shape[1]) > 1 else row_bytes
+        return pitch_holds(0, (int(arr.shape[1]) - 1) * row_pitch + row_bytes)
     if arr.ndim == 2:
         pixel = itemsize
         if not is_packed_axis(1, itemsize):
@@ -231,6 +250,24 @@ def _transposed_source(arr: np.ndarray) -> Optional["Array"]:
     return mi.orientation(inner, orientation=_TRANSPOSE_ORIENTATION[flipped])
 
 
+def _permuted_source(arr: np.ndarray, channel_axis: int) -> Optional["Array"]:
+    """``arr`` read as a permutation of a source buffer, or ``None`` to copy.
+
+    ``np.moveaxis(chw, 0, -1)`` and a Fortran-order ``(H, W, C)`` array
+    store their axes in a different order from their shape. The first
+    permutation of ``arr``'s 3 axes that the engine can bind is bound, and
+    one ``transpose`` puts the axes back in ``arr``'s order. The bound
+    array's channel axis is ``arr``'s axis ``channel_axis``.
+    """
+    for order in itertools.permutations(range(3)):
+        bound = arr.transpose(order)
+        bound_channel_axis = order.index(channel_axis)
+        if order != (0, 1, 2) and _is_direct_source(bound, bound_channel_axis):
+            inverse = tuple(order.index(axis) for axis in range(3))
+            return _permute(Array(bound, channel_axis=bound_channel_axis), inverse)
+    return None
+
+
 
 if TYPE_CHECKING:
     from .engines.graph import OpNode
@@ -300,7 +337,7 @@ type ArrayLike = Array | np.ndarray
 @dataclass(frozen=True)
 class ArrayMeta:
     dtype: ElementType
-    # The NumPy shape: ``(N,)``, ``(H, W)``, or ``(H, W, C)``. A mono array
+    # The NumPy shape: ``(N,)``, ``(H, W)``, or three axes. A mono array
     # can be ``(H, W)`` or ``(H, W, 1)``.
     shape: Tuple[int, ...]
     # Buffer top-left in the shared canvas coordinate system, as (row, col).
@@ -309,35 +346,55 @@ class ArrayMeta:
     # crop uses it. When this array is the whole canvas, (x0, y0) is
     # (origin col, origin row).
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    # The axis of a 3-axis shape that holds the channels: 2 for
+    # ``(H, W, C)``, 0 for ``(C, H, W)``. The other two axes are the rows
+    # and the columns, in that order. ``None`` on 3 axes means 2, and a
+    # negative axis counts from the end. A shape with fewer axes has no
+    # channel axis, so ``channel_axis`` is ``None``.
+    channel_axis: Optional[int] = None
 
     def __post_init__(self) -> None:
         shape = tuple(int(v) for v in self.shape)
         if not 1 <= len(shape) <= 3:
-            raise ValueError("array must be (N,), (H,W) or (H,W,C)")
-        if len(shape) == 3 and shape[2] < 1:
-            raise ValueError(f"unsupported channel count: {shape[2]}")
-        if min(shape[:2]) < 1:
-            raise ValueError(f"shape dimensions must be at least 1, got {shape}")
+            raise ValueError("array must be (N,), (H,W) or 3 axes")
         object.__setattr__(self, "shape", shape)
+        if len(shape) == 3:
+            axis = 2 if self.channel_axis is None else operator.index(self.channel_axis)
+            axis = normalize_axis_index(axis, 3, "channel_axis")
+            object.__setattr__(self, "channel_axis", axis)
+            if shape[axis] < 1:
+                raise ValueError(f"unsupported channel count: {shape[axis]}")
+        elif self.channel_axis is not None:
+            raise ValueError(
+                f"shape {shape} has no channel axis, got channel_axis={self.channel_axis}"
+            )
+        if min(shape) < 1:
+            raise ValueError(f"shape dimensions must be at least 1, got {shape}")
+
+    @property
+    def spatial_axes(self) -> Tuple[int, int]:
+        """The axes of ``shape`` that hold the rows and the columns.
+
+        A 1D array's one axis is its columns, and it has one row.
+        """
+        if self.channel_axis is None:
+            return (0, 1)
+        rows_axis, cols_axis = (axis for axis in range(3) if axis != self.channel_axis)
+        return (rows_axis, cols_axis)
 
     @property
     def height(self) -> int:
         """Rows in the buffer. A 1D array is one row."""
-        return 1 if self.is_1d else self.shape[0]
+        return 1 if self.is_1d else self.shape[self.spatial_axes[0]]
 
     @property
     def width(self) -> int:
         """Columns in the buffer. A 1D array's length is its width."""
-        return self.shape[0] if self.is_1d else self.shape[1]
+        return self.shape[0] if self.is_1d else self.shape[self.spatial_axes[1]]
 
     @property
     def channels(self) -> int:
-        return self.shape[2] if self.channel_axis else 1
-
-    @property
-    def channel_axis(self) -> bool:
-        """True when the shape has a channel axis, including ``(H, W, 1)``."""
-        return len(self.shape) == 3
+        return 1 if self.channel_axis is None else self.shape[self.channel_axis]
 
     @property
     def is_1d(self) -> bool:
@@ -371,8 +428,10 @@ class ArrayMeta:
 
         Each size that is not given keeps this array's value. ``ndim``
         defaults to this array's rank, except that more than one channel
-        always needs a channel axis. A 1D result must be one row and one
-        channel. ``changes`` sets other fields, as in ``copy``.
+        always needs a channel axis. A 3-axis result keeps this array's
+        channel axis, or puts the channels last when this array has none.
+        A 1D result must be one row and one channel. ``changes`` sets other
+        fields, as in ``copy``.
         """
         height = self.height if height is None else height
         width = self.width if width is None else width
@@ -380,6 +439,7 @@ class ArrayMeta:
         ndim = self.ndim if ndim is None else ndim
         if channels > 1 and ndim == 2:
             ndim = 3
+        channel_axis = None
         if ndim == 1:
             if height != 1 or channels != 1:
                 raise ValueError(
@@ -390,12 +450,48 @@ class ArrayMeta:
         elif ndim == 2:
             shape = (height, width)
         else:
-            shape = (height, width, channels)
-        return replace(self, shape=shape, **changes)
+            channel_axis = 2 if self.channel_axis is None else self.channel_axis
+            sizes = [height, width]
+            sizes.insert(channel_axis, channels)
+            shape = tuple(sizes)
+        return replace(self, shape=shape, channel_axis=channel_axis, **changes)
 
 
-def meta_from_array(arr: np.ndarray) -> ArrayMeta:
-    return _meta_from_shape(arr.shape, ElementType(arr.dtype))
+def meta_from_array(arr: np.ndarray, channel_axis: Optional[int] = -1) -> ArrayMeta:
+    """Whole-canvas meta for ``arr``. ``channel_axis`` applies to 3 axes only."""
+    return _meta_from_shape(
+        arr.shape, ElementType(arr.dtype), channel_axis if arr.ndim == 3 else None
+    )
+
+
+def _engine_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
+    """Whether the engine reads a tensor of ``meta`` planar, and its
+    (rows, columns, channels) in that reading.
+
+    A 3-axis tensor whose channel axis is 0 is planar: one plane of rows and
+    columns per channel. The engine reads every other tensor packed, in
+    axis order, so ``(H, C, W)`` is H rows of C pixels of W channels.
+    """
+    shape = meta.buffer_shape
+    if meta.channel_axis == 0:
+        return True, (shape[1], shape[2], shape[0])
+    return False, (shape[0], shape[1], shape[2] if len(shape) == 3 else 1)
+
+
+# Temporary. Remove this check once indexing, pad, tile, and rot90 read
+# NumPy's axes through channel_axis.
+def _require_channels_last(array: "Array", name: str) -> None:
+    """Raise when ``array``'s channel axis is not its last axis.
+
+    ``name`` reads NumPy's axes as rows, columns, and channels in that
+    order, so another channel axis would act on the wrong axes.
+    """
+    axis = array.meta.channel_axis
+    if axis is not None and axis != 2:
+        raise NotImplementedError(
+            f"{name} of shape {array.shape} with channel_axis {axis} is not supported "
+            f"yet; move the channels last with mi.moveaxis(x, {axis}, -1)"
+        )
 
 
 def _require_scalar(value: Any, op: str) -> float:
@@ -497,15 +593,13 @@ def _wrap_channel_index(value: Any, channels: int) -> int:
     return index
 
 
-def _src_channels_from_last_axis(
-    key: Any, channels: int
-) -> Tuple[Optional[list[int]], Optional[bool]]:
-    """Source channel list and rank-3 flag for a last-axis key.
+def _channel_key(key: Any, channels: int) -> Tuple[Optional[list[int]], bool]:
+    """The source channels a last-axis index ``key`` reads, and whether it
+    drops the channel axis.
 
-    The list is ``None`` when it is identity ``0..C-1``. The flag is
-    ``None`` to keep the parent's channel axis, ``False`` when an integer
-    index drops the axis, and ``True`` when a slice or list of one channel
-    keeps ``(H, W, 1)``.
+    The list is ``None`` when it is identity ``0..C-1``. An integer index
+    drops the axis, as in NumPy; a slice or a sequence keeps it, even for
+    one channel.
     """
     rank_drop = isinstance(key, (int, np.integer)) and not isinstance(
         key, (bool, np.bool_)
@@ -532,12 +626,8 @@ def _src_channels_from_last_axis(
             raise ValueError("channels: empty index")
         src_channels = [_wrap_channel_index(value, channels) for value in values]
     if src_channels == list(range(channels)):
-        return None, False if rank_drop else None
-    if rank_drop:
-        return src_channels, False
-    if len(src_channels) == 1:
-        return src_channels, True
-    return src_channels, None
+        return None, rank_drop
+    return src_channels, rank_drop
 
 
 def _expand_index_key(key: Any, ndim: int) -> Tuple[Tuple[Any, ...], Tuple[int, ...]]:
@@ -608,10 +698,9 @@ class _Window:
 
     ``left`` and ``top`` are the first sample. ``row_step`` and ``col_step``
     are the source steps, including -1. ``src_channels`` is ``None`` when
-    the last axis is identity. ``channel_axis`` is ``None`` to keep the
-    parent's flag, ``True`` to present ``C == 1`` as ``(H, W, 1)``, and
-    ``False`` to drop that axis. ``left`` and ``top`` may be negative so a
-    later view can reach back into the parent canvas.
+    the last axis is identity. ``drops_channel_axis`` is true when an integer
+    index removes the channel axis. ``left`` and ``top`` may be negative so
+    a later view can reach back into the parent canvas.
     """
 
     left: int
@@ -621,7 +710,7 @@ class _Window:
     row_step: int = 1
     col_step: int = 1
     src_channels: Optional[list[int]] = None
-    channel_axis: Optional[bool] = None
+    drops_channel_axis: bool = False
 
     def is_full(self, meta: ArrayMeta) -> bool:
         return (
@@ -639,13 +728,11 @@ def _window_from_slices(
     meta: ArrayMeta, rows: Any, cols: Any, channels: Any = None
 ) -> _Window:
     src_channels = None
-    channel_axis = None
+    drops_channel_axis = False
     if channels is not None:
         if len(meta.shape) < 3:
             raise IndexError("too many indices for a (H, W) array")
-        src_channels, channel_axis = _src_channels_from_last_axis(
-            channels, meta.channels
-        )
+        src_channels, drops_channel_axis = _channel_key(channels, meta.channels)
     top, height, row_step = _slice_span(rows, meta.height, "rows")
     left, width, col_step = _slice_span(cols, meta.width, "cols")
     return _Window(
@@ -656,7 +743,7 @@ def _window_from_slices(
         row_step=row_step,
         col_step=col_step,
         src_channels=src_channels,
-        channel_axis=channel_axis,
+        drops_channel_axis=drops_channel_axis,
     )
 
 
@@ -692,6 +779,7 @@ def rot90(m: ArrayLike, k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
     orientation, because a slice cannot swap height and width.
     """
     m = Array(m)
+    _require_channels_last(m, "rot90")
     if m.meta.is_1d:
         raise ValueError(f"Axes={tuple(axes)} out of range for array of ndim=1.")
     if tuple(axes) != (0, 1):
@@ -729,43 +817,73 @@ def flipud(m: ArrayLike) -> "Array":
     return m.view(np.s_[::-1, :], oob_valid=True)
 
 
-def _permute(array: "Array", order: Tuple[int, ...], name: str) -> "Array":
+def _node_permutation(array: "Array") -> Optional[Tuple[int, ...]]:
+    """The axis order of the permutation that produced ``array``, or ``None``.
+
+    A ``transpose`` node and an ``orientation`` 5 node, which swaps the rows
+    and the columns, are permutations. On a ``(H, C, W)`` input, orientation
+    swaps the axes the engine reads as rows and columns, which are axes 0
+    and 1, so it is not counted. ``array`` must present its node's output
+    unchanged: an ingested array with an ``origin`` is not one.
+    """
+    node = array._node
+    if node is None or node.fn is not None or array.meta != node.out_meta:
+        return None
+    if node.op == "transpose":
+        return tuple(int(axis) for axis in node.attrs["axes"])
+    if node.op != "orientation" or int(node.attrs["orientation"]) != 5:
+        return None
+    input_meta = node.inputs[0].meta
+    if input_meta.channel_axis == 1:
+        return None
+    rows_axis, cols_axis = input_meta.spatial_axes
+    order = list(range(input_meta.ndim))
+    order[rows_axis], order[cols_axis] = cols_axis, rows_axis
+    return tuple(order)
+
+
+def _permute(array: "Array", order: Tuple[int, ...]) -> "Array":
     """``array`` with its axes in ``order``: axis ``i`` of the result is axis
     ``order[i]`` of ``array``, as in ``numpy.transpose``.
 
-    The identity returns ``array``. A swap of the two spatial axes is
-    ``orientation`` 5. A permutation that moves the channel axis raises
-    ``NotImplementedError``.
+    A permutation of a permutation is one permutation of the first one's
+    input, so a permutation and its inverse give back that input. The
+    identity returns ``array``. A swap of the rows and the columns that
+    keeps the channel axis in place is ``orientation`` 5, except on a
+    ``(H, C, W)`` array, which the engine reads packed with the rows first
+    and the columns second. Every other permutation is one ``transpose``.
     """
-    ndim = array.meta.ndim
-    if order == tuple(range(ndim)):
+    inner_order = _node_permutation(array)
+    if inner_order is not None:
+        combined = tuple(inner_order[axis] for axis in order)
+        return _permute(array._node.inputs[0], combined)
+    meta = array.meta
+    if order == tuple(range(meta.ndim)):
         return array
-    if ndim == 3 and order[2] != 2:
-        raise NotImplementedError(
-            f"{name}: moving the channel axis (axes {order} of shape {array.shape}) "
-            "is not supported yet"
-        )
-    import muimage as mi
+    from .engines import ops as engine_ops
 
-    return mi.orientation(array, orientation=5)
+    if meta.ndim == 2 or (
+        meta.channel_axis != 1 and order[meta.channel_axis] == meta.channel_axis
+    ):
+        return engine_ops.orientation(array, orientation=5)
+    return engine_ops.transpose(array, axes=list(order))
 
 
 def transpose(a: ArrayLike, axes: Any = None) -> "Array":
     """Permute the axes. Same arguments as ``numpy.transpose``.
 
-    ``axes=None`` reverses the axes. On a 3D array that moves the channel
-    axis, which is not supported yet.
+    ``axes=None`` reverses the axes, so ``(H, W, C)`` becomes ``(C, W, H)``.
     """
     a = Array(a)
     if axes is None:
-        return _permute(a, tuple(reversed(range(a.meta.ndim))), "transpose")
+        return _permute(a, tuple(reversed(range(a.meta.ndim))))
     axes = tuple(axes)
     if len(axes) != a.meta.ndim:
         raise ValueError("axes don't match array")
     order = normalize_axis_tuple(axes, a.meta.ndim, allow_duplicate=True)
     if len(set(order)) != len(order):
         raise ValueError("repeated axis in transpose")
-    return _permute(a, order, "transpose")
+    return _permute(a, order)
 
 
 def permute_dims(a: ArrayLike, axes: Any = None) -> "Array":
@@ -780,7 +898,7 @@ def swapaxes(a: ArrayLike, axis1: int, axis2: int) -> "Array":
     second = normalize_axis_index(int(axis2), a.meta.ndim, "axis2")
     order = list(range(a.meta.ndim))
     order[first], order[second] = order[second], order[first]
-    return _permute(a, tuple(order), "swapaxes")
+    return _permute(a, tuple(order))
 
 
 def moveaxis(a: ArrayLike, source: Any, destination: Any) -> "Array":
@@ -795,7 +913,7 @@ def moveaxis(a: ArrayLike, source: Any, destination: Any) -> "Array":
     order = [axis for axis in range(a.meta.ndim) if axis not in sources]
     for dest, src in sorted(zip(destinations, sources)):
         order.insert(dest, src)
-    return _permute(a, tuple(order), "moveaxis")
+    return _permute(a, tuple(order))
 
 
 def expand_dims(a: ArrayLike, axis: Any) -> "Array":
@@ -803,6 +921,7 @@ def expand_dims(a: ArrayLike, axis: Any) -> "Array":
 
     Adding a length-1 axis keeps the samples in the same order, so the
     result reads the same buffer. A result with more than 3 axes raises.
+    The axis added to a 2D array is the channel axis.
     """
     a = Array(a)
     axes = tuple(axis) if isinstance(axis, (tuple, list)) else (axis,)
@@ -814,7 +933,8 @@ def expand_dims(a: ArrayLike, axis: Any) -> "Array":
         raise ValueError(
             f"expand_dims of shape {a.shape} gives {len(shape)} axes; an Array has at most 3"
         )
-    return _reshape_layout(a, shape)
+    channel_axis = new_axes[0] if a.meta.ndim == 2 else None
+    return _reshape_layout(a, shape, channel_axis)
 
 
 def squeeze(a: ArrayLike, axis: Any = None) -> "Array":
@@ -863,9 +983,14 @@ def _as_shape(shape: Any) -> Tuple[int, ...]:
     return dims
 
 
-def _meta_from_shape(shape: Tuple[int, ...], dtype: ElementType) -> ArrayMeta:
-    """Build whole-canvas meta for ``(N,)``, ``(H, W)``, or ``(H, W, C)``."""
-    meta = ArrayMeta(dtype=dtype, shape=tuple(shape))
+def _meta_from_shape(
+    shape: Tuple[int, ...], dtype: ElementType, channel_axis: Optional[int] = None
+) -> ArrayMeta:
+    """Build whole-canvas meta for ``(N,)``, ``(H, W)``, or 3 axes.
+
+    ``channel_axis`` is as in ``ArrayMeta``: ``None`` on 3 axes means 2.
+    """
+    meta = ArrayMeta(dtype=dtype, shape=tuple(shape), channel_axis=channel_axis)
     return meta.copy(canvas=(0, 0, meta.width, meta.height))
 
 
@@ -1101,11 +1226,14 @@ def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = N
     return full(array.shape, fill_value, dtype=et)
 
 
-def _reshape_layout(array: "Array", shape: Tuple[int, ...]) -> "Array":
-    """The same samples, read as ``shape``.
+def _reshape_layout(
+    array: "Array", shape: Tuple[int, ...], channel_axis: Optional[int] = None
+) -> "Array":
+    """The same samples, read as ``shape`` with ``channel_axis``.
 
-    When the height, width, and channel count stay the same, only the NumPy
-    shape changes (``(N,)`` and ``(1, N)``, or ``(H, W)`` and
+    ``channel_axis`` is as in ``ArrayMeta``: ``None`` on 3 axes means 2.
+    When the engine reads the result the same way as this array, only the
+    NumPy shape changes (``(N,)`` and ``(1, N)``, or ``(H, W)`` and
     ``(H, W, 1)``). The result shares this array's node and canvas, and a
     cached buffer is reshaped.
 
@@ -1120,15 +1248,15 @@ def _reshape_layout(array: "Array", shape: Tuple[int, ...]) -> "Array":
 
     if tuple(shape) == array.shape:
         return array
-    new = _meta_from_shape(shape, array.dtype)
+    new = _meta_from_shape(shape, array.dtype, channel_axis)
+    old = array.meta
     if int(np.prod(array.shape)) != int(np.prod(new.shape)):
         raise ValueError(
             f"cannot reshape {array.shape} to {new.shape}: the sample count differs"
         )
-    old = array.meta
-    if (new.height, new.width, new.channels) == (old.height, old.width, old.channels):
+    if _engine_reading(new) == _engine_reading(old):
         out = object.__new__(Array)
-        out._take_fields(array, old.copy(shape=new.shape))
+        out._take_fields(array, old.copy(shape=new.shape, channel_axis=new.channel_axis))
         if out._data is not None:
             out._data = np.reshape(out._data, out.meta.buffer_shape)
         return out
@@ -1136,7 +1264,11 @@ def _reshape_layout(array: "Array", shape: Tuple[int, ...]) -> "Array":
     meta = new.copy(origin=old.origin, canvas=(col, row, new.width, new.height))
     if array._node is None:
         assert array._data is not None
-        return Array(np.reshape(array._data, meta.shape), origin=array.meta.origin)
+        return Array(
+            np.reshape(array._data, meta.shape),
+            origin=array.meta.origin,
+            channel_axis=meta.channel_axis,
+        )
 
     def reshape(samples: np.ndarray, shape: Tuple[int, ...]) -> np.ndarray:
         return np.reshape(samples, shape)
@@ -1208,6 +1340,7 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
     from .engines.graph import op
 
     array = Array(array)
+    _require_channels_last(array, "tile")
     is_1d = array.meta.is_1d
     if isinstance(reps, (str, bytes)):
         raise TypeError(f"tile reps must be an int or a sequence of ints, got {reps!r}")
@@ -1277,12 +1410,15 @@ class Array:
         data: Optional[np.ndarray | Array] = None,
         *,
         origin: Optional[Tuple[int, int]] = None,
+        channel_axis: Optional[int] = -1,
         _meta: Optional[ArrayMeta] = None,
         _node: Optional["OpNode"] = None,
     ):
         if isinstance(data, Array):
             if origin is not None:
                 raise ValueError("origin= is only valid when ingesting a source buffer")
+            if channel_axis != -1:
+                raise ValueError("channel_axis= is only valid when ingesting a source buffer")
             if _meta is not None or _node is not None:
                 raise ValueError("Array(Array) cannot take _meta= or _node=")
             return data
@@ -1293,22 +1429,27 @@ class Array:
         data: Optional[np.ndarray | Array] = None,
         *,
         origin: Optional[Tuple[int, int]] = None,
+        channel_axis: Optional[int] = -1,
         _meta: Optional[ArrayMeta] = None,
         _node: Optional["OpNode"] = None,
     ):
+        """``channel_axis`` is the axis of a 3-axis ``data`` that holds the
+        channels. The other two are the rows and the columns, in that order.
+        It is ignored for fewer axes.
+        """
         if isinstance(data, Array):
             return
         if data is not None:
             if _node is not None:
                 raise ValueError("source Array cannot also have an op node")
             arr = np.asarray(data)
+            meta = meta_from_array(arr, channel_axis)
             repeated = _repeated_axes(arr)
-            if repeated is not None:
+            if repeated is not None and meta.channel_axis in (None, 2):
                 core, reps = repeated
                 stretched = tile(Array(core, origin=origin), reps)
                 self._take_fields(stretched, stretched._meta)
                 return
-            meta = meta_from_array(arr)
             if origin is not None:
                 row, col = int(origin[0]), int(origin[1])
                 meta = meta.copy(
@@ -1320,16 +1461,19 @@ class Array:
             # are not reshaped, because sealing must mark the caller's array.
             if meta.is_1d:
                 arr = arr.reshape(meta.buffer_shape)
-            if not _is_direct_source(arr):
-                viewed = _view_over_packed(arr)
-                if viewed is not None:
+            if not _is_direct_source(arr, meta.channel_axis):
+                # A view or a spatial transpose of a packed parent reads the
+                # last axis as the channels.
+                source = None
+                if meta.channel_axis in (None, 2):
+                    source = _view_over_packed(arr)
+                    if source is None:
+                        source = _transposed_source(arr)
+                if source is None and meta.ndim == 3:
+                    source = _permuted_source(arr, meta.channel_axis)
+                if source is not None:
                     _seal_ndarray(arr)
-                    self._take_fields(viewed, meta)
-                    return
-                transposed = _transposed_source(arr)
-                if transposed is not None:
-                    _seal_ndarray(arr)
-                    self._take_fields(transposed, meta)
+                    self._take_fields(source, meta)
                     return
                 # "A" copies a misaligned array too. A one-row array can be
                 # C-contiguous and still start on a byte that is not a
@@ -1397,6 +1541,7 @@ class Array:
         ``oob_valid`` true keeps the parent canvas in this coordinate system.
         A ``None`` in ``region`` adds an axis of length 1, as in NumPy.
         """
+        _require_channels_last(self, "indexing")
         if region is None:
             if self._meta.is_1d:
                 raise TypeError(
@@ -1433,13 +1578,9 @@ class Array:
         import muimage as mi
 
         if window.is_full(self._meta):
-            if (
-                window.channel_axis is None
-                or window.channel_axis == self._meta.channel_axis
-            ):
+            if not window.drops_channel_axis:
                 return self
-            ndim = 3 if window.channel_axis else 2
-            return _reshape_layout(self, self._meta.with_size(ndim=ndim).shape)
+            return _reshape_layout(self, self._meta.with_size(ndim=2).shape)
 
         attrs: dict[str, Any] = {
             "left": window.left,
@@ -1457,12 +1598,8 @@ class Array:
             attrs["col_step"] = window.col_step
 
         out = mi.view(self, **attrs)
-        if (
-            window.channel_axis is not None
-            and out.meta.channel_axis != window.channel_axis
-        ):
-            ndim = 3 if window.channel_axis else 2
-            out = _reshape_layout(out, out.meta.with_size(ndim=ndim).shape)
+        if window.drops_channel_axis:
+            out = _reshape_layout(out, out.meta.with_size(ndim=2).shape)
         return out
 
     def crop(
@@ -1501,6 +1638,7 @@ class Array:
         """
         import muimage as mi
 
+        _require_channels_last(self, "pad")
         if self._meta.is_1d:
             left, right = (
                 int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)
@@ -1568,19 +1706,12 @@ class Array:
         """Permute the axes, as ``ndarray.transpose``: ``a.transpose(1, 0, 2)``
         or ``a.transpose((1, 0, 2))``.
 
-        With no axes, a 3D array swaps only its two spatial axes, giving
-        ``(W, H, C)``. NumPy reverses every axis there, giving ``(C, W, H)``.
-        A 1D array is returned unchanged, as in NumPy.
+        With no axes, every axis is reversed, so ``(H, W, C)`` becomes
+        ``(C, W, H)``. A 1D array is returned unchanged, as in NumPy.
         """
         if len(axes) == 1 and (axes[0] is None or not isinstance(axes[0], (int, np.integer))):
             axes = () if axes[0] is None else tuple(axes[0])
-        if axes:
-            return transpose(self, axes)
-        if self._meta.is_1d:
-            return self
-        import muimage as mi
-
-        return mi.orientation(self, orientation=5)
+        return transpose(self, axes or None)
 
     def swapaxes(self, axis1: int, axis2: int) -> "Array":
         """Swap two axes, as ``ndarray.swapaxes``."""
@@ -1592,7 +1723,7 @@ class Array:
 
     @property
     def T(self) -> "Array":
-        """Spatial transpose. Same as ``transpose()``."""
+        """Every axis reversed. Same as ``transpose()``."""
         return self.transpose()
 
     def astype(self, dtype: ElementTypeLike) -> "Array":

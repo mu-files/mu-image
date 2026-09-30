@@ -231,6 +231,19 @@ def _reflected_canvas(
     return (x0, y0, width, height)
 
 
+def _require_engine_rows_and_columns(x: Array, name: str) -> None:
+    """Raise when the engine does not read ``x``'s rows and columns as such.
+
+    The engine reads a ``(H, C, W)`` array packed, with axis 1 as its
+    columns, so an op that moves rows and columns would move the wrong axes.
+    """
+    if x.meta.channel_axis == 1:
+        raise NotImplementedError(
+            f"{name} of shape {x.shape} with channel_axis 1 is not supported yet; "
+            "move the channels last with mi.moveaxis(x, 1, -1)"
+        )
+
+
 def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``view``: H/W from attrs. Canvas stays in this array's system.
 
@@ -245,6 +258,7 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     false puts canvas on the view rect; true keeps the parent canvas (or
     remaps it into dest space when origin was reset).
     """
+    _require_engine_rows_and_columns(x, "view")
     left, top = int(attrs["left"]), int(attrs["top"])
     width, height = int(attrs["width"]), int(attrs["height"])
     row_step = int(attrs.get("row_step", 1))
@@ -314,6 +328,7 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     ``-(top, left)``. Canvas is the new array at that origin, same as a
     crop's view rect and canvas both sitting on the window.
     """
+    _require_engine_rows_and_columns(x, "pad")
     top = int(attrs["top"])
     bottom = int(attrs["bottom"])
     left = int(attrs["left"])
@@ -358,6 +373,7 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     The first copy keeps the source origin. Canvas grows to the right
     and down from that origin.
     """
+    _require_engine_rows_and_columns(x, "tile")
     row_reps = int(attrs["row_reps"])
     col_reps = int(attrs["col_reps"])
     channel_reps = int(attrs["channel_reps"])
@@ -411,6 +427,7 @@ def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     Canvas is remapped in dest space, then stored back in the shared
     system (dest ``(0, 0)`` is ``origin``).
     """
+    _require_engine_rows_and_columns(x, "orientation")
     code = int(attrs["orientation"])
     if code not in _ORIENTATION:
         raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
@@ -426,6 +443,32 @@ def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         width=width,
         ndim=2 if x.meta.is_1d and swap else x.meta.ndim,
         canvas=(mx + origin_col, my + origin_row, mw, mh),
+    )
+
+
+def _out_meta_transpose(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    """Geometry policy ``transpose``: axis ``i`` of the output is axis
+    ``axes[i]`` of the 3-axis input, and the channel axis moves with it.
+
+    Origin and canvas describe the rows and the columns. When the rows and
+    the columns trade places, they are remapped as by ``orientation`` 5.
+    """
+    axes = tuple(int(axis) for axis in attrs["axes"])
+    meta = x.meta
+    if meta.ndim != 3 or sorted(axes) != [0, 1, 2]:
+        raise ValueError(
+            f"transpose: axes {list(axes)} is not a permutation of the axes of shape {x.shape}"
+        )
+    rows_axis, cols_axis = meta.spatial_axes
+    canvas = meta.canvas
+    if axes.index(rows_axis) > axes.index(cols_axis):
+        origin_row, origin_col = meta.origin
+        cx, cy, cw, ch = canvas
+        canvas = (cy - origin_row + origin_col, cx - origin_col + origin_row, ch, cw)
+    return meta.copy(
+        shape=tuple(meta.shape[axis] for axis in axes),
+        channel_axis=axes.index(meta.channel_axis),
+        canvas=canvas,
     )
 
 
@@ -641,8 +684,8 @@ def _run_python_node(t: Array, values: Dict[int, np.ndarray]) -> None:
     out = node.fn(inp.reshape(node.inputs[0].meta.shape), **node.attrs)
     if not isinstance(out, np.ndarray):
         raise TypeError(f"python op {node.op!r}: kernel must return ndarray")
-    got = meta_from_array(out)
     want = t.meta
+    got = meta_from_array(out, want.channel_axis)
     if (got.height, got.width, got.channels, got.dtype) != (
         want.height,
         want.width,

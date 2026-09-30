@@ -8,29 +8,49 @@ import pytest
 from muraw.array import Array, ArrayMeta, ElementType
 
 
-def _meta(shape):
-    return ArrayMeta(dtype=ElementType.FLOAT32, shape=shape)
+def _meta(shape, channel_axis=None):
+    return ArrayMeta(dtype=ElementType.FLOAT32, shape=shape, channel_axis=channel_axis)
 
 
 @pytest.mark.parametrize(
-    "shape, height, width, channels, channel_axis, is_1d, buffer_shape",
+    "shape, channel_axis, height, width, channels, is_1d, buffer_shape",
     [
-        ((5,), 1, 5, 1, False, True, (1, 5)),
-        ((2, 5), 2, 5, 1, False, False, (2, 5)),
-        ((2, 5, 1), 2, 5, 1, True, False, (2, 5, 1)),
-        ((2, 5, 3), 2, 5, 3, True, False, (2, 5, 3)),
+        ((5,), None, 1, 5, 1, True, (1, 5)),
+        ((2, 5), None, 2, 5, 1, False, (2, 5)),
+        ((2, 5, 1), 2, 2, 5, 1, False, (2, 5, 1)),
+        ((2, 5, 3), 2, 2, 5, 3, False, (2, 5, 3)),
+        ((3, 2, 5), 0, 2, 5, 3, False, (3, 2, 5)),
+        ((2, 3, 5), 1, 2, 5, 3, False, (2, 3, 5)),
     ],
 )
 def test_properties_follow_the_shape(
-    shape, height, width, channels, channel_axis, is_1d, buffer_shape
+    shape, channel_axis, height, width, channels, is_1d, buffer_shape
 ):
-    meta = _meta(shape)
+    meta = _meta(shape, channel_axis)
     assert meta.shape == shape
     assert meta.ndim == len(shape)
     assert (meta.height, meta.width, meta.channels) == (height, width, channels)
-    assert meta.channel_axis is channel_axis
+    assert meta.channel_axis == channel_axis
     assert meta.is_1d is is_1d
     assert meta.buffer_shape == buffer_shape
+
+
+def test_channel_axis_defaults_to_last_and_counts_negative_from_the_end():
+    assert _meta((2, 5, 3)).channel_axis == 2
+    assert _meta((2, 5, 3), -1).channel_axis == 2
+    assert _meta((3, 2, 5), -3).channel_axis == 0
+
+
+@pytest.mark.parametrize("channel_axis", [3, -4])
+def test_rejects_a_channel_axis_out_of_range(channel_axis):
+    with pytest.raises(np.exceptions.AxisError, match="channel_axis"):
+        _meta((3, 2, 5), channel_axis)
+
+
+@pytest.mark.parametrize("shape", [(5,), (2, 5)])
+def test_rejects_a_channel_axis_below_three_axes(shape):
+    with pytest.raises(ValueError, match="has no channel axis"):
+        _meta(shape, 0)
 
 
 @pytest.mark.parametrize("shape", [(0,), (0, 4), (3, 0), (2, 2, 0)])
@@ -41,7 +61,7 @@ def test_rejects_an_axis_below_one(shape):
 
 @pytest.mark.parametrize("shape", [(), (2, 2, 2, 2)])
 def test_rejects_a_rank_outside_one_to_three(shape):
-    with pytest.raises(ValueError, match=r"\(N,\), \(H,W\) or \(H,W,C\)"):
+    with pytest.raises(ValueError, match=r"\(N,\), \(H,W\) or 3 axes"):
         _meta(shape)
 
 
@@ -52,8 +72,16 @@ def test_with_size_keeps_the_rank():
     assert _meta((5,)).with_size(width=7).shape == (7,)
 
 
+def test_with_size_keeps_the_channel_axis():
+    planar = _meta((3, 2, 5), 0).with_size(height=4, width=7)
+    assert (planar.shape, planar.channel_axis) == ((3, 4, 7), 0)
+    middle = _meta((2, 3, 5), 1).with_size(channels=4)
+    assert (middle.shape, middle.channel_axis) == ((2, 4, 5), 1)
+
+
 def test_with_size_adds_a_channel_axis_for_more_than_one_channel():
-    assert _meta((2, 5)).with_size(channels=3).shape == (2, 5, 3)
+    meta = _meta((2, 5)).with_size(channels=3)
+    assert (meta.shape, meta.channel_axis) == ((2, 5, 3), 2)
 
 
 def test_with_size_changes_the_rank():
@@ -61,6 +89,8 @@ def test_with_size_changes_the_rank():
     assert _meta((1, 5)).with_size(ndim=1).shape == (5,)
     assert _meta((2, 5)).with_size(ndim=3).shape == (2, 5, 1)
     assert _meta((2, 5, 1)).with_size(ndim=2).shape == (2, 5)
+    dropped = _meta((1, 2, 5), 0).with_size(ndim=2)
+    assert (dropped.shape, dropped.channel_axis) == ((2, 5), None)
 
 
 @pytest.mark.parametrize("changes", [{"height": 2}, {"channels": 3}])

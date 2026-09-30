@@ -73,4 +73,4 @@ __all__ = [
     "zeros",
     "zeros_like",
 ]
-__all__ += _catalog.__all__
+__all__ += [name for name in _catalog.__all__ if name not in __all__]
