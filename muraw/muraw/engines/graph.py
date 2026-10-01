@@ -24,6 +24,7 @@ from ..array import (
     ElementType,
     Array,
     ArrayMeta,
+    _meta_from_shape,
     _seal_ndarray,
     meta_from_array,
 )
@@ -149,9 +150,11 @@ class EngineOp:
             return x
         return emit(self, x, *more, **attrs)
 
-    def infer_out_meta(self, x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    def infer_out_meta(self, x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayMeta:
+        """``more`` are the inputs after ``x``. Only a geometry policy of an
+        op with more than one input is passed them."""
         if self._infer_meta is not None:
-            return self._infer_meta(x, attrs)
+            return self._infer_meta(x, attrs, *more)
         return x.meta.with_size(
             channels=self._out_channels(x, attrs),
             dtype=self._out_dtype(x, attrs),
@@ -476,6 +479,21 @@ def _out_meta_transpose(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     )
 
 
+def _out_meta_broadcast(x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayMeta:
+    """Geometry policy ``broadcast``: NumPy's broadcast shape of every input.
+
+    The inputs have one dtype and the same number of axes. The result is
+    the meta of the first input that already has the broadcast shape, or a
+    whole canvas with ``x``'s channel axis when none does.
+    """
+    inputs = (x, *more)
+    shape = np.broadcast_shapes(*(inp.shape for inp in inputs))
+    for inp in inputs:
+        if inp.shape == shape:
+            return inp.meta
+    return _meta_from_shape(shape, x.dtype, x.meta.channel_axis)
+
+
 @dataclass(frozen=True)
 class OpNode:
     """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""
@@ -689,7 +707,7 @@ def emit(engine_op: EngineOp, x: Array, /, *more: Array, **attrs: Any) -> Array:
         entry = min(index, len(engine_op._in_channels) - 1)
         _check_input(engine_op.meta, engine_op._in_channels[entry], inp, index)
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
-    out_meta = engine_op.infer_out_meta(x, coerced)
+    out_meta = engine_op.infer_out_meta(x, coerced, *more)
     node = OpNode(
         op=name,
         inputs=inputs,

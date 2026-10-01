@@ -87,6 +87,50 @@ div_scalar = EngineOp(
     _infer_meta=None,
 )
 
+add = EngineOp(
+    meta=OpMeta(name='add', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[]''')),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+subtract = EngineOp(
+    meta=OpMeta(name='subtract', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[]''')),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+multiply = EngineOp(
+    meta=OpMeta(name='multiply', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[]''')),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+divide = EngineOp(
+    meta=OpMeta(name='divide', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[]''')),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
 fill = EngineOp(
     meta=OpMeta(name='fill', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1159,6 +1203,10 @@ OPS_BY_NAME = {
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
     'div_scalar': div_scalar,
+    'add': add,
+    'subtract': subtract,
+    'multiply': multiply,
+    'divide': divide,
     'fill': fill,
     'ramp': ramp,
     'view': view,
@@ -1191,6 +1239,7 @@ OPS_BY_NAME = {
 
 __all__ = [
     'OPS_BY_NAME',
+    'add',
     'add_scalar',
     'apply_flat_gain_map',
     'cast_dtype',
@@ -1201,12 +1250,14 @@ __all__ = [
     'cfa_normalize_raw',
     'convert_dtype',
     'div_scalar',
+    'divide',
     'fill',
     'fix_vignette',
     'lut',
     'map_polynomial',
     'mono_lut',
     'mul_scalar',
+    'multiply',
     'orientation',
     'pad',
     'ramp',
@@ -1219,6 +1270,7 @@ __all__ = [
     'rgb_normalize_raw',
     'rgb_transform',
     'sub_scalar',
+    'subtract',
     'tile',
     'transpose',
     'view',

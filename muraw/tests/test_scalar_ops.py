@@ -125,19 +125,7 @@ def test_a_lazy_chain_of_operators_matches_numpy():
     _check(got, want + np.float32(1.0))
 
 
-def test_a_constant_that_varies_along_a_spatial_axis_is_rejected():
-    arr = mi.Array(np.zeros((4, 6, 3), dtype=np.float32))
-    with pytest.raises(ValueError, match="non-channel axis"):
-        arr * np.ones((6, 1))
-
-
-def test_a_constant_that_would_change_the_shape_is_rejected():
+def test_a_constant_of_strings_is_rejected():
     arr = mi.Array(np.zeros((4, 6), dtype=np.float32))
-    with pytest.raises(ValueError, match="change the shape"):
-        arr + np.ones((2, 4, 6))
-
-
-def test_array_array_arithmetic_is_rejected():
-    arr = mi.Array(np.zeros((4, 6), dtype=np.float32))
-    with pytest.raises(TypeError, match="array–array"):
-        arr + arr
+    with pytest.raises(TypeError, match="expected a number"):
+        arr + "a"

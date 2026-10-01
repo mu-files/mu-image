@@ -9,7 +9,7 @@ import operator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import ceil
-from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple
 
 import numpy as np
 from numpy.lib.array_utils import byte_bounds, normalize_axis_index, normalize_axis_tuple
@@ -333,6 +333,12 @@ type ElementTypeLike = str | ElementType | np.dtype[Any] | type[np.generic]
 # An array argument: an ``Array``, or an ndarray that is ingested with ``Array(...)``.
 type ArrayLike = Array | np.ndarray
 
+# An operand of +, -, *, /: an array, a number, or a (nested) list of numbers.
+# A float annotation also accepts int and bool. Complex numbers are rejected.
+type ArithmeticOperand = (
+    ArrayLike | float | np.integer | np.floating | np.bool_ | Sequence[Any]
+)
+
 
 @dataclass(frozen=True)
 class ArrayMeta:
@@ -478,24 +484,57 @@ def _engine_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
     return False, (shape[0], shape[1], shape[2] if len(shape) == 3 else 1)
 
 
-def _scalar_operand(meta: ArrayMeta, value: Any, op: str) -> Tuple[list[float], bool]:
-    """``value`` as the ``value`` attr of a scalar op on an array of ``meta``,
-    and whether ``value`` is a float constant.
+def _arithmetic_function(
+    apply: Callable[[Any, Any], "Array"], x1: ArithmeticOperand, x2: ArithmeticOperand
+) -> "Array":
+    """``apply(x1, x2)`` with at least one Array: ``x1`` is ingested when
+    neither is."""
+    if not isinstance(x1, Array) and not isinstance(x2, Array):
+        x1 = Array(np.asarray(x1))
+    return apply(x1, x2)
 
-    ``value`` is a number, or a list or ndarray that broadcasts to the
-    array's shape and varies only along the channel axis. The attr holds
-    one value, or one per channel.
+
+def add(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
+    """NumPy's ``add``: ``x1 + x2``, broadcast. Integer results saturate."""
+    return _arithmetic_function(operator.add, x1, x2)
+
+
+def subtract(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
+    """NumPy's ``subtract``: ``x1 - x2``, broadcast. Integer results saturate."""
+    return _arithmetic_function(operator.sub, x1, x2)
+
+
+def multiply(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
+    """NumPy's ``multiply``: ``x1 * x2``, broadcast. Integer results saturate."""
+    return _arithmetic_function(operator.mul, x1, x2)
+
+
+def divide(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
+    """NumPy's ``divide``: ``x1 / x2``, broadcast. Integer inputs give float32."""
+    return _arithmetic_function(operator.truediv, x1, x2)
+
+
+# The scalar op and the op between two arrays for each operator.
+_ELEMENTWISE_OPS = {
+    "add_scalar": "add",
+    "sub_scalar": "subtract",
+    "mul_scalar": "multiply",
+    "div_scalar": "divide",
+}
+
+
+def _scalar_values(meta: ArrayMeta, const: np.ndarray) -> Optional[list[float]]:
+    """``const`` as the ``value`` attr of a scalar op on an array of
+    ``meta``: one value, or one per channel. ``None`` when ``const`` would
+    change the array's shape or varies along an axis the engine does not
+    read as channels, so it needs the op between two arrays.
     """
-    if isinstance(value, Array):
-        raise TypeError(f"{op}: array–array arithmetic is not supported yet")
-    const = np.asarray(value)
-    if const.dtype.kind not in "biuf":
-        raise TypeError(f"{op}: expected a number or an array of numbers, got {value!r}")
     shape = meta.shape
-    if np.broadcast_shapes(const.shape, shape) != shape:
-        raise ValueError(
-            f"{op}: a constant of shape {const.shape} would change the shape {shape}"
-        )
+    try:
+        if np.broadcast_shapes(const.shape, shape) != shape:
+            return None
+    except ValueError:
+        return None
     padded_shape = (1,) * (len(shape) - const.ndim) + const.shape
     channel_axis = None
     if len(shape) == 3:
@@ -503,11 +542,42 @@ def _scalar_operand(meta: ArrayMeta, value: Any, op: str) -> Tuple[list[float], 
         channel_axis = 0 if planar else 2
     varying = [axis for axis, size in enumerate(padded_shape) if size > 1]
     if varying and varying != [channel_axis]:
-        raise ValueError(
-            f"{op}: a constant that varies along a non-channel axis is not supported yet"
+        return None
+    return [float(v) for v in const.reshape(-1)]
+
+
+def _is_integer(dtype: ElementType) -> bool:
+    return dtype in (ElementType.UINT8, ElementType.UINT16)
+
+
+def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
+    """The op ``name`` between two arrays, with NumPy's broadcasting and
+    dtype promotion. Integer division gives float32.
+
+    Both arrays get the broadcast rank: a missing leading axis becomes
+    size 1. The engine must read both the same way, planar or packed.
+    """
+    from .engines.graph import op
+
+    shape = np.broadcast_shapes(first.shape, second.shape)
+    channel_axis = None
+    if len(shape) == 3:
+        channel_axis = next(a.meta.channel_axis for a in (first, second) if a.meta.ndim == 3)
+    operands = []
+    for operand in (first, second):
+        padded = (1,) * (len(shape) - operand.meta.ndim) + operand.shape
+        operands.append(_reshape_layout(operand, padded, channel_axis))
+    first, second = operands
+    if _engine_reading(first.meta)[0] != _engine_reading(second.meta)[0]:
+        raise NotImplementedError(
+            f"{name} of shape {first.shape} with channel_axis {first.meta.channel_axis} "
+            f"and shape {second.shape} with channel_axis {second.meta.channel_axis} "
+            "is not supported yet; give both arrays the same channel_axis"
         )
-    values = [float(v) for v in const.reshape(-1)]
-    return values, const.dtype.kind == "f"
+    dtype = ElementType(np.result_type(first.dtype.value, second.dtype.value))
+    if name == "divide" and _is_integer(dtype):
+        dtype = ElementType.FLOAT32
+    return op(name, first.astype(dtype), second.astype(dtype))
 
 
 def _expand_pad(
@@ -1462,6 +1532,10 @@ class Array:
 
     __slots__ = ("_meta", "_data", "_node")
 
+    # Above ndarray's, so ``ndarray + Array`` calls ``Array.__radd__`` and
+    # stays lazy instead of realizing this array.
+    __array_priority__ = 1000
+
     def __new__(
         cls,
         data: Optional[np.ndarray | Array] = None,
@@ -1572,43 +1646,63 @@ class Array:
     def meta(self) -> ArrayMeta:
         return self._meta
 
-    def _scalar_op(self, name: str, other: Any, reverse: bool = False) -> "Array":
-        """Integer arrays become float32 for a float constant or for
-        ``div_scalar``. Integer results saturate instead of wrapping."""
+    def _scalar_op(self, name: str, other: ArithmeticOperand, reverse: bool = False) -> "Array":
+        """``self`` and ``other`` with the scalar op ``name``, or the op
+        between two arrays when ``other`` is an Array or a constant that is
+        not one value or one per channel. ``reverse`` puts ``other`` first.
+
+        A constant keeps an integer array's dtype when its values are
+        integers. A float constant, and ``/``, make an integer array
+        float32. Integer results saturate instead of wrapping.
+        """
         from .engines.graph import op
 
-        values, is_float = _scalar_operand(self._meta, other, name)
-        operand = self
-        integer = self.dtype in (ElementType.UINT8, ElementType.UINT16)
-        if integer and (is_float or name == "div_scalar"):
-            operand = self.astype(ElementType.FLOAT32)
-        attrs: dict[str, Any] = {"value": values}
-        if reverse:
-            attrs["reverse"] = True
-        return op(name, operand, **attrs)
+        if not isinstance(other, Array):
+            const = np.asarray(other)
+            if const.dtype.kind not in "biuf":
+                raise TypeError(
+                    f"{name}: expected a number, an array of numbers, or an Array, "
+                    f"got {other!r}"
+                )
+            dtype = self.dtype
+            if _is_integer(dtype) and (const.dtype.kind == "f" or name == "div_scalar"):
+                dtype = ElementType.FLOAT32
+            values = _scalar_values(self._meta, const)
+            if values is not None:
+                attrs: dict[str, Any] = {"value": values}
+                if reverse:
+                    attrs["reverse"] = True
+                return op(name, self.astype(dtype), **attrs)
+            channel_axis = self.meta.channel_axis if const.ndim == 3 else None
+            other = Array(
+                np.ascontiguousarray(const, dtype=np.dtype(dtype.value)),
+                channel_axis=channel_axis,
+            )
+        first, second = (other, self) if reverse else (self, other)
+        return _elementwise(_ELEMENTWISE_OPS[name], first, second)
 
-    def __add__(self, other: Any) -> "Array":
+    def __add__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("add_scalar", other)
 
-    def __radd__(self, other: Any) -> "Array":
+    def __radd__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("add_scalar", other)
 
-    def __sub__(self, other: Any) -> "Array":
+    def __sub__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("sub_scalar", other)
 
-    def __rsub__(self, other: Any) -> "Array":
+    def __rsub__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("sub_scalar", other, reverse=True)
 
-    def __mul__(self, other: Any) -> "Array":
+    def __mul__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("mul_scalar", other)
 
-    def __rmul__(self, other: Any) -> "Array":
+    def __rmul__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("mul_scalar", other)
 
-    def __truediv__(self, other: Any) -> "Array":
+    def __truediv__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("div_scalar", other)
 
-    def __rtruediv__(self, other: Any) -> "Array":
+    def __rtruediv__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("div_scalar", other, reverse=True)
 
     def view(

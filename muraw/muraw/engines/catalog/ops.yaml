@@ -113,6 +113,53 @@ ops:
         count: 1
         optional: true
 
+  # Arithmetic between two arrays of one dtype: a + b, a - b, a * b,
+  # a / b. The inputs broadcast as in NumPy: each input's rows, columns,
+  # and channels (planes of a planar tensor) match the output's, or are 1
+  # and are read at index 0 for every output index. Both inputs are read
+  # the same way as the output, planar or packed. Integer results are
+  # rounded to the nearest integer and saturate to the dtype's range.
+  # divide has float paths only.
+  - name: add
+    needs_plane_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  - name: subtract
+    needs_plane_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  - name: multiply
+    needs_plane_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  - name: divide
+    needs_plane_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
   # Constant dest: no input. Shape/dtype live on the output array.
   - name: fill
     inputs: []

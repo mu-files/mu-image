@@ -483,11 +483,13 @@ def test_op_rejects_unknown_attr():
         mi.rgb_matrix_3x3(x, matrix=np.eye(3, dtype=np.float32), extra=1)
 
 
-def test_rejects_array_array_sub():
+def test_array_array_sub_is_a_two_input_node():
     a = Array(np.zeros((2, 2), dtype=np.float32))
     b = Array(np.ones((2, 2), dtype=np.float32))
-    with pytest.raises(TypeError, match="array–array"):
-        _ = a - b
+    diff = a - b
+    assert diff._node.op == "subtract"
+    assert diff._node.inputs == (a, b)
+    np.testing.assert_array_equal(np.asarray(diff), -np.ones((2, 2), dtype=np.float32))
 
 
 def test_demosaic_array_lazy():
