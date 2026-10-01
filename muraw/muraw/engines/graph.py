@@ -143,11 +143,11 @@ class EngineOp:
     # When set (e.g. geometry: view), replaces dtype/channels/H×W/origin composition.
     _infer_meta: Optional[GraphOutMetaFn] = None
 
-    def __call__(self, x: Array, /, **attrs: Any) -> Array:
+    def __call__(self, x: Array, /, *more: Array, **attrs: Any) -> Array:
         # TIFF orientation 1 is identity; skip the node.
         if self.meta.name == "orientation" and int(attrs.get("orientation", 0)) == 1:
             return x
-        return emit(self, x, **attrs)
+        return emit(self, x, *more, **attrs)
 
     def infer_out_meta(self, x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         if self._infer_meta is not None:
@@ -487,8 +487,10 @@ class OpNode:
     fn: Optional[Callable[..., np.ndarray]] = None
 
 
-def _check_input(op_meta: OpMeta, in_channels: Optional[int], x: Array) -> None:
-    """Raise when ``x`` is not an input the op ``op_meta`` reads.
+def _check_input(
+    op_meta: OpMeta, in_channels: Optional[int], x: Array, index: int = 0
+) -> None:
+    """Raise when ``x`` is not input ``index`` of the op ``op_meta``.
 
     An ``rgb_`` op mixes the channels of each pixel, so it needs them on the
     last axis. A ``cfa_`` op reads a mono mosaic, ``(H, W)`` or ``(H, W, 1)``.
@@ -511,7 +513,7 @@ def _check_input(op_meta: OpMeta, in_channels: Optional[int], x: Array) -> None:
         )
     if in_channels is not None and x.meta.channels != in_channels:
         raise ValueError(
-            f"op {name!r} input[0]: expected {in_channels} channel(s), "
+            f"op {name!r} input[{index}]: expected {in_channels} channel(s), "
             f"got {x.meta.channels}"
         )
 
@@ -652,29 +654,59 @@ def _validate_attrs(
     return out
 
 
-def emit(engine_op: EngineOp, x: Array, /, **attrs: Any) -> Array:
-    """Validate attrs, ask the op for output meta, and build a lazy node."""
+def _check_input_count(engine_op: EngineOp, count: int) -> None:
+    """Raise when the op ``engine_op`` does not take ``count`` inputs."""
+    expected = engine_op._n_inputs
+    if engine_op._variable_input:
+        if count < expected:
+            raise ValueError(
+                f"op {engine_op.meta.name!r}: expected at least {expected} "
+                f"input(s), got {count}"
+            )
+    elif count != expected:
+        raise ValueError(
+            f"op {engine_op.meta.name!r}: expected {expected} input(s), got {count}"
+        )
+
+
+def emit(engine_op: EngineOp, x: Array, /, *more: Array, **attrs: Any) -> Array:
+    """Validate inputs and attrs, ask the op for output meta, and build a lazy node.
+
+    ``x`` is input 0 and ``more`` are the inputs after it. An op with no
+    inputs takes only ``x``, as the meta of its output. When the op's last
+    input is variable, input ``i`` past the catalog entries is checked
+    against the last entry.
+    """
     name = engine_op.meta.name
-    _check_input(engine_op.meta, engine_op._in_channels[0] if engine_op._in_channels else None, x)
+    if engine_op._n_inputs == 0:
+        if more:
+            raise ValueError(f"op {name!r}: takes no inputs, got {1 + len(more)}")
+        inputs: Tuple[Array, ...] = ()
+    else:
+        inputs = (x, *more)
+        _check_input_count(engine_op, len(inputs))
+    for index, inp in enumerate(inputs):
+        entry = min(index, len(engine_op._in_channels) - 1)
+        _check_input(engine_op.meta, engine_op._in_channels[entry], inp, index)
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
     out_meta = engine_op.infer_out_meta(x, coerced)
     node = OpNode(
         op=name,
-        inputs=() if engine_op._n_inputs == 0 else (x,),
+        inputs=inputs,
         attrs=MappingProxyType(coerced),
         out_meta=out_meta,
     )
     return Array(_meta=out_meta, _node=node)
 
 
-def op(name: str, x: Array, /, **attrs: Any) -> Array:
+def op(name: str, x: Array, /, *more: Array, **attrs: Any) -> Array:
     """Emit a named engine op (thin alias over ``engines.ops.OPS_BY_NAME``)."""
     from .ops import OPS_BY_NAME
 
     engine_op = OPS_BY_NAME.get(name)
     if engine_op is None:
         raise ValueError(f"unknown engine op {name!r}")
-    return emit(engine_op, x, **attrs)
+    return emit(engine_op, x, *more, **attrs)
 
 
 def flush(x: Array) -> Array:

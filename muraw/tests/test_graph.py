@@ -10,7 +10,8 @@ import pytest
 import muimage as mi
 from muraw.engines import get_default_engine, set_default_engine
 from muraw.engines.core import CoreEngine
-from muraw.engines.graph import EngineOp, flush, graph_op
+from muraw.engines import graph
+from muraw.engines.graph import EngineOp, OpMeta, flush, graph_op
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
 from muraw.array import Array, ArrayMeta, ElementType, rot90
@@ -45,6 +46,58 @@ def test_catalog_engine_ops_io():
     assert callable(mi.lut)
     assert callable(flush)
     assert "view" in get_default_engine().supported_ops
+
+
+def _engine_op(
+    name: str, in_channels: tuple, variable_input: bool = False
+) -> EngineOp:
+    """An engine op that is not in the catalog, for building nodes only."""
+    return EngineOp(
+        meta=OpMeta(name=name),
+        _out_dtype=graph._out_dtype_same,
+        _out_channels=graph._out_channels_same,
+        _in_channels=in_channels,
+        _n_inputs=len(in_channels),
+        _variable_input=variable_input,
+    )
+
+
+def test_two_input_op_builds_a_node_with_both_inputs():
+    add2 = _engine_op("add2", (None, 1))
+    first = Array(np.zeros((2, 3, 3), dtype=np.float32))
+    second = Array(np.zeros((2, 3), dtype=np.float32))
+    out = add2(first, second)
+    assert out._node.op == "add2"
+    assert out._node.inputs == (first, second)
+    assert out.meta == first.meta
+
+
+def test_two_input_op_checks_each_input():
+    add2 = _engine_op("add2", (None, 1))
+    rgb = Array(np.zeros((2, 3, 3), dtype=np.float32))
+    with pytest.raises(ValueError, match=r"input\[1\]: expected 1 channel"):
+        add2(rgb, rgb)
+    with pytest.raises(ValueError, match="expected 2 input"):
+        add2(rgb)
+    with pytest.raises(ValueError, match="expected 2 input"):
+        add2(rgb, rgb, rgb)
+
+
+def test_variable_input_op_takes_one_or_more_of_its_last_input():
+    sum_n = _engine_op("sum_n", (1,), variable_input=True)
+    mono = Array(np.zeros((2, 3), dtype=np.float32))
+    assert sum_n(mono)._node.inputs == (mono,)
+    assert sum_n(mono, mono, mono, mono)._node.inputs == (mono,) * 4
+    rgb = Array(np.zeros((2, 3, 3), dtype=np.float32))
+    with pytest.raises(ValueError, match=r"input\[2\]: expected 1 channel"):
+        sum_n(mono, mono, rgb)
+
+
+def test_op_with_no_inputs_takes_only_its_output_meta():
+    fill = OPS_BY_NAME["fill"]
+    like = Array(np.zeros((2, 3), dtype=np.float32))
+    with pytest.raises(ValueError, match="takes no inputs"):
+        fill(like, like, value=1.0)
 
 
 def test_array_meta_origin_default():
