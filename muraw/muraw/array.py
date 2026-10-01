@@ -514,6 +514,146 @@ def divide(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     return _arithmetic_function(operator.truediv, x1, x2)
 
 
+# The most input channels, and the most output channels, of a matmul.
+_MATMUL_MAX_CHANNELS = 32
+
+# NumPy's signature for matmul, quoted in its error messages.
+_MATMUL_SIGNATURE = "(n?,k),(k,m?)->(n?,m?)"
+
+
+def matmul(x1: ArrayLike | Sequence[Any], x2: ArrayLike | Sequence[Any]) -> "Array":
+    """NumPy's ``matmul``: ``x1 @ x2``, for a per-pixel channel transform.
+
+    One operand is an array whose last axis is its channels, and the other
+    is a constant matrix of at most 32 by 32: ``rgb @ M.T`` applies ``M``
+    to every pixel, ``rgba @ B`` with a ``(4, 3)`` ``B`` gives RGB, and
+    ``rgb @ [0.299, 0.587, 0.114]`` gives an ``(H, W)`` luma image.
+    ``B @ v`` works for a 1D ``v``. Other uses raise
+    ``NotImplementedError``; ``np.matmul(x.realize(), B)`` runs them.
+
+    An integer matrix keeps an integer array's dtype and the result
+    saturates; a float matrix makes an integer array float32.
+    """
+    if _matmul_array_is_second(x1, x2):
+        return _matmul_matrix_first(_matmul_constant(x1, 0), x2)
+    array = x1 if isinstance(x1, Array) else Array(np.asarray(x1))
+    return _matmul_array_first(array, _matmul_constant(x2, 1))
+
+
+def _is_lazy(operand: Any) -> bool:
+    return isinstance(operand, Array) and operand._node is not None
+
+
+def _matmul_array_is_second(x1: Any, x2: Any) -> bool:
+    """Whether ``x2`` is the array and ``x1`` the matrix in ``x1 @ x2``.
+    A computed ``x2`` is the array unless ``x1`` is computed too. A concrete
+    ``x2`` is the array when ``x1`` is not an ``mi.Array`` and has at most
+    2 axes, so ``M @ mi.Array(v)`` and ``rgb @ mi.Array(M)`` both work."""
+    if not isinstance(x2, Array):
+        return False
+    if _is_lazy(x2):
+        return not _is_lazy(x1)
+    return not isinstance(x1, Array) and np.ndim(x1) <= 2
+
+
+def _matmul_constant(operand: Any, index: int) -> np.ndarray:
+    """``operand`` as the constant matrix of a matmul, where ``index`` is
+    its position in ``x1 @ x2``."""
+    if _is_lazy(operand):
+        raise NotImplementedError(
+            "matmul with a computed mi.Array as the matrix is not supported yet; "
+            "realize() the matrix first"
+        )
+    matrix = np.asarray(operand)
+    if matrix.dtype.kind not in "biuf":
+        raise TypeError(f"matmul: expected an array of numbers, got {operand!r}")
+    if matrix.ndim == 0:
+        raise ValueError(
+            f"matmul: Input operand {index} does not have enough dimensions "
+            f"(has 0, gufunc core with signature {_MATMUL_SIGNATURE} requires 1)"
+        )
+    if matrix.ndim > 2:
+        raise NotImplementedError(
+            f"matmul with a matrix of shape {matrix.shape} is not supported; "
+            "use np.matmul(x.realize(), matrix)"
+        )
+    return matrix
+
+
+def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
+    """``array @ matrix``: each pixel's channels times ``matrix``."""
+    from .engines.graph import op
+
+    meta = array.meta
+    input_channels = array.shape[-1]
+    if matrix.shape[0] != input_channels:
+        raise ValueError(
+            "matmul: Input operand 1 has a mismatch in its core dimension 0, with gufunc "
+            f"signature {_MATMUL_SIGNATURE} (size {matrix.shape[0]} is different from "
+            f"{input_channels})"
+        )
+    if meta.ndim == 3 and meta.channel_axis not in (None, 2):
+        raise NotImplementedError(
+            f"matmul of shape {array.shape} with channel_axis {meta.channel_axis} is not "
+            "supported: NumPy sums over the last axis, which is not the channel axis. "
+            "Move the channels last with mi.moveaxis, or use np.matmul(x.realize(), matrix)"
+        )
+    if meta.ndim == 1 and matrix.ndim == 1:
+        raise NotImplementedError(
+            "matmul of two 1D arrays is one number, which mi.Array does not hold; "
+            "use np.dot(x.realize(), matrix)"
+        )
+    columns = matrix.shape[1] if matrix.ndim == 2 else 1
+    if max(input_channels, columns) > _MATMUL_MAX_CHANNELS:
+        raise NotImplementedError(
+            f"matmul with a matrix of shape {matrix.shape} is not supported: at most "
+            f"{_MATMUL_MAX_CHANNELS} input and output channels. "
+            "Use np.matmul(x.realize(), matrix)"
+        )
+    dtype = array.dtype
+    if _is_integer(dtype) and matrix.dtype.kind == "f":
+        dtype = ElementType.FLOAT32
+    if meta.ndim == 3:
+        pixels_shape = array.shape
+    elif meta.ndim == 2:
+        pixels_shape = (array.shape[0], 1, input_channels)
+    else:
+        pixels_shape = (1, 1, input_channels)
+    pixels = _reshape_layout(array, pixels_shape)
+    out = op(
+        "matmul",
+        pixels.astype(dtype),
+        matrix=[float(value) for value in matrix.reshape(-1)],
+        columns=columns,
+    )
+    out_shape = array.shape[:-1] + ((columns,) if matrix.ndim == 2 else ())
+    return _reshape_layout(out, out_shape)
+
+
+def _matmul_matrix_first(matrix: np.ndarray, array: "Array") -> "Array":
+    """``matrix @ array``. NumPy sums over ``array``'s second-to-last axis,
+    which is a spatial axis unless ``array`` is 1D, so only a 1D ``array``
+    is supported: ``matrix @ v`` is ``v @ matrix.T``."""
+    if array.meta.ndim != 1:
+        raise NotImplementedError(
+            f"matmul of a matrix and an array of shape {array.shape} is not supported: "
+            "NumPy sums over the array's second-to-last axis, which is not its channels. "
+            "Use array @ matrix.T, or np.matmul(matrix, x.realize())"
+        )
+    if matrix.ndim == 1:
+        raise NotImplementedError(
+            "matmul of two 1D arrays is one number, which mi.Array does not hold; "
+            "use np.dot(matrix, x.realize())"
+        )
+    if matrix.shape[1] != array.shape[0]:
+        raise ValueError(
+            "matmul: Input operand 1 has a mismatch in its core dimension 0, with gufunc "
+            f"signature {_MATMUL_SIGNATURE} (size {array.shape[0]} is different from "
+            f"{matrix.shape[1]})"
+        )
+    return _matmul_array_first(array, matrix.T)
+
+
 # The scalar op and the op between two arrays for each operator.
 _ELEMENTWISE_OPS = {
     "add_scalar": "add",
@@ -1704,6 +1844,12 @@ class Array:
 
     def __rtruediv__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("div_scalar", other, reverse=True)
+
+    def __matmul__(self, other: ArrayLike | Sequence[Any]) -> "Array":
+        return matmul(self, other)
+
+    def __rmatmul__(self, other: ArrayLike | Sequence[Any]) -> "Array":
+        return matmul(other, self)
 
     def view(
         self,

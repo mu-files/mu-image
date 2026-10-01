@@ -199,6 +199,13 @@ def _out_channels_const(n: int) -> OutMetaFn:
     return _fn
 
 
+def _out_channels_from_attr(key: str) -> OutMetaFn:
+    def _fn(x: Array, attrs: Dict[str, Any]) -> int:
+        return int(attrs[key])
+
+    return _fn
+
+
 def _sample_box(origin: int, count: int, step: int) -> Tuple[int, int]:
     """Bounding box of ``count`` samples starting at ``origin`` with ``step``."""
     last = origin + (count - 1) * step

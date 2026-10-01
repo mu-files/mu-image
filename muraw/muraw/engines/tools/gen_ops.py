@@ -116,7 +116,13 @@ def load_ops_yaml(path: Path) -> dict[str, Any]:
             k, _, v = rest.partition(":")
             k = k.strip()
             v = v.strip()
-            item = {k: _parse_scalar(v) if v else None}
+            if v:
+                item = {k: _parse_scalar(v)}
+            else:
+                # The key sits two columns right of the "- ", so its block is
+                # indented further than that.
+                child, i = parse_block(i, seq_indent + 2)
+                item = {k: child}
             while i < len(lines):
                 ln, ind2, c2 = lines[i]
                 if ind2 <= seq_indent:
@@ -163,6 +169,11 @@ def _out_channels_expr(out_spec: dict[str, Any]) -> str:
     ch = out_spec.get("channels", "same")
     if ch == "same":
         return "graph._out_channels_same"
+    if isinstance(ch, dict):
+        attr_key = ch.get("from_attr")
+        if not attr_key:
+            raise ValueError(f"invalid channels spec: {ch!r}")
+        return f"graph._out_channels_from_attr({attr_key!r})"
     return f"graph._out_channels_const({int(ch)})"
 
 

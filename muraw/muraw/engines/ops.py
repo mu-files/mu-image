@@ -410,6 +410,28 @@ cfa_ea_demosaic = EngineOp(
     _infer_meta=None,
 )
 
+matmul = EngineOp(
+    meta=OpMeta(name='matmul', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_from_attr('columns'),
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "matrix",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "columns",
+    "type": "i32"
+  }
+]''')),
+    _infer_meta=None,
+)
+
 rgb_matrix_3x3 = EngineOp(
     meta=OpMeta(name='rgb_matrix_3x3', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_same,
@@ -1216,6 +1238,7 @@ OPS_BY_NAME = {
     'transpose': transpose,
     'cfa_bilinear_demosaic': cfa_bilinear_demosaic,
     'cfa_ea_demosaic': cfa_ea_demosaic,
+    'matmul': matmul,
     'rgb_matrix_3x3': rgb_matrix_3x3,
     'lut': lut,
     'convert_dtype': convert_dtype,
@@ -1255,6 +1278,7 @@ __all__ = [
     'fix_vignette',
     'lut',
     'map_polynomial',
+    'matmul',
     'mono_lut',
     'mul_scalar',
     'multiply',

@@ -10,9 +10,10 @@
 #   variable: true on the last input entry means a node has that input one
 #     or more times, so the op takes a variable number of inputs. Only the
 #     last entry may be variable.
-#   channels: <int> | any | same
+#   channels: <int> | any | same | {from_attr: <key>}
 #     - inputs: int or any
-#     - outputs: int or same (same = copy input 0)
+#     - outputs: int, same (same = copy input 0), or from_attr (the
+#       value of the i32 attr <key>)
 #   dtype matches input 0 unless outputs.dtype is set.
 #   height/width/origin match input 0 unless outputs.geometry is set.
 #   geometry: <policy> — named emit-meta policy (not attr inspection).
@@ -362,6 +363,24 @@ ops:
         type: bool
         count: 1
         optional: true
+
+  # NumPy's x @ matrix on each pixel's channels. matrix has one row per
+  # input channel and `columns` values per row, row-major. The output has
+  # `columns` channels. Up to 32 input and 32 output channels. Computed in
+  # float32; integer results round to nearest and saturate.
+  - name: matmul
+    inputs:
+      - channels: any
+    outputs:
+      - channels:
+          from_attr: columns
+    attrs:
+      - key: matrix
+        type: f32_array
+        count: 0  # input channels * columns
+      - key: columns
+        type: i32
+        count: 1
 
   - name: rgb_matrix_3x3
     is_rgb: true
