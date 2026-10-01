@@ -56,25 +56,62 @@ enums:
     - rows
 
 ops:
-  - name: sub_scalar
+  # Arithmetic with a constant: x + value, x - value, x * value, x / value.
+  # value holds one number for every channel, or one per channel (one per
+  # plane of a planar tensor). Integer results are rounded to the nearest
+  # integer and saturate to the dtype's range. reverse: true computes
+  # value - x and value / x.
+  - name: add_scalar
+    needs_plane_index: true
     inputs:
       - channels: any
     outputs:
       - channels: same
     attrs:
       - key: value
-        type: f32
+        type: f32_array
+        count: 0
+
+  - name: sub_scalar
+    needs_plane_index: true
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32_array
+        count: 0
+      - key: reverse
+        type: bool
         count: 1
+        optional: true
 
   - name: mul_scalar
+    needs_plane_index: true
     inputs:
       - channels: any
     outputs:
       - channels: same
     attrs:
       - key: value
-        type: f32
+        type: f32_array
+        count: 0
+
+  - name: div_scalar
+    needs_plane_index: true
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32_array
+        count: 0
+      - key: reverse
+        type: bool
         count: 1
+        optional: true
 
   # Constant dest: no input. Shape/dtype live on the output array.
   - name: fill

@@ -22,14 +22,14 @@ def test_execute_graph_sub_mul():
                 "op": "sub_scalar",
                 "inputs": [0],
                 "outputs": [1],
-                "attrs": {"value": 1.0},
+                "attrs": {"value": [1.0]},
             },
             {
                 "id": 1,
                 "op": "mul_scalar",
                 "inputs": [1],
                 "outputs": [2],
-                "attrs": {"value": 2.0},
+                "attrs": {"value": [2.0]},
             },
         ],
     }

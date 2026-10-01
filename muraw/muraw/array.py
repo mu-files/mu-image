@@ -478,13 +478,36 @@ def _engine_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
     return False, (shape[0], shape[1], shape[2] if len(shape) == 3 else 1)
 
 
-def _require_scalar(value: Any, op: str) -> float:
+def _scalar_operand(meta: ArrayMeta, value: Any, op: str) -> Tuple[list[float], bool]:
+    """``value`` as the ``value`` attr of a scalar op on an array of ``meta``,
+    and whether ``value`` is a float constant.
+
+    ``value`` is a number, or a list or ndarray that broadcasts to the
+    array's shape and varies only along the channel axis. The attr holds
+    one value, or one per channel.
+    """
     if isinstance(value, Array):
-        raise TypeError(f"{op}: array–array arithmetic not supported")
-    try:
-        return float(value)
-    except (TypeError, ValueError) as e:
-        raise TypeError(f"{op}: RHS must be a scalar") from e
+        raise TypeError(f"{op}: array–array arithmetic is not supported yet")
+    const = np.asarray(value)
+    if const.dtype.kind not in "biuf":
+        raise TypeError(f"{op}: expected a number or an array of numbers, got {value!r}")
+    shape = meta.shape
+    if np.broadcast_shapes(const.shape, shape) != shape:
+        raise ValueError(
+            f"{op}: a constant of shape {const.shape} would change the shape {shape}"
+        )
+    padded_shape = (1,) * (len(shape) - const.ndim) + const.shape
+    channel_axis = None
+    if len(shape) == 3:
+        planar, _ = _engine_reading(meta)
+        channel_axis = 0 if planar else 2
+    varying = [axis for axis, size in enumerate(padded_shape) if size > 1]
+    if varying and varying != [channel_axis]:
+        raise ValueError(
+            f"{op}: a constant that varies along a non-channel axis is not supported yet"
+        )
+    values = [float(v) for v in const.reshape(-1)]
+    return values, const.dtype.kind == "f"
 
 
 def _expand_pad(
@@ -1549,17 +1572,44 @@ class Array:
     def meta(self) -> ArrayMeta:
         return self._meta
 
-    def __sub__(self, other: Any) -> "Array":
+    def _scalar_op(self, name: str, other: Any, reverse: bool = False) -> "Array":
+        """Integer arrays become float32 for a float constant or for
+        ``div_scalar``. Integer results saturate instead of wrapping."""
         from .engines.graph import op
 
-        value = _require_scalar(other, "sub_scalar")
-        return op("sub_scalar", self, value=value)
+        values, is_float = _scalar_operand(self._meta, other, name)
+        operand = self
+        integer = self.dtype in (ElementType.UINT8, ElementType.UINT16)
+        if integer and (is_float or name == "div_scalar"):
+            operand = self.astype(ElementType.FLOAT32)
+        attrs: dict[str, Any] = {"value": values}
+        if reverse:
+            attrs["reverse"] = True
+        return op(name, operand, **attrs)
+
+    def __add__(self, other: Any) -> "Array":
+        return self._scalar_op("add_scalar", other)
+
+    def __radd__(self, other: Any) -> "Array":
+        return self._scalar_op("add_scalar", other)
+
+    def __sub__(self, other: Any) -> "Array":
+        return self._scalar_op("sub_scalar", other)
+
+    def __rsub__(self, other: Any) -> "Array":
+        return self._scalar_op("sub_scalar", other, reverse=True)
 
     def __mul__(self, other: Any) -> "Array":
-        from .engines.graph import op
+        return self._scalar_op("mul_scalar", other)
 
-        value = _require_scalar(other, "mul_scalar")
-        return op("mul_scalar", self, value=value)
+    def __rmul__(self, other: Any) -> "Array":
+        return self._scalar_op("mul_scalar", other)
+
+    def __truediv__(self, other: Any) -> "Array":
+        return self._scalar_op("div_scalar", other)
+
+    def __rtruediv__(self, other: Any) -> "Array":
+        return self._scalar_op("div_scalar", other, reverse=True)
 
     def view(
         self,

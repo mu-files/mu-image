@@ -7,6 +7,23 @@ import json
 from . import graph
 from .graph import EngineOp, OpMeta
 
+add_scalar = EngineOp(
+    meta=OpMeta(name='add_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "value",
+    "type": "f32_array"
+  }
+]''')),
+    _infer_meta=None,
+)
+
 sub_scalar = EngineOp(
     meta=OpMeta(name='sub_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -16,9 +33,15 @@ sub_scalar = EngineOp(
     _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
-    "count": 1,
+    "count": 0,
     "key": "value",
-    "type": "f32"
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "reverse",
+    "optional": true,
+    "type": "bool"
   }
 ]''')),
     _infer_meta=None,
@@ -33,9 +56,32 @@ mul_scalar = EngineOp(
     _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
-    "count": 1,
+    "count": 0,
     "key": "value",
-    "type": "f32"
+    "type": "f32_array"
+  }
+]''')),
+    _infer_meta=None,
+)
+
+div_scalar = EngineOp(
+    meta=OpMeta(name='div_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "value",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "reverse",
+    "optional": true,
+    "type": "bool"
   }
 ]''')),
     _infer_meta=None,
@@ -1109,8 +1155,10 @@ cfa_fix_bad_pixels_constant = EngineOp(
 )
 
 OPS_BY_NAME = {
+    'add_scalar': add_scalar,
     'sub_scalar': sub_scalar,
     'mul_scalar': mul_scalar,
+    'div_scalar': div_scalar,
     'fill': fill,
     'ramp': ramp,
     'view': view,
@@ -1143,6 +1191,7 @@ OPS_BY_NAME = {
 
 __all__ = [
     'OPS_BY_NAME',
+    'add_scalar',
     'apply_flat_gain_map',
     'cast_dtype',
     'cfa_apply_gain_map',
@@ -1151,6 +1200,7 @@ __all__ = [
     'cfa_fix_bad_pixels_constant',
     'cfa_normalize_raw',
     'convert_dtype',
+    'div_scalar',
     'fill',
     'fix_vignette',
     'lut',
