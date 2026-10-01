@@ -11,8 +11,9 @@ sub_scalar = EngineOp(
     meta=OpMeta(name='sub_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -27,8 +28,9 @@ mul_scalar = EngineOp(
     meta=OpMeta(name='mul_scalar', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -43,8 +45,9 @@ fill = EngineOp(
     meta=OpMeta(name='fill', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(),
     _n_inputs=0,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -59,8 +62,9 @@ ramp = EngineOp(
     meta=OpMeta(name='ramp', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(),
     _n_inputs=0,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -95,8 +99,9 @@ view = EngineOp(
     meta=OpMeta(name='view', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -156,8 +161,9 @@ pad = EngineOp(
     meta=OpMeta(name='pad', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -217,8 +223,9 @@ tile = EngineOp(
     meta=OpMeta(name='tile', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -243,8 +250,9 @@ orientation = EngineOp(
     meta=OpMeta(name='orientation', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -259,8 +267,9 @@ transpose = EngineOp(
     meta=OpMeta(name='transpose', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 3,
@@ -275,8 +284,9 @@ cfa_bilinear_demosaic = EngineOp(
     meta=OpMeta(name='cfa_bilinear_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -291,8 +301,9 @@ cfa_ea_demosaic = EngineOp(
     meta=OpMeta(name='cfa_ea_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -313,8 +324,9 @@ rgb_matrix_3x3 = EngineOp(
     meta=OpMeta(name='rgb_matrix_3x3', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 9,
@@ -329,8 +341,9 @@ lut = EngineOp(
     meta=OpMeta(name='lut', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -345,8 +358,9 @@ convert_dtype = EngineOp(
     meta=OpMeta(name='convert_dtype', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -379,8 +393,9 @@ cast_dtype = EngineOp(
     meta=OpMeta(name='cast_dtype', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -395,8 +410,9 @@ mono_lut = EngineOp(
     meta=OpMeta(name='mono_lut', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_const(1),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -426,8 +442,9 @@ rgb_transform = EngineOp(
     meta=OpMeta(name='rgb_transform', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_from_attr('dest_dtype'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -475,8 +492,9 @@ rgb_clip_and_transform = EngineOp(
     meta=OpMeta(name='rgb_clip_and_transform', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 3,
@@ -496,8 +514,9 @@ cfa_normalize_raw = EngineOp(
     meta=OpMeta(name='cfa_normalize_raw', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -545,8 +564,9 @@ rgb_normalize_raw = EngineOp(
     meta=OpMeta(name='rgb_normalize_raw', requires_2d=True, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -594,8 +614,9 @@ rgb_apply_hue_sat_map = EngineOp(
     meta=OpMeta(name='rgb_apply_hue_sat_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -626,8 +647,9 @@ rgb_apply_hue_sat_val_map = EngineOp(
     meta=OpMeta(name='rgb_apply_hue_sat_val_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -663,8 +685,9 @@ rgb_apply_profile_gain_table_map = EngineOp(
     meta=OpMeta(name='rgb_apply_profile_gain_table_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -729,8 +752,9 @@ fix_vignette = EngineOp(
     meta=OpMeta(name='fix_vignette', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -755,8 +779,9 @@ warp_rectilinear = EngineOp(
     meta=OpMeta(name='warp_rectilinear', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -802,8 +827,9 @@ rgb_apply_gain_map = EngineOp(
     meta=OpMeta(name='rgb_apply_gain_map', requires_2d=False, is_cfa=False, is_rgb=True),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=3,
+    _in_channels=(3,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -893,8 +919,9 @@ cfa_apply_gain_map = EngineOp(
     meta=OpMeta(name='cfa_apply_gain_map', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -974,8 +1001,9 @@ apply_flat_gain_map = EngineOp(
     meta=OpMeta(name='apply_flat_gain_map', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_const('float32'),
     _out_channels=graph._out_channels_const(1),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
@@ -1000,8 +1028,9 @@ map_polynomial = EngineOp(
     meta=OpMeta(name='map_polynomial', requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
-    _in_channels=None,
+    _in_channels=(None,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,
@@ -1061,8 +1090,9 @@ cfa_fix_bad_pixels_constant = EngineOp(
     meta=OpMeta(name='cfa_fix_bad_pixels_constant', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_const('uint16'),
     _out_channels=graph._out_channels_const(1),
-    _in_channels=1,
+    _in_channels=(1,),
     _n_inputs=1,
+    _variable_input=False,
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 1,

@@ -177,14 +177,17 @@ def _infer_meta_expr(out_spec: dict[str, Any]) -> str:
 
 
 def _in_channels_expr(inputs: list[dict[str, Any]]) -> str:
-    if not inputs:
-        return "None"
-    if len(inputs) != 1:
-        raise ValueError("only zero- or single-input ops are supported in engines.ops")
-    ch = inputs[0].get("channels", "any")
-    if ch == "any":
-        return "None"
-    return str(int(ch))
+    """One channel count per input entry; ``None`` is ``channels: any``."""
+    counts = []
+    for entry in inputs:
+        ch = entry.get("channels", "any")
+        counts.append("None" if ch == "any" else str(int(ch)))
+    trailing_comma = "," if len(counts) == 1 else ""
+    return "(" + ", ".join(counts) + trailing_comma + ")"
+
+
+def _has_variable_input(inputs: list[dict[str, Any]]) -> bool:
+    return bool(inputs) and inputs[-1].get("variable", False) is True
 
 
 def resolve_attr_enums(doc: dict[str, Any]) -> None:
@@ -254,6 +257,7 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
         lines.append(f"    _out_channels={_out_channels_expr(out_spec)},")
         lines.append(f"    _in_channels={_in_channels_expr(inputs)},")
         lines.append(f"    _n_inputs={len(inputs)},")
+        lines.append(f"    _variable_input={_has_variable_input(inputs)},")
         lines.append(
             f"    _attr_specs=tuple(json.loads(r'''{attrs_json}''')),"
         )
@@ -293,15 +297,32 @@ def validate_ops(ops: list[dict[str, Any]]) -> None:
             )
         if not isinstance(op["inputs"], list):
             raise ValueError(f"op {op['name']!r}: inputs must be a list")
-        if len(op["inputs"]) > 1 or len(op["outputs"]) != 1:
-            raise ValueError(
-                f"op {op['name']!r}: only zero- or single-input / "
-                "single-output ops are supported"
-            )
+        if len(op["outputs"]) != 1:
+            raise ValueError(f"op {op['name']!r}: only single-output ops are supported")
         geom = (op["outputs"][0] or {}).get("geometry")
         if geom is not None:
             _infer_meta_expr({"geometry": geom})
+        _validate_input_entries(op)
         _validate_op_properties(op)
+
+
+def _validate_input_entries(op: dict[str, Any]) -> None:
+    """Each ``inputs:`` entry has ``channels`` an int or ``any``, and only the
+    last entry may say ``variable: true``. The engine's tools/gen_op_catalog.py
+    applies the same rules in validate_input_entries."""
+    name = op["name"]
+    entries = op["inputs"]
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"op {name!r}: inputs[{index}] must be a map")
+        channels = entry.get("channels", "any")
+        if channels != "any" and not isinstance(channels, int):
+            raise ValueError(f"op {name!r}: inputs[{index}].channels must be an int or any")
+        variable = entry.get("variable", False)
+        if not isinstance(variable, bool):
+            raise ValueError(f"op {name!r}: inputs[{index}].variable must be true or false")
+        if variable and index != len(entries) - 1:
+            raise ValueError(f"op {name!r}: only the last input entry may be variable")
 
 
 def _validate_op_properties(op: dict[str, Any]) -> None:

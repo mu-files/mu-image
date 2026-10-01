@@ -133,9 +133,12 @@ class EngineOp:
     meta: OpMeta
     _out_dtype: OutMetaFn
     _out_channels: OutMetaFn
-    _in_channels: Optional[int]  # None = any
+    # One channel count per catalog input entry; None = any.
+    _in_channels: Tuple[Optional[int], ...]
     # Catalog input count. 0 means ``x`` is dest meta only, not a graph input.
     _n_inputs: int
+    # True when the last input entry may appear one or more times on a node.
+    _variable_input: bool
     _attr_specs: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
     # When set (e.g. geometry: view), replaces dtype/channels/H×W/origin composition.
     _infer_meta: Optional[GraphOutMetaFn] = None
@@ -652,7 +655,7 @@ def _validate_attrs(
 def emit(engine_op: EngineOp, x: Array, /, **attrs: Any) -> Array:
     """Validate attrs, ask the op for output meta, and build a lazy node."""
     name = engine_op.meta.name
-    _check_input(engine_op.meta, engine_op._in_channels, x)
+    _check_input(engine_op.meta, engine_op._in_channels[0] if engine_op._in_channels else None, x)
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
     out_meta = engine_op.infer_out_meta(x, coerced)
     node = OpNode(

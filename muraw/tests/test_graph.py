@@ -38,7 +38,7 @@ def test_catalog_engine_ops_io():
     assert callable(mi.cast_dtype)
     assert callable(mi.convert_dtype)
     assert isinstance(mi.cfa_bilinear_demosaic, EngineOp)
-    assert mi.cfa_bilinear_demosaic._in_channels == 1
+    assert mi.cfa_bilinear_demosaic._in_channels == (1,)
     x = Array(np.zeros((2, 2), dtype=np.float32))
     assert mi.cfa_bilinear_demosaic.infer_out_meta(x, {}).channels == 3
     assert callable(mi.rgb_matrix_3x3)
