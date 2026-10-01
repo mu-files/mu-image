@@ -1395,6 +1395,41 @@ def broadcast_to(array: ArrayLike, shape: Any) -> "Array":
     return tile(array, tuple(reps))
 
 
+def meshgrid(
+    *xi: ArrayLike, sparse: bool = False, indexing: str = "xy"
+) -> Tuple["Array", "Array"]:
+    """Coordinate grids from two 1D vectors, like ``numpy.meshgrid``.
+
+    Under ``xy`` indexing, ``x`` is the column samples and ``y`` the row
+    samples, and both results are ``(len(y), len(x))``. Under ``ij`` both
+    are ``(len(x), len(y))``. ``sparse=True`` returns the size-1 views
+    instead, which broadcast to the full grid. Exactly two 1D inputs are
+    accepted: NumPy's other counts do not give two images, and a rank-2
+    input is an image, not a coordinate vector.
+    """
+    if indexing not in ("xy", "ij"):
+        raise ValueError(
+            f"meshgrid indexing must be 'xy' or 'ij', got {indexing!r}"
+        )
+    if len(xi) != 2:
+        raise ValueError(f"meshgrid takes two 1D arrays, got {len(xi)}")
+    x, y = (Array(vector) for vector in xi)
+    for name, vector in (("x", x), ("y", y)):
+        if len(vector.shape) != 1:
+            raise ValueError(
+                f"meshgrid {name} must be 1D, got shape {vector.shape}"
+            )
+    if indexing == "xy":
+        first, second = x[None, :], y[:, None]
+        shape = (y.shape[0], x.shape[0])
+    else:
+        first, second = x[:, None], y[None, :]
+        shape = (x.shape[0], y.shape[0])
+    if sparse:
+        return first, second
+    return broadcast_to(first, shape), broadcast_to(second, shape)
+
+
 class Array:
     """Lazy array handle: a source buffer and/or an engine op result.
 
