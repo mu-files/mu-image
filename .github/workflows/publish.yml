@@ -40,7 +40,7 @@ jobs:
             os: ubuntu-latest
             cibw_build: "cp312-manylinux_x86_64 cp313-manylinux_x86_64"
           - name: macos
-            os: macos-14
+            os: macos-15
             cibw_build: "cp312-macosx_arm64 cp313-macosx_arm64"
           - name: windows
             os: windows-latest
@@ -85,7 +85,7 @@ jobs:
             artifact: wheels-ubuntu
             extras: "[all]"
           - name: macos
-            os: macos-14
+            os: macos-15
             artifact: wheels-macos
             extras: "[all,coreimage]"
           - name: windows
