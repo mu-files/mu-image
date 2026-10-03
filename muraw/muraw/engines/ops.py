@@ -131,6 +131,33 @@ divide = EngineOp(
     _infer_meta=graph._out_meta_broadcast,
 )
 
+composite = EngineOp(
+    meta=OpMeta(name='composite', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=True,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "tops",
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "lefts",
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "dest_channels",
+    "type": "i32_array"
+  }
+]''')),
+    _infer_meta=None,
+)
+
 fill = EngineOp(
     meta=OpMeta(name='fill', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1229,6 +1256,7 @@ OPS_BY_NAME = {
     'subtract': subtract,
     'multiply': multiply,
     'divide': divide,
+    'composite': composite,
     'fill': fill,
     'ramp': ramp,
     'view': view,
@@ -1271,6 +1299,7 @@ __all__ = [
     'cfa_ea_demosaic',
     'cfa_fix_bad_pixels_constant',
     'cfa_normalize_raw',
+    'composite',
     'convert_dtype',
     'div_scalar',
     'divide',

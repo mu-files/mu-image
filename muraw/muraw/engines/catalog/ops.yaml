@@ -161,6 +161,33 @@ ops:
         geometry: broadcast
     attrs: []
 
+  # The base (input 0) with sources written over it, as NumPy's
+  # out[top:top + h, left:left + w, channels] = source for each source in
+  # input order, so a later source overwrites an earlier one. Source i
+  # (input i + 1) has its first pixel at row tops[i] and column lefts[i].
+  # dest_channels lists the dest channel of each channel of source 0, then
+  # of source 1, and so on; a repeated dest channel takes the later source
+  # channel, as in NumPy. A source must fit inside the base. A source less
+  # precise than the base is converted to the base's dtype.
+  - name: composite
+    needs_plane_index: true
+    inputs:
+      - channels: any
+      - channels: any
+        variable: true
+    outputs:
+      - channels: same
+    attrs:
+      - key: tops
+        type: i32_array
+        count: 0
+      - key: lefts
+        type: i32_array
+        count: 0
+      - key: dest_channels
+        type: i32_array
+        count: 0
+
   # Constant dest: no input. Shape/dtype live on the output array.
   - name: fill
     inputs: []
