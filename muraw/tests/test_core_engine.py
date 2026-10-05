@@ -9,7 +9,7 @@ def test_execute_graph_sub_mul():
 
     h = w = 2
     graph = {
-        "tensor_descs": [
+        "array_descs": [
             {"id": 0, "dtype": "float32", "shape": [h, w]},
             {"id": 1, "dtype": "float32", "shape": [h, w]},
             {"id": 2, "dtype": "float32", "shape": [h, w]},
@@ -43,7 +43,7 @@ def test_execute_graph_unknown_op():
     from muraw.engines.core import _engine_load
 
     graph = {
-        "tensor_descs": [
+        "array_descs": [
             {"id": 0, "dtype": "float32", "shape": [1, 1]},
             {"id": 1, "dtype": "float32", "shape": [1, 1]},
         ],
@@ -70,7 +70,7 @@ def test_execute_graph_rgb_matrix_3x3_identity():
 
     eye = np.eye(3, dtype=np.float32).reshape(-1)
     graph = {
-        "tensor_descs": [
+        "array_descs": [
             {"id": 0, "dtype": "float32", "shape": [1, 1, 3]},
             {"id": 1, "dtype": "float32", "shape": [1, 1, 3]},
         ],

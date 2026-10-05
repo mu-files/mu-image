@@ -81,7 +81,7 @@ class CoreEngine:
             values[id(t)] = arr
             out_binds[id_of[id(t)]] = arr
 
-        tensor_descs = []
+        array_descs = []
         for t in all_arrays:
             m = t.meta
             origin_row, origin_col = m.origin
@@ -97,7 +97,7 @@ class CoreEngine:
                 "canvas_width": int(m.canvas[2]),
                 "canvas_height": int(m.canvas[3]),
             }
-            tensor_descs.append(desc)
+            array_descs.append(desc)
 
         graph_nodes = []
         for t in nodes:
@@ -113,7 +113,7 @@ class CoreEngine:
             )
 
         graph = {
-            "tensor_descs": tensor_descs,
+            "array_descs": array_descs,
             "inputs": [id_of[id(t)] for t in input_arrays],
             "outputs": [id_of[id(t)] for t in outputs],
             "nodes": graph_nodes,
