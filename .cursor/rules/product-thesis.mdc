@@ -1,0 +1,43 @@
+---
+description: Destination for the muimage graph — lazy, span-first, NumPy-feel
+alwaysApply: true
+---
+
+# Product thesis
+
+We are building a NumPy-feel image compute graph for 2D spatial pipelines
+(RAW / DNG first, imaging-general after). It sits next to NumPy and
+OpenCV; it does not replace them.
+
+Constraints when planning or changing API, scheduling, or kernels:
+
+- The API design defaults to "match numpy exactly", only diverge from that 
+  in exceptional cases.
+- Operators build a lazy graph. Full-frame work happens on `.realize()`.
+- Prefer a span implementation of an operator (it processes one row
+  span at a time), then a tiled one. A full-frame implementation is
+  the last option. 
+- Operator fusion is an engine execute step. The public catalog stays small
+  functional units (`rgb_matrix_3x3`, `lut`, …), not opaque composed ops.
+- The Python surface stays ordinary array code (slice, astype, `*`),
+  not a scheduling language.
+- `mi.Array` is a handle, not “a NumPy array.” Today the backing is
+  ndarray; leave room for other handles (native buffer, JAX, torch).
+  Dropping to NumPy / OpenCV via `.realize()` / `__array__` stays
+  effortless. Do not wall those libraries off.
+- Every op has a float32 path. Lower precision is extra, not a
+  replacement.
+- Array-valued parameters (matrix, lut, gain) may later be Array
+  inputs, not only frozen attrs. Control flags (dtype name, `fast`,
+  pad mode) stay attrs. Do not harden “exactly one image input.”
+- Do not add a compiler or JIT toolchain as a required dependency.
+- Ship a small native CPU catalog as the default. Optional JAX,
+  Numba, or Halide backends consume the same IR; they do not replace
+  the lightweight kernels.
+
+Public spelling: `import muimage as mi`, `mi.Array`, `.realize()`.
+Today the `muimage` top-level package ships from the muraw wheel.
+Call sites keep that import when the graph is extracted.
+
+This is the destination. Do not rewrite working eager or unfused code
+to match the thesis unless the task is that change.
