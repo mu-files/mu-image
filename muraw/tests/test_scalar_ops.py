@@ -33,8 +33,9 @@ def _source(dtype: str) -> np.ndarray:
 
 
 def _check(got: mi.Array, want: np.ndarray, max_ulp: int = 0) -> None:
-    """``max_ulp`` is 1 for division: the kernels build with fast math, which
-    lets a division become a multiply by the reciprocal."""
+    """``max_ulp`` is 2 for division: the kernels build with fast math, which
+    lets a division become a multiply by the reciprocal, and lets GCC on x86
+    and MSVC compute that reciprocal from an estimate."""
     assert got.dtype == mi.ElementType(want.dtype)
     if max_ulp:
         np.testing.assert_array_max_ulp(np.asarray(got), want, maxulp=max_ulp)
@@ -58,7 +59,7 @@ def test_a_float_constant_matches_numpy(dtype, name, reflected):
     if dtype in ("uint8", "uint16"):
         f32 = src.astype(np.float32)
         want = fn(np.float32(const), f32) if reflected else fn(f32, np.float32(const))
-    _check(got, want, max_ulp=1 if name == "div" else 0)
+    _check(got, want, max_ulp=2 if name == "div" else 0)
 
 
 @pytest.mark.parametrize("dtype", ["uint8", "uint16"])
@@ -78,9 +79,9 @@ def test_an_int_constant_keeps_the_integer_dtype_and_saturates(dtype, name, refl
 def test_integer_division_gives_float32(dtype):
     src = _source(dtype) + 1
     got = mi.Array(src) / 3
-    _check(got, src.astype(np.float32) / np.float32(3), max_ulp=1)
+    _check(got, src.astype(np.float32) / np.float32(3), max_ulp=2)
     got = 3 / mi.Array(src)
-    _check(got, np.float32(3) / src.astype(np.float32), max_ulp=1)
+    _check(got, np.float32(3) / src.astype(np.float32), max_ulp=2)
 
 
 def test_uint8_results_saturate_at_both_ends():

@@ -42,12 +42,13 @@ def _expected(fn, first: np.ndarray, second: np.ndarray, divide: bool) -> np.nda
 
 
 def _check(got: mi.Array, want: np.ndarray, divide: bool = False) -> None:
-    """A division may be 1 ulp off: the kernels build with fast math, which
-    lets a division become a multiply by the reciprocal."""
+    """A division may be 2 ulp off: the kernels build with fast math, which
+    lets a division become a multiply by the reciprocal, and lets GCC on x86
+    and MSVC compute that reciprocal from an estimate."""
     assert got.dtype == mi.ElementType(want.dtype)
     assert got.shape == want.shape
     if divide:
-        np.testing.assert_array_max_ulp(np.asarray(got), want, maxulp=1)
+        np.testing.assert_array_max_ulp(np.asarray(got), want, maxulp=2)
     else:
         np.testing.assert_array_equal(np.asarray(got), want)
 
