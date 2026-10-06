@@ -78,6 +78,9 @@ change the codec and/or rewrite metadata without a full develop.
 - **macOS** (Intel and Apple Silicon)
 - **Linux** (Ubuntu, Debian, Fedora)
 - **Raspberry Pi** (ARM64)
+- **Android** (arm64). The prebuilt engine is
+  [`_core_engine.android-aarch64.abi3.so`](muraw/muraw/engines/core/_binaries/_core_engine.android-aarch64.abi3.so)
+  in this repository.
 
 ---
 
