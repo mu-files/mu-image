@@ -8,11 +8,22 @@ import platform
 import sys
 
 
+def _is_android():
+    if sys.platform == "android" or hasattr(sys, "getandroidapilevel"):
+        return True
+    # Termux reports Linux. The Android dynamic linker is on the device.
+    return os.path.exists("/system/bin/linker64") or os.path.exists("/system/bin/linker")
+
+
 def host_core_binaries():
     """Ship only the host abi3 CoreEngine extension in wheels; sdist keeps all via MANIFEST.in."""
     system = platform.system()
     machine = platform.machine().lower()
-    if system == "Windows":
+    if _is_android():
+        if machine not in ("arm64", "aarch64"):
+            raise RuntimeError(f"Android {machine} is not a supported CoreEngine target")
+        name = "_core_engine.android-aarch64.abi3.so"
+    elif system == "Windows":
         name = "_core_engine.windows-amd64.abi3.pyd"
     elif system == "Darwin":
         if machine in ("arm64", "aarch64"):

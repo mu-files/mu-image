@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import os
 import platform
 import sys
 from pathlib import Path
@@ -20,9 +21,20 @@ from pathlib import Path
 __all__ = ["execute_graph", "version"]
 
 
+def _is_android() -> bool:
+    if sys.platform == "android" or hasattr(sys, "getandroidapilevel"):
+        return True
+    # Termux reports Linux. The Android dynamic linker is on the device.
+    return os.path.exists("/system/bin/linker64") or os.path.exists("/system/bin/linker")
+
+
 def _host_tagged_name() -> str:
     system = platform.system()
     machine = platform.machine().lower()
+    if _is_android():
+        if machine not in ("arm64", "aarch64"):
+            raise ImportError(f"Android {machine} is not a supported CoreEngine target")
+        return "_core_engine.android-aarch64.abi3.so"
     if system == "Windows":
         return "_core_engine.windows-amd64.abi3.pyd"
     if system == "Darwin":
