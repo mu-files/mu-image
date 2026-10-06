@@ -9,7 +9,7 @@ at call sites does not change::
     import muimage as mi
 
     x = mi.Array(cfa)
-    x = mi.cfa_ea_demosaic(x, cfa_pattern="RGGB")
+    x = mi.cfa_demosaic(x, cfa_pattern="RGGB")
     x = mi.rgb_matrix_3x3(x, matrix=M)
     out = x.realize()
 

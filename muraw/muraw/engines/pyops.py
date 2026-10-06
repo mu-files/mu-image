@@ -37,19 +37,13 @@ def cfa_demosaic_op(
     """Non-bilinear demosaic kernel (ndarray in/out).
 
     Caller (``raw_render.demosaic``) emits pre/post ``convert_type`` neighbors.
-    For bilinear use ``mi.cfa_bilinear_demosaic``.
-    For Hamilton–Adams (``EA`` / ``EA_FAST``) use ``mi.cfa_ea_demosaic``.
+    For ``BILINEAR``, ``EA`` and ``EA_FAST`` use ``mi.cfa_demosaic``.
     ``OPENCV_EA`` stays here for quality comparison against the native EA path.
     """
-    if algorithm == "BILINEAR":
+    if algorithm in ("BILINEAR", "EA", "EA_FAST"):
         raise ValueError(
-            "cfa_demosaic_op does not run BILINEAR; "
-            "use mi.cfa_bilinear_demosaic"
-        )
-    if algorithm in ("EA", "EA_FAST"):
-        raise ValueError(
-            "cfa_demosaic_op does not run EA / EA_FAST; "
-            "use mi.cfa_ea_demosaic"
+            f"cfa_demosaic_op does not run {algorithm}; "
+            f"use mi.cfa_demosaic(algorithm={algorithm.lower()!r})"
         )
 
     if arr.ndim == 3 and arr.shape[2] == 1:

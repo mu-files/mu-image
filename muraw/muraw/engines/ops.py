@@ -397,25 +397,8 @@ transpose = EngineOp(
     _infer_meta=graph._out_meta_transpose,
 )
 
-cfa_bilinear_demosaic = EngineOp(
-    meta=OpMeta(name='cfa_bilinear_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
-    _out_dtype=graph._out_dtype_same,
-    _out_channels=graph._out_channels_const(3),
-    _in_channels=(1,),
-    _n_inputs=1,
-    _variable_input=False,
-    _attr_specs=tuple(json.loads(r'''[
-  {
-    "count": 1,
-    "key": "cfa_pattern",
-    "type": "string"
-  }
-]''')),
-    _infer_meta=None,
-)
-
-cfa_ea_demosaic = EngineOp(
-    meta=OpMeta(name='cfa_ea_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
+cfa_demosaic = EngineOp(
+    meta=OpMeta(name='cfa_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
     _in_channels=(1,),
@@ -429,9 +412,20 @@ cfa_ea_demosaic = EngineOp(
   },
   {
     "count": 1,
-    "key": "fast",
+    "key": "algorithm",
     "optional": true,
-    "type": "bool"
+    "type": "string",
+    "values": [
+      "bilinear",
+      "ea",
+      "ea_fast"
+    ]
+  },
+  {
+    "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
   }
 ]''')),
     _infer_meta=None,
@@ -1264,8 +1258,7 @@ OPS_BY_NAME = {
     'tile': tile,
     'orientation': orientation,
     'transpose': transpose,
-    'cfa_bilinear_demosaic': cfa_bilinear_demosaic,
-    'cfa_ea_demosaic': cfa_ea_demosaic,
+    'cfa_demosaic': cfa_demosaic,
     'matmul': matmul,
     'rgb_matrix_3x3': rgb_matrix_3x3,
     'lut': lut,
@@ -1295,8 +1288,7 @@ __all__ = [
     'apply_flat_gain_map',
     'cast_dtype',
     'cfa_apply_gain_map',
-    'cfa_bilinear_demosaic',
-    'cfa_ea_demosaic',
+    'cfa_demosaic',
     'cfa_fix_bad_pixels_constant',
     'cfa_normalize_raw',
     'composite',

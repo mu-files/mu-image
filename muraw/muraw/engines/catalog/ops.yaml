@@ -55,6 +55,10 @@ enums:
   ramp_along:
     - columns
     - rows
+  demosaic_algorithm:
+    - bilinear
+    - ea
+    - ea_fast
 
 ops:
   # Arithmetic with a constant: x + value, x - value, x * value, x / value.
@@ -361,7 +365,14 @@ ops:
         type: i32_array
         count: 3
 
-  - name: cfa_bilinear_demosaic
+  # Bayer CFA to RGB. algorithm picks the method (default ea):
+  #   bilinear  DNG SDK bilinear, halo 1.
+  #   ea        Hamilton–Adams, halo 3. RGB clamped to [0, 1].
+  #   ea_fast   OpenCV EA: axis-pick green and bilinear chroma, halo 1.
+  #             RGB clamped to [0, 1].
+  # engine_opts {"core": {"neon": false}} forces the scalar loops of ea and
+  # ea_fast.
+  - name: cfa_demosaic
     is_cfa: true
     requires_2d: true
     inputs:
@@ -372,22 +383,13 @@ ops:
       - key: cfa_pattern
         type: string
         count: 1
-
-  # Hamilton–Adams by default (halo 3, G ring). fast=true is OpenCV EA:
-  # axis-pick green + bilinear chroma, halo 1, single pass. RGB clamped to [0, 1].
-  - name: cfa_ea_demosaic
-    is_cfa: true
-    requires_2d: true
-    inputs:
-      - channels: 1
-    outputs:
-      - channels: 3
-    attrs:
-      - key: cfa_pattern
+      - key: algorithm
         type: string
         count: 1
-      - key: fast
-        type: bool
+        optional: true
+        enum: demosaic_algorithm
+      - key: engine_opts
+        type: string
         count: 1
         optional: true
 

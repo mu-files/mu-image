@@ -129,13 +129,10 @@ class CoreEngine:
         if record_ops and timings:
             timer = PerfTimer.current()
             assert timer is not None
-            op_by_id = {
-                n["id"]: _engine_timing_op_name(n["op"], n.get("attrs") or {})
-                for n in graph_nodes
-            }
+            op_by_id = {n["id"]: n["op"] for n in graph_nodes}
             steps = [
                 (
-                    f"{op_by_id.get(row['node_id'], f'node_{row['node_id']}')} (engine)",
+                    f"{_timing_row_name(row, op_by_id)} (engine)",
                     row["exclusive_ns"] * 1e-9,
                 )
                 for row in timings
@@ -143,8 +140,8 @@ class CoreEngine:
             timer.add_completed_steps(steps)
 
 
-def _engine_timing_op_name(op: str, attrs: Dict) -> str:
-    """Display name for ``--timing ops``. ``cfa_ea_demosaic`` + ``fast`` is EA_FAST."""
-    if op == "cfa_ea_demosaic" and attrs.get("fast"):
-        return "ea_fast_demosaic"
-    return op
+def _timing_row_name(row: Dict, op_by_id: Dict[int, str]) -> str:
+    """Name for ``--timing ops``: the label the op's prepare chose, else the op name."""
+    if "label" in row:
+        return row["label"]
+    return op_by_id.get(row["node_id"], f"node_{row['node_id']}")

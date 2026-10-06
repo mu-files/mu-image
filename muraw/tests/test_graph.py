@@ -38,10 +38,10 @@ def test_catalog_engine_ops_io():
     assert "cast_dtype" in OPS_BY_NAME
     assert callable(mi.cast_dtype)
     assert callable(mi.convert_dtype)
-    assert isinstance(mi.cfa_bilinear_demosaic, EngineOp)
-    assert mi.cfa_bilinear_demosaic._in_channels == (1,)
+    assert isinstance(mi.cfa_demosaic, EngineOp)
+    assert mi.cfa_demosaic._in_channels == (1,)
     x = Array(np.zeros((2, 2), dtype=np.float32))
-    assert mi.cfa_bilinear_demosaic.infer_out_meta(x, {}).channels == 3
+    assert mi.cfa_demosaic.infer_out_meta(x, {}).channels == 3
     assert callable(mi.rgb_matrix_3x3)
     assert callable(mi.lut)
     assert callable(flush)
@@ -386,16 +386,18 @@ def test_convert_type_f32_to_f16_subnormals():
     assert np.array_equal(got, expect)
 
 
-def test_cfa_bilinear_demosaic_rggb():
+def test_cfa_demosaic_bilinear_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
-    out = mi.cfa_bilinear_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
+    out = mi.cfa_demosaic(
+        Array(cfa), cfa_pattern="RGGB", algorithm="bilinear"
+    ).realize()
     assert out.shape == (2, 2, 3)
     np.testing.assert_allclose(out[0, 0, 0], 0.2)
 
 
-def test_cfa_ea_demosaic_rggb():
+def test_cfa_demosaic_ea_rggb():
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
-    out = mi.cfa_ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
+    out = mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
     assert out.shape == (2, 2, 3)
     np.testing.assert_allclose(
         out,
@@ -407,7 +409,7 @@ def test_cfa_ea_demosaic_rggb():
     )
 
 
-def test_cfa_ea_demosaic_then_crop_matches_slice():
+def test_cfa_demosaic_ea_then_crop_matches_slice():
     """Fused EA + DefaultCrop (nonzero origin) must match a sliced full frame.
 
     Tile last-compute used to address the cropped dest with CFA coordinates
@@ -415,8 +417,8 @@ def test_cfa_ea_demosaic_then_crop_matches_slice():
     """
     rng = np.random.default_rng(0)
     cfa = rng.random((17, 19), dtype=np.float32)
-    full = mi.cfa_ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
-    fused = mi.cfa_ea_demosaic(Array(cfa), cfa_pattern="RGGB").view(
+    full = mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
+    fused = mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB").view(
         left=3,
         top=2,
         width=11,
@@ -428,7 +430,7 @@ def test_cfa_ea_demosaic_then_crop_matches_slice():
     np.testing.assert_array_max_ulp(fused, full[2:15, 3:14], maxulp=1)
 
 
-def test_cfa_ea_demosaic_fast_differs_from_ha():
+def test_cfa_demosaic_ea_fast_differs_from_ea():
     cfa = np.full((5, 5), 0.5, dtype=np.float32)
     cfa[1, 2] = 0.1
     cfa[3, 2] = 0.9
@@ -436,45 +438,54 @@ def test_cfa_ea_demosaic_fast_differs_from_ha():
     cfa[2, 3] = 0.2
     cfa[2, 0] = 0.0
     cfa[2, 4] = 0.0
-    ha = mi.cfa_ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
-    fast = mi.cfa_ea_demosaic(Array(cfa), cfa_pattern="RGGB", fast=True).realize()
+    ea = mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB", algorithm="ea").realize()
+    fast = mi.cfa_demosaic(
+        Array(cfa), cfa_pattern="RGGB", algorithm="ea_fast"
+    ).realize()
     wrap = demosaic(
         Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST
     ).realize()
     np.testing.assert_allclose(fast[2, 2, 1], 0.2, atol=1e-6)
-    np.testing.assert_allclose(ha[2, 2, 1], 0.5, atol=1e-6)
+    np.testing.assert_allclose(ea[2, 2, 1], 0.5, atol=1e-6)
     np.testing.assert_array_equal(fast, wrap)
 
 
-def test_cfa_ea_demosaic_fast_timing_label():
+def test_cfa_demosaic_rejects_unknown_algorithm():
+    cfa = np.zeros((2, 2), dtype=np.float32)
+    with pytest.raises(ValueError, match="algorithm"):
+        mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB", algorithm="vng")
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "row_name"),
+    [
+        (None, "cfa_demosaic (ea) (engine)"),
+        ("bilinear", "cfa_demosaic (bilinear) (engine)"),
+        ("ea", "cfa_demosaic (ea) (engine)"),
+        ("ea_fast", "cfa_demosaic (ea_fast) (engine)"),
+    ],
+)
+def test_cfa_demosaic_timing_row_names_the_algorithm(algorithm, row_name):
     from muraw.common import PerfTimer
     from muraw.engines.graph import EngineTiming, engine_timing, set_engine_timing
 
     cfa = np.array([[0.2, 0.4], [0.6, 0.8]], dtype=np.float32)
+    attrs = {} if algorithm is None else {"algorithm": algorithm}
     prev = engine_timing
     try:
         set_engine_timing(EngineTiming.OPS)
-        with PerfTimer("root") as ha_root:
-            mi.cfa_ea_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
-        with PerfTimer("root") as fast_root:
-            mi.cfa_ea_demosaic(
-                Array(cfa), cfa_pattern="RGGB", fast=True
-            ).realize()
+        with PerfTimer("root") as root:
+            mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB", **attrs).realize()
     finally:
         set_engine_timing(prev)
 
-    assert [c.name for c in ha_root.children[0].children] == [
-        "cfa_ea_demosaic (engine)"
-    ]
-    assert [c.name for c in fast_root.children[0].children] == [
-        "ea_fast_demosaic (engine)"
-    ]
+    assert [c.name for c in root.children[0].children] == [row_name]
 
 
 def test_op_rejects_bad_channels():
     rgb = Array(np.zeros((2, 2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="expected 1 channel"):
-        mi.cfa_bilinear_demosaic(rgb, cfa_pattern="RGGB")
+        mi.cfa_demosaic(rgb, cfa_pattern="RGGB")
 
 
 def test_op_rejects_unknown_attr():

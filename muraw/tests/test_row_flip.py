@@ -19,7 +19,9 @@ UPSTREAM = {
     "astype": lambda a: a.astype(np.float32),
     "chain": lambda a: (a.astype(np.float32) * 2 - 1) * 0.5,
     "col_step_view": lambda a: (a * 2)[:, ::2],
-    "demosaic": lambda a: mi.cfa_bilinear_demosaic(a.convert_type(np.float32), cfa_pattern="RGGB"),
+    "demosaic": lambda a: mi.cfa_demosaic(
+        a.convert_type(np.float32), cfa_pattern="RGGB", algorithm="bilinear"
+    ),
     "pad": lambda a: (a * 2).pad(3, mode="reflect"),
     "tile": lambda a: mi.tile(a * 2, (2, 1)),
     "orientation": lambda a: (a * 2).T,

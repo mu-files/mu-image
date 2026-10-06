@@ -53,7 +53,7 @@ def test_gen_ops_accepts_consistent_properties():
 @pytest.mark.parametrize(
     ("name", "requires_2d", "is_cfa", "is_rgb"),
     [
-        ("cfa_ea_demosaic", True, True, False),
+        ("cfa_demosaic", True, True, False),
         ("cfa_normalize_raw", True, True, False),
         ("rgb_normalize_raw", True, False, True),
         ("rgb_transform", False, False, True),

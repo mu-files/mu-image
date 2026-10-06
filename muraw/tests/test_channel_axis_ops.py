@@ -41,7 +41,7 @@ def test_rgb_op_on_chw_raises_and_runs_after_moveaxis():
 def test_cfa_op_on_chw_raises(shape):
     x = Array(np.zeros(shape, np.float32), channel_axis=0)
     with pytest.raises(ValueError, match=r"mono \(H, W\) or \(H, W, 1\)"):
-        mi.cfa_bilinear_demosaic(x, cfa_pattern="RGGB")
+        mi.cfa_demosaic(x, cfa_pattern="RGGB")
 
 
 @pytest.mark.parametrize("height, width", [(6, 9), (9, 6)])

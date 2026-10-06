@@ -436,15 +436,14 @@ def demosaic(
 
     out_dtype = ElementType(dst_dtype) if dst_dtype is not None else t.meta.dtype
 
-    if algorithm == DemosaicAlgorithm.BILINEAR:
+    if algorithm in (
+        DemosaicAlgorithm.BILINEAR,
+        DemosaicAlgorithm.EA,
+        DemosaicAlgorithm.EA_FAST,
+    ):
         x = t.convert_type("float32")
-        rgb = mi.cfa_bilinear_demosaic(x, cfa_pattern=cfa_pattern)
-        return rgb.convert_type(out_dtype, clip_max=clip_max)
-
-    if algorithm in (DemosaicAlgorithm.EA, DemosaicAlgorithm.EA_FAST):
-        x = t.convert_type("float32")
-        rgb = mi.cfa_ea_demosaic(
-            x, cfa_pattern=cfa_pattern, fast=algorithm == DemosaicAlgorithm.EA_FAST
+        rgb = mi.cfa_demosaic(
+            x, cfa_pattern=cfa_pattern, algorithm=algorithm.value.lower()
         )
         return rgb.convert_type(out_dtype, clip_max=clip_max)
 

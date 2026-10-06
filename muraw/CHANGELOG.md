@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Changed
+- **One demosaic op (breaking, no aliases)**: `cfa_bilinear_demosaic` and `cfa_ea_demosaic` are replaced by `cfa_demosaic(x, cfa_pattern=..., algorithm=...)`. `algorithm` is `"bilinear"`, `"ea"` (Hamilton–Adams, the default) or `"ea_fast"`; it replaces the `fast` attr. The output pixels are unchanged. The `--timing ops` row is named for the algorithm, for example `cfa_demosaic (ea)`.
 - **Op names (breaking, no aliases)**: Ops that need one-channel CFA input start with `cfa_`, and ops that need three-channel RGB input start with `rgb_`. The redundant `_color` suffix is dropped. Renamed:
   - `bilinear_demosaic` → `cfa_bilinear_demosaic`, `ea_demosaic` → `cfa_ea_demosaic`, `demosaic_op` → `cfa_demosaic_op`
   - `apply_gain_map_cfa` → `cfa_apply_gain_map`, `fix_bad_pixels_constant` → `cfa_fix_bad_pixels_constant`
