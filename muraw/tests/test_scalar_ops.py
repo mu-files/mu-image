@@ -36,7 +36,7 @@ def _check(got: mi.Array, want: np.ndarray, max_ulp: int = 0) -> None:
     """``max_ulp`` is 2 for division: the kernels build with fast math, which
     lets a division become a multiply by the reciprocal, and lets GCC on x86
     and MSVC compute that reciprocal from an estimate."""
-    assert got.dtype == mi.ElementType(want.dtype)
+    assert got.dtype == want.dtype
     if max_ulp:
         np.testing.assert_array_max_ulp(np.asarray(got), want, maxulp=max_ulp)
     else:

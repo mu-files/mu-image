@@ -5,11 +5,11 @@
 import numpy as np
 import pytest
 
-from muraw.array import Array, ArrayMeta, ElementType
+from muraw.array import Array, ArrayMeta
 
 
 def _meta(shape, channel_axis=None):
-    return ArrayMeta(dtype=ElementType.FLOAT32, shape=shape, channel_axis=channel_axis)
+    return ArrayMeta(dtype=np.float32, shape=shape, channel_axis=channel_axis)
 
 
 @pytest.mark.parametrize(
@@ -125,5 +125,11 @@ def test_view_node_buffer_matches_the_ingest_meta(arr):
 
 
 def test_with_size_sets_other_fields():
-    meta = _meta((2, 5)).with_size(height=3, dtype=ElementType.UINT16, origin=(1, 2))
-    assert (meta.shape, meta.dtype, meta.origin) == ((3, 5), ElementType.UINT16, (1, 2))
+    meta = _meta((2, 5)).with_size(height=3, dtype=np.uint16, origin=(1, 2))
+    assert (meta.shape, meta.dtype, meta.origin) == ((3, 5), np.dtype(np.uint16), (1, 2))
+
+
+def test_array_ndim_matches_shape():
+    assert Array(np.zeros((5,), np.float32)).ndim == 1
+    assert Array(np.zeros((2, 5), np.float32)).ndim == 2
+    assert Array(np.zeros((2, 5, 3), np.float32)).ndim == 3

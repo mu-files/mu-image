@@ -18,12 +18,14 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 import numpy as np
 
 from ..common import PerfTimer
+from numpy.typing import DTypeLike
+
 from ..array import (
-    ElementType,
     Array,
     ArrayMeta,
     _meta_from_shape,
     _seal_ndarray,
+    supported_dtype,
 )
 
 OutMetaFn = Callable[[Array, Dict[str, Any]], Any]
@@ -161,24 +163,24 @@ class EngineOp:
         return f"EngineOp({self.meta.name!r})"
 
 
-def _out_dtype_same(x: Array, attrs: Dict[str, Any]) -> ElementType:
+def _out_dtype_same(x: Array, attrs: Dict[str, Any]) -> np.dtype:
     return x.meta.dtype
 
 
-def _out_dtype_const(dtype: str | ElementType) -> OutMetaFn:
-    resolved = ElementType(dtype)
+def _out_dtype_const(dtype: DTypeLike) -> OutMetaFn:
+    resolved = supported_dtype(dtype)
 
-    def _fn(x: Array, attrs: Dict[str, Any]) -> ElementType:
+    def _fn(x: Array, attrs: Dict[str, Any]) -> np.dtype:
         return resolved
 
     return _fn
 
 
 def _out_dtype_from_attr(key: str) -> OutMetaFn:
-    def _fn(x: Array, attrs: Dict[str, Any]) -> ElementType:
+    def _fn(x: Array, attrs: Dict[str, Any]) -> np.dtype:
         val = attrs.get(key)
         try:
-            return ElementType(val)
+            return supported_dtype(val)
         except ValueError as e:
             raise ValueError(f"attr {key!r}: {e}") from e
 
@@ -500,7 +502,7 @@ def _out_meta_broadcast(x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayM
 
 @dataclass(frozen=True)
 class OpNode:
-    """A catalog engine op applied to ``inputs``."""
+    """A catalog engine op applied to ``inputs``, or a reshape handle."""
 
     op: str
     inputs: Tuple[Array, ...]
@@ -671,14 +673,28 @@ def _run_op_arrays(
     values: Dict[int, np.ndarray],
     root: Array,
 ) -> None:
-    """Run ``op_arrays`` as one engine call whose output is ``root``."""
+    """Run ``op_arrays``. A reshape handle is the producer's pixels viewed
+    as this handle's shape."""
     parent = PerfTimer.current()
-    record = get_engine_timing() >= EngineTiming.SEGMENTS
     timing = PerfTimer.inactive
-    if parent is not None and record:
+    if parent is not None and get_engine_timing() >= EngineTiming.SEGMENTS:
         timing = parent.start_step("graph_compute")
+    engine = get_default_engine()
+    pending: List[Array] = []
     try:
-        get_default_engine().execute_segment(op_arrays, values, [root])
+        for array in op_arrays:
+            node = array._node
+            if node.op == "reshape":
+                if pending:
+                    engine.execute_segment(pending, values, pending)
+                    pending = []
+                values[id(array)] = np.reshape(
+                    values[id(node.inputs[0])], array.meta.buffer_shape
+                )
+            else:
+                pending.append(array)
+        if pending:
+            engine.execute_segment(pending, values, [root])
     finally:
         timing.close()
 

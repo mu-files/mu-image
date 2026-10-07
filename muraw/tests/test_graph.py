@@ -14,7 +14,7 @@ from muraw.engines import graph
 from muraw.engines.graph import EngineOp, OpMeta, flush
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
-from muraw.array import Array, ElementType, rot90
+from muraw.array import Array, supported_dtype, rot90
 from conftest import generate_rgb_ramp
 
 
@@ -1638,7 +1638,7 @@ def test_unsupported_dtype_argument_names_the_fix():
         mi.zeros((2, 2), dtype="rgb8")
 
 
-def test_dtype_strings_and_types_map_to_element_type():
-    assert ElementType("f4") is ElementType.FLOAT32
-    assert ElementType(np.uint16) is ElementType.UINT16
-    assert ElementType(np.dtype("<f2")) is ElementType.FLOAT16
+def test_dtype_strings_and_types_map_to_supported_dtype():
+    assert supported_dtype("f4") == np.float32
+    assert supported_dtype(np.uint16) == np.uint16
+    assert supported_dtype(np.dtype("<f2")) == np.float16

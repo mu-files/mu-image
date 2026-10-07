@@ -77,7 +77,7 @@ class CoreEngine:
         out_binds: Dict[int, np.ndarray] = {}
         for t in outputs:
             # Kernels write every dest pixel, so do not spend a pass zeroing arr.
-            arr = np.empty(t.meta.buffer_shape, dtype=t.meta.dtype.numpy_dtype)
+            arr = np.empty(t.meta.buffer_shape, dtype=t.meta.dtype)
             values[id(t)] = arr
             out_binds[id_of[id(t)]] = arr
 
@@ -87,7 +87,7 @@ class CoreEngine:
             origin_row, origin_col = m.origin
             desc = {
                 "id": id_of[id(t)],
-                "dtype": m.dtype.value,
+                "dtype": m.dtype.name,
                 "shape": list(m.buffer_shape),
                 "channel_axis": -1 if m.channel_axis is None else m.channel_axis,
                 "origin_y": int(origin_row),

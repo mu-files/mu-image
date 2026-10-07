@@ -25,7 +25,7 @@ def _matrix(input_channels: int, output_channels: int) -> np.ndarray:
 
 def _check_close(got: mi.Array, want: np.ndarray) -> None:
     assert got.shape == want.shape
-    assert got.dtype == mi.ElementType(want.dtype)
+    assert got.dtype == want.dtype
     tolerance = 2e-3 if want.dtype == np.float16 else 1e-5
     np.testing.assert_allclose(
         np.asarray(got).astype(np.float32),
@@ -50,7 +50,7 @@ def test_integer_matrix_keeps_the_dtype_and_saturates(dtype: str) -> None:
     want = image.astype(np.float32) @ matrix.astype(np.float32)
     want = np.clip(np.round(want), 0, np.iinfo(dtype).max).astype(dtype)
     got = mi.Array(image) @ matrix
-    assert got.dtype == mi.ElementType(dtype)
+    assert got.dtype == np.dtype(dtype)
     np.testing.assert_array_equal(np.asarray(got), want)
 
 

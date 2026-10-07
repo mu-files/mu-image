@@ -35,7 +35,7 @@ def test_meshgrid_matches_numpy(kind, indexing, sparse):
     for grid, want in zip(got, expect):
         assert isinstance(grid, mi.Array)
         assert grid.shape == want.shape
-        assert grid.dtype == mi.ElementType.FLOAT32
+        assert grid.dtype == np.float32
         np.testing.assert_array_equal(np.asarray(grid), want)
 
 

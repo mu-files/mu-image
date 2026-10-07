@@ -13,7 +13,9 @@ from typing import IO, Callable, Iterable, Any
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm
-from .array import Array, ElementType, ElementTypeLike
+from numpy.typing import DTypeLike
+
+from .array import Array
 from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, TiffType
 from .deps import cv2_proxy as cv2, imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
 
@@ -137,7 +139,7 @@ def write_image(
 
 def decode_image(
     file: str | Path | IO[bytes],
-    output_dtype: ElementTypeLike = ElementType.UINT8,
+    output_dtype: DTypeLike = np.uint8,
 ) -> Array:
     """
     Decode an image file to a ``Array``.
@@ -225,7 +227,7 @@ def decode_image(
 def convert_imgformat(
     file: str | Path | IO[bytes],
     output: str | Path | IO[bytes],
-    output_dtype: ElementTypeLike = ElementType.UINT8,
+    output_dtype: DTypeLike = np.uint8,
     output_format_stream: str = "jpg",
 ) -> bool:
     """
@@ -259,7 +261,7 @@ def convert_imgformat(
 def convert_imgformat_to_stream(
     file: str | Path | IO[bytes],
     output_format_stream: str = "jpg",
-    output_dtype: ElementTypeLike = ElementType.UINT8,
+    output_dtype: DTypeLike = np.uint8,
 ) -> IO[bytes]:
     """
     Encode an image file to a BytesIO stream.
@@ -285,7 +287,7 @@ def convert_imgformat_to_stream(
 def convert_dng(
     file: str | Path | IO[bytes] | "DngFile" | "DngPage",
     output: str | Path | IO[bytes],
-    output_dtype: ElementTypeLike = ElementType.UINT16,
+    output_dtype: DTypeLike = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     strict: bool = True,
     use_xmp: bool = True,
@@ -351,7 +353,7 @@ def convert_dng(
 def convert_dng_to_stream(
     file: str | Path | IO[bytes] | "DngFile" | "DngPage",
     output_format_stream: str = "jpg",
-    output_dtype: ElementTypeLike = ElementType.UINT16,
+    output_dtype: DTypeLike = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     strict: bool = True,
     use_xmp: bool = True,
@@ -406,7 +408,7 @@ class ImageSequencePipeline(ProcessingPipeline):
             source_files=[Path("img1.jpg"), Path("img2.jpg")],
             output_folder=Path("/output"),
             output_format="tif",
-            output_dtype=ElementType.UINT16,
+            output_dtype=np.uint16,
             num_workers=4,
         )
         pipeline.run()
@@ -417,7 +419,7 @@ class ImageSequencePipeline(ProcessingPipeline):
         source_files: list[Any] = None,
         output_folder = None,
         output_format: str = "tif",
-        output_dtype: ElementTypeLike | None = None,
+        output_dtype: DTypeLike | None = None,
         producer: Callable[[], Iterable[Any]] | None = DEFAULT_PIPELINE_CALLABLE,
         consumer: Callable[[Any], Any] | None = DEFAULT_PIPELINE_CALLABLE,
         writer: Callable[[Any], None] | None = DEFAULT_PIPELINE_CALLABLE,
@@ -448,7 +450,7 @@ class ImageSequencePipeline(ProcessingPipeline):
         self.output_folder = Path(output_folder) if output_folder else None
         self.output_format = output_format
         self.output_dtype = (
-            ElementType.UINT8 if output_dtype is None else output_dtype
+            np.uint8 if output_dtype is None else output_dtype
         )
         
         # Use default methods if not explicitly provided

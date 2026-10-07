@@ -7,12 +7,12 @@ from __future__ import annotations
 import itertools
 import operator
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple
 
 import numpy as np
 from numpy.lib.array_utils import byte_bounds, normalize_axis_index, normalize_axis_tuple
+from numpy.typing import DTypeLike
 
 
 def _is_direct_source(arr: np.ndarray, channel_axis: Optional[int] = None) -> bool:
@@ -273,62 +273,41 @@ if TYPE_CHECKING:
     from .engines.graph import OpNode
 
 
-class ElementType(StrEnum):
-    """Closed element-type vocabulary for Array / graph / engine IR.
+# The dtypes an Array can hold. Their names match the native ``MuImgDType`` names.
+SUPPORTED_DTYPES = tuple(np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16))
 
-    String values match the native ``MuImgDType`` names and NumPy dtype names.
-    Distinct from ``np.dtype`` (buffer descriptors) and TIFF ``TiffType``
-    (tag wire formats).
+
+def supported_dtype(value: DTypeLike) -> np.dtype:
+    """``value`` (a dtype, scalar type, or string such as ``"f4"``) as a
+    native-byte-order ``np.dtype`` that an Array can hold.
+
+    An unsupported dtype raises ``ValueError`` with a message that says how
+    to convert the input. No input is converted automatically.
     """
+    supported = ", ".join(dtype.name for dtype in SUPPORTED_DTYPES)
+    dtype = None
+    if value is not None:
+        try:
+            dtype = np.dtype(value)
+        except TypeError:
+            pass
+    if dtype is None:
+        raise ValueError(f"{value!r} is not a dtype. Supported dtypes: {supported}.")
+    for supported_type in SUPPORTED_DTYPES:
+        if dtype == supported_type:
+            return supported_type
+    if dtype.kind == "f" and dtype.itemsize == 8:
+        raise ValueError(
+            "float64 is not supported; muimage computes in float32. "
+            "Convert with arr.astype(np.float32)."
+        )
+    if not dtype.isnative and dtype.newbyteorder("=") in SUPPORTED_DTYPES:
+        raise ValueError(
+            f"big-endian {dtype.str} is not supported. Convert to native byte order "
+            'with arr.astype(arr.dtype.newbyteorder("=")).'
+        )
+    raise ValueError(f"dtype {dtype} is not supported. Supported dtypes: {supported}.")
 
-    FLOAT32 = "float32"
-    FLOAT16 = "float16"
-    UINT8 = "uint8"
-    UINT16 = "uint16"
-
-    @classmethod
-    def _missing_(cls, value: object) -> ElementType | None:
-        """Map a NumPy dtype, scalar type, or dtype string such as ``"f4"``.
-
-        An unsupported dtype raises ``ValueError`` with a message that says
-        how to convert the input. No input is converted automatically.
-        """
-        supported = ", ".join(member.value for member in cls)
-        dtype = None
-        if value is not None:
-            try:
-                dtype = np.dtype(value)
-            except TypeError:
-                pass
-        if dtype is None:
-            raise ValueError(f"{value!r} is not a dtype. Supported dtypes: {supported}.")
-        member = next((member for member in cls if dtype == np.dtype(member.value)), None)
-        if member is not None:
-            return member
-        if dtype.kind == "f" and dtype.itemsize == 8:
-            raise ValueError(
-                "float64 is not supported; muimage computes in float32. "
-                "Convert with arr.astype(np.float32)."
-            )
-        if not dtype.isnative and dtype.newbyteorder("=").name in supported.split(", "):
-            raise ValueError(
-                f"big-endian {dtype.str} is not supported. Convert to native byte order "
-                'with arr.astype(arr.dtype.newbyteorder("=")).'
-            )
-        raise ValueError(f"dtype {dtype} is not supported. Supported dtypes: {supported}.")
-
-    @property
-    def numpy_dtype(self) -> type:
-        """NumPy scalar type for this element type (``np.float32``, …)."""
-        return np.dtype(self.value).type
-
-    @property
-    def itemsize(self) -> int:
-        """Bytes per element."""
-        return int(np.dtype(self.value).itemsize)
-
-
-type ElementTypeLike = str | ElementType | np.dtype[Any] | type[np.generic]
 
 # An array argument: an ``Array``, or an ndarray that is ingested with ``Array(...)``.
 type ArrayLike = Array | np.ndarray
@@ -342,7 +321,9 @@ type ArithmeticOperand = (
 
 @dataclass(frozen=True)
 class ArrayMeta:
-    dtype: ElementType
+    # One of ``SUPPORTED_DTYPES``. Any value ``supported_dtype`` accepts is
+    # converted on construction.
+    dtype: np.dtype
     # The NumPy shape: ``(N,)``, ``(H, W)``, or three axes. A mono array
     # can be ``(H, W)`` or ``(H, W, 1)``.
     shape: Tuple[int, ...]
@@ -360,6 +341,7 @@ class ArrayMeta:
     channel_axis: Optional[int] = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "dtype", supported_dtype(self.dtype))
         shape = tuple(int(v) for v in self.shape)
         if not 1 <= len(shape) <= 3:
             raise ValueError("array must be (N,), (H,W) or 3 axes")
@@ -466,7 +448,7 @@ class ArrayMeta:
 def meta_from_array(arr: np.ndarray, channel_axis: Optional[int] = -1) -> ArrayMeta:
     """Whole-canvas meta for ``arr``. ``channel_axis`` applies to 3 axes only."""
     return _meta_from_shape(
-        arr.shape, ElementType(arr.dtype), channel_axis if arr.ndim == 3 else None
+        arr.shape, supported_dtype(arr.dtype), channel_axis if arr.ndim == 3 else None
     )
 
 
@@ -612,7 +594,7 @@ def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
         )
     dtype = array.dtype
     if _is_integer(dtype) and matrix.dtype.kind == "f":
-        dtype = ElementType.FLOAT32
+        dtype = np.dtype(np.float32)
     if meta.ndim == 3:
         pixels_shape = array.shape
     elif meta.ndim == 2:
@@ -686,8 +668,8 @@ def _scalar_values(meta: ArrayMeta, const: np.ndarray) -> Optional[list[float]]:
     return [float(v) for v in const.reshape(-1)]
 
 
-def _is_integer(dtype: ElementType) -> bool:
-    return dtype in (ElementType.UINT8, ElementType.UINT16)
+def _is_integer(dtype: np.dtype) -> bool:
+    return dtype.kind == "u"
 
 
 def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
@@ -714,9 +696,9 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
             f"and shape {second.shape} with channel_axis {second.meta.channel_axis} "
             "is not supported yet; give both arrays the same channel_axis"
         )
-    dtype = ElementType(np.result_type(first.dtype.value, second.dtype.value))
+    dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
     if name == "divide" and _is_integer(dtype):
-        dtype = ElementType.FLOAT32
+        dtype = np.dtype(np.float32)
     return op(name, first.astype(dtype), second.astype(dtype))
 
 
@@ -1205,12 +1187,12 @@ def _as_shape(shape: Any) -> Tuple[int, ...]:
             dims = tuple(operator.index(dim) for dim in shape)
     except TypeError:
         raise TypeError(f"shape must be an int or a sequence of ints, got {shape!r}") from None
-    ArrayMeta(dtype=ElementType.FLOAT32, shape=dims)
+    ArrayMeta(dtype=np.dtype(np.float32), shape=dims)
     return dims
 
 
 def _meta_from_shape(
-    shape: Tuple[int, ...], dtype: ElementType, channel_axis: Optional[int] = None
+    shape: Tuple[int, ...], dtype: DTypeLike, channel_axis: Optional[int] = None
 ) -> ArrayMeta:
     """Build whole-canvas meta for ``(N,)``, ``(H, W)``, or 3 axes.
 
@@ -1230,21 +1212,21 @@ def _with_meta(array: "Array", meta: ArrayMeta) -> "Array":
     return out
 
 
-def _dtype_from_fill(fill_value: Any) -> ElementType:
+def _dtype_from_fill(fill_value: Any) -> np.dtype:
     """Element type of ``fill_value`` when ``full(..., dtype=None)``."""
     if isinstance(fill_value, bool):
         raise TypeError("unsupported fill_value dtype: bool")
     if isinstance(fill_value, np.generic) or (
         isinstance(fill_value, np.ndarray) and fill_value.ndim == 0
     ):
-        return ElementType(np.asarray(fill_value).dtype)
+        return supported_dtype(np.asarray(fill_value).dtype)
     if isinstance(fill_value, np.ndarray):
         try:
-            return ElementType(fill_value.dtype)
+            return supported_dtype(fill_value.dtype)
         except ValueError:
             pass
     if isinstance(fill_value, (int, float, list, tuple)):
-        return ElementType.FLOAT32
+        return np.dtype(np.float32)
     raise TypeError(f"unsupported fill_value type: {type(fill_value).__name__}")
 
 
@@ -1273,31 +1255,31 @@ def _emit_fill(meta: ArrayMeta, fill_value: Any) -> "Array":
     )
 
 
-def zeros(shape: Any, dtype: ElementTypeLike = ElementType.FLOAT32) -> "Array":
+def zeros(shape: Any, dtype: DTypeLike = np.float32) -> "Array":
     """Lazy array filled with 0. Same arguments as ``numpy.zeros`` for image rank."""
-    return _emit_fill(_meta_from_shape(_as_shape(shape), ElementType(dtype)), 0)
+    return _emit_fill(_meta_from_shape(_as_shape(shape), supported_dtype(dtype)), 0)
 
 
-def ones(shape: Any, dtype: ElementTypeLike = ElementType.FLOAT32) -> "Array":
+def ones(shape: Any, dtype: DTypeLike = np.float32) -> "Array":
     """Lazy array filled with 1. Same arguments as ``numpy.ones`` for image rank."""
-    return _emit_fill(_meta_from_shape(_as_shape(shape), ElementType(dtype)), 1)
+    return _emit_fill(_meta_from_shape(_as_shape(shape), supported_dtype(dtype)), 1)
 
 
-def full(shape: Any, fill_value: Any, dtype: ElementTypeLike | None = None) -> "Array":
+def full(shape: Any, fill_value: Any, dtype: DTypeLike | None = None) -> "Array":
     """Lazy array filled with a constant. Same arguments as ``numpy.full`` for image rank."""
-    et = ElementType(dtype) if dtype is not None else _dtype_from_fill(fill_value)
+    et = supported_dtype(dtype) if dtype is not None else _dtype_from_fill(fill_value)
     return _emit_fill(_meta_from_shape(_as_shape(shape), et), fill_value)
 
 
-def zeros_like(array: "Array", dtype: ElementTypeLike | None = None) -> "Array":
+def zeros_like(array: "Array", dtype: DTypeLike | None = None) -> "Array":
     """Lazy zeros with ``array``'s shape (and dtype unless ``dtype`` is set)."""
-    et = array.dtype if dtype is None else ElementType(dtype)
+    et = array.dtype if dtype is None else supported_dtype(dtype)
     return zeros(array.shape, dtype=et)
 
 
-def ones_like(array: "Array", dtype: ElementTypeLike | None = None) -> "Array":
+def ones_like(array: "Array", dtype: DTypeLike | None = None) -> "Array":
     """Lazy ones with ``array``'s shape (and dtype unless ``dtype`` is set)."""
-    et = array.dtype if dtype is None else ElementType(dtype)
+    et = array.dtype if dtype is None else supported_dtype(dtype)
     return ones(array.shape, dtype=et)
 
 
@@ -1322,7 +1304,7 @@ def arange(
     stop: Any = None,
     step: Any = 1,
     *,
-    dtype: ElementTypeLike = ElementType.FLOAT32,
+    dtype: DTypeLike = np.float32,
 ) -> "Array":
     """Samples ``start + i * step`` for ``i`` below ``ceil((stop - start) / step)``.
 
@@ -1353,15 +1335,14 @@ def arange(
     count = ceil((stop_v - start_v) / step_v)
     if count < 1:
         raise ValueError(f"arange({start}, {stop}, {step}) is empty")
-    element_type = ElementType(dtype)
-    numpy_dtype = np.dtype(element_type.value)
+    numpy_dtype = supported_dtype(dtype)
     if np.issubdtype(numpy_dtype, np.integer):
         # NumPy stores start and start + step as the integer dtype, then
         # steps by their difference, so the step is an integer too.
         first, second = np.array([start_v, start_v + step_v]).astype(numpy_dtype)
         start_v = float(first)
         step_v = float(second) - start_v
-    meta = _meta_from_shape((count,), element_type)
+    meta = _meta_from_shape((count,), numpy_dtype)
     return _emit_ramp(meta, [start_v], [step_v], None)
 
 
@@ -1398,7 +1379,7 @@ def linspace(
     num: Any = 50,
     *,
     endpoint: bool = True,
-    dtype: ElementTypeLike = ElementType.FLOAT32,
+    dtype: DTypeLike = np.float32,
     axis: int = 0,
 ) -> "Array":
     """``num`` samples from ``start`` to ``stop``, like ``numpy.linspace``.
@@ -1435,9 +1416,9 @@ def linspace(
         step_v = (stop_v - start_v) / count
         stop_arg = None
     if scalar:
-        meta = _meta_from_shape((count,), ElementType(dtype))
+        meta = _meta_from_shape((count,), supported_dtype(dtype))
     else:
-        meta = _meta_from_shape((count, int(start_v.shape[0])), ElementType(dtype))
+        meta = _meta_from_shape((count, int(start_v.shape[0])), supported_dtype(dtype))
     return _emit_ramp(
         meta,
         [float(value) for value in start_v],
@@ -1446,9 +1427,9 @@ def linspace(
     )
 
 
-def full_like(array: "Array", fill_value: Any, dtype: ElementTypeLike | None = None) -> "Array":
+def full_like(array: "Array", fill_value: Any, dtype: DTypeLike | None = None) -> "Array":
     """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
-    et = array.dtype if dtype is None else ElementType(dtype)
+    et = array.dtype if dtype is None else supported_dtype(dtype)
     return full(array.shape, fill_value, dtype=et)
 
 
@@ -1496,17 +1477,15 @@ def _reshape_layout(
             channel_axis=meta.channel_axis,
         )
 
-    def reshape(samples: np.ndarray, shape: Tuple[int, ...]) -> np.ndarray:
-        return np.reshape(samples, shape)
-
-    node = OpNode(
-        op="reshape",
-        inputs=(array,),
-        attrs=MappingProxyType({"shape": meta.shape}),
-        out_meta=meta,
-        fn=reshape,
+    return Array(
+        _meta=meta,
+        _node=OpNode(
+            op="reshape",
+            inputs=(array,),
+            attrs=MappingProxyType({"shape": meta.shape}),
+            out_meta=meta,
+        ),
     )
-    return Array(_meta=meta, _node=node)
 
 
 def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...]]]:
@@ -1775,12 +1754,16 @@ class Array:
         self._node = other._node
 
     @property
-    def dtype(self) -> ElementType:
+    def dtype(self) -> np.dtype:
         return self._meta.dtype
 
     @property
     def shape(self) -> Tuple[int, ...]:
         return self._meta.shape
+
+    @property
+    def ndim(self) -> int:
+        return len(self._meta.shape)
 
     @property
     def meta(self) -> ArrayMeta:
@@ -1806,7 +1789,7 @@ class Array:
                 )
             dtype = self.dtype
             if _is_integer(dtype) and (const.dtype.kind == "f" or name == "div_scalar"):
-                dtype = ElementType.FLOAT32
+                dtype = np.dtype(np.float32)
             values = _scalar_values(self._meta, const)
             if values is not None:
                 attrs: dict[str, Any] = {"value": values}
@@ -1815,7 +1798,7 @@ class Array:
                 return op(name, self.astype(dtype), **attrs)
             channel_axis = self.meta.channel_axis if const.ndim == 3 else None
             other = Array(
-                np.ascontiguousarray(const, dtype=np.dtype(dtype.value)),
+                np.ascontiguousarray(const, dtype=dtype),
                 channel_axis=channel_axis,
             )
         first, second = (other, self) if reverse else (self, other)
@@ -2089,18 +2072,18 @@ class Array:
         """Every axis reversed. Same as ``transpose()``."""
         return self.transpose()
 
-    def astype(self, dtype: ElementTypeLike) -> "Array":
+    def astype(self, dtype: DTypeLike) -> "Array":
         """Numeric cast. ``255`` uint8 becomes ``255.0`` float32."""
         import muimage as mi
 
-        dest = ElementType(dtype)
+        dest = supported_dtype(dtype)
         if dest is self.dtype:
             return self
-        return mi.cast_dtype(self, dest_dtype=dest.value)
+        return mi.cast_dtype(self, dest_dtype=dest.name)
 
     def convert_type(
         self,
-        dtype: ElementTypeLike,
+        dtype: DTypeLike,
         src_bits: int | None = None,
         dst_bits: int | None = None,
         clip_max: float | None = None,
@@ -2112,7 +2095,7 @@ class Array:
         """
         import muimage as mi
 
-        dest = ElementType(dtype)
+        dest = supported_dtype(dtype)
         if (
             dest is self.dtype
             and src_bits is None
@@ -2120,7 +2103,7 @@ class Array:
             and clip_max is None
         ):
             return self
-        attrs: dict[str, Any] = {"dest_dtype": dest.value}
+        attrs: dict[str, Any] = {"dest_dtype": dest.name}
         if src_bits is not None:
             attrs["src_bits"] = int(src_bits)
         if dst_bits is not None:

@@ -24,8 +24,6 @@ from muraw.engines import ops as _catalog
 from muraw.engines.graph import emit, flush, op
 from muraw.engines.ops import *  # noqa: F401,F403 — generated __all__ is the catalog surface
 from muraw.array import (
-    ElementType,
-    ElementTypeLike,
     Array,
     ArrayLike,
     ArrayMeta,
@@ -58,8 +56,6 @@ from muraw.array import (
 )
 
 __all__ = [
-    "ElementType",
-    "ElementTypeLike",
     "Array",
     "ArrayLike",
     "ArrayMeta",

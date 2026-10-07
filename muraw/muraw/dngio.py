@@ -29,7 +29,9 @@ from . import raw_render
 from .compress import compress_ifd, deswizzle_cfa_data
 import muimage as mi
 from .raw_render import DemosaicAlgorithm
-from .array import Array, ElementType, ElementTypeLike
+from numpy.typing import DTypeLike
+
+from .array import Array
 from .common import PerfTimer
 from .tiff_metadata import (
     MetadataTags,
@@ -596,7 +598,7 @@ class DngPage(tifffile.TiffPage):
     
     def decode_to_rgb(
         self,
-        output_dtype: ElementTypeLike = ElementType.UINT8,
+        output_dtype: DTypeLike = np.uint8,
     ) -> Array | None:
         """Decode any DNG page to an RGB ``Array``.
 
@@ -634,7 +636,7 @@ class DngPage(tifffile.TiffPage):
     
     def render_raw(
         self,
-        output_dtype: ElementTypeLike = ElementType.UINT16,
+        output_dtype: DTypeLike = np.uint16,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
         strict: bool = True,
         use_xmp: bool = True,
@@ -947,7 +949,7 @@ class DngFile(tifffile.TiffFile):
 
     def render_raw(
         self,
-        output_dtype: ElementTypeLike = ElementType.UINT16,
+        output_dtype: DTypeLike = np.uint16,
         demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
         strict: bool = True,
         use_xmp: bool = True,
@@ -1074,7 +1076,7 @@ class DngFile(tifffile.TiffFile):
 
     def get_preview_rgb(
         self,
-        output_dtype: ElementTypeLike = ElementType.UINT8,
+        output_dtype: DTypeLike = np.uint8,
     ) -> Array | None:
         """Decode preview image from IFD0 to an RGB ``Array``.
         
@@ -2329,7 +2331,7 @@ def _write_dng_with_params(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 mono_camera=Array(pyramid_images[preview_level_idx]),
-                output_dtype=ElementType.UINT8,
+                output_dtype=np.uint8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             )
@@ -2345,7 +2347,7 @@ def _write_dng_with_params(
                 ifd0_tags=ifd0_tags_no_orientation,
                 raw_ifd_tags=main_spec.extratags,
                 rgb_camera=Array(pyramid_images[preview_level_idx]),
-                output_dtype=ElementType.UINT8,
+                output_dtype=np.uint8,
                 rendering_params=preview_rendering_params,
                 use_xmp=False,
             ).realize()
@@ -2651,7 +2653,7 @@ def create_dng_from_page(
 
 def decode_dng(
     file: str | Path | IO[bytes] | DngFile | DngPage,
-    output_dtype: ElementTypeLike = ElementType.UINT16,
+    output_dtype: DTypeLike = np.uint16,
     demosaic_algorithm: DemosaicAlgorithm = DemosaicAlgorithm.EA,
     use_coreimage_if_available: bool = False,
     use_xmp: bool = True,

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import muimage as mi
-from muraw.array import ElementType, Array
+from muraw.array import Array
 
 
 def test_zeros_is_lazy_then_realizes():
@@ -15,7 +15,7 @@ def test_zeros_is_lazy_then_realizes():
     assert z._node is not None
     assert z._node.op == "fill"
     assert z._node.inputs == ()
-    assert z.dtype == ElementType.FLOAT32
+    assert z.dtype == np.float32
     assert z.shape == (3, 4)
     np.testing.assert_array_equal(z.realize(), np.zeros((3, 4), dtype=np.float32))
 
@@ -38,19 +38,19 @@ def test_ones_rgb():
 
 def test_full_scalar_uint8():
     t = mi.full((2, 2), 128, dtype="uint8")
-    assert t.dtype == ElementType.UINT8
+    assert t.dtype == np.uint8
     np.testing.assert_array_equal(t.realize(), np.full((2, 2), 128, dtype=np.uint8))
 
 
 def test_full_default_dtype_python_int_is_float32():
     t = mi.full((2, 2), 128)
-    assert t.dtype == ElementType.FLOAT32
+    assert t.dtype == np.float32
     np.testing.assert_array_equal(t.realize(), np.full((2, 2), 128, dtype=np.float32))
 
 
 def test_full_inherits_numpy_scalar_dtype():
     t = mi.full((2, 2), np.uint8(7))
-    assert t.dtype == ElementType.UINT8
+    assert t.dtype == np.uint8
     np.testing.assert_array_equal(t.realize(), np.full((2, 2), 7, dtype=np.uint8))
 
 
@@ -80,14 +80,14 @@ def test_zeros_like_does_not_realize_input():
 def test_ones_like_dtype_override():
     src = Array(np.zeros((2, 2), dtype=np.float32))
     t = mi.ones_like(src, dtype="uint8")
-    assert t.dtype == ElementType.UINT8
+    assert t.dtype == np.uint8
     np.testing.assert_array_equal(t.realize(), np.ones((2, 2), dtype=np.uint8))
 
 
 def test_full_like_uses_reference_dtype():
     src = Array(np.zeros((2, 3), dtype=np.uint8))
     t = mi.full_like(src, 9)
-    assert t.dtype == ElementType.UINT8
+    assert t.dtype == np.uint8
     np.testing.assert_array_equal(t.realize(), np.full((2, 3), 9, dtype=np.uint8))
 
 

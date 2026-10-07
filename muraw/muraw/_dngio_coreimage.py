@@ -11,7 +11,7 @@ import os
 from typing import TYPE_CHECKING, Any, IO
 
 # Package imports
-from .array import ElementType, ElementTypeLike
+from numpy.typing import DTypeLike
 from .splines import CubicSpline
 
 if TYPE_CHECKING:
@@ -392,7 +392,7 @@ def render_dng_coreimage(
 def decode_dng_coreimage(
     file: str | os.PathLike[str] | IO[bytes] | "DngFile",
     use_xmp: bool = True,
-    output_dtype: ElementTypeLike = ElementType.UINT16,
+    output_dtype: DTypeLike = np.uint16,
     rendering_params: dict[str, Any] = None,
 ) -> "Array":
     """
