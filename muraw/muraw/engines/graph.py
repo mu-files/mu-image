@@ -2,15 +2,13 @@
 # Copyright (c) 2026 mu-files
 """muraw compute graph: OpNode / Array DAG, engine protocol, and orchestration.
 
-Pipeline code (e.g. ``raw_render``) builds this portable DAG. Engines execute
-engine-affinity segments of it; ``@graph_op`` kernels run in Python.
+Pipeline code (e.g. ``raw_render``) builds this portable DAG, and the
+default engine runs it in one call per ``realize()``. Python code that is
+not an engine op runs on a realized array.
 """
 
 from __future__ import annotations
 
-import functools
-import inspect
-import itertools
 import operator
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -26,7 +24,6 @@ from ..array import (
     ArrayMeta,
     _meta_from_shape,
     _seal_ndarray,
-    meta_from_array,
 )
 
 OutMetaFn = Callable[[Array, Dict[str, Any]], Any]
@@ -41,7 +38,7 @@ class EngineTiming(IntEnum):
     """How much detail ``graph.realize`` / execute_segment should record."""
 
     OFF = 0
-    SEGMENTS = 1  # one row per python op or engine execute_segment
+    SEGMENTS = 1  # one row per engine execute_segment
     OPS = 2  # + per-op rows inside an engine segment
 
 
@@ -109,7 +106,7 @@ def set_default_engine(engine: Engine) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Op catalog types + graph_op
+# Op catalog types
 # ---------------------------------------------------------------------------
 
 
@@ -503,13 +500,12 @@ def _out_meta_broadcast(x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayM
 
 @dataclass(frozen=True)
 class OpNode:
-    """Catalog engine op (``fn is None``) or Python ``@graph_op`` kernel."""
+    """A catalog engine op applied to ``inputs``."""
 
     op: str
     inputs: Tuple[Array, ...]
     attrs: Mapping[str, Any]
     out_meta: ArrayMeta
-    fn: Optional[Callable[..., np.ndarray]] = None
 
 
 def _check_input(
@@ -541,75 +537,6 @@ def _check_input(
             f"op {name!r} input[{index}]: expected {in_channels} channel(s), "
             f"got {x.meta.channels}"
         )
-
-
-def graph_op(
-    fn: Optional[Callable[..., np.ndarray]] = None,
-    /,
-    *,
-    out_meta: Optional[GraphOutMetaFn] = None,
-    requires_2d: bool = False,
-    is_cfa: bool = False,
-    is_rgb: bool = False,
-):
-    """Decorator: eager ndarray body; Array first-arg attaches a lazy graph node.
-
-    ``requires_2d``, ``is_cfa`` and ``is_rgb`` are the catalog op properties
-    (see the header of ``engines/catalog/ops.yaml``). The decorated function
-    exposes them as ``.meta``. The ``cfa_`` / ``rgb_`` naming rule is not
-    checked here.
-
-    Usage::
-
-        @graph_op
-        def same_shape(arr, *, scale):
-            return arr * scale
-
-        @graph_op(out_meta=my_infer, is_rgb=True)
-        def rgb_scale_op(arr, *, factor):
-            return arr * factor
-    """
-
-    def decorate(f: Callable[..., np.ndarray]) -> Callable[..., Any]:
-        sig = inspect.signature(f)
-        param_names = list(sig.parameters)
-        if not param_names:
-            raise ValueError(f"graph_op {f.__name__!r}: need at least one parameter")
-        first_name = param_names[0]
-        meta = OpMeta(
-            name=f.__name__, requires_2d=requires_2d, is_cfa=is_cfa, is_rgb=is_rgb
-        )
-
-        @functools.wraps(f)
-        def wrapper(image: Any, /, *args: Any, **kwargs: Any) -> Any:
-            if not isinstance(image, Array):
-                return f(image, *args, **kwargs)
-            _check_input(meta, 1 if is_cfa else 3 if is_rgb else None, image)
-
-            placeholder = object()
-            bound = sig.bind(placeholder, *args, **kwargs)
-            bound.apply_defaults()
-            attrs = {
-                k: v for k, v in bound.arguments.items() if k != first_name
-            }
-
-            resolved = image.meta if out_meta is None else out_meta(image, attrs)
-            node = OpNode(
-                op=f.__name__,
-                inputs=(image,),
-                attrs=MappingProxyType(attrs),
-                out_meta=resolved,
-                fn=f,
-            )
-            return Array(_meta=resolved, _node=node)
-
-        wrapper.__graph_op__ = True  # type: ignore[attr-defined]
-        wrapper.meta = meta  # type: ignore[attr-defined]
-        return wrapper
-
-    if fn is not None:
-        return decorate(fn)
-    return decorate
 
 
 _SCALAR_FLOAT = {"f32": np.float32, "f64": np.float64}
@@ -735,58 +662,8 @@ def op(name: str, x: Array, /, *more: Array, **attrs: Any) -> Array:
 
 
 def flush(x: Array) -> Array:
-    """Materialize a lazy graph into a concrete source Array.
-
-    Prefer ``@graph_op`` helpers for reusable Python steps; ``flush`` remains
-    for ad-hoc barriers.
-    """
+    """Materialize a lazy graph into a concrete source Array."""
     return Array(x.realize())
-
-
-def _is_python_node(t: Array) -> bool:
-    return t._node is not None and t._node.fn is not None
-
-
-def _run_python_node(t: Array, values: Dict[int, np.ndarray]) -> None:
-    node = t._node
-    assert node is not None and node.fn is not None
-    if len(node.inputs) != 1:
-        raise ValueError(f"python op {node.op!r}: expected 1 input")
-    inp = values.get(id(node.inputs[0]))
-    if inp is None:
-        raise RuntimeError(f"python op {node.op!r}: missing input value")
-    # The kernel sees the NumPy shape, as when it is called on an ndarray.
-    out = node.fn(inp.reshape(node.inputs[0].meta.shape), **node.attrs)
-    if not isinstance(out, np.ndarray):
-        raise TypeError(f"python op {node.op!r}: kernel must return ndarray")
-    want = t.meta
-    got = meta_from_array(out, want.channel_axis)
-    if (got.height, got.width, got.channels, got.dtype) != (
-        want.height,
-        want.width,
-        want.channels,
-        want.dtype,
-    ):
-        raise ValueError(
-            f"python op {node.op!r}: output meta {got} != inferred {want}"
-        )
-    values[id(t)] = out.reshape(want.buffer_shape)
-
-
-def _segment_boundary_outputs(
-    nodes: List[Array],
-    all_op_arrays: List[Array],
-    root: Array,
-) -> List[Array]:
-    """Arrays produced in this segment that escape to later consumers or root."""
-    node_set = {id(t) for t in nodes}
-    outside_inputs = {
-        id(inp)
-        for other in all_op_arrays
-        if id(other) not in node_set
-        for inp in other._node.inputs
-    }
-    return [t for t in nodes if t is root or id(t) in outside_inputs]
 
 
 def _run_op_arrays(
@@ -794,41 +671,23 @@ def _run_op_arrays(
     values: Dict[int, np.ndarray],
     root: Array,
 ) -> None:
-    """Run each Python node on its own, and each run of consecutive engine
-    nodes as one engine segment."""
+    """Run ``op_arrays`` as one engine call whose output is ``root``."""
     parent = PerfTimer.current()
     record = get_engine_timing() >= EngineTiming.SEGMENTS
-
-    def step(name: str) -> Any:
-        if parent is None or not record:
-            return PerfTimer.inactive
-        return parent.start_step(name)
-
-    engine = get_default_engine()
-    for is_python, group in itertools.groupby(op_arrays, _is_python_node):
-        group = list(group)
-        if is_python:
-            for t in group:
-                assert t._node is not None
-                timing = step(f"{t._node.op} (python)")
-                try:
-                    _run_python_node(t, values)
-                finally:
-                    timing.close()
-        else:
-            outs = _segment_boundary_outputs(group, op_arrays, root)
-            timing = step("graph_compute")
-            try:
-                engine.execute_segment(group, values, outs)
-            finally:
-                timing.close()
+    timing = PerfTimer.inactive
+    if parent is not None and record:
+        timing = parent.start_step("graph_compute")
+    try:
+        get_default_engine().execute_segment(op_arrays, values, [root])
+    finally:
+        timing.close()
 
 
 def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     """Run the graph if needed and return ``root``'s pixels.
 
-    Only ``root`` keeps its pixels. Buffers for other arrays, such as the
-    outputs that pass between engine segments, are dropped on return.
+    Only ``root`` keeps its pixels. The engine's buffers for the other
+    arrays are dropped on return.
 
     An array the caller realized earlier has ``_data``, which is handed to
     the engine as an extra bind. The engine skips a producer when that

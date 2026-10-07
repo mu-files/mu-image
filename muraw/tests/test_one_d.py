@@ -7,9 +7,8 @@ import pytest
 
 import muimage as mi
 from muraw.array import Array, fliplr, flipud, rot90
-from muraw.engines.graph import graph_op
 from muraw.engines.ops import OPS_BY_NAME
-from muraw.engines.pyops import cfa_demosaic_op, radial_distortion_op
+from muraw.raw_render import cfa_demosaic_eager
 
 V = np.arange(8, dtype=np.float32)
 
@@ -141,20 +140,6 @@ def test_tile_three_reps_makes_channels():
     np.testing.assert_array_equal(out.realize(), expected)
 
 
-def test_graph_op_sees_numpy_shape_and_may_return_1d():
-    seen = []
-
-    @graph_op
-    def reverse(arr):
-        seen.append(arr.shape)
-        return arr[::-1].copy()
-
-    out = reverse(Array(V))
-    assert out.shape == (8,)
-    np.testing.assert_array_equal(out.realize(), V[::-1])
-    assert seen == [(8,)]
-
-
 @pytest.mark.parametrize(
     "name", sorted(name for name, engine_op in OPS_BY_NAME.items() if engine_op.meta.requires_2d)
 )
@@ -163,11 +148,9 @@ def test_requires_2d_catalog_ops_raise(name):
         OPS_BY_NAME[name](Array(V))
 
 
-def test_requires_2d_python_ops_raise():
-    with pytest.raises(ValueError, match="requires a 2D input"):
-        radial_distortion_op(Array(V), k1=0.0, k2=0.0, k3=0.0, focal_length_mm=50.0)
-    with pytest.raises(ValueError, match="requires a 2D input"):
-        cfa_demosaic_op(Array(V), "RGGB")
+def test_cfa_demosaic_eager_rejects_1d():
+    with pytest.raises(ValueError, match="expected 2D CFA"):
+        cfa_demosaic_eager(V, "RGGB")
 
 
 def test_rgb_ops_reject_1d_by_channel_count():

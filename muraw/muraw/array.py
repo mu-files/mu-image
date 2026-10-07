@@ -1038,7 +1038,7 @@ def _node_permutation(array: "Array") -> Optional[Tuple[int, ...]]:
     unchanged: an ingested array with an ``origin`` is not one.
     """
     node = array._node
-    if node is None or node.fn is not None or array.meta != node.out_meta:
+    if node is None or array.meta != node.out_meta:
         return None
     if node.op == "transpose":
         return tuple(int(axis) for axis in node.attrs["axes"])

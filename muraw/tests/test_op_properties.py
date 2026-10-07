@@ -7,9 +7,7 @@ import pytest
 
 import muimage as mi
 from muraw.array import Array
-from muraw.engines.graph import graph_op
 from muraw.engines.ops import OPS_BY_NAME
-from muraw.engines.pyops import cfa_demosaic_op, radial_distortion_op, rgb_channel_luts_op
 from muraw.engines.tools.gen_ops import validate_ops
 
 
@@ -74,23 +72,6 @@ def test_every_catalog_op_follows_the_naming_rule():
         assert meta.is_rgb == name.startswith("rgb_"), name
         assert not meta.is_cfa or meta.requires_2d, name
 
-
-def test_python_ops_report_properties():
-    assert (cfa_demosaic_op.meta.is_cfa, cfa_demosaic_op.meta.requires_2d) == (True, True)
-    assert rgb_channel_luts_op.meta.is_rgb
-    assert radial_distortion_op.meta.requires_2d
-    assert not radial_distortion_op.meta.is_rgb
-
-
-def test_graph_op_rgb_checks_channels_when_called():
-    @graph_op(is_rgb=True)
-    def rgb_identity(arr):
-        return arr
-
-    with pytest.raises(ValueError, match="expected 3 channel"):
-        rgb_identity(Array(np.zeros((2, 2), dtype=np.float32)))
-    out = rgb_identity(Array(np.ones((2, 2, 3), dtype=np.float32))).realize()
-    np.testing.assert_array_equal(out, np.ones((2, 2, 3), dtype=np.float32))
 
 def _normalize_attrs(channels):
     return dict(

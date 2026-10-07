@@ -11,22 +11,11 @@ import muimage as mi
 from muraw.engines import get_default_engine, set_default_engine
 from muraw.engines.core import CoreEngine
 from muraw.engines import graph
-from muraw.engines.graph import EngineOp, OpMeta, flush, graph_op
+from muraw.engines.graph import EngineOp, OpMeta, flush
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
-from muraw.array import Array, ArrayMeta, ElementType, rot90
+from muraw.array import Array, ElementType, rot90
 from conftest import generate_rgb_ramp
-
-
-def _fence_cast_out_meta(t: Array, attrs: dict) -> ArrayMeta:
-    dest = ElementType(attrs["dst_dtype"])
-    return t.meta.copy(dtype=dest)
-
-
-@graph_op(out_meta=_fence_cast_out_meta)
-def _fence_cast(arr: np.ndarray, dst_dtype: str) -> np.ndarray:
-    dest = ElementType(dst_dtype)
-    return arr.astype(dest.numpy_dtype, copy=False)
 
 
 def test_catalog_engine_ops_io():
@@ -124,7 +113,6 @@ def test_view_emit_meta_updates_origin_and_size():
     assert cat.meta.origin == (2, 1)
     assert cat.meta.canvas == (0, 0, 7, 5)
     assert cat._node is not None and cat._node.op == "view"
-    assert cat._node.fn is None
 
     cat2 = cat.view(left=1, top=0, width=2, height=1)
     assert cat2.meta.origin == (2, 2)
@@ -639,15 +627,6 @@ def test_core_binaries_path():
     assert libs, f"no _core_engine abi3 binaries under {binaries}"
 
 
-def test_graph_op_cast_then_native_crop():
-    src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    x = _fence_cast(Array(src), "uint16")
-    x = x.view(left=1, top=1, width=3, height=2)
-    assert x._node is not None and x._node.op == "view" and x._node.fn is None
-    out = x.realize()
-    np.testing.assert_array_equal(out, src.astype(np.uint16)[1:3, 1:4])
-
-
 def test_add_completed_step_duration():
     from muraw.common import PerfTimer
 
@@ -817,30 +796,6 @@ def test_perftimer_missed_close_then_continue_at_parent():
         PerfTimer._stack().clear()
 
 
-def test_compute_times_python_ops():
-    from muraw.common import PerfTimer
-    from muraw.engines.graph import EngineTiming, engine_timing, set_engine_timing
-
-    src = np.arange(16, dtype=np.uint8).reshape(4, 4)
-    x = _fence_cast(Array(src), "uint16")
-    x = _fence_cast(x, "float32")
-
-    prev = engine_timing
-    try:
-        set_engine_timing(EngineTiming.SEGMENTS)
-        with PerfTimer("root") as root:
-            parent = root.start_step("camera_space")
-            out = x.realize()
-            parent.close()
-    finally:
-        set_engine_timing(prev)
-
-    np.testing.assert_allclose(out, src.astype(np.float32))
-    names = [c.name for c in parent.children]
-    assert names == ["_fence_cast (python)", "_fence_cast (python)"]
-    assert all(c.get_elapsed_ms() >= 0.0 for c in parent.children)
-
-
 def test_compute_times_engine_ops():
     from muraw.common import PerfTimer
     from muraw.engines.graph import EngineTiming, engine_timing, set_engine_timing
@@ -931,13 +886,11 @@ def test_compute_ops_under_graph_compute():
     assert [c.name for c in parent.children[0].children] == ["mul_scalar (engine)"]
 
 
-def test_graph_op_splits_engine_segments():
+def test_realize_makes_one_engine_call():
     from muraw.engines.core import _engine_load
 
     src = np.arange(16, dtype=np.float32).reshape(4, 4)
-    x = Array(src) - 0.0
-    x = _fence_cast(x, "float32")  # python fence between engine segments
-    x = x * 2.0
+    x = mi.cfa_demosaic(Array(src) - 1.0, cfa_pattern="RGGB") * 2.0
 
     calls = {"n": 0}
     real = _engine_load.execute_graph
@@ -948,24 +901,39 @@ def test_graph_op_splits_engine_segments():
 
     _engine_load.execute_graph = counting_execute
     try:
-        out = x.realize()
+        x.realize()
     finally:
         _engine_load.execute_graph = real
 
-    assert calls["n"] == 2
-    np.testing.assert_allclose(out, src * 2.0)
+    assert calls["n"] == 1
 
 
-def test_cfa_demosaic_op_lazy():
-    from muraw.engines.pyops import cfa_demosaic_op
+def test_realize_in_the_middle_matches_one_realize():
+    rng = np.random.default_rng(7)
+    cfa = rng.random((300, 40), dtype=np.float32)
+
+    def head(source: Array) -> Array:
+        return mi.cfa_demosaic(source - 0.1, cfa_pattern="RGGB")
+
+    def tail(rgb: Array) -> Array:
+        return (rgb * 2.0)[5:290, 3:37]
+
+    whole = tail(head(Array(cfa))).realize()
+    middle = Array(head(Array(cfa)).realize())
+    split = tail(middle).realize()
+    np.testing.assert_array_equal(split, whole)
+
+
+def test_cfa_demosaic_eager_matches_demosaic():
+    from muraw.raw_render import cfa_demosaic_eager
 
     rng = np.random.default_rng(4)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out = cfa_demosaic_op(Array(cfa), "RGGB", "VNG").realize()
+    out = cfa_demosaic_eager(cfa, "RGGB", "VNG")
     ref = demosaic(Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.VNG).realize()
     np.testing.assert_array_equal(out, ref)
 
-    out_ea = cfa_demosaic_op(Array(cfa), "RGGB", "OPENCV_EA").realize()
+    out_ea = cfa_demosaic_eager(cfa, "RGGB", "OPENCV_EA")
     ref_ea = demosaic(
         Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA
     ).realize()
@@ -1081,11 +1049,6 @@ def _upstream_op_arrays(root: Array) -> List[Array]:
     return found
 
 
-def _two_segments_through_a_python_op() -> Array:
-    src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
-    return _fence_cast(Array(src) - 1.0, "float32") * 2.0
-
-
 def _two_segments_through_a_reshape() -> Array:
     src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
     return (Array(src) - 1.0)[None, ...] * 2.0
@@ -1104,7 +1067,6 @@ def _ramp_reshaped_and_broadcast() -> Array:
 @pytest.mark.parametrize(
     "build",
     [
-        _two_segments_through_a_python_op,
         _two_segments_through_a_reshape,
         _one_segment_chain,
         _ramp_reshaped_and_broadcast,
@@ -1125,7 +1087,7 @@ def test_realize_keeps_pixels_only_on_the_realized_array(build, force_recompute)
 
 def test_realize_reuses_an_array_the_caller_realized_and_adds_no_others():
     src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
-    pinned = _fence_cast(Array(src) - 1.0, "float32")
+    pinned = Array(src) - 1.0
     pinned_pixels = pinned.realize()
     root = (pinned * 2.0) - 3.0
     out = root.realize()
