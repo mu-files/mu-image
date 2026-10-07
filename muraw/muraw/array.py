@@ -452,13 +452,15 @@ def meta_from_array(arr: np.ndarray, channel_axis: Optional[int] = -1) -> ArrayM
     )
 
 
-def _engine_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
-    """Whether the engine reads a tensor of ``meta`` planar, and its
-    (rows, columns, channels) in that reading.
+def spatial_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
+    """Which axes of an array of ``meta`` are its rows, columns, and
+    channels: whether it is planar, and its (rows, columns, channels).
 
-    A 3-axis tensor whose channel axis is 0 is planar: one plane of rows and
-    columns per channel. The engine reads every other tensor packed, in
-    axis order, so ``(H, C, W)`` is H rows of C pixels of W channels.
+    An array has an origin and a canvas, so it has to say which of its
+    axes are spatial. A 3-axis array whose channel axis is 0 is planar: one
+    plane of rows and columns per channel. Every other array is packed, in
+    axis order: rows, then columns, then channels if there is a third axis,
+    so ``(H, C, W)`` is H rows of C pixels of W channels.
     """
     shape = meta.buffer_shape
     if meta.channel_axis == 0:
@@ -648,8 +650,8 @@ _ELEMENTWISE_OPS = {
 def _scalar_values(meta: ArrayMeta, const: np.ndarray) -> Optional[list[float]]:
     """``const`` as the ``value`` attr of a scalar op on an array of
     ``meta``: one value, or one per channel. ``None`` when ``const`` would
-    change the array's shape or varies along an axis the engine does not
-    read as channels, so it needs the op between two arrays.
+    change the array's shape or varies along an axis that is not the
+    array's channels, so it needs the op between two arrays.
     """
     shape = meta.shape
     try:
@@ -660,7 +662,7 @@ def _scalar_values(meta: ArrayMeta, const: np.ndarray) -> Optional[list[float]]:
     padded_shape = (1,) * (len(shape) - const.ndim) + const.shape
     channel_axis = None
     if len(shape) == 3:
-        planar, _ = _engine_reading(meta)
+        planar, _ = spatial_reading(meta)
         channel_axis = 0 if planar else 2
     varying = [axis for axis, size in enumerate(padded_shape) if size > 1]
     if varying and varying != [channel_axis]:
@@ -677,7 +679,7 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
     dtype promotion. Integer division gives float32.
 
     Both arrays get the broadcast rank: a missing leading axis becomes
-    size 1. The engine must read both the same way, planar or packed.
+    size 1. Both must be planar, or both packed.
     """
     from .engines.graph import op
 
@@ -690,7 +692,7 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
         padded = (1,) * (len(shape) - operand.meta.ndim) + operand.shape
         operands.append(_reshape_layout(operand, padded, channel_axis))
     first, second = operands
-    if _engine_reading(first.meta)[0] != _engine_reading(second.meta)[0]:
+    if spatial_reading(first.meta)[0] != spatial_reading(second.meta)[0]:
         raise NotImplementedError(
             f"{name} of shape {first.shape} with channel_axis {first.meta.channel_axis} "
             f"and shape {second.shape} with channel_axis {second.meta.channel_axis} "
@@ -1433,21 +1435,38 @@ def full_like(array: "Array", fill_value: Any, dtype: DTypeLike | None = None) -
     return full(array.shape, fill_value, dtype=et)
 
 
+def reshaped_meta(
+    old: ArrayMeta, shape: Tuple[int, ...], channel_axis: Optional[int] = None
+) -> ArrayMeta:
+    """The meta of an array of ``old`` reshaped to ``shape`` with
+    ``channel_axis`` (as in ``ArrayMeta``: ``None`` on 3 axes means 2).
+
+    The sample count must not change. The origin stays. The canvas stays
+    when the rows and the columns do (``(H, W)`` to ``(H, W, 1)``);
+    otherwise the old canvas means nothing on the new shape, and the canvas
+    is the new array at the old origin.
+    """
+    new = _meta_from_shape(shape, old.dtype, channel_axis)
+    if int(np.prod(old.shape)) != int(np.prod(new.shape)):
+        raise ValueError(
+            f"cannot reshape {old.shape} to {new.shape}: the sample count differs"
+        )
+    row, col = old.origin
+    canvas = old.canvas
+    if spatial_reading(new)[1][:2] != spatial_reading(old)[1][:2]:
+        canvas = (col, row, new.width, new.height)
+    return new.copy(origin=old.origin, canvas=canvas)
+
+
 def _reshape_layout(
     array: "Array", shape: Tuple[int, ...], channel_axis: Optional[int] = None
 ) -> "Array":
-    """The same samples, read as ``shape`` with ``channel_axis``.
+    """The same samples as ``array``, as ``shape`` with ``channel_axis``.
 
-    ``channel_axis`` is as in ``ArrayMeta``: ``None`` on 3 axes means 2.
-    When the engine reads the result the same way as this array, only the
-    NumPy shape changes (``(N,)`` and ``(1, N)``, or ``(H, W)`` and
-    ``(H, W, 1)``). The result shares this array's node and canvas, and a
-    cached buffer is reshaped.
-
-    Otherwise the engine sees new sizes. A source buffer is
-    ``ndarray.reshape``, which is a view. A lazy array gets its own node, so
-    the producer writes its buffer and the next op binds that buffer
-    reshaped, with no copy.
+    The same shape is ``array`` itself. An array that has its pixels, a
+    source or a realized one, is reshaped on the host, as ``np.reshape``.
+    A lazy array gets a ``reshape`` node; the engine reads the producer's
+    buffer as the new shape without a copy.
     """
     from types import MappingProxyType
 
@@ -1455,34 +1474,20 @@ def _reshape_layout(
 
     if tuple(shape) == array.shape:
         return array
-    new = _meta_from_shape(shape, array.dtype, channel_axis)
-    old = array.meta
-    if int(np.prod(array.shape)) != int(np.prod(new.shape)):
-        raise ValueError(
-            f"cannot reshape {array.shape} to {new.shape}: the sample count differs"
-        )
-    if _engine_reading(new) == _engine_reading(old):
+    meta = reshaped_meta(array.meta, shape, channel_axis)
+    if array._data is not None:
         out = object.__new__(Array)
-        out._take_fields(array, old.copy(shape=new.shape, channel_axis=new.channel_axis))
-        if out._data is not None:
-            out._data = np.reshape(out._data, out.meta.buffer_shape)
+        out._meta = meta
+        out._data = np.reshape(array._data, meta.buffer_shape)
+        out._node = None
         return out
-    row, col = old.origin
-    meta = new.copy(origin=old.origin, canvas=(col, row, new.width, new.height))
-    if array._node is None:
-        assert array._data is not None
-        return Array(
-            np.reshape(array._data, meta.shape),
-            origin=array.meta.origin,
-            channel_axis=meta.channel_axis,
-        )
-
+    shape_attr = np.asarray(meta.buffer_shape, dtype=np.int32)
     return Array(
         _meta=meta,
         _node=OpNode(
             op="reshape",
             inputs=(array,),
-            attrs=MappingProxyType({"shape": meta.shape}),
+            attrs=MappingProxyType({"shape": shape_attr}),
             out_meta=meta,
         ),
     )

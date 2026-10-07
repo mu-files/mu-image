@@ -193,7 +193,8 @@ def test_newaxis_lifts_mono_to_rank3():
     assert ingested[:, :, 0].shape == (4, 5)
     lazy = mi.zeros((4, 5))
     lazy_lifted = lazy[:, :, None]
-    assert lazy_lifted._node is lazy._node
+    assert lazy_lifted._node.op == "reshape"
+    assert lazy_lifted._node.inputs == (lazy,)
     assert lazy_lifted.shape == (4, 5, 1)
     np.testing.assert_array_equal(
         lazy_lifted.realize(), np.zeros((4, 5, 1), dtype=np.float32)
@@ -202,7 +203,8 @@ def test_newaxis_lifts_mono_to_rank3():
     assert filled.shape == (2, 3, 1)
     dropped = filled[:, :, 0]
     assert dropped.shape == (2, 3)
-    assert dropped._node is filled._node
+    assert dropped._node.op == "reshape"
+    assert dropped._node.inputs == (filled,)
     np.testing.assert_array_equal(filled.realize(), np.zeros((2, 3, 1), dtype=np.float32))
     np.testing.assert_array_equal(dropped.realize(), np.zeros((2, 3), dtype=np.float32))
 

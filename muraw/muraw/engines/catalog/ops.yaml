@@ -18,6 +18,8 @@
 #   height/width/origin match input 0 unless outputs.geometry is set.
 #   geometry: <policy> — named emit-meta policy (not attr inspection).
 #     Codegen wires geometry: foo → graph._out_meta_foo (implement the fn in graph.py).
+#     A policy builds the whole output meta, so an output with a geometry
+#     may leave channels out when the policy decides it (reshape).
 #
 # Op properties. Each is false unless written as `true` on the op, and none
 # is implied by another property or by the op name.
@@ -364,6 +366,22 @@ ops:
       - key: axes
         type: i32_array
         count: 3
+
+  # The same samples, in the same order, read as another shape, as
+  # np.reshape(x, shape). shape is the output's buffer shape: 1 to 3 axes
+  # (count 0 is variable), with the same sample count as the input. The
+  # dtype does not change.
+  # The engine does not copy for this op: the output is the input's
+  # storage read as the new shape. The node is a chain boundary.
+  - name: reshape
+    inputs:
+      - channels: any
+    outputs:
+      - geometry: reshape
+    attrs:
+      - key: shape
+        type: i32_array
+        count: 0
 
   # Bayer CFA to RGB. algorithm picks the method (default ea):
   #   bilinear  DNG SDK bilinear, halo 1.

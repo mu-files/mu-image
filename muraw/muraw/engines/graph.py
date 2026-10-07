@@ -25,6 +25,7 @@ from ..array import (
     ArrayMeta,
     _meta_from_shape,
     _seal_ndarray,
+    reshaped_meta,
     supported_dtype,
 )
 
@@ -485,6 +486,15 @@ def _out_meta_transpose(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     )
 
 
+def _out_meta_reshape(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    """Geometry policy ``reshape``: the same samples as ``shape``, as
+    ``np.reshape``. A 3-axis result has its channels on the last axis;
+    ``Array.reshape`` is the way to choose another channel axis.
+    """
+    shape = tuple(int(axis) for axis in attrs["shape"])
+    return reshaped_meta(x.meta, shape)
+
+
 def _out_meta_broadcast(x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayMeta:
     """Geometry policy ``broadcast``: NumPy's broadcast shape of every input.
 
@@ -502,7 +512,7 @@ def _out_meta_broadcast(x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayM
 
 @dataclass(frozen=True)
 class OpNode:
-    """A catalog engine op applied to ``inputs``, or a reshape handle."""
+    """A catalog engine op applied to ``inputs``."""
 
     op: str
     inputs: Tuple[Array, ...]
@@ -673,28 +683,13 @@ def _run_op_arrays(
     values: Dict[int, np.ndarray],
     root: Array,
 ) -> None:
-    """Run ``op_arrays``. A reshape handle is the producer's pixels viewed
-    as this handle's shape."""
+    """Run ``op_arrays`` as one engine call that writes ``root``."""
     parent = PerfTimer.current()
     timing = PerfTimer.inactive
     if parent is not None and get_engine_timing() >= EngineTiming.SEGMENTS:
         timing = parent.start_step("graph_compute")
-    engine = get_default_engine()
-    pending: List[Array] = []
     try:
-        for array in op_arrays:
-            node = array._node
-            if node.op == "reshape":
-                if pending:
-                    engine.execute_segment(pending, values, pending)
-                    pending = []
-                values[id(array)] = np.reshape(
-                    values[id(node.inputs[0])], array.meta.buffer_shape
-                )
-            else:
-                pending.append(array)
-        if pending:
-            engine.execute_segment(pending, values, [root])
+        get_default_engine().execute_segment(op_arrays, values, [root])
     finally:
         timing.close()
 
@@ -709,8 +704,24 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     the engine as an extra bind. The engine skips a producer when that
     buffer covers the array's canvas. ``force_recompute`` omits those binds
     and reruns every op.
+
+    A reshape of pixels is ``np.reshape`` of those pixels, a view. When
+    ``root`` is only reshapes of some array, that array is realized and
+    the result is its pixels reshaped. The engine would otherwise copy:
+    a ``reshape`` that is the last node has the caller's buffer to fill
+    and its producer's buffer to fill it from.
     """
     if root._data is not None and not force_recompute:
+        return _as_numpy_shape(root)
+
+    source = root
+    while source._node is not None and source._node.op == "reshape":
+        if source._data is not None and not force_recompute:
+            break
+        source = source._node.inputs[0]
+    if source is not root:
+        realize(source, force_recompute=force_recompute)
+        root._data = _seal_ndarray(np.reshape(source._data, root.meta.buffer_shape))
         return _as_numpy_shape(root)
 
     values: Dict[int, np.ndarray] = {}

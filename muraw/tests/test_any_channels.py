@@ -66,8 +66,11 @@ def test_view_pad_orientation_any_channels(channels, monkeypatch):
 
 
 def _assert_gather_channels(graph: dict, src_channels: int, dest_channels: int) -> None:
-    assert [node["op"] for node in graph["nodes"]] == ["view"]
-    node = graph["nodes"][0]
+    """One ``view`` gathers the channels. A ``reshape`` may follow it to
+    drop the channel axis; it moves no pixels."""
+    ops = [node["op"] for node in graph["nodes"]]
+    assert [op for op in ops if op != "reshape"] == ["view"]
+    node = graph["nodes"][ops.index("view")]
     by_id = {desc["id"]: _desc_channels(desc) for desc in graph["array_descs"]}
     assert by_id[node["inputs"][0]] == src_channels
     assert by_id[node["outputs"][0]] == dest_channels

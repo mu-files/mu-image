@@ -397,6 +397,23 @@ transpose = EngineOp(
     _infer_meta=graph._out_meta_transpose,
 )
 
+reshape = EngineOp(
+    meta=OpMeta(name='reshape', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "shape",
+    "type": "i32_array"
+  }
+]''')),
+    _infer_meta=graph._out_meta_reshape,
+)
+
 cfa_demosaic = EngineOp(
     meta=OpMeta(name='cfa_demosaic', requires_2d=True, is_cfa=True, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1258,6 +1275,7 @@ OPS_BY_NAME = {
     'tile': tile,
     'orientation': orientation,
     'transpose': transpose,
+    'reshape': reshape,
     'cfa_demosaic': cfa_demosaic,
     'matmul': matmul,
     'rgb_matrix_3x3': rgb_matrix_3x3,
@@ -1306,6 +1324,7 @@ __all__ = [
     'orientation',
     'pad',
     'ramp',
+    'reshape',
     'rgb_apply_gain_map',
     'rgb_apply_hue_sat_map',
     'rgb_apply_hue_sat_val_map',

@@ -1426,6 +1426,14 @@ def _random_axis_slice(rng: np.random.Generator, length: int) -> slice:
     return slice(None)
 
 
+def _ingested_pixels(array: Array) -> np.ndarray:
+    """The host buffer an ingested array reads: its own, or the one under
+    its ``view`` node, which a ``reshape`` node may sit on top of."""
+    while array._node is not None:
+        array = array._node.inputs[0]
+    return array._data
+
+
 def test_ingest_random_views_match_numpy():
     """Packed-parent slices ingest as a view or a bound buffer, never a wrong copy."""
     rng = np.random.default_rng(20260923)
@@ -1437,7 +1445,7 @@ def test_ingest_random_views_match_numpy():
             view = view[:, :, None]
         t = Array(view)
         np.testing.assert_array_equal(t.realize(), view)
-        src = t._data if t._node is None else t._node.inputs[0]._data
+        src = _ingested_pixels(t)
         assert np.shares_memory(src, mono)
     for _ in range(25):
         rows = _random_axis_slice(rng, 12)
@@ -1453,7 +1461,7 @@ def test_ingest_random_views_match_numpy():
             view = rgb[rows, cols, int(rng.integers(0, 4))]
         t = Array(view)
         np.testing.assert_array_equal(t.realize(), view)
-        src = t._data if t._node is None else t._node.inputs[0]._data
+        src = _ingested_pixels(t)
         assert np.shares_memory(src, rgb)
     frame, raw = _padded_xrgb_frame(9, 11)
     for _ in range(25):
@@ -1463,7 +1471,7 @@ def test_ingest_random_views_match_numpy():
         view = frame[rows, cols, channels]
         t = Array(view)
         np.testing.assert_array_equal(t.realize(), view)
-        src = t._data if t._node is None else t._node.inputs[0]._data
+        src = _ingested_pixels(t)
         assert np.shares_memory(src, raw)
 
 

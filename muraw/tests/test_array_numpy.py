@@ -347,15 +347,45 @@ def test_squeeze_method_matches_numpy():
     np.testing.assert_array_equal(Array(src).squeeze().realize(), src.squeeze())
 
 
-def test_size_one_axis_on_the_same_buffer_sizes_keeps_the_node():
+def test_size_one_axis_change_is_a_reshape_node():
+    """A lazy shape change is a ``reshape`` node on the array, whatever the
+    change; the same shape is the array itself."""
     import muimage as mi
 
     mono = Array(_mono()) * 2.0
-    assert mi.expand_dims(mono, -1)._node is mono._node
-    assert mi.squeeze(mi.expand_dims(mono, -1))._node is mono._node
-    line = Array(_V) * 2.0
-    assert mi.expand_dims(line, 0)._node is line._node
+    expanded = mi.expand_dims(mono, -1)
+    assert expanded._node.op == "reshape"
+    assert expanded._node.inputs == (mono,)
+    assert mi.squeeze(expanded)._node.inputs == (expanded,)
     assert mi.squeeze(mono) is mono
+    line = Array(_V) * 2.0
+    assert mi.expand_dims(line, 0)._node.op == "reshape"
+
+
+def test_realizing_a_reshape_reshapes_the_realized_pixels():
+    """A root that is only reshapes realizes the array under them and
+    returns its pixels reshaped, a view, whether that array was realized
+    before or not. A lazy op after the reshape goes through the engine."""
+    import muimage as mi
+    from muraw.array import _reshape_layout
+
+    src = _mono()
+    rows, cols = src.shape
+    doubled = Array(src) * 2.0
+    column = _reshape_layout(doubled, (rows * cols, 1))
+    got = column.realize()
+    pixels = doubled.realize()
+    np.testing.assert_array_equal(got, pixels.reshape(-1, 1))
+    assert np.shares_memory(got, pixels)
+    for reshaped in (
+        _reshape_layout(doubled, (rows * cols, 1)),
+        mi.squeeze(mi.expand_dims(column, 0)),
+    ):
+        got = reshaped.realize()
+        np.testing.assert_array_equal(got, pixels.reshape(reshaped.shape))
+        assert np.shares_memory(got, pixels)
+    scaled = column * 3.0
+    np.testing.assert_array_equal(scaled.realize(), pixels.reshape(-1, 1) * 3.0)
 
 
 @pytest.mark.parametrize("lazy", [False, True], ids=["source", "lazy"])
