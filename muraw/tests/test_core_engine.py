@@ -15,7 +15,7 @@ def test_execute_graph_sub_mul():
             {"id": 2, "dtype": "float32", "shape": [h, w]},
         ],
         "inputs": [0],
-        "outputs": [2],
+        "output": 2,
         "nodes": [
             {
                 "id": 0,
@@ -35,7 +35,7 @@ def test_execute_graph_sub_mul():
     }
     inp = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
     out = np.full((h, w), -1.0, dtype=np.float32)
-    _engine_load.execute_graph(graph, {0: inp}, {2: out})
+    _engine_load.execute_graph(graph, {0: inp}, out)
     np.testing.assert_allclose(out, [[0.0, 2.0], [4.0, 6.0]])
 
 
@@ -48,7 +48,7 @@ def test_execute_graph_unknown_op():
             {"id": 1, "dtype": "float32", "shape": [1, 1]},
         ],
         "inputs": [0],
-        "outputs": [1],
+        "output": 1,
         "nodes": [
             {
                 "id": 0,
@@ -62,7 +62,7 @@ def test_execute_graph_unknown_op():
     inp = np.zeros((1, 1), dtype=np.float32)
     out = np.zeros((1, 1), dtype=np.float32)
     with pytest.raises(RuntimeError, match="UNKNOWN_OP"):
-        _engine_load.execute_graph(graph, {0: inp}, {1: out})
+        _engine_load.execute_graph(graph, {0: inp}, out)
 
 
 def test_execute_graph_rgb_matrix_3x3_identity():
@@ -75,7 +75,7 @@ def test_execute_graph_rgb_matrix_3x3_identity():
             {"id": 1, "dtype": "float32", "shape": [1, 1, 3]},
         ],
         "inputs": [0],
-        "outputs": [1],
+        "output": 1,
         "nodes": [
             {
                 "id": 0,
@@ -88,7 +88,7 @@ def test_execute_graph_rgb_matrix_3x3_identity():
     }
     inp = np.array([[[0.25, 0.5, 0.75]]], dtype=np.float32)
     out = np.zeros_like(inp)
-    _engine_load.execute_graph(graph, {0: inp}, {1: out})
+    _engine_load.execute_graph(graph, {0: inp}, out)
     np.testing.assert_allclose(out, inp)
 
 

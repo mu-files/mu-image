@@ -26,12 +26,17 @@ class CoreEngine:
             self._supported_ops = frozenset(OPS_BY_NAME)
         return self._supported_ops
 
-    def execute_segment(
+    def execute(
         self,
         nodes: List["Array"],
         values: Dict[int, np.ndarray],
-        outputs: List["Array"],
+        root: "Array",
     ) -> None:
+        """Run ``nodes``; write ``root`` into ``values``.
+
+        Every array in ``values`` has its ``meta.buffer_shape``, so a 1D
+        array is a one-row ``(1, N)`` buffer.
+        """
         from ...common import PerfTimer
         from ..graph import EngineTiming, get_engine_timing
         from . import _engine_load
@@ -62,7 +67,7 @@ class CoreEngine:
         all_arrays = input_arrays + nodes
         id_of = {id(t): i for i, t in enumerate(all_arrays)}
 
-        output_ids = {id(t) for t in outputs}
+        root_id = id(root)
         in_binds: Dict[int, np.ndarray] = {}
         for t in input_arrays:
             tid = id(t)
@@ -71,15 +76,12 @@ class CoreEngine:
             in_binds[id_of[tid]] = values[tid]
         for t in nodes:
             tid = id(t)
-            if tid in values and tid not in output_ids:
+            if tid in values and tid != root_id:
                 in_binds[id_of[tid]] = values[tid]
 
-        out_binds: Dict[int, np.ndarray] = {}
-        for t in outputs:
-            # Kernels write every dest pixel, so do not spend a pass zeroing arr.
-            arr = np.empty(t.meta.buffer_shape, dtype=t.meta.dtype)
-            values[id(t)] = arr
-            out_binds[id_of[id(t)]] = arr
+        # Kernels write every dest pixel, so do not spend a pass zeroing arr.
+        out = np.empty(root.meta.buffer_shape, dtype=root.meta.dtype)
+        values[root_id] = out
 
         array_descs = []
         for t in all_arrays:
@@ -115,7 +117,7 @@ class CoreEngine:
         graph = {
             "array_descs": array_descs,
             "inputs": [id_of[id(t)] for t in input_arrays],
-            "outputs": [id_of[id(t)] for t in outputs],
+            "output": id_of[root_id],
             "nodes": graph_nodes,
         }
         # OPS detail attaches under the open graph_compute step (stack top).
@@ -124,7 +126,7 @@ class CoreEngine:
             and PerfTimer.current() is not None
         )
         timings = _engine_load.execute_graph(
-            graph, in_binds, out_binds, record_ops
+            graph, in_binds, out, record_ops
         )
         if record_ops and timings:
             timer = PerfTimer.current()

@@ -38,10 +38,10 @@ GraphOutMetaFn = Callable[[Array, Dict[str, Any]], ArrayMeta]
 
 
 class EngineTiming(IntEnum):
-    """How much detail ``graph.realize`` / execute_segment should record."""
+    """How much detail ``graph.realize`` / execute should record."""
 
     OFF = 0
-    SEGMENTS = 1  # one row per engine execute_segment
+    SEGMENTS = 1  # one row per engine execute
     OPS = 2  # + per-op rows inside an engine segment
 
 
@@ -77,13 +77,13 @@ class Engine(Protocol):
         """Op names this engine can execute."""
         ...
 
-    def execute_segment(
+    def execute(
         self,
         nodes: List[Array],
         values: dict[int, np.ndarray],
-        outputs: List[Array],
+        root: Array,
     ) -> None:
-        """Run ``nodes``; write ``outputs`` into ``values`` (and any needed intermediates).
+        """Run ``nodes``; write ``root`` into ``values`` (and any needed intermediates).
 
         Every array in ``values`` has its ``meta.buffer_shape``, so a 1D
         array is a one-row ``(1, N)`` buffer.
@@ -689,7 +689,7 @@ def _run_op_arrays(
     if parent is not None and get_engine_timing() >= EngineTiming.SEGMENTS:
         timing = parent.start_step("graph_compute")
     try:
-        get_default_engine().execute_segment(op_arrays, values, [root])
+        get_default_engine().execute(op_arrays, values, root)
     finally:
         timing.close()
 

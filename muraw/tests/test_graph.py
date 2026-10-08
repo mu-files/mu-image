@@ -580,22 +580,20 @@ def test_apply_opcodes_single_execute():
 
 
 class _RecordingEngine:
-    """Minimal Engine stub that records execute_segment calls."""
+    """Minimal Engine stub that records execute calls."""
 
     def __init__(self) -> None:
         self.calls: List[int] = []
         self.supported_ops = frozenset({"sub_scalar", "mul_scalar"})
 
-    def execute_segment(
+    def execute(
         self,
         nodes: List[Array],
         values: Dict[int, np.ndarray],
-        outputs: List[Array],
+        root: Array,
     ) -> None:
         self.calls.append(len(nodes))
-        # Produce zeros for outputs (enough to exercise the dispatch path).
-        for t in outputs:
-            values[id(t)] = np.zeros(t.meta.shape, dtype=np.float32)
+        values[id(root)] = np.zeros(root.meta.shape, dtype=np.float32)
 
 
 def test_set_default_engine_stub():
