@@ -2118,7 +2118,13 @@ class Array:
         return mi.convert_dtype(self, **attrs)
 
     def realize(self, *, force_recompute: bool = False) -> np.ndarray:
-        """Run the graph if needed and return this array's pixels (read-only)."""
+        """Run the graph if needed and return this array's pixels (read-only).
+
+        An array that several row-by-row ops read is computed row by row as
+        they need it, and computed again where its reads are far apart (a
+        flip of it, a shifted read). Realizing it first keeps one computed
+        copy.
+        """
         from .engines.graph import realize
 
         return realize(self, force_recompute=force_recompute)

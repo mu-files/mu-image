@@ -33,13 +33,13 @@
 #   is_rgb: the input is three-channel RGB. Requires inputs[0].channels: 3.
 #   is_cfa and is_rgb are never both true; with neither, the op takes any
 #   layout.
-#   needs_plane_index: on a planar tensor (3 axes with channel_axis 0), the
+#   needs_plane_index: on a planar array (3 axes with channel_axis 0), the
 #     op must know which plane it is writing. The engine runs every op on a
-#     planar tensor one plane at a time, as a one-channel image, except
+#     planar array one plane at a time, as a one-channel image, except
 #     transpose, which takes every plane in one call. Most ops
 #     treat every plane the same; an op with this property instead has
 #     per-plane attrs, or reads a different source plane than it writes.
-#     Excludes is_cfa and is_rgb, which never run on a planar tensor.
+#     Excludes is_cfa and is_rgb, which never run on a planar array.
 # Naming rule, checked by both generators against the properties: an is_cfa
 # op's name starts with cfa_, an is_rgb op's name starts with rgb_, and no
 # other op uses either prefix.
@@ -65,7 +65,7 @@ enums:
 ops:
   # Arithmetic with a constant: x + value, x - value, x * value, x / value.
   # value holds one number for every channel, or one per channel (one per
-  # plane of a planar tensor). Integer results are rounded to the nearest
+  # plane of a planar array). Integer results are rounded to the nearest
   # integer and saturate to the dtype's range. reverse: true computes
   # value - x and value / x.
   - name: add_scalar
@@ -122,7 +122,7 @@ ops:
 
   # Arithmetic between two arrays of one dtype: a + b, a - b, a * b,
   # a / b. The inputs broadcast as in NumPy: each input's rows, columns,
-  # and channels (planes of a planar tensor) match the output's, or are 1
+  # and channels (planes of a planar array) match the output's, or are 1
   # and are read at index 0 for every output index. Both inputs are read
   # the same way as the output, planar or packed. Integer results are
   # rounded to the nearest integer and saturate to the dtype's range.
@@ -353,7 +353,7 @@ ops:
 
   # Permute the three axes, as np.transpose(x, axes): output axis i is input
   # axis axes[i]. Input and output may differ in channel_axis, so this is
-  # the op that moves a tensor between planar and packed. Only the graph
+  # the op that moves an array between planar and packed. Only the graph
   # builder emits it: identity emits nothing, and the permutations that are
   # an orientation or a view emit those ops.
   - name: transpose

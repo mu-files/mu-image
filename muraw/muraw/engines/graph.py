@@ -710,6 +710,14 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     the result is its pixels reshaped. The engine would otherwise copy:
     a ``reshape`` that is the last node has the caller's buffer to fill
     and its producer's buffer to fill it from.
+
+    An array that several row-by-row ops read is not stored as a whole
+    image: the engine computes its rows as the readers need them. Where
+    the reads of one row are far apart, as with a flip of the array or a
+    shifted read, the row is computed again for the later read. To compute
+    such an array once, realize it first; later graphs read its pixels.
+    An array read by a tiled or whole-image op (``rot90``, ``transpose``)
+    is still stored as a whole image.
     """
     if root._data is not None and not force_recompute:
         return _as_numpy_shape(root)
