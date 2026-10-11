@@ -152,6 +152,7 @@ composite = EngineOp(
   {
     "count": 0,
     "key": "dest_channels",
+    "optional": true,
     "type": "i32_array"
   }
 ]''')),

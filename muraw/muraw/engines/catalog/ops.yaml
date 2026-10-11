@@ -172,8 +172,10 @@ ops:
   # input order, so a later source overwrites an earlier one. Source i
   # (input i + 1) has its first pixel at row tops[i] and column lefts[i].
   # dest_channels lists the dest channel of each channel of source 0, then
-  # of source 1, and so on; a repeated dest channel takes the later source
-  # channel, as in NumPy. A source must fit inside the base. A source less
+  # of source 1, and so on. When it is absent, each source channel is
+  # written to the dest channel of the same index. A repeated dest channel
+  # takes the later source channel, as in NumPy. A source must fit inside
+  # the base. A source less
   # precise than the base is converted to the base's dtype.
   - name: composite
     needs_plane_index: true
@@ -193,6 +195,7 @@ ops:
       - key: dest_channels
         type: i32_array
         count: 0
+        optional: true
 
   # Constant dest: no input. Shape/dtype live on the output array.
   - name: fill
