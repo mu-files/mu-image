@@ -134,7 +134,7 @@ class CoreEngine:
             op_by_id = {n["id"]: n["op"] for n in graph_nodes}
             steps = [
                 (
-                    f"{_timing_row_name(row, op_by_id)} (engine)",
+                    _timing_row_name(row, op_by_id),
                     row["exclusive_ns"] * 1e-9,
                 )
                 for row in timings
@@ -143,7 +143,16 @@ class CoreEngine:
 
 
 def _timing_row_name(row: Dict, op_by_id: Dict[int, str]) -> str:
-    """Name for ``--timing ops``: the label the op's prepare chose, else the op name."""
+    """Name for ``--timing ops``: the label the op's prepare chose, else the
+    op name, then ``(engine)``. It is ``(engine, not run)`` when the engine
+    never called the op's kernel, and ``(engine, not sampled)`` when the
+    kernel ran but none of its calls was timed, so its time is unknown."""
     if "label" in row:
-        return row["label"]
-    return op_by_id.get(row["node_id"], f"node_{row['node_id']}")
+        name = row["label"]
+    else:
+        name = op_by_id.get(row["node_id"], f"node_{row['node_id']}")
+    if row.get("calls") == 0:
+        return f"{name} (engine, not run)"
+    if row.get("timed_calls") == 0:
+        return f"{name} (engine, not sampled)"
+    return f"{name} (engine)"
