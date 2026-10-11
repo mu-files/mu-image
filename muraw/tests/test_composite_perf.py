@@ -65,12 +65,7 @@ def _muimage(src, height, width):
     image = _rendered(mi, mi.Array(src))
     top, left = _origin(src.shape[0], src.shape[1], height, width)
     patch = mi.full((height, width, 3), _COLOR)
-    return mi.composite(
-        image,
-        patch,
-        tops=[top],
-        lefts=[left],
-    ).realize()
+    return image.composite(((top, left), patch)).realize()
 
 
 def _median_time(run, repeats=5):

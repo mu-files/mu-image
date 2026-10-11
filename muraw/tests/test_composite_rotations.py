@@ -49,14 +49,12 @@ def _numpy(src):
 def _muimage(src):
     side = src.shape[0]
     image = mi.Array(src)
-    turns = [mi.rot90(image, k) for k in range(4)]
     base = mi.zeros((side * 2, side * 2, 3), dtype=np.uint8)
-    return mi.composite(
-        base,
-        *turns,
-        tops=[block_row * side for block_row, _, _ in _PLACEMENTS],
-        lefts=[block_col * side for _, block_col, _ in _PLACEMENTS],
-    ).realize()
+    placements = tuple(
+        ((block_row * side, block_col * side), mi.rot90(image, turns))
+        for block_row, block_col, turns in _PLACEMENTS
+    )
+    return base.composite(*placements).realize()
 
 
 def test_four_rotations_composite_into_quadrants():

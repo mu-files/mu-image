@@ -1647,6 +1647,54 @@ def meshgrid(
     return broadcast_to(first, shape), broadcast_to(second, shape)
 
 
+def composite(base: ArrayLike, *placements: tuple) -> "Array":
+    """Write each source onto ``base``. ``base`` is unchanged.
+
+    A placement is ``(origin, source)`` or ``(origin, source, channels)``.
+    ``origin`` is ``(row, col)`` in ``base``, or ``(col,)`` when ``base``
+    is 1D. ``channels`` is the dest channel of each of that source's
+    channels. Without it, source channel ``i`` is written to dest channel
+    ``i``. A later placement overwrites an earlier one where they overlap.
+    """
+    from .engines.ops import composite as composite_op
+
+    base = Array(base)
+    sources: list[Array] = []
+    tops: list[int] = []
+    lefts: list[int] = []
+    dest_channels: list[int] = []
+    scattered = False
+    for placement in placements:
+        if not isinstance(placement, tuple) or not 2 <= len(placement) <= 3:
+            raise TypeError(
+                "a composite placement is (origin, source) or "
+                f"(origin, source, channels), got {placement!r}"
+            )
+        origin, source, *channels = placement
+        source = Array(source)
+        if len(origin) == 2:
+            row, col = origin
+        elif len(origin) == 1 and base.meta.is_1d:
+            row, col = 0, origin[0]
+        else:
+            expected = "(col,)" if base.meta.is_1d else "(row, col)"
+            raise ValueError(
+                f"composite origin for shape {base.shape} must be {expected}, got {origin!r}"
+            )
+        sources.append(source)
+        tops.append(operator.index(row))
+        lefts.append(operator.index(col))
+        if channels:
+            scattered = True
+            dest_channels.extend(operator.index(channel) for channel in channels[0])
+        else:
+            dest_channels.extend(range(source.meta.channels))
+    attrs: dict[str, Any] = {"tops": tops, "lefts": lefts}
+    if scattered:
+        attrs["dest_channels"] = dest_channels
+    return composite_op(base, *sources, **attrs)
+
+
 class Array:
     """Lazy array handle: a source buffer and/or an engine op result.
 
@@ -2045,6 +2093,10 @@ class Array:
             )
 
         return _on_channels_last(self, run)
+
+    def composite(self, *placements: tuple) -> "Array":
+        """``composite(self, *placements)``."""
+        return composite(self, *placements)
 
     def __getitem__(self, key: Any) -> "Array":
         """NumPy spatial slice: a hard crop of this array."""
