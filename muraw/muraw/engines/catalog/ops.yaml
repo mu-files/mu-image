@@ -33,13 +33,19 @@
 #   is_rgb: the input is three-channel RGB. Requires inputs[0].channels: 3.
 #   is_cfa and is_rgb are never both true; with neither, the op takes any
 #   layout.
-#   needs_plane_index: on a planar array (3 axes with channel_axis 0), the
-#     op must know which plane it is writing. The engine runs every op on a
-#     planar array one plane at a time, as a one-channel image, except
-#     transpose, which takes every plane in one call. Most ops
-#     treat every plane the same; an op with this property instead has
-#     per-plane attrs, or reads a different source plane than it writes.
-#     Excludes is_cfa and is_rgb, which never run on a planar array.
+#   needs_frame_index: the op must know which frame it is writing. An
+#     array is a stack of frames, each a packed (rows, columns, channels)
+#     image; a 3-axis array with channel_axis 0 is one frame per index of
+#     axis 0, with one channel, and any other array is one frame. The
+#     engine runs every op one frame at a time, except transpose, which
+#     takes every frame in one call. Most ops treat every frame the same
+#     and need every array of a node to have the same number of frames;
+#     an op with this property instead has per-frame attrs, or reads a
+#     different source frame than it writes, so its arrays may have
+#     different frame counts. An attr names channels or frames, never both:
+#     on an array whose channels are on axis 0, the caller sends the frame
+#     attr (dest_frames, src_frames, frame_reps, frame_before and
+#     frame_after, per_frame). Excludes is_cfa and is_rgb.
 # Naming rule, checked by both generators against the properties: an is_cfa
 # op's name starts with cfa_, an is_rgb op's name starts with rgb_, and no
 # other op uses either prefix.
@@ -64,12 +70,13 @@ enums:
 
 ops:
   # Arithmetic with a constant: x + value, x - value, x * value, x / value.
-  # value holds one number for every channel, or one per channel (one per
-  # plane of a planar array). Integer results are rounded to the nearest
+  # value holds one number for every sample, or one per channel. With
+  # per_frame: true it holds one number per frame instead, used for every
+  # channel of that frame. Integer results are rounded to the nearest
   # integer and saturate to the dtype's range. reverse: true computes
   # value - x and value / x.
   - name: add_scalar
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -78,9 +85,13 @@ ops:
       - key: value
         type: f32_array
         count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
 
   - name: sub_scalar
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -89,13 +100,17 @@ ops:
       - key: value
         type: f32_array
         count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
       - key: reverse
         type: bool
         count: 1
         optional: true
 
   - name: mul_scalar
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -104,9 +119,13 @@ ops:
       - key: value
         type: f32_array
         count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
 
   - name: div_scalar
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -115,20 +134,23 @@ ops:
       - key: value
         type: f32_array
         count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
       - key: reverse
         type: bool
         count: 1
         optional: true
 
   # Arithmetic between two arrays of one dtype: a + b, a - b, a * b,
-  # a / b. The inputs broadcast as in NumPy: each input's rows, columns,
-  # and channels (planes of a planar array) match the output's, or are 1
-  # and are read at index 0 for every output index. Both inputs are read
-  # the same way as the output, planar or packed. Integer results are
-  # rounded to the nearest integer and saturate to the dtype's range.
-  # divide has float paths only.
+  # a / b. The inputs broadcast as in NumPy: each input's frames, rows,
+  # columns, and channels match the output's, or are 1 and are read at
+  # index 0 for every output index. Integer results are rounded to the
+  # nearest integer and saturate to the dtype's range. divide has float
+  # paths only.
   - name: add
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
       - channels: any
@@ -138,7 +160,7 @@ ops:
     attrs: []
 
   - name: subtract
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
       - channels: any
@@ -148,7 +170,7 @@ ops:
     attrs: []
 
   - name: multiply
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
       - channels: any
@@ -158,7 +180,7 @@ ops:
     attrs: []
 
   - name: divide
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
       - channels: any
@@ -174,11 +196,13 @@ ops:
   # dest_channels lists the dest channel of each channel of source 0, then
   # of source 1, and so on. When it is absent, each source channel is
   # written to the dest channel of the same index. A repeated dest channel
-  # takes the later source channel, as in NumPy. A source must fit inside
-  # the base. A source less
+  # takes the later source channel, as in NumPy. dest_frames does the same
+  # for frames: the dest frame of each frame of source 0, then of source 1,
+  # and so on, each source frame to the dest frame of the same index when
+  # it is absent. A source must fit inside the base. A source less
   # precise than the base is converted to the base's dtype.
   - name: composite
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
       - channels: any
@@ -193,6 +217,10 @@ ops:
         type: i32_array
         count: 0
       - key: dest_channels
+        type: i32_array
+        count: 0
+        optional: true
+      - key: dest_frames
         type: i32_array
         count: 0
         optional: true
@@ -233,7 +261,7 @@ ops:
 
   # ROI view: emit meta via geometry: view (_out_meta_view); native span execute.
   - name: view
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -267,6 +295,11 @@ ops:
         type: i32_array
         count: 0
         optional: true
+      # Dest frame i reads src_frames[i]. Omit for identity 0..F-1.
+      - key: src_frames
+        type: i32_array
+        count: 0
+        optional: true
       # Dest row y reads source row top + y * row_step. Omit for 1.
       # Step -1 is a flip along this axis.
       - key: row_step
@@ -280,11 +313,12 @@ ops:
         optional: true
 
   # Grow height and width. channel_before / channel_after add constant
-  # channels; that requires mode constant. constant_values is the four
-  # spatial edges, or those four plus the channel-before and channel-after
-  # fills (prepare accepts length 4 or 6).
+  # channels; that requires mode constant. frame_before / frame_after add
+  # frames, in any mode. constant_values is the four spatial edges, or
+  # those four plus the fills before and after the source's channels or
+  # frames (prepare accepts length 4 or 6).
   - name: pad
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -311,6 +345,14 @@ ops:
         type: i32
         count: 1
         optional: true
+      - key: frame_before
+        type: i32
+        count: 1
+        optional: true
+      - key: frame_after
+        type: i32
+        count: 1
+        optional: true
       - key: mode
         type: string
         count: 1
@@ -322,10 +364,11 @@ ops:
         optional: true
 
   # Repeat the source. row_reps, col_reps, and channel_reps are the
-  # counts after NumPy's right-aligned padding with leading 1s. Each
-  # must be >= 1. The public mi.tile parses reps; this op takes the counts.
+  # counts after NumPy's right-aligned padding with leading 1s, and
+  # frame_reps (1 when omitted) repeats frames. Each must be >= 1. The
+  # public mi.tile parses reps; this op takes the counts.
   - name: tile
-    needs_plane_index: true
+    needs_frame_index: true
     inputs:
       - channels: any
     outputs:
@@ -341,6 +384,10 @@ ops:
       - key: channel_reps
         type: i32
         count: 1
+      - key: frame_reps
+        type: i32
+        count: 1
+        optional: true
 
   # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation.
   - name: orientation
@@ -762,7 +809,7 @@ ops:
         count: 1
 
   - name: warp_rectilinear
-    needs_plane_index: true
+    needs_frame_index: true
     requires_2d: true
     inputs:
       - channels: any
@@ -920,7 +967,7 @@ ops:
         count: 1
 
   - name: map_polynomial
-    needs_plane_index: true
+    needs_frame_index: true
     requires_2d: true
     inputs:
       - channels: any

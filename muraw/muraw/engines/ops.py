@@ -19,6 +19,12 @@ add_scalar = EngineOp(
     "count": 0,
     "key": "value",
     "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
   }
 ]''')),
     _infer_meta=None,
@@ -36,6 +42,12 @@ sub_scalar = EngineOp(
     "count": 0,
     "key": "value",
     "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
   },
   {
     "count": 1,
@@ -59,6 +71,12 @@ mul_scalar = EngineOp(
     "count": 0,
     "key": "value",
     "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
   }
 ]''')),
     _infer_meta=None,
@@ -76,6 +94,12 @@ div_scalar = EngineOp(
     "count": 0,
     "key": "value",
     "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
   },
   {
     "count": 1,
@@ -152,6 +176,12 @@ composite = EngineOp(
   {
     "count": 0,
     "key": "dest_channels",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "dest_frames",
     "optional": true,
     "type": "i32_array"
   }
@@ -260,6 +290,12 @@ view = EngineOp(
     "type": "i32_array"
   },
   {
+    "count": 0,
+    "key": "src_frames",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
     "count": 1,
     "key": "row_step",
     "optional": true,
@@ -317,6 +353,18 @@ pad = EngineOp(
   },
   {
     "count": 1,
+    "key": "frame_before",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "frame_after",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
     "key": "mode",
     "optional": true,
     "type": "string",
@@ -358,6 +406,12 @@ tile = EngineOp(
   {
     "count": 1,
     "key": "channel_reps",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "frame_reps",
+    "optional": true,
     "type": "i32"
   }
 ]''')),

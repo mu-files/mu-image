@@ -4,12 +4,39 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
     from ...array import Array
+    from ..graph import OpNode
+
+
+# The engine reads an array whose channels are on axis 0 as a stack of
+# frames of one channel each, so a node whose input 0 is such an array
+# names its channels by these frame attrs instead.
+_FRAME_ATTRS = {
+    "dest_channels": "dest_frames",
+    "src_channels": "src_frames",
+    "channel_reps": "frame_reps",
+    "channel_before": "frame_before",
+    "channel_after": "frame_after",
+}
+_SCALAR_OPS = frozenset({"add_scalar", "sub_scalar", "mul_scalar", "div_scalar"})
+
+
+def _engine_attrs(node: "OpNode") -> Dict[str, Any]:
+    """The attrs of ``node`` as the engine reads them."""
+    attrs = dict(node.attrs)
+    if not node.inputs or node.inputs[0].meta.channel_axis != 0:
+        return attrs
+    lowered = {_FRAME_ATTRS.get(key, key): value for key, value in attrs.items()}
+    if "frame_reps" in lowered:
+        lowered["channel_reps"] = 1
+    if node.op in _SCALAR_OPS and len(attrs["value"]) > 1:
+        lowered["per_frame"] = True
+    return lowered
 
 
 class CoreEngine:
@@ -110,7 +137,7 @@ class CoreEngine:
                     "op": t._node.op,
                     "inputs": [id_of[id(inp)] for inp in t._node.inputs],
                     "outputs": [id_of[id(t)]],
-                    "attrs": dict(t._node.attrs),
+                    "attrs": _engine_attrs(t._node),
                 }
             )
 
