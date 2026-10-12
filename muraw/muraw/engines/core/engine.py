@@ -65,7 +65,7 @@ class CoreEngine:
         array is a one-row ``(1, N)`` buffer.
         """
         from ...common import PerfTimer
-        from ..graph import EngineTiming, get_engine_timing
+        from ..graph import EngineTiming, check_engine_layout, get_engine_timing
         from . import _engine_load
 
         unknown = sorted(
@@ -113,12 +113,15 @@ class CoreEngine:
         array_descs = []
         for t in all_arrays:
             m = t.meta
+            check_engine_layout(m)
             origin_row, origin_col = m.origin
+            # The engine reads a CHW array as frames on axis 0 with one
+            # channel each, and any other array with its channels last.
             desc = {
                 "id": id_of[id(t)],
                 "dtype": m.dtype.name,
                 "shape": list(m.buffer_shape),
-                "channel_axis": -1 if m.channel_axis is None else m.channel_axis,
+                "frame_axis": 0 if m.channel_axis == 0 else -1,
                 "origin_y": int(origin_row),
                 "origin_x": int(origin_col),
                 "canvas_x0": int(m.canvas[0]),

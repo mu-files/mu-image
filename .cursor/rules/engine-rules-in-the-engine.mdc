@@ -1,0 +1,43 @@
+---
+description: An engine's limits are checked in muraw/muraw/engines/, not in mi.Array
+alwaysApply: true
+---
+
+# Engine rules live in the engines package
+
+`mi.Array` and `ArrayMeta` (`muraw/muraw/array.py`) accept what NumPy
+accepts. A limit that comes from how an engine stores or runs an array
+(which axis may hold channels, how many axes it takes, which layouts an
+op's kernel reads) is checked in Python under `muraw/muraw/engines/`,
+where the graph is built and translated for the engine. Another engine
+may have different limits, and the array layer must not hard-code the
+current one's.
+
+The array layer still raises for what NumPy itself rejects: a bad
+shape, an axis out of range, shapes that do not broadcast.
+
+The check raises with a message that names the layout and how to fix
+it, for example with `mi.moveaxis`. Do not leave the user with only
+the Rust engine's `GRAPH_INVALID`.
+
+```python
+# ❌ BAD: array.py refuses a NumPy-valid layout because the engine
+# cannot read it
+class ArrayMeta:
+    def __post_init__(self):
+        if axis == 1:
+            raise NotImplementedError("channel_axis 1 is not supported")
+
+# ✅ GOOD: ArrayMeta records the layout; engines/graph.py rejects it
+# for each op's inputs and output, and the core engine for every array
+# it is sent
+def check_engine_layout(meta: ArrayMeta) -> None:
+    if meta.ndim == 3 and meta.channel_axis == 1:
+        raise NotImplementedError(
+            f"shape {meta.shape} with channel_axis 1 is not supported; put the "
+            "channels last, (H, W, C), or first, (C, H, W), with mi.moveaxis"
+        )
+```
+
+Existing checks in `array.py` move when the code around them is being
+changed for another reason; this rule is not a task by itself.

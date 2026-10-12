@@ -117,14 +117,14 @@ def test_per_channel_constants_use_the_scalar_op_and_others_the_two_input_op():
     assert (arr * np.ones((4, 5, 1)))._node.op == "multiply"
 
 
-def test_planar_arrays_broadcast_per_plane():
+def test_chw_arrays_broadcast_per_channel():
     chw = _source("float32", (3, 4, 5), 7)
     rows = _source("float32", (3, 4, 1), 8)
     got = mi.Array(chw, channel_axis=0) * mi.Array(rows, channel_axis=0)
     assert got.meta.channel_axis == 0
     _check(got, chw * rows)
-    one_plane = _source("float32", (4, 5), 9)
-    _check(mi.Array(chw, channel_axis=0) - mi.Array(one_plane), chw - one_plane)
+    mono = _source("float32", (4, 5), 9)
+    _check(mi.Array(chw, channel_axis=0) - mi.Array(mono), chw - mono)
 
 
 def test_arrays_read_differently_by_the_engine_are_not_supported_yet():

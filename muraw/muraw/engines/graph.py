@@ -244,19 +244,6 @@ def _reflected_canvas(
     return (x0, y0, width, height)
 
 
-def _require_engine_rows_and_columns(x: Array, name: str) -> None:
-    """Raise when the engine does not read ``x``'s rows and columns as such.
-
-    The engine reads a ``(H, C, W)`` array packed, with axis 1 as its
-    columns, so an op that moves rows and columns would move the wrong axes.
-    """
-    if x.meta.channel_axis == 1:
-        raise NotImplementedError(
-            f"{name} of shape {x.shape} with channel_axis 1 is not supported yet; "
-            "move the channels last with mi.moveaxis(x, 1, -1)"
-        )
-
-
 def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``view``: H/W from attrs. Canvas stays in this array's system.
 
@@ -271,7 +258,6 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     false puts canvas on the view rect; true keeps the parent canvas (or
     remaps it into dest space when origin was reset).
     """
-    _require_engine_rows_and_columns(x, "view")
     left, top = int(attrs["left"]), int(attrs["top"])
     width, height = int(attrs["width"]), int(attrs["height"])
     row_step = int(attrs.get("row_step", 1))
@@ -341,7 +327,6 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     ``-(top, left)``. Canvas is the new array at that origin, same as a
     crop's view rect and canvas both sitting on the window.
     """
-    _require_engine_rows_and_columns(x, "pad")
     top = int(attrs["top"])
     bottom = int(attrs["bottom"])
     left = int(attrs["left"])
@@ -387,7 +372,6 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     The first copy keeps the source origin. Canvas grows to the right
     and down from that origin.
     """
-    _require_engine_rows_and_columns(x, "tile")
     row_reps = int(attrs["row_reps"])
     col_reps = int(attrs["col_reps"])
     channel_reps = int(attrs["channel_reps"])
@@ -441,7 +425,6 @@ def _out_meta_orientation(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     Canvas is remapped in dest space, then stored back in the shared
     system (dest ``(0, 0)`` is ``origin``).
     """
-    _require_engine_rows_and_columns(x, "orientation")
     code = int(attrs["orientation"])
     if code not in _ORIENTATION:
         raise ValueError(f"orientation: invalid TIFF code {code} (expected 1–8)")
@@ -520,6 +503,19 @@ class OpNode:
     out_meta: ArrayMeta
 
 
+def check_engine_layout(meta: ArrayMeta) -> None:
+    """Raise when the engine cannot read an array of ``meta``.
+
+    The engine reads the channels of a 3-axis array last, ``(H, W, C)``, or
+    first, ``(C, H, W)``, never on axis 1.
+    """
+    if meta.ndim == 3 and meta.channel_axis == 1:
+        raise NotImplementedError(
+            f"shape {meta.shape} with channel_axis 1 is not supported; put the "
+            "channels last, (H, W, C), or first, (C, H, W), with mi.moveaxis"
+        )
+
+
 def _check_input(
     op_meta: OpMeta, in_channels: Optional[int], x: Array, index: int = 0
 ) -> None:
@@ -530,6 +526,7 @@ def _check_input(
     ``in_channels`` is the channel count the op needs, or ``None`` for any.
     """
     name = op_meta.name
+    check_engine_layout(x.meta)
     channel_axis = x.meta.channel_axis
     if op_meta.requires_2d and x.meta.is_1d:
         raise ValueError(f"op {name!r} requires a 2D input, got shape {x.shape}")
@@ -654,6 +651,7 @@ def emit(engine_op: EngineOp, x: Array, /, *more: Array, **attrs: Any) -> Array:
         _check_input(engine_op.meta, engine_op._in_channels[entry], inp, index)
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
     out_meta = engine_op.infer_out_meta(x, coerced, *more)
+    check_engine_layout(out_meta)
     node = OpNode(
         op=name,
         inputs=inputs,

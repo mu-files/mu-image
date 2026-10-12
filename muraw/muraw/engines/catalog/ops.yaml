@@ -35,8 +35,8 @@
 #   layout.
 #   needs_frame_index: the op must know which frame it is writing. An
 #     array is a stack of frames, each a packed (rows, columns, channels)
-#     image; a 3-axis array with channel_axis 0 is one frame per index of
-#     axis 0, with one channel, and any other array is one frame. The
+#     image; an array with frame_axis 0 is one frame per index of axis 0,
+#     and any other array is one frame. The
 #     engine runs every op one frame at a time, except transpose, which
 #     takes every frame in one call. Most ops treat every frame the same
 #     and need every array of a node to have the same number of frames;
@@ -402,8 +402,8 @@ ops:
         count: 1
 
   # Permute the three axes, as np.transpose(x, axes): output axis i is input
-  # axis axes[i]. Input and output may differ in channel_axis, so this is
-  # the op that moves an array between planar and packed. Only the graph
+  # axis axes[i]. Input and output may differ in frame_axis, so this is
+  # the op that moves an array between CHW and packed. Only the graph
   # builder emits it: identity emits nothing, and the permutations that are
   # an orientation or a view emit those ops.
   - name: transpose

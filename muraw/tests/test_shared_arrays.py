@@ -145,10 +145,10 @@ def test_array_read_by_a_rotation_and_an_add_matches_numpy():
     np.testing.assert_array_equal((mi.rot90(y) + y).realize(), expected)
 
 
-def test_planar_array_read_twice_matches_numpy():
-    planes = _random((3, 23, 37), 9)
-    y = mi.Array(planes, channel_axis=0) * 2.0 - 0.5
-    expected_y = planes * 2.0 - 0.5
+def test_chw_array_read_twice_matches_numpy():
+    chw = _random((3, 23, 37), 9)
+    y = mi.Array(chw, channel_axis=0) * 2.0 - 0.5
+    expected_y = chw * 2.0 - 0.5
     np.testing.assert_array_equal((y * y + y).realize(), expected_y * expected_y + expected_y)
 
 

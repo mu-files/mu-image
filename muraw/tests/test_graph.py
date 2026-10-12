@@ -1294,11 +1294,11 @@ def test_channel_slice_and_pad_installed_as_view():
     assert kept.shape == (4, 6, 1)
     np.testing.assert_array_equal(kept.realize(), rgb[:, :, 0:1])
 
-    planes = rgb[::2, 1::2, ::-1]
-    mixed = Array(planes)
+    strided_bgr = rgb[::2, 1::2, ::-1]
+    mixed = Array(strided_bgr)
     assert mixed._node is not None and mixed._node.op == "view"
     assert np.shares_memory(mixed._node.inputs[0]._data, rgb)
-    np.testing.assert_array_equal(mixed.realize(), planes)
+    np.testing.assert_array_equal(mixed.realize(), strided_bgr)
 
     mono = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
     lifted = Array(mono[:, :, None])
@@ -1387,7 +1387,7 @@ _CHW = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
     ],
     ids=["moveaxis", "moveaxis_transposed", "fortran"],
 )
-def test_planar_layouts_bound_on_ingest(arr, axes):
+def test_chw_layouts_bound_on_ingest(arr, axes):
     t = Array(arr)
     assert _op_chain(t) == ["transpose"]
     assert list(t._node.attrs["axes"]) == axes

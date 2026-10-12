@@ -64,7 +64,15 @@ def test_row_slice_of_chw_moves_the_origin_row(height, width):
         np.s_[..., 1:3],
         np.s_[:, ::-1, 3:],
     ],
-    ids=["plane_step", "plane_int", "plane_int_rows", "plane_list", "all_axes", "ellipsis", "row_flip"],
+    ids=[
+        "channel_step",
+        "channel_int",
+        "channel_int_rows",
+        "channel_list",
+        "all_axes",
+        "ellipsis",
+        "row_flip",
+    ],
 )
 def test_chw_index_matches_numpy(key):
     chw = _chw()
@@ -79,7 +87,7 @@ def test_chw_flips_match_numpy():
 
 
 @pytest.mark.parametrize("mode", ["constant", "edge", "reflect", "symmetric"])
-def test_chw_pad_with_plane_widths_matches_numpy(mode):
+def test_chw_pad_with_channel_widths_matches_numpy(mode):
     chw = _chw()
     pad_width = ((1, 2), (1, 0), (0, 2))
     kwargs = {"constant_values": 0.5} if mode == "constant" else {}
@@ -89,7 +97,7 @@ def test_chw_pad_with_plane_widths_matches_numpy(mode):
 
 
 @pytest.mark.parametrize("mode", ["edge", "reflect"])
-def test_chw_pad_shorthand_pads_planes_like_numpy(mode):
+def test_chw_pad_shorthand_pads_channels_like_numpy(mode):
     chw = _chw()
     got = Array(chw, channel_axis=0).pad(1, mode=mode)
     np.testing.assert_array_equal(got.realize(), np.pad(chw, 1, mode=mode))
@@ -111,9 +119,9 @@ def test_chw_tile_matches_numpy(reps):
 
 def test_chw_broadcast_matches_numpy():
     chw = _chw()
-    plane = Array(chw[:1], channel_axis=0)
+    one_channel = Array(chw[:1], channel_axis=0)
     np.testing.assert_array_equal(
-        mi.broadcast_to(plane, (3, 6, 9)).realize(), np.broadcast_to(chw[:1], (3, 6, 9))
+        mi.broadcast_to(one_channel, (3, 6, 9)).realize(), np.broadcast_to(chw[:1], (3, 6, 9))
     )
     repeated = np.broadcast_to(chw[:1], (4, 6, 9))
     np.testing.assert_array_equal(Array(repeated, channel_axis=0).realize(), repeated)
@@ -158,7 +166,7 @@ def test_legacy_full_frame_ops_rejected_on_chw_and_run_after_moveaxis(name):
     assert run(mi.moveaxis(x, 0, -1)).realize().shape == (40, 48, 3)
 
 
-def test_planar_crop_then_moveaxis_then_rgb_op_matches_numpy():
+def test_chw_crop_then_moveaxis_then_rgb_op_matches_numpy():
     chw = _chw(40, 48)
     x = Array(chw, channel_axis=0)
     x = x[:, 16:-16, 16:-16] * 2.0
@@ -190,7 +198,7 @@ def _random_channel_key(rng: np.random.Generator) -> Any:
     return _random_slice(rng, 3)
 
 
-@pytest.mark.parametrize("channel_axis", [0, 1])
+@pytest.mark.parametrize("channel_axis", [0, 2])
 @pytest.mark.parametrize("seed", range(20))
 def test_random_index_matches_numpy(channel_axis, seed):
     rng = np.random.default_rng(seed)
@@ -202,17 +210,7 @@ def test_random_index_matches_numpy(channel_axis, seed):
     np.testing.assert_array_equal(Array(src, channel_axis=channel_axis)[key].realize(), src[key])
 
 
-@pytest.mark.parametrize(
-    "key",
-    [np.s_[1:3], np.s_[:, 1], np.s_[:, [2, 0]], np.s_[..., ::-2], np.s_[:, 1, None, ::2]],
-    ids=["rows", "channel_int", "channel_list", "ellipsis", "newaxis"],
-)
-def test_channels_in_the_middle_index_matches_numpy(key):
-    src = _with_channels_on(1)
-    np.testing.assert_array_equal(Array(src, channel_axis=1)[key].realize(), src[key])
-
-
-@pytest.mark.parametrize("channel_axis", [0, 1])
+@pytest.mark.parametrize("channel_axis", [0, 2])
 @pytest.mark.parametrize("axis", [None, 0, 1, 2, (0, 2)], ids=str)
 def test_flip_matches_numpy(channel_axis, axis):
     src = _with_channels_on(channel_axis)
@@ -220,59 +218,3 @@ def test_flip_matches_numpy(channel_axis, axis):
     np.testing.assert_array_equal(mi.flip(x, axis).realize(), np.flip(src, axis))
     np.testing.assert_array_equal(mi.fliplr(x).realize(), np.fliplr(src))
     np.testing.assert_array_equal(mi.flipud(x).realize(), np.flipud(src))
-
-
-@pytest.mark.parametrize("mode", ["constant", "edge", "reflect", "symmetric"])
-def test_channels_in_the_middle_pad_matches_numpy(mode):
-    src = _with_channels_on(1)
-    pad_width = ((1, 2), (0, 0), (2, 1))
-    kwargs = {"constant_values": 0.5} if mode == "constant" else {}
-    got = Array(src, channel_axis=1).pad(pad_width, mode=mode, **kwargs)
-    assert got.meta.channel_axis == 1
-    np.testing.assert_array_equal(got.realize(), np.pad(src, pad_width, mode=mode, **kwargs))
-
-
-def test_channels_in_the_middle_pad_constants_per_axis_match_numpy():
-    src = _with_channels_on(1)
-    constants = ((7, 8), (1, 2), (3, 4))
-    got = Array(src, channel_axis=1).pad(1, constant_values=constants)
-    np.testing.assert_array_equal(got.realize(), np.pad(src, 1, constant_values=constants))
-
-
-@pytest.mark.parametrize("reps", [(2, 1, 1), (2, 2, 3), (1, 2), 3], ids=str)
-def test_channels_in_the_middle_tile_matches_numpy(reps):
-    src = _with_channels_on(1)
-    got = mi.tile(Array(src, channel_axis=1), reps)
-    np.testing.assert_array_equal(got.realize(), np.tile(src, reps))
-
-
-def test_channels_in_the_middle_broadcast_matches_numpy():
-    src = _with_channels_on(1)
-    column = Array(src[:, :, :1], channel_axis=1)
-    np.testing.assert_array_equal(
-        mi.broadcast_to(column, src.shape).realize(), np.broadcast_to(src[:, :, :1], src.shape)
-    )
-    repeated = np.broadcast_to(src[:, :1], src.shape)
-    np.testing.assert_array_equal(Array(repeated, channel_axis=1).realize(), repeated)
-
-
-def test_moved_channels_index_adds_one_transpose():
-    hwc = np.ascontiguousarray(np.moveaxis(_chw(), 0, -1))
-    x = mi.moveaxis(Array(hwc), -1, 1)[1:4, [2, 0], ::2]
-    assert _op_names(x).count("transpose") == 1
-    np.testing.assert_array_equal(x.realize(), np.moveaxis(hwc, -1, 1)[1:4, [2, 0], ::2])
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda a: mi.view(a, left=0, top=0, width=2, height=2),
-        lambda a: mi.pad(a, top=1, bottom=0, left=0, right=0),
-        lambda a: mi.orientation(a, orientation=5),
-    ],
-    ids=["view", "pad", "orientation"],
-)
-def test_engine_ops_on_channels_in_the_middle_raise(call):
-    x = Array(np.zeros((6, 3, 9), np.float32), channel_axis=1)
-    with pytest.raises(NotImplementedError, match=r"mi\.moveaxis\(x, 1, -1\)"):
-        call(x)

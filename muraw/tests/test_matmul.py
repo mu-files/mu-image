@@ -123,10 +123,9 @@ def test_more_than_32_channels_is_not_implemented(shape: tuple[int, int]) -> Non
         mi.Array(image) @ _matrix(*shape)
 
 
-@pytest.mark.parametrize("channel_axis", [0, 1])
-def test_channels_not_on_the_last_axis_is_not_implemented(channel_axis: int) -> None:
-    planes = np.moveaxis(_image("float32", 3), -1, channel_axis)
-    image = mi.Array(planes, channel_axis=channel_axis)
+def test_channels_not_on_the_last_axis_is_not_implemented() -> None:
+    chw = np.moveaxis(_image("float32", 3), -1, 0)
+    image = mi.Array(chw, channel_axis=0)
     with pytest.raises(NotImplementedError, match="channel_axis"):
         image @ _matrix(image.shape[-1], 3)
 

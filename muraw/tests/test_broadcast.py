@@ -80,12 +80,12 @@ def test_broadcast_ingest_shares_memory():
     row = np.arange(8, dtype=np.float32)
     column = np.arange(4, dtype=np.float32).reshape(4, 1)
     pixel = np.array([[[1.0, 2.0, 3.0]]], dtype=np.float32)
-    plane = np.arange(8, dtype=np.float32).reshape(2, 4, 1)
+    mono = np.arange(8, dtype=np.float32).reshape(2, 4, 1)
     cases = [
         (row, (4, 8)),
         (column, (4, 6)),
         (pixel, (3, 5, 3)),
-        (plane, (2, 4, 3)),
+        (mono, (2, 4, 3)),
     ]
     for src, shape in cases:
         broadcast = np.broadcast_to(src, shape)

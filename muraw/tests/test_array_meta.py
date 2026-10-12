@@ -38,6 +38,7 @@ def test_properties_follow_the_shape(
 def test_channel_axis_defaults_to_last_and_counts_negative_from_the_end():
     assert _meta((2, 5, 3)).channel_axis == 2
     assert _meta((2, 5, 3), -1).channel_axis == 2
+    assert _meta((2, 3, 5), -2).channel_axis == 1
     assert _meta((3, 2, 5), -3).channel_axis == 0
 
 
@@ -73,10 +74,10 @@ def test_with_size_keeps_the_rank():
 
 
 def test_with_size_keeps_the_channel_axis():
-    planar = _meta((3, 2, 5), 0).with_size(height=4, width=7)
-    assert (planar.shape, planar.channel_axis) == ((3, 4, 7), 0)
-    middle = _meta((2, 3, 5), 1).with_size(channels=4)
-    assert (middle.shape, middle.channel_axis) == ((2, 4, 5), 1)
+    chw = _meta((3, 2, 5), 0).with_size(height=4, width=7)
+    assert (chw.shape, chw.channel_axis) == ((3, 4, 7), 0)
+    packed = _meta((2, 5, 3), 2).with_size(channels=4)
+    assert (packed.shape, packed.channel_axis) == ((2, 5, 4), 2)
 
 
 def test_with_size_adds_a_channel_axis_for_more_than_one_channel():

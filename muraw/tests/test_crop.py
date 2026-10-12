@@ -288,8 +288,8 @@ def _mono() -> np.ndarray:
 
 
 def _rgb() -> np.ndarray:
-    plane = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
-    return np.stack([plane, plane + 100.0, plane + 200.0], axis=-1)
+    mono = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    return np.stack([mono, mono + 100.0, mono + 200.0], axis=-1)
 
 
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])

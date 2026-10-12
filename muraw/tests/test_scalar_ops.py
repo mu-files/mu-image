@@ -107,7 +107,7 @@ def test_an_int_list_on_a_uint8_array_keeps_uint8():
 
 
 @pytest.mark.parametrize("dtype", ["uint8", "float32"])
-def test_a_value_per_plane_scales_each_plane_of_a_planar_array(dtype):
+def test_a_value_per_channel_scales_each_channel_of_a_chw_array(dtype):
     chw = (np.arange(3 * 4 * 5) % 50).reshape(3, 4, 5).astype(dtype)
     gains = np.array([1, 2, 3]).reshape(3, 1, 1)
     got = mi.Array(chw, channel_axis=0) * gains
