@@ -129,7 +129,7 @@ def test_view_rejects_spatial_fancy_and_mono_channel():
     np.testing.assert_array_equal(mono[None, :, :].realize(), mono_np[None, :, :])
     np.testing.assert_array_equal(mono[:, None, :].realize(), mono_np[:, None, :])
     with pytest.raises(IndexError, match="newaxis"):
-        Array(np.zeros((2, 3, 1), dtype=np.float32))[:, :, None]
+        Array(np.zeros((2, 2, 3, 1), dtype=np.float32))[:, :, :, None]
     with pytest.raises(ValueError, match="empty"):
         t[:, :, 1:4:-1]
     with pytest.raises(ValueError, match="empty"):

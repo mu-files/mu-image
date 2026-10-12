@@ -505,15 +505,15 @@ def test_expand_dims_and_squeeze_errors_match_numpy(src, call):
     assert str(got.value) == str(want.value)
 
 
-def test_squeeze_to_no_axes_and_expand_past_three_axes_raise():
+def test_squeeze_to_no_axes_and_expand_past_four_axes_raise():
     import muimage as mi
 
     with pytest.raises(ValueError, match="would leave no axes"):
         mi.squeeze(np.zeros((1, 1), np.float32))
     with pytest.raises(ValueError, match="would leave no axes"):
         mi.squeeze(np.zeros((1, 1, 1), np.float32))
-    with pytest.raises(ValueError, match="at most 3"):
-        mi.expand_dims(_rgb(), 0)
+    with pytest.raises(ValueError, match="at most 4"):
+        mi.expand_dims(_rgb(), (0, 1))
 
 
 def test_ndarray_input_is_ingested():

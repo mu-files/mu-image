@@ -311,17 +311,28 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
                 f"view: src_channels {list(src_channels)} has an index out of bounds "
                 f"for {x.meta.channels} channel(s)"
             )
+    frames = x.meta.frames
+    if "src_frames" in attrs:
+        src_frames = attrs["src_frames"]
+        frames = len(src_frames)
+        if any(not 0 <= int(value) < x.meta.frames for value in src_frames):
+            raise IndexError(
+                f"view: src_frames {list(src_frames)} has an index out of bounds "
+                f"for {x.meta.frames} frame(s)"
+            )
     return x.meta.with_size(
         height=height,
         width=width,
         channels=channels,
+        frames=frames,
         origin=origin,
         canvas=canvas,
     )
 
 
 def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
-    """Geometry policy ``pad``: grow H/W, and channels when those attrs are set.
+    """Geometry policy ``pad``: grow H/W, and channels or frames when those
+    attrs are set.
 
     Dest ``(left, top)`` is src ``(0, 0)``. Origin shifts by
     ``-(top, left)``. Canvas is the new array at that origin, same as a
@@ -333,12 +344,16 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     right = int(attrs["right"])
     channel_before = int(attrs.get("channel_before", 0))
     channel_after = int(attrs.get("channel_after", 0))
-    if min(top, bottom, left, right, channel_before, channel_after) < 0:
+    frame_before = int(attrs.get("frame_before", 0))
+    frame_after = int(attrs.get("frame_after", 0))
+    sides = [top, bottom, left, right, channel_before, channel_after, frame_before, frame_after]
+    if min(sides) < 0:
         raise ValueError(
-            "pad: top/bottom/left/right/channel_before/channel_after "
-            f"{[top, bottom, left, right, channel_before, channel_after]} "
-            "must be non-negative"
+            "pad: top/bottom/left/right/channel_before/channel_after/frame_before/"
+            f"frame_after {sides} must be non-negative"
         )
+    if (frame_before or frame_after) and x.meta.ndim != 4:
+        raise ValueError(f"pad: a frame pad needs a 4-axis stack, got shape {x.shape}")
     mode = attrs.get("mode", "constant")
     if (channel_before or channel_after) and mode != "constant" and x.meta.channel_axis != 0:
         raise ValueError(
@@ -351,7 +366,7 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     origin = (base_row - top, base_col - left)
     origin_row, origin_col = origin
     if channel_before or channel_after:
-        ndim = 3
+        ndim = max(3, x.meta.ndim)
     elif x.meta.is_1d and (top or bottom):
         ndim = 2
     else:
@@ -360,6 +375,7 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         height=dest_h,
         width=dest_w,
         channels=x.meta.channels + channel_before + channel_after,
+        frames=x.meta.frames + frame_before + frame_after,
         ndim=ndim,
         origin=origin,
         canvas=(origin_col, origin_row, dest_w, dest_h),
@@ -380,6 +396,9 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
             "tile: row_reps/col_reps/channel_reps "
             f"{[row_reps, col_reps, channel_reps]} must be >= 1"
         )
+    frame_reps = int(attrs.get("frame_reps", 1))
+    if frame_reps < 1:
+        raise ValueError(f"tile: frame_reps {frame_reps} must be >= 1")
     dest_h = x.meta.height * row_reps
     dest_w = x.meta.width * col_reps
     origin_row, origin_col = x.meta.origin
@@ -387,6 +406,7 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         height=dest_h,
         width=dest_w,
         channels=x.meta.channels * channel_reps,
+        frames=x.meta.frames * frame_reps,
         ndim=2 if x.meta.is_1d and row_reps > 1 else x.meta.ndim,
         canvas=(origin_col, origin_row, dest_w, dest_h),
     )
@@ -507,12 +527,17 @@ def check_engine_layout(meta: ArrayMeta) -> None:
     """Raise when the engine cannot read an array of ``meta``.
 
     The engine reads the channels of a 3-axis array last, ``(H, W, C)``, or
-    first, ``(C, H, W)``, never on axis 1.
+    first, ``(C, H, W)``, never on axis 1. A 4-axis stack is ``(N, H, W, C)``.
     """
     if meta.ndim == 3 and meta.channel_axis == 1:
         raise NotImplementedError(
             f"shape {meta.shape} with channel_axis 1 is not supported; put the "
             "channels last, (H, W, C), or first, (C, H, W), with mi.moveaxis"
+        )
+    if meta.ndim == 4 and meta.channel_axis != 3:
+        raise NotImplementedError(
+            f"shape {meta.shape} with channel_axis {meta.channel_axis} is not supported; "
+            "a 4-axis stack is (N, H, W, C)"
         )
 
 
@@ -530,11 +555,16 @@ def _check_input(
     channel_axis = x.meta.channel_axis
     if op_meta.requires_2d and x.meta.is_1d:
         raise ValueError(f"op {name!r} requires a 2D input, got shape {x.shape}")
-    if op_meta.is_rgb and channel_axis not in (None, 2):
+    if op_meta.is_rgb and channel_axis not in (None, x.meta.ndim - 1):
         raise ValueError(
             f"op {name!r} needs the channels on the last axis, as (H, W, 3); got "
             f"shape {x.shape} with channel_axis {channel_axis}. Move them with "
             f"mi.moveaxis(x, {channel_axis}, -1)"
+        )
+    if op_meta.is_cfa and x.meta.ndim == 4:
+        raise NotImplementedError(
+            f"op {name!r} on a 4-axis stack {x.shape} is not supported; run it on "
+            "each frame"
         )
     if op_meta.is_cfa and channel_axis not in (None, 2):
         raise ValueError(

@@ -116,12 +116,13 @@ class CoreEngine:
             check_engine_layout(m)
             origin_row, origin_col = m.origin
             # The engine reads a CHW array as frames on axis 0 with one
-            # channel each, and any other array with its channels last.
+            # channel each, a 4-axis stack as frames on axis 0, and any
+            # other array with its channels last.
             desc = {
                 "id": id_of[id(t)],
                 "dtype": m.dtype.name,
                 "shape": list(m.buffer_shape),
-                "frame_axis": 0 if m.channel_axis == 0 else -1,
+                "frame_axis": 0 if m.channel_axis == 0 or m.ndim == 4 else -1,
                 "origin_y": int(origin_row),
                 "origin_x": int(origin_col),
                 "canvas_x0": int(m.canvas[0]),

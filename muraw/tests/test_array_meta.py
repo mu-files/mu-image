@@ -60,9 +60,9 @@ def test_rejects_an_axis_below_one(shape):
         _meta(shape)
 
 
-@pytest.mark.parametrize("shape", [(), (2, 2, 2, 2)])
-def test_rejects_a_rank_outside_one_to_three(shape):
-    with pytest.raises(ValueError, match=r"\(N,\), \(H,W\) or 3 axes"):
+@pytest.mark.parametrize("shape", [(), (2, 2, 2, 2, 2)])
+def test_rejects_a_rank_outside_one_to_four(shape):
+    with pytest.raises(ValueError, match=r"\(N,\), \(H,W\), 3 axes, or 4 axes"):
         _meta(shape)
 
 

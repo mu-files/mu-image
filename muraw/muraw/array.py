@@ -90,8 +90,9 @@ class ArrayMeta:
     # One of ``SUPPORTED_DTYPES``. Any value ``supported_dtype`` accepts is
     # converted on construction.
     dtype: np.dtype
-    # The NumPy shape: ``(N,)``, ``(H, W)``, or three axes. A mono array
-    # can be ``(H, W)`` or ``(H, W, 1)``.
+    # The NumPy shape: ``(N,)``, ``(H, W)``, three axes, or a stack of
+    # frames on axis 0 and three axes per frame, ``(N, H, W, C)``. A mono
+    # array can be ``(H, W)`` or ``(H, W, 1)``.
     shape: Tuple[int, ...]
     # Buffer top-left in the shared canvas coordinate system, as (row, col).
     origin: Tuple[int, int] = (0, 0)
@@ -99,22 +100,30 @@ class ArrayMeta:
     # crop uses it. When this array is the whole canvas, (x0, y0) is
     # (origin col, origin row).
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
-    # The axis of a 3-axis shape that holds the channels: 2 for
-    # ``(H, W, C)``, 1 for ``(H, C, W)``, 0 for ``(C, H, W)``. The other
-    # two axes are the rows and the columns, in that order. ``None`` on 3
-    # axes means 2, and a negative axis counts from the end. A shape with
-    # fewer axes has no channel axis, so ``channel_axis`` is ``None``.
+    # The axis of a 3- or 4-axis shape that holds the channels: 2 for
+    # ``(H, W, C)``, 1 for ``(H, C, W)``, 0 for ``(C, H, W)``, and 3 for
+    # ``(N, H, W, C)``. A 4-axis shape has its frames on axis 0, so its
+    # channels are on axis 1, 2, or 3. The other two axes are the rows and
+    # the columns, in that order. ``None`` means the last axis, and a
+    # negative axis counts from the end. A shape with fewer axes has no
+    # channel axis, so ``channel_axis`` is ``None``.
     channel_axis: Optional[int] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dtype", supported_dtype(self.dtype))
         shape = tuple(int(v) for v in self.shape)
-        if not 1 <= len(shape) <= 3:
-            raise ValueError("array must be (N,), (H,W) or 3 axes")
+        if not 1 <= len(shape) <= 4:
+            raise ValueError("array must be (N,), (H,W), 3 axes, or 4 axes")
         object.__setattr__(self, "shape", shape)
-        if len(shape) == 3:
-            axis = 2 if self.channel_axis is None else operator.index(self.channel_axis)
-            axis = normalize_axis_index(axis, 3, "channel_axis")
+        if len(shape) >= 3:
+            ndim = len(shape)
+            axis = ndim - 1 if self.channel_axis is None else operator.index(self.channel_axis)
+            axis = normalize_axis_index(axis, ndim, "channel_axis")
+            if ndim == 4 and axis == 0:
+                raise ValueError(
+                    f"shape {shape}: axis 0 of a 4-axis array holds its frames, "
+                    "not its channels"
+                )
             object.__setattr__(self, "channel_axis", axis)
             if shape[axis] < 1:
                 raise ValueError(f"unsupported channel count: {shape[axis]}")
@@ -133,8 +142,16 @@ class ArrayMeta:
         """
         if self.channel_axis is None:
             return (0, 1)
-        rows_axis, cols_axis = (axis for axis in range(3) if axis != self.channel_axis)
+        first_axis = 1 if self.ndim == 4 else 0
+        rows_axis, cols_axis = (
+            axis for axis in range(first_axis, self.ndim) if axis != self.channel_axis
+        )
         return (rows_axis, cols_axis)
+
+    @property
+    def frames(self) -> int:
+        """Frames in a 4-axis stack, its axis 0. Any other array is one frame."""
+        return self.shape[0] if self.ndim == 4 else 1
 
     @property
     def height(self) -> int:
@@ -175,21 +192,25 @@ class ArrayMeta:
         height: Optional[int] = None,
         width: Optional[int] = None,
         channels: Optional[int] = None,
+        frames: Optional[int] = None,
         ndim: Optional[int] = None,
         **changes: Any,
     ) -> "ArrayMeta":
-        """A copy with a new height, width, channel count, or rank.
+        """A copy with a new height, width, channel count, frame count, or
+        rank.
 
         Each size that is not given keeps this array's value. ``ndim``
         defaults to this array's rank, except that more than one channel
-        always needs a channel axis. A 3-axis result keeps this array's
-        channel axis, or puts the channels last when this array has none.
-        A 1D result must be one row and one channel. ``changes`` sets other
-        fields, as in ``copy``.
+        always needs a channel axis. A 3- or 4-axis result of this array's
+        rank keeps its channel axis; otherwise the channels are last.
+        ``frames`` is the size of axis 0 of a 4-axis result. A 1D result
+        must be one row and one channel. ``changes`` sets other fields, as
+        in ``copy``.
         """
         height = self.height if height is None else height
         width = self.width if width is None else width
         channels = self.channels if channels is None else channels
+        frames = self.frames if frames is None else frames
         ndim = self.ndim if ndim is None else ndim
         if channels > 1 and ndim == 2:
             ndim = 3
@@ -204,17 +225,18 @@ class ArrayMeta:
         elif ndim == 2:
             shape = (height, width)
         else:
-            channel_axis = 2 if self.channel_axis is None else self.channel_axis
+            channel_axis = self.channel_axis if self.ndim == ndim else ndim - 1
+            first_axis = ndim - 3
             sizes = [height, width]
-            sizes.insert(channel_axis, channels)
-            shape = tuple(sizes)
+            sizes.insert(channel_axis - first_axis, channels)
+            shape = tuple([frames] * first_axis + sizes)
         return replace(self, shape=shape, channel_axis=channel_axis, **changes)
 
 
 def meta_from_array(arr: np.ndarray, channel_axis: Optional[int] = -1) -> ArrayMeta:
-    """Whole-canvas meta for ``arr``. ``channel_axis`` applies to 3 axes only."""
+    """Whole-canvas meta for ``arr``. ``channel_axis`` applies to 3 or 4 axes only."""
     return _meta_from_shape(
-        arr.shape, supported_dtype(arr.dtype), channel_axis if arr.ndim == 3 else None
+        arr.shape, supported_dtype(arr.dtype), channel_axis if arr.ndim >= 3 else None
     )
 
 
@@ -225,13 +247,11 @@ def spatial_reading(meta: ArrayMeta) -> Tuple[bool, Tuple[int, int, int]]:
 
     An array has an origin and a canvas, so it has to say which of its
     axes are spatial. A 3-axis array whose channel axis is 0 is CHW:
-    channels, then rows, then columns. Every other array is packed, in
-    axis order: rows, then columns, then channels if there is a third axis.
+    channels, then rows, then columns. Every other array is packed: rows,
+    then columns, then channels if there is a channel axis, after the
+    frames of a 4-axis stack.
     """
-    shape = meta.buffer_shape
-    if meta.channel_axis == 0:
-        return True, (shape[1], shape[2], shape[0])
-    return False, (shape[0], shape[1], shape[2] if len(shape) == 3 else 1)
+    return meta.channel_axis == 0, (meta.height, meta.width, meta.channels)
 
 
 def _arithmetic_function(
@@ -342,7 +362,7 @@ def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
             f"signature {_MATMUL_SIGNATURE} (size {matrix.shape[0]} is different from "
             f"{input_channels})"
         )
-    if meta.ndim == 3 and meta.channel_axis not in (None, 2):
+    if meta.ndim >= 3 and meta.channel_axis != meta.ndim - 1:
         raise NotImplementedError(
             f"matmul of shape {array.shape} with channel_axis {meta.channel_axis} is not "
             "supported: NumPy sums over the last axis, which is not the channel axis. "
@@ -363,7 +383,7 @@ def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
     dtype = array.dtype
     if _is_integer(dtype) and matrix.dtype.kind == "f":
         dtype = np.dtype(np.float32)
-    if meta.ndim == 3:
+    if meta.ndim >= 3:
         pixels_shape = array.shape
     elif meta.ndim == 2:
         pixels_shape = (array.shape[0], 1, input_channels)
@@ -377,7 +397,8 @@ def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
         columns=columns,
     )
     out_shape = array.shape[:-1] + ((columns,) if matrix.ndim == 2 else ())
-    return _reshape_layout(out, out_shape)
+    # A stack whose channels are summed away is (N, H, W): mono frames.
+    return _reshape_layout(out, out_shape, 0 if len(out_shape) == 3 and meta.ndim == 4 else None)
 
 
 def _matmul_matrix_first(matrix: np.ndarray, array: "Array") -> "Array":
@@ -413,11 +434,14 @@ _ELEMENTWISE_OPS = {
 }
 
 
-def _scalar_values(meta: ArrayMeta, const: np.ndarray) -> Optional[list[float]]:
+def _scalar_values(
+    meta: ArrayMeta, const: np.ndarray
+) -> Optional[Tuple[list[float], bool]]:
     """``const`` as the ``value`` attr of a scalar op on an array of
-    ``meta``: one value, or one per channel. ``None`` when ``const`` would
-    change the array's shape or varies along an axis that is not the
-    array's channels, so it needs the op between two arrays.
+    ``meta``, and whether it holds one value per frame: one value, one per
+    channel, or one per frame of a 4-axis stack. ``None`` when ``const``
+    would change the array's shape or varies along any other axes, so it
+    needs the op between two arrays.
     """
     shape = meta.shape
     try:
@@ -426,14 +450,13 @@ def _scalar_values(meta: ArrayMeta, const: np.ndarray) -> Optional[list[float]]:
     except ValueError:
         return None
     padded_shape = (1,) * (len(shape) - const.ndim) + const.shape
-    channel_axis = None
-    if len(shape) == 3:
-        channels_first, _ = spatial_reading(meta)
-        channel_axis = 0 if channels_first else 2
     varying = [axis for axis, size in enumerate(padded_shape) if size > 1]
-    if varying and varying != [channel_axis]:
-        return None
-    return [float(v) for v in const.reshape(-1)]
+    values = [float(v) for v in const.reshape(-1)]
+    if not varying or varying == [meta.channel_axis]:
+        return values, False
+    if meta.ndim == 4 and varying == [0]:
+        return values, True
+    return None
 
 
 def _is_integer(dtype: np.dtype) -> bool:
@@ -481,7 +504,7 @@ def _expand_pad(
     try:
         pairs = np.broadcast_to(np.asarray(value), (axes, 2))
     except ValueError:
-        if axes == 3:
+        if axes >= 3:
             detail = "one (before, after) pair per axis"
         elif axes == 1:
             detail = "((before, after),)"
@@ -516,56 +539,55 @@ def _as_axis_int(value: Any, name: str) -> int:
     return int(value)
 
 
-def _wrap_channel_index(value: Any, channels: int, axis: int) -> int:
-    """NumPy wrap of one index on the channel axis ``axis`` into ``0 .. channels-1``."""
+def _wrap_index(value: Any, size: int, axis: int, what: str) -> int:
+    """NumPy wrap of one index on axis ``axis``, of length ``size``, into
+    ``0 .. size-1``. ``what`` names the axis's entries in errors:
+    ``"channel"`` or ``"frame"``."""
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
-        raise TypeError("channel index must be an int")
+        raise TypeError(f"{what} index must be an int")
     raw = int(value)
-    index = raw + channels if raw < 0 else raw
-    if index < 0 or index >= channels:
-        raise IndexError(
-            f"index {value} is out of bounds for axis {axis} with size {channels}"
-        )
+    index = raw + size if raw < 0 else raw
+    if index < 0 or index >= size:
+        raise IndexError(f"index {value} is out of bounds for axis {axis} with size {size}")
     return index
 
 
-def _channel_key(
-    key: Any, channels: int, axis: int
+def _selection_key(
+    key: Any, size: int, axis: int, what: str
 ) -> Tuple[Optional[list[int]], bool]:
-    """The source channels that ``key``, the index on the channel axis
-    ``axis``, reads, and whether it drops that axis.
+    """The source indices that ``key``, the index on axis ``axis`` of
+    length ``size``, reads, and whether it drops that axis. ``what`` names
+    the axis's entries in errors: ``"channel"`` or ``"frame"``.
 
-    The list is ``None`` when it is identity ``0..C-1``. An integer index
-    drops the axis, as in NumPy; a slice or a sequence keeps it, even for
-    one channel.
+    The list is ``None`` when it is identity ``0..size-1``. An integer
+    index drops the axis, as in NumPy; a slice or a sequence keeps it,
+    even for one entry.
     """
     rank_drop = isinstance(key, (int, np.integer)) and not isinstance(
         key, (bool, np.bool_)
     )
     if isinstance(key, slice):
-        start, stop, step = key.indices(channels)
-        src_channels = list(range(start, stop, step))
-        if not src_channels:
-            raise ValueError("channels: slice results in an empty dimension")
+        start, stop, step = key.indices(size)
+        indices = list(range(start, stop, step))
+        if not indices:
+            raise ValueError(f"{what}s: slice results in an empty dimension")
     else:
         if isinstance(key, np.ndarray):
             if key.dtype == np.bool_ or key.ndim != 1:
-                raise TypeError("channel index must be a 1-d sequence of ints")
+                raise TypeError(f"{what} index must be a 1-d sequence of ints")
             values = key.tolist()
         elif isinstance(key, (list, tuple)):
             values = list(key)
         elif rank_drop:
             values = [int(key)]
         else:
-            raise TypeError(
-                "channel index must be an int, a slice, or a sequence of ints"
-            )
+            raise TypeError(f"{what} index must be an int, a slice, or a sequence of ints")
         if not values:
-            raise ValueError("channels: empty index")
-        src_channels = [_wrap_channel_index(value, channels, axis) for value in values]
-    if src_channels == list(range(channels)):
+            raise ValueError(f"{what}s: empty index")
+        indices = [_wrap_index(value, size, axis, what) for value in values]
+    if indices == list(range(size)):
         return None, rank_drop
-    return src_channels, rank_drop
+    return indices, rank_drop
 
 
 def _expand_index_key(
@@ -581,10 +603,11 @@ def _expand_index_key(
     Each ``None`` (``np.newaxis``) adds an axis of length 1. The second
     value is the position of each new axis in the result's shape, so
     ``(H, W)[:, None, :]`` gives ``(1,)`` and ``(N,)[None, :, None]`` gives
-    ``(0, 2)``. The result may have at most 3 axes.
+    ``(0, 2)``. The result may have at most 4 axes.
 
-    The rows and the columns must be slices. The channel axis may be an int
-    (which drops that axis), a slice, or a sequence of ints.
+    The rows and the columns must be slices. The channel axis, and the
+    frame axis of a 4-axis stack, may be an int (which drops that axis), a
+    slice, or a sequence of ints.
     """
     ndim = meta.ndim
     items: Tuple[Any, ...] = key if isinstance(key, tuple) else (key,)
@@ -616,9 +639,9 @@ def _expand_index_key(
         axes.append(item)
         if not isinstance(item, (int, np.integer)):
             rank += 1
-    if rank > 3:
+    if rank > 4:
         raise IndexError(
-            f"newaxis would give {rank} axes; an array has at most 3 (H, W, C)"
+            f"newaxis would give {rank} axes; an array has at most 4 (N, H, W, C)"
         )
     spatial = axes if ndim < 3 else [axes[axis] for axis in meta.spatial_axes]
     if any(not isinstance(item, slice) for item in spatial):
@@ -630,13 +653,14 @@ def _expand_index_key(
 
 @dataclass(frozen=True)
 class _Window:
-    """Spatial box plus optional last-axis gather.
+    """Spatial box plus optional channel and frame gathers.
 
     ``left`` and ``top`` are the first sample. ``row_step`` and ``col_step``
     are the source steps, including -1. ``src_channels`` is ``None`` when
-    the last axis is identity. ``drops_channel_axis`` is true when an integer
-    index removes the channel axis. ``left`` and ``top`` may be negative so
-    a later view can reach back into the parent canvas.
+    the channel axis is identity, and ``src_frames`` when the frame axis of
+    a 4-axis stack is. ``drops_channel_axis`` and ``drops_frame_axis`` are
+    true when an integer index removes that axis. ``left`` and ``top`` may
+    be negative so a later view can reach back into the parent canvas.
     """
 
     left: int
@@ -647,6 +671,8 @@ class _Window:
     col_step: int = 1
     src_channels: Optional[list[int]] = None
     drops_channel_axis: bool = False
+    src_frames: Optional[list[int]] = None
+    drops_frame_axis: bool = False
 
     def is_full(self, meta: ArrayMeta) -> bool:
         return (
@@ -657,20 +683,25 @@ class _Window:
             and self.row_step == 1
             and self.col_step == 1
             and self.src_channels is None
+            and self.src_frames is None
         )
 
 
 def _window_from_slices(
-    meta: ArrayMeta, rows: Any, cols: Any, channels: Any = None
+    meta: ArrayMeta, rows: Any, cols: Any, channels: Any = None, frames: Any = None
 ) -> _Window:
     src_channels = None
     drops_channel_axis = False
     if channels is not None:
         if len(meta.shape) < 3:
             raise IndexError("too many indices for a (H, W) array")
-        src_channels, drops_channel_axis = _channel_key(
-            channels, meta.channels, meta.channel_axis
+        src_channels, drops_channel_axis = _selection_key(
+            channels, meta.channels, meta.channel_axis, "channel"
         )
+    src_frames = None
+    drops_frame_axis = False
+    if frames is not None:
+        src_frames, drops_frame_axis = _selection_key(frames, meta.frames, 0, "frame")
     top, height, row_step = _slice_span(rows, meta.height, "rows")
     left, width, col_step = _slice_span(cols, meta.width, "cols")
     return _Window(
@@ -682,6 +713,8 @@ def _window_from_slices(
         col_step=col_step,
         src_channels=src_channels,
         drops_channel_axis=drops_channel_axis,
+        src_frames=src_frames,
+        drops_frame_axis=drops_frame_axis,
     )
 
 
@@ -708,6 +741,26 @@ def _window_from_rect(
             f"width={width_i} height={height_i}"
         )
     return _Window(left=left_i, top=top_i, width=width_i, height=height_i)
+
+
+def _without_dropped_axes(array: "Array", window: _Window) -> "Array":
+    """``array``, the view of ``window``, without the axes that integer
+    indices in ``window`` drop. A stack that loses its frame axis is one
+    ``(H, W, C)`` image; one that loses its channel axis is ``(N, H, W)``,
+    a frame per index of axis 0 as in a CHW array."""
+    meta = array.meta
+    dropped = set()
+    if window.drops_frame_axis:
+        dropped.add(0)
+    if window.drops_channel_axis:
+        dropped.add(meta.channel_axis)
+    if not dropped:
+        return array
+    shape = tuple(size for axis, size in enumerate(meta.shape) if axis not in dropped)
+    channel_axis = None
+    if len(shape) == 3:
+        channel_axis = 0 if window.drops_channel_axis else 2
+    return _reshape_layout(array, shape, channel_axis)
 
 
 def rot90(m: ArrayLike, k: int = 1, axes: Tuple[int, int] = (0, 1)) -> "Array":
@@ -805,8 +858,8 @@ def _permute(array: "Array", order: Tuple[int, ...]) -> "Array":
     A permutation of a permutation is one permutation of the first one's
     input, so a permutation and its inverse give back that input. The
     identity returns ``array``. A swap of the rows and the columns that
-    keeps the channel axis in place is ``orientation`` 5. Every other
-    permutation is one ``transpose``.
+    keeps the channel axis, and the frame axis of a stack, in place is
+    ``orientation`` 5. Every other permutation is one ``transpose``.
     """
     inner_order = _node_permutation(array)
     if inner_order is not None:
@@ -817,7 +870,9 @@ def _permute(array: "Array", order: Tuple[int, ...]) -> "Array":
         return array
     from .engines import ops as engine_ops
 
-    if meta.ndim == 2 or order[meta.channel_axis] == meta.channel_axis:
+    if meta.ndim == 2 or (
+        order[meta.channel_axis] == meta.channel_axis and (meta.ndim < 4 or order[0] == 0)
+    ):
         return engine_ops.orientation(array, orientation=5)
     return engine_ops.transpose(array, axes=list(order))
 
@@ -873,7 +928,7 @@ def expand_dims(a: ArrayLike, axis: Any) -> "Array":
     """Insert axes of length 1. Same arguments as ``numpy.expand_dims``.
 
     Adding a length-1 axis keeps the samples in the same order, so the
-    result reads the same buffer. A result with more than 3 axes raises.
+    result reads the same buffer. A result with more than 4 axes raises.
     The axis added to a 2D array is the channel axis.
     """
     a = Array(a)
@@ -882,11 +937,11 @@ def expand_dims(a: ArrayLike, axis: Any) -> "Array":
     new_axes = normalize_axis_tuple(axes, out_ndim)
     sizes = iter(a.shape)
     shape = tuple(1 if position in new_axes else next(sizes) for position in range(out_ndim))
-    if len(shape) > 3:
+    if len(shape) > 4:
         raise ValueError(
-            f"expand_dims of shape {a.shape} gives {len(shape)} axes; an Array has at most 3"
+            f"expand_dims of shape {a.shape} gives {len(shape)} axes; an Array has at most 4"
         )
-    channel_axis = new_axes[0] if a.meta.ndim == 2 else None
+    channel_axis = new_axes[0] if a.meta.ndim == 2 and out_ndim == 3 else None
     return _reshape_layout(a, shape, channel_axis)
 
 
@@ -1262,12 +1317,14 @@ def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...
     return arr[tuple(slices)], tuple(reps)
 
 
-def _tile_reps(meta: ArrayMeta, reps: Any) -> tuple[int, int, int]:
-    """Right-align ``reps`` onto ``meta.shape`` and return ``(row, col, channel)``.
+def _tile_reps(meta: ArrayMeta, reps: Any) -> tuple[int, int, int, int]:
+    """Right-align ``reps`` onto ``meta.shape`` and return ``(frame, row,
+    col, channel)``.
 
     An int is the last axis. Missing leading counts are 1. A longer tuple
     would add an axis. A rank-2 array has no channel axis, so that count
-    stays 1. A 1D array has only a column count.
+    stays 1. A 1D array has only a column count. Only a 4-axis stack has a
+    frame count other than 1.
     """
     shape = meta.shape
     if np.iterable(reps):
@@ -1279,12 +1336,13 @@ def _tile_reps(meta: ArrayMeta, reps: Any) -> tuple[int, int, int]:
     if any(count < 1 for count in counts):
         raise ValueError(f"tile reps must be >= 1, got {reps!r}")
     if len(shape) == 1:
-        return 1, counts[0], 1
+        return 1, 1, counts[0], 1
     counts = (1,) * (len(shape) - len(counts)) + counts
     if meta.channel_axis is None:
-        return counts[0], counts[1], 1
+        return 1, counts[0], counts[1], 1
     rows_axis, cols_axis = meta.spatial_axes
-    return counts[rows_axis], counts[cols_axis], counts[meta.channel_axis]
+    frame_reps = counts[0] if meta.ndim == 4 else 1
+    return frame_reps, counts[rows_axis], counts[cols_axis], counts[meta.channel_axis]
 
 
 def tile(array: ArrayLike, reps: Any) -> "Array":
@@ -1309,13 +1367,14 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
     elif is_1d and reps_count == 2:
         # NumPy promotes (N,) to (1, N), which is this array's buffer.
         array = _with_meta(array, array.meta.with_size(ndim=2))
-    row_reps, col_reps, channel_reps = _tile_reps(array.meta, reps)
+    frame_reps, row_reps, col_reps, channel_reps = _tile_reps(array.meta, reps)
     return op(
         "tile",
         array,
         row_reps=row_reps,
         col_reps=col_reps,
         channel_reps=channel_reps,
+        frame_reps=frame_reps if frame_reps != 1 else None,
     )
 
 
@@ -1432,6 +1491,11 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
             )
         origin, source, *channels = placement
         source = Array(source)
+        if 4 in (base.meta.ndim, source.meta.ndim):
+            raise NotImplementedError(
+                f"composite of a 4-axis stack is not supported (base {base.shape}, "
+                f"source {source.shape})"
+            )
         if source.meta.ndim == 3 and (source.meta.channel_axis == 0) != base_chw:
             if base_chw:
                 source_layout, axes = "packed", "(2, 0, 1)"
@@ -1506,9 +1570,10 @@ class Array:
         _meta: Optional[ArrayMeta] = None,
         _node: Optional["OpNode"] = None,
     ):
-        """``channel_axis`` is the axis of a 3-axis ``data`` that holds the
-        channels. The other two are the rows and the columns, in that order.
-        It is ignored for fewer axes.
+        """``channel_axis`` is the axis of a 3- or 4-axis ``data`` that
+        holds the channels. Axis 0 of a 4-axis ``data`` holds its frames;
+        the other two axes are the rows and the columns, in that order. It
+        is ignored for fewer axes.
         """
         if isinstance(data, Array):
             return
@@ -1607,13 +1672,16 @@ class Array:
             dtype = self.dtype
             if _is_integer(dtype) and (const.dtype.kind == "f" or name == "div_scalar"):
                 dtype = np.dtype(np.float32)
-            values = _scalar_values(self._meta, const)
-            if values is not None:
+            scalar = _scalar_values(self._meta, const)
+            if scalar is not None:
+                values, per_frame = scalar
                 attrs: dict[str, Any] = {"value": values}
+                if per_frame:
+                    attrs["per_frame"] = True
                 if reverse:
                     attrs["reverse"] = True
                 return op(name, self.astype(dtype), **attrs)
-            channel_axis = self.meta.channel_axis if const.ndim == 3 else None
+            channel_axis = self.meta.channel_axis if const.ndim == self.meta.ndim else None
             other = Array(
                 np.ascontiguousarray(const, dtype=dtype),
                 channel_axis=channel_axis,
@@ -1696,6 +1764,7 @@ class Array:
                     axes[rows_axis],
                     axes[cols_axis],
                     axes[self._meta.channel_axis],
+                    axes[0] if self._meta.ndim == 4 else None,
                 )
             viewed = self._view_window(
                 window, oob_valid=oob_valid, reset_origin=reset_origin
@@ -1712,9 +1781,7 @@ class Array:
         import muimage as mi
 
         if window.is_full(self._meta):
-            if not window.drops_channel_axis:
-                return self
-            return _reshape_layout(self, self._meta.with_size(ndim=2).shape)
+            return _without_dropped_axes(self, window)
 
         attrs: dict[str, Any] = {
             "left": window.left,
@@ -1726,15 +1793,14 @@ class Array:
         }
         if window.src_channels is not None:
             attrs["src_channels"] = window.src_channels
+        if window.src_frames is not None:
+            attrs["src_frames"] = window.src_frames
         if window.row_step != 1:
             attrs["row_step"] = window.row_step
         if window.col_step != 1:
             attrs["col_step"] = window.col_step
 
-        out = mi.view(self, **attrs)
-        if window.drops_channel_axis:
-            out = _reshape_layout(out, out.meta.with_size(ndim=2).shape)
-        return out
+        return _without_dropped_axes(mi.view(self, **attrs), window)
 
     def crop(
         self,
@@ -1769,7 +1835,8 @@ class Array:
         axis, channels included; ``((0, 0), (1, 1), (1, 1))`` pads only the
         rows and columns of a CHW array. The pair on the channel axis adds
         channels. On a CHW array that pad works in any ``mode``; with
-        the channels on another axis it requires ``mode="constant"``.
+        the channels on another axis it requires ``mode="constant"``. The
+        pair on axis 0 of a 4-axis stack adds frames, in any ``mode``.
         """
         import muimage as mi
 
@@ -1798,16 +1865,24 @@ class Array:
             return [values[2 * axis + side] for axis in axis_order for side in (0, 1)]
 
         ndim = self._meta.ndim
-        sides = [
-            int(v) for v in by_engine_side(_expand_pad(pad_width, "pad_width", ndim, nonneg=True))
-        ]
-        consts = [
-            float(v)
-            for v in by_engine_side(_expand_pad(constant_values, "constant_values", ndim))
-        ]
+        all_sides = _expand_pad(pad_width, "pad_width", ndim, nonneg=True)
+        all_consts = _expand_pad(constant_values, "constant_values", ndim)
+        sides = [int(v) for v in by_engine_side(all_sides)]
+        consts = [float(v) for v in by_engine_side(all_consts)]
         attrs: dict[str, Any] = dict(zip(("top", "bottom", "left", "right"), sides))
-        if ndim == 3:
+        if ndim >= 3:
             attrs["channel_before"], attrs["channel_after"] = sides[4:]
+        if ndim == 4 and any(all_sides[:2]):
+            # The engine fills a frame pad and a channel pad with the same
+            # two constants, after the four spatial ones.
+            attrs["frame_before"], attrs["frame_after"] = (int(v) for v in all_sides[:2])
+            frame_consts = [float(v) for v in all_consts[:2]]
+            if any(sides[4:]) and mode == "constant" and frame_consts != consts[4:]:
+                raise NotImplementedError(
+                    "pad of frames and channels with different constant_values is not "
+                    "supported; pad them in two calls"
+                )
+            consts = consts[:4] + frame_consts
         return mi.pad(self, mode=mode, constant_values=consts, **attrs)
 
     def composite(self, *placements: tuple) -> "Array":

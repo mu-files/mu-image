@@ -31,10 +31,11 @@ def is_bindable(arr: np.ndarray, channel_axis: Optional[int] = None) -> bool:
     row stride of 0.
 
     ``channel_axis`` is as in ``ArrayMeta``. The engine reads a 3-axis
-    ``arr`` whose channel axis is 0 as frames, rows, and columns. Each
-    frame must then be a source buffer on its own, and the frame pitch a
-    whole number of elements that holds one frame, so frames do not
-    overlap. Every other ``arr`` is read packed in axis order.
+    ``arr`` whose channel axis is 0 as frames, rows, and columns, and a
+    4-axis ``arr`` as frames, rows, columns, and channels. Each frame must
+    then be a source buffer on its own, and the frame pitch a whole number
+    of elements that holds one frame, so frames do not overlap. Every other
+    ``arr`` is read packed in axis order.
     """
     itemsize = int(arr.dtype.itemsize)
     if int(arr.ctypes.data) % itemsize != 0:
@@ -47,10 +48,13 @@ def is_bindable(arr: np.ndarray, channel_axis: Optional[int] = None) -> bool:
         stride = int(arr.strides[axis])
         return int(arr.shape[axis]) == 1 or (stride >= span_bytes and stride % itemsize == 0)
 
-    if arr.ndim == 3 and channel_axis == 0:
-        if not is_packed_axis(2, itemsize):
+    if arr.ndim == 4 or (arr.ndim == 3 and channel_axis == 0):
+        pixel = itemsize * (int(arr.shape[3]) if arr.ndim == 4 else 1)
+        if arr.ndim == 4 and not is_packed_axis(3, itemsize):
             return False
-        row_bytes = int(arr.shape[2]) * itemsize
+        if not is_packed_axis(2, pixel):
+            return False
+        row_bytes = int(arr.shape[2]) * pixel
         if not pitch_holds(1, row_bytes):
             return False
         row_pitch = int(arr.strides[1]) if int(arr.shape[1]) > 1 else row_bytes

@@ -239,11 +239,11 @@ def test_newaxis_anywhere_matches_numpy(src, key):
         np.testing.assert_array_equal(out.realize(), expected * scale)
 
 
-def test_newaxis_past_three_axes_raises():
+def test_newaxis_past_four_axes_raises():
     with pytest.raises(IndexError, match="newaxis"):
-        Array(_MONO)[None, :, :, None]
+        Array(_MONO)[None, :, :, None, None]
     with pytest.raises(IndexError, match="newaxis"):
-        Array(_RGB)[None]
+        Array(_RGB)[None, None]
 
 
 def test_slice_rejects_step_and_mixed_args():
