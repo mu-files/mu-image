@@ -204,8 +204,20 @@ def test_a_broadcast_stack_is_tiled_on_ingest():
         (((1, 1), (1, 0), (0, 1), (0, 0)), "edge", 0),
         (((0, 0), (0, 0), (0, 0), (1, 1)), "constant", 9.0),
         (((1, 0), (0, 0), (0, 0), (1, 0)), "constant", 4.0),
+        (
+            ((1, 2), (1, 0), (0, 1), (1, 1)),
+            "constant",
+            ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)),
+        ),
     ],
-    ids=["spatial", "frames_constant", "frames_edge", "channels", "frames_and_channels"],
+    ids=[
+        "spatial",
+        "frames_constant",
+        "frames_edge",
+        "channels",
+        "frames_and_channels",
+        "every_axis_own_constants",
+    ],
 )
 def test_pad_of_a_stack_matches_numpy(pad_width, mode, constant_values):
     stack = _stack(2, 3, 4, 3)
@@ -214,14 +226,6 @@ def test_pad_of_a_stack_matches_numpy(pad_width, mode, constant_values):
     out = Array(stack).pad(pad_width, mode=mode, **kwargs)
     assert out.shape == expected.shape
     np.testing.assert_array_equal(out.realize(), expected)
-
-
-def test_pad_of_frames_and_channels_with_different_constants_raises():
-    with pytest.raises(NotImplementedError, match="pad them in two calls"):
-        Array(_stack()).pad(
-            ((1, 0), (0, 0), (0, 0), (1, 0)),
-            constant_values=((1, 1), (0, 0), (0, 0), (2, 2)),
-        )
 
 
 def test_expand_dims_of_an_image_is_a_stack():

@@ -314,9 +314,10 @@ ops:
 
   # Grow height and width. channel_before / channel_after add constant
   # channels; that requires mode constant. frame_before / frame_after add
-  # frames, in any mode. constant_values is the four spatial edges, or
-  # those four plus the fills before and after the source's channels or
-  # frames (prepare accepts length 4 or 6).
+  # frames, in any mode. constant_values is the four spatial edges, then
+  # the fills before and after the source's channels, then the fills
+  # before and after its frames (prepare accepts length 4, 6, or 8; an
+  # omitted fill is 0).
   - name: pad
     needs_frame_index: true
     inputs:

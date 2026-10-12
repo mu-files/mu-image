@@ -1873,16 +1873,8 @@ class Array:
         if ndim >= 3:
             attrs["channel_before"], attrs["channel_after"] = sides[4:]
         if ndim == 4 and any(all_sides[:2]):
-            # The engine fills a frame pad and a channel pad with the same
-            # two constants, after the four spatial ones.
             attrs["frame_before"], attrs["frame_after"] = (int(v) for v in all_sides[:2])
-            frame_consts = [float(v) for v in all_consts[:2]]
-            if any(sides[4:]) and mode == "constant" and frame_consts != consts[4:]:
-                raise NotImplementedError(
-                    "pad of frames and channels with different constant_values is not "
-                    "supported; pad them in two calls"
-                )
-            consts = consts[:4] + frame_consts
+            consts += [float(v) for v in all_consts[:2]]
         return mi.pad(self, mode=mode, constant_values=consts, **attrs)
 
     def composite(self, *placements: tuple) -> "Array":

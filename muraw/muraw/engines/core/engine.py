@@ -34,6 +34,12 @@ def _engine_attrs(node: "OpNode") -> Dict[str, Any]:
     lowered = {_FRAME_ATTRS.get(key, key): value for key, value in attrs.items()}
     if "frame_reps" in lowered:
         lowered["channel_reps"] = 1
+    constants = attrs.get("constant_values")
+    if node.op == "pad" and constants is not None and len(constants) == 6:
+        # The engine reads the frame fills after the channel fills.
+        lowered["constant_values"] = np.concatenate(
+            [constants[:4], np.zeros(2, constants.dtype), constants[4:]]
+        )
     if node.op in _SCALAR_OPS and len(attrs["value"]) > 1:
         lowered["per_frame"] = True
     return lowered
