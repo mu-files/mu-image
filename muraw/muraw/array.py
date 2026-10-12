@@ -1651,27 +1651,57 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
     """Write each source onto ``base``. ``base`` is unchanged.
 
     A placement is ``(origin, source)`` or ``(origin, source, channels)``.
-    ``origin`` is ``(row, col)`` in ``base``, or ``(col,)`` when ``base``
-    is 1D. ``channels`` is the dest channel of each of that source's
-    channels. Without it, source channel ``i`` is written to dest channel
-    ``i``. A later placement overwrites an earlier one where they overlap.
+    ``origin`` is ``(row, col)`` in ``base``, in NumPy index order, not
+    ``(x, y)`` as in PIL or OpenCV; it is ``(col,)`` when ``base`` is 1D.
+    ``channels`` is the dest channel of each of that source's channels.
+    Without it, source channel ``i`` is written to dest channel ``i``. A
+    later placement overwrites an earlier one where they overlap.
+
+    The same placements work on a packed base ``(h, w, c)`` and a planar
+    base ``(c, h, w)``, where a channel is a plane. For a source of
+    height ``h`` and width ``w``, a placement is the NumPy assignment::
+
+        ((r, c), src)          packed: out[r:r+h, c:c+w, :] = src
+                               planar: out[:, r:r+h, c:c+w] = src
+        ((r, c), src, chans)   packed: out[r:r+h, c:c+w, chans] = src
+                               planar: out[chans, r:r+h, c:c+w] = src
+
+    A source has the base's layout. A 2D source is one channel and fits
+    either layout. A 3D source of the other layout raises ``ValueError``;
+    transpose it first.
     """
     from .engines.ops import composite as composite_op
 
     base = Array(base)
+    base_planar = base.meta.channel_axis == 0
     sources: list[Array] = []
     tops: list[int] = []
     lefts: list[int] = []
     dest_channels: list[int] = []
     scattered = False
     for placement in placements:
-        if not isinstance(placement, tuple) or not 2 <= len(placement) <= 3:
+        if (
+            not isinstance(placement, tuple)
+            or not 2 <= len(placement) <= 3
+            or not isinstance(placement[0], (tuple, list))
+        ):
             raise TypeError(
                 "a composite placement is (origin, source) or "
-                f"(origin, source, channels), got {placement!r}"
+                "(origin, source, channels), as in "
+                f"composite(base, ((row, col), source)), got {placement!r}"
             )
         origin, source, *channels = placement
         source = Array(source)
+        if source.meta.ndim == 3 and (source.meta.channel_axis == 0) != base_planar:
+            if base_planar:
+                source_layout, axes = "packed", "(2, 0, 1)"
+            else:
+                source_layout, axes = "planar", "(1, 2, 0)"
+            raise ValueError(
+                f"composite source of shape {source.shape} is {source_layout} and the base "
+                f"of shape {base.shape} is not; give it the base's layout with "
+                f"source.transpose{axes}"
+            )
         if len(origin) == 2:
             row, col = origin
         elif len(origin) == 1 and base.meta.is_1d:

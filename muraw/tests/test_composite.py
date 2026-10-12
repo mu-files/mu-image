@@ -1,7 +1,8 @@
 """``composite(base, (origin, source), ...)`` against NumPy slice assignment.
 
 ``origin`` is ``(row, col)``, or ``(col,)`` on a 1D base. A placement may
-end with the dest channel of each of that source's channels.
+end with the dest channel of each of that source's channels, which are
+planes on a planar base.
 """
 
 from __future__ import annotations
@@ -163,14 +164,66 @@ def test_a_source_past_the_edge_raises():
         base.composite(((0, 0), patch, [1, 2, 3])).realize()
 
 
-def test_a_planar_array_raises():
-    base = Array(np.zeros((3, 4, 5), np.float32), channel_axis=0)
-    with pytest.raises(RuntimeError, match="GRAPH_INVALID"):
-        base.composite(((0, 0), np.zeros((4, 5), np.float32))).realize()
-    packed = Array(np.zeros((4, 5, 3), np.float32))
-    planar = Array(np.zeros((3, 2, 2), np.float32), channel_axis=0)
-    with pytest.raises(RuntimeError, match="GRAPH_INVALID"):
-        packed.composite(((0, 0), planar)).realize()
+def _planar(samples):
+    return Array(samples, channel_axis=0)
+
+
+def test_a_planar_base_matches_slice_assignment():
+    for dtype in (np.uint8, np.float32):
+        base = _image((3, 6, 8), dtype)
+        rgb = _image((3, 2, 3), dtype)
+        mono = _image((2, 3), dtype)
+        expected = base.copy()
+        expected[:, 1:3, 2:5] = rgb
+        expected[2, 3:5, 4:7] = mono
+        got = _planar(base).composite(((1, 2), _planar(rgb)), ((3, 4), mono, [2])).realize()
+        np.testing.assert_array_equal(got, expected)
+
+
+def test_the_same_placements_on_a_packed_and_a_planar_base():
+    base = _image((6, 8, 3), np.float32)
+    rgb = _image((2, 3, 3), np.float32)
+    mono = _image((2, 3), np.float32)
+    placements = (((1, 2), rgb), ((3, 4), mono, [2]))
+    packed = Array(base).composite(*placements).realize()
+    planar_placements = (((1, 2), _planar(rgb.transpose(2, 0, 1).copy())), placements[1])
+    planar = _planar(base.transpose(2, 0, 1).copy()).composite(*planar_placements).realize()
+    np.testing.assert_array_equal(planar, packed.transpose(2, 0, 1))
+
+
+def test_three_mono_sources_stack_into_planes():
+    planes = [_image((3, 4), np.float32) for _ in range(3)]
+    base = _planar(np.zeros((3, 3, 4), np.float32))
+    got = base.composite(*(((0, 0), plane, [c]) for c, plane in enumerate(planes))).realize()
+    np.testing.assert_array_equal(got, np.stack(planes, axis=0))
+
+
+def test_planar_scatter_channels_write_the_named_planes():
+    base = np.zeros((4, 2, 3), np.float32)
+    two = _image((2, 2, 3), np.float32)
+    expected = base.copy()
+    expected[[0, 2]] = two
+    got = _planar(base).composite(((0, 0), _planar(two), [0, 2])).realize()
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_a_source_of_the_other_layout_raises_naming_the_transpose():
+    packed_src = _image((2, 2, 3), np.float32)
+    planar_base = _planar(np.zeros((3, 4, 5), np.float32))
+    with pytest.raises(ValueError, match=r"transpose\(2, 0, 1\)"):
+        planar_base.composite(((0, 0), packed_src))
+    got = planar_base.composite(((0, 0), Array(packed_src).transpose(2, 0, 1))).realize()
+    np.testing.assert_array_equal(got[:, :2, :2], packed_src.transpose(2, 0, 1))
+
+    packed_base = Array(np.zeros((4, 5, 3), np.float32))
+    with pytest.raises(ValueError, match=r"transpose\(1, 2, 0\)"):
+        packed_base.composite(((0, 0), _planar(np.zeros((3, 2, 2), np.float32))))
+
+
+def test_a_placement_without_its_own_tuple_raises():
+    base = Array(np.zeros((4, 5), np.float32))
+    with pytest.raises(TypeError, match=r"composite\(base, \(\(row, col\), source\)\)"):
+        base.composite((1, 2), np.ones((2, 2), np.float32))
 
 
 def test_a_call_without_a_source_raises():
