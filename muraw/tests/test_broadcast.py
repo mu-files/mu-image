@@ -120,6 +120,9 @@ def test_downward_row_repeat_runs_no_tile_kernel():
 
     np.testing.assert_array_equal(down, np.broadcast_to(row, (64, 32)))
     np.testing.assert_array_equal(across, np.broadcast_to(column, (64, 256)))
-    assert [child.name for child in down_timer.children[0].children] == ["tile (engine)"]
+    assert [child.name for child in down_timer.children[0].children] == [
+        "tile (engine, not run)"
+    ]
     assert down_timer.children[0].children[0].get_elapsed_ms() == 0.0
+    assert [child.name for child in across_timer.children[0].children] == ["tile (engine)"]
     assert across_timer.children[0].children[0].get_elapsed_ms() > 0.0
