@@ -207,6 +207,34 @@ def test_chw_scatter_channels_write_the_named_channels():
     np.testing.assert_array_equal(got, expected)
 
 
+def test_a_packed_base_takes_planes_from_a_chw_array():
+    """Channels 0 and 2 of a packed base are the first and third planes of a CHW array."""
+    base = _image((6, 8, 3), np.float32)
+    planes = _image((3, 6, 8), np.float32)
+    expected = base.copy()
+    expected[:, :, 0] = planes[0]
+    expected[:, :, 2] = planes[2]
+    got = Array(base).composite(
+        ((0, 0), planes[0], [0]),
+        ((0, 0), planes[2], [2]),
+    ).realize()
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_a_chw_base_takes_a_region_from_packed_channels():
+    """A window of channels 0 and 2 on a CHW base comes from a packed array."""
+    base = _image((3, 6, 8), np.float32)
+    packed = _image((4, 5, 3), np.float32)
+    expected = base.copy()
+    expected[0, 1:5, 2:7] = packed[:, :, 0]
+    expected[2, 1:5, 2:7] = packed[:, :, 2]
+    got = _chw(base).composite(
+        ((1, 2), packed[:, :, 0], [0]),
+        ((1, 2), packed[:, :, 2], [2]),
+    ).realize()
+    np.testing.assert_array_equal(got, expected)
+
+
 def test_a_source_of_the_other_layout_raises_naming_the_transpose():
     packed_src = _image((2, 2, 3), np.float32)
     chw_base = _chw(np.zeros((3, 4, 5), np.float32))
