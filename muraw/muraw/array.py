@@ -972,11 +972,13 @@ def squeeze(a: ArrayLike, axis: Any = None) -> "Array":
     return _reshape_layout(a, shape)
 
 
-def _as_shape(shape: Any) -> Tuple[int, ...]:
+def _as_shape(shape: Any, size: Optional[int] = None) -> Tuple[int, ...]:
     """A ``shape`` argument as a tuple of ints. One int is a 1-tuple.
 
-    ``ArrayMeta`` checks the rank and sizes, so every constructor rejects
-    the same shapes with the same messages.
+    With ``size``, one dimension may be ``-1``, as in ``np.reshape``: it
+    becomes the size that gives the shape ``size`` samples. ``ArrayMeta``
+    checks the rank and sizes, so every constructor rejects the same shapes
+    with the same messages.
     """
     if isinstance(shape, (str, bytes, bool, np.bool_)):
         raise TypeError(f"shape must be an int or a sequence of ints, got {shape!r}")
@@ -987,6 +989,13 @@ def _as_shape(shape: Any) -> Tuple[int, ...]:
             dims = tuple(operator.index(dim) for dim in shape)
     except TypeError:
         raise TypeError(f"shape must be an int or a sequence of ints, got {shape!r}") from None
+    if size is not None and -1 in dims:
+        unknown = dims.index(-1)
+        others = dims[:unknown] + dims[unknown + 1 :]
+        known = int(np.prod(others))
+        if -1 in others or known <= 0 or size % known:
+            raise ValueError(f"cannot reshape array of size {size} into shape {shape}")
+        dims = dims[:unknown] + (size // known,) + dims[unknown + 1 :]
     ArrayMeta(dtype=np.dtype(np.float32), shape=dims)
     return dims
 
@@ -1291,6 +1300,19 @@ def _reshape_layout(
     )
 
 
+def reshape(a: ArrayLike, /, shape: Any, order: str = "C") -> "Array":
+    """The same samples as ``shape``, as ``np.reshape(a, shape)``.
+
+    ``shape`` is an int or a sequence of ints, and one size may be ``-1``.
+    A 3- or 4-axis result has its channels on the last axis. Only
+    ``order="C"`` is supported.
+    """
+    a = Array(a)
+    if order != "C":
+        raise NotImplementedError(f"reshape order {order!r} is not supported; use order='C'")
+    return _reshape_layout(a, _as_shape(shape, int(np.prod(a.shape))))
+
+
 def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...]]]:
     """Strip axes that repeat one sample, or ``None`` when nothing does.
 
@@ -1527,6 +1549,117 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
     if scattered:
         attrs["dest_channels"] = dest_channels
     return composite_op(base, *sources, **attrs)
+
+
+def _image_sequence(name: str, arrays: Sequence[ArrayLike]) -> list["Array"]:
+    """The arrays in ``arrays``. An ndarray is the sequence of its first-axis
+    slices, as in NumPy. An ``Array`` is lazy and is not iterated."""
+    if isinstance(arrays, (Array, str, bytes)):
+        raise TypeError(f"{name} takes a sequence of arrays, got {type(arrays).__name__}")
+    items = [Array(item) for item in arrays]
+    if not items:
+        raise ValueError(f"need at least one array to {name}")
+    return items
+
+
+def _join_channels(name: str, images: Sequence["Array"], channel_axis: int) -> "Array":
+    """One ``fill`` of the 3-axis result, with each image written at
+    ``(0, 0)`` into the channels after the images before it.
+
+    ``channel_axis`` is the result's channel axis. A ``(N,)`` or ``(H, W)``
+    image is one channel; a 3-axis image has the result's layout. The
+    result is that fill: origin ``(0, 0)`` and a canvas the size of the
+    result. The dtype is NumPy's promotion, and an image of another dtype
+    is cast with ``astype``.
+    """
+    height, width = images[0].meta.height, images[0].meta.width
+    for image in images[1:]:
+        if image.meta.height != height or image.meta.width != width:
+            shapes = [tuple(image.shape) for image in images]
+            raise ValueError(
+                f"{name} inputs must have the same height and width, got shapes {shapes}"
+            )
+    dtype = supported_dtype(np.result_type(*(image.dtype for image in images)))
+    placed = [image.astype(dtype) for image in images]
+    shape = [height, width]
+    shape.insert(channel_axis, sum(image.meta.channels for image in placed))
+    base = _emit_fill(_meta_from_shape(tuple(shape), dtype, channel_axis), 0)
+    start = 0
+    placements = []
+    for image in placed:
+        count = image.meta.channels
+        placements.append(((0, 0), image, list(range(start, start + count))))
+        start += count
+    return composite(base, *placements)
+
+
+def concatenate(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
+    """Join 3-axis arrays along their channel axis, as ``np.concatenate``.
+
+    ``axis`` is the channel axis of every input: ``-1`` for ``(H, W, C)``
+    and ``0``, NumPy's default, for ``(C, H, W)``. Joining rows or columns is not supported.
+    The inputs share a height and a width. The result is its own array at
+    origin ``(0, 0)``, with a canvas the size of the result.
+
+    The dtype is NumPy's promotion. uint8 ``255`` joined with float32 is
+    ``255.0``.
+    """
+    images = _image_sequence("concatenate", arrays)
+    if len({image.ndim for image in images}) != 1:
+        shapes = [tuple(image.shape) for image in images]
+        raise ValueError(
+            f"concatenate inputs must have the same number of axes, got shapes {shapes}"
+        )
+    ndim = images[0].ndim
+    if ndim == 4:
+        raise NotImplementedError(
+            f"concatenate of a 4-axis stack is not supported (shape {images[0].shape})"
+        )
+    resolved = normalize_axis_index(axis, ndim, "concatenate axis")
+    for image in images:
+        if image.meta.channel_axis != resolved:
+            hint = "; join (H, W) arrays as channels with mi.stack" if ndim < 3 else ""
+            raise NotImplementedError(
+                f"concatenate along axis {axis} of shape {image.shape} joins its rows "
+                f"or columns, which is not supported{hint}"
+            )
+    return _join_channels("concatenate", images, resolved)
+
+
+def stack(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
+    """Stack ``(H, W)`` arrays along a new axis, as ``np.stack``.
+
+    ``K`` arrays give ``(K, H, W)`` for ``axis`` ``0``, NumPy's default,
+    and ``(H, W, K)`` for ``axis`` ``-1``. The inputs share a shape. Dtype, origin, and
+    canvas match ``concatenate``.
+    """
+    images = _image_sequence("stack", arrays)
+    for image in images:
+        if image.ndim != 2:
+            raise NotImplementedError(
+                f"stack of shape {image.shape} is not supported; only (H, W) "
+                "arrays can be stacked"
+            )
+    resolved = normalize_axis_index(axis, 3, "stack axis")
+    return _join_channels("stack", images, resolved)
+
+
+def dstack(arrays: Sequence[ArrayLike]) -> "Array":
+    """Join arrays along axis 2, as ``np.dstack``.
+
+    A ``(N,)`` input is one channel of a one-row image, a ``(H, W)`` input
+    is one channel, and a 3-axis input must be ``(H, W, C)``. Dtype,
+    origin, and canvas match ``concatenate``.
+    """
+    images = _image_sequence("dstack", arrays)
+    for image in images:
+        if image.ndim >= 3 and image.meta.channel_axis != 2:
+            raise NotImplementedError(
+                f"dstack of shape {image.shape} with channel_axis "
+                f"{image.meta.channel_axis} joins its rows or columns, which is "
+                "not supported"
+            )
+    return _join_channels("dstack", images, 2)
 
 
 class Array:
@@ -1898,6 +2031,11 @@ class Array:
         if len(axes) == 1 and (axes[0] is None or not isinstance(axes[0], (int, np.integer))):
             axes = () if axes[0] is None else tuple(axes[0])
         return transpose(self, axes or None)
+
+    def reshape(self, *shape: Any, order: str = "C") -> "Array":
+        """The same samples as a new shape, as ``ndarray.reshape``:
+        ``a.reshape(2, 4, 3)`` or ``a.reshape((2, 4, 3))``."""
+        return reshape(self, shape[0] if len(shape) == 1 else shape, order=order)
 
     def swapaxes(self, axis1: int, axis2: int) -> "Array":
         """Swap two axes, as ``ndarray.swapaxes``."""

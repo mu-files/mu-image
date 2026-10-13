@@ -491,8 +491,7 @@ def _out_meta_transpose(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
 
 def _out_meta_reshape(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``reshape``: the same samples as ``shape``, as
-    ``np.reshape``. A 3-axis result has its channels on the last axis;
-    ``Array.reshape`` is the way to choose another channel axis.
+    ``np.reshape``. A 3-axis result has its channels on the last axis.
     """
     shape = tuple(int(axis) for axis in attrs["shape"])
     return reshaped_meta(x.meta, shape)

@@ -454,6 +454,40 @@ def test_realizing_a_reshape_reshapes_the_realized_pixels():
     np.testing.assert_array_equal(scaled.realize(), pixels.reshape(-1, 1) * 3.0)
 
 
+def _reshapes(lib):
+    """``lib.reshape`` and the ``reshape`` method, with ``-1`` and an int shape."""
+    flat = lib.arange(24, dtype=np.float32)
+    image = lib.reshape(flat, (2, 4, 3))
+    return [
+        image,
+        flat.reshape(2, 4, 3),
+        flat.reshape((4, -1)),
+        lib.reshape(image * 2, (-1, 6)),
+        image.reshape(24),
+    ]
+
+
+def test_reshape_matches_numpy():
+    import muimage as mi
+
+    for got, want in zip(_reshapes(mi), _reshapes(np)):
+        assert got.shape == want.shape
+        np.testing.assert_array_equal(got.realize(), want)
+
+
+def test_reshape_rejects_what_numpy_rejects():
+    import muimage as mi
+
+    for lib in (np, mi):
+        flat = lib.arange(24, dtype=np.float32)
+        with pytest.raises(ValueError):
+            lib.reshape(flat, (5, -1))
+        with pytest.raises(ValueError):
+            lib.reshape(flat, (-1, -1, 6))
+        with pytest.raises(ValueError):
+            lib.reshape(flat, (2, 4, 4))
+
+
 @pytest.mark.parametrize("lazy", [False, True], ids=["source", "lazy"])
 def test_the_axis_expand_dims_adds_to_a_2d_array_is_the_channel_axis(lazy):
     import muimage as mi
