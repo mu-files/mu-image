@@ -591,9 +591,14 @@ class _RecordingEngine:
         nodes: List[Array],
         values: Dict[int, np.ndarray],
         root: Array,
+        output: np.ndarray | None = None,
     ) -> None:
         self.calls.append(len(nodes))
-        values[id(root)] = np.zeros(root.meta.shape, dtype=np.float32)
+        if output is None:
+            values[id(root)] = np.zeros(root.meta.shape, dtype=np.float32)
+        else:
+            output[...] = 0
+            values[id(root)] = output
 
 
 def test_set_default_engine_stub():

@@ -82,11 +82,15 @@ class Engine(Protocol):
         nodes: List[Array],
         values: dict[int, np.ndarray],
         root: Array,
+        output: Optional[np.ndarray] = None,
     ) -> None:
         """Run ``nodes``; write ``root`` into ``values`` (and any needed intermediates).
 
         Every array in ``values`` has its ``meta.buffer_shape``, so a 1D
         array is a one-row ``(1, N)`` buffer.
+
+        ``output``, when given, is the buffer for ``root``. It already has
+        ``root``'s buffer shape, dtype, and a layout this engine can bind.
 
         At engine timing OPS, record per-op ``{op} (engine)`` children under the
         current ``graph_compute`` step via ``PerfTimer.current()``.
@@ -709,6 +713,7 @@ def _run_op_arrays(
     op_arrays: List[Array],
     values: Dict[int, np.ndarray],
     root: Array,
+    output: Optional[np.ndarray] = None,
 ) -> None:
     """Run ``op_arrays`` as one engine call that writes ``root``."""
     parent = PerfTimer.current()
@@ -716,16 +721,34 @@ def _run_op_arrays(
     if parent is not None and get_engine_timing() >= EngineTiming.SEGMENTS:
         timing = parent.start_step("graph_compute")
     try:
-        get_default_engine().execute(op_arrays, values, root)
+        get_default_engine().execute(op_arrays, values, root, output=output)
     finally:
         timing.close()
 
 
-def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
+def realize(
+    root: Array,
+    *,
+    force_recompute: bool = False,
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """Run the graph if needed and return ``root``'s pixels.
 
     Only ``root`` keeps its pixels. The engine's buffers for the other
-    arrays are dropped on return.
+    arrays are dropped on return. ``out`` is the exception: when the engine
+    writes it directly, those pixels stay in the caller's array and are not
+    kept on ``root``.
+
+    ``out`` must have ``root``'s shape and be writeable. For a different
+    dtype the result is ``root.astype(out.dtype)``, which must be a
+    ``same_kind`` cast; a ``root`` realized earlier is cast that way too.
+    When the engine runs, ``out`` cannot share memory with a buffer it
+    reads. When ``out`` is a buffer the engine can bind, the engine writes
+    it, and it is neither sealed nor kept on ``root``. Otherwise the result
+    is copied into ``out``, as for a negative stride. With
+    ``force_recompute``, a cache ``root`` already had is dropped unless the
+    new pixels replace it, so a later ``realize()`` never returns the old
+    pixels.
 
     An array the caller realized earlier has ``_data``, which is handed to
     the engine as an extra bind. The engine skips a producer when that
@@ -746,8 +769,13 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     An array read by a tiled or whole-image op (``rot90``, ``transpose``)
     is still stored as a whole image.
     """
+    requested = root
+    if out is not None:
+        _check_realize_out(requested, out)
+        if out.dtype != requested.dtype:
+            root = requested.astype(out.dtype)
     if root._data is not None and not force_recompute:
-        return _as_numpy_shape(root)
+        return _result(_as_numpy_shape(root), out)
 
     source = root
     while source._node is not None and source._node.op == "reshape":
@@ -757,7 +785,7 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
     if source is not root:
         realize(source, force_recompute=force_recompute)
         root._data = _seal_ndarray(np.reshape(source._data, root.meta.buffer_shape))
-        return _as_numpy_shape(root)
+        return _result(_as_numpy_shape(root), out)
 
     values: Dict[int, np.ndarray] = {}
     op_arrays: List[Array] = []
@@ -793,15 +821,24 @@ def realize(root: Array, *, force_recompute: bool = False) -> np.ndarray:
         done.add(tid)
         stack.pop()
     if not op_arrays:
-        return _as_numpy_shape(root)
+        return _result(_as_numpy_shape(root), out)
 
-    _run_op_arrays(op_arrays, values, root)
+    if out is not None and any(np.shares_memory(out, buf) for buf in values.values()):
+        raise ValueError("realize out= cannot be an input of the graph")
+    bound = out if out is not None and _engine_can_write(root.meta, out) else None
+    _run_op_arrays(op_arrays, values, root, output=bound)
 
     root_pixels = values.get(id(root))
     if root_pixels is None:
         raise RuntimeError("realize finished without materializing root")
-    root._data = _seal_ndarray(root_pixels)
-    return _as_numpy_shape(root)
+    if bound is None and root is requested:
+        root._data = _seal_ndarray(root_pixels)
+        return _result(_as_numpy_shape(root), out)
+    if force_recompute:
+        requested._data = None
+    if bound is not None:
+        return out
+    return _result(root_pixels.reshape(root.meta.shape), out)
 
 
 def _as_numpy_shape(array: Array) -> np.ndarray:
@@ -810,3 +847,43 @@ def _as_numpy_shape(array: Array) -> np.ndarray:
     if array.meta.is_1d:
         return array._data.reshape(array.meta.shape)
     return array._data
+
+
+def _result(pixels: np.ndarray, out: Optional[np.ndarray]) -> np.ndarray:
+    """``pixels``, or ``out`` with ``pixels`` copied into it. ``pixels``
+    has ``out``'s dtype."""
+    if out is None:
+        return pixels
+    np.copyto(out, pixels)
+    return out
+
+
+def _check_realize_out(root: Array, out: np.ndarray) -> None:
+    """Raise unless ``out`` can receive ``root``'s pixels."""
+    if not isinstance(out, np.ndarray):
+        raise TypeError("realize out= must be a numpy ndarray")
+    if out.shape != root.shape:
+        raise ValueError(
+            f"realize out= shape {out.shape} does not match result shape {root.shape}"
+        )
+    if not out.flags.writeable:
+        raise ValueError("realize out= array is read-only")
+    if out.dtype != root.dtype:
+        if not np.can_cast(root.dtype, out.dtype, casting="same_kind"):
+            raise TypeError(
+                f"realize out= cannot cast {root.dtype} to {out.dtype} "
+                "with casting 'same_kind'"
+            )
+        supported_dtype(out.dtype)
+
+
+def _engine_can_write(meta: ArrayMeta, out: np.ndarray) -> bool:
+    """True when the engine can write ``out``, which has ``meta``'s shape and
+    dtype, as its output buffer.
+
+    A 1D result's buffer is ``(1, N)``, so an ``(N,)`` ``out`` is copied
+    into instead.
+    """
+    from .core.binding import is_bindable
+
+    return not meta.is_1d and is_bindable(out, meta.channel_axis)

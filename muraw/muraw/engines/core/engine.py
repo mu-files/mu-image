@@ -64,11 +64,15 @@ class CoreEngine:
         nodes: List["Array"],
         values: Dict[int, np.ndarray],
         root: "Array",
+        output: np.ndarray | None = None,
     ) -> None:
         """Run ``nodes``; write ``root`` into ``values``.
 
         Every array in ``values`` has its ``meta.buffer_shape``, so a 1D
         array is a one-row ``(1, N)`` buffer.
+
+        ``output``, when given, is the buffer for ``root``. It already has
+        ``root``'s buffer shape, dtype, and a layout this engine can bind.
         """
         from ...common import PerfTimer
         from ..graph import EngineTiming, check_engine_layout, get_engine_timing
@@ -113,7 +117,10 @@ class CoreEngine:
                 in_binds[id_of[tid]] = values[tid]
 
         # Kernels write every dest pixel, so do not spend a pass zeroing arr.
-        out = np.empty(root.meta.buffer_shape, dtype=root.meta.dtype)
+        if output is None:
+            out = np.empty(root.meta.buffer_shape, dtype=root.meta.dtype)
+        else:
+            out = output
         values[root_id] = out
 
         array_descs = []

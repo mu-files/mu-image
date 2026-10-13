@@ -2090,8 +2090,22 @@ class Array:
             attrs["clip_max"] = float(clip_max)
         return mi.convert_dtype(self, **attrs)
 
-    def realize(self, *, force_recompute: bool = False) -> np.ndarray:
-        """Run the graph if needed and return this array's pixels (read-only).
+    def realize(
+        self,
+        *,
+        force_recompute: bool = False,
+        out: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Run the graph if needed and return this array's pixels.
+
+        Without ``out``, the returned array is read-only and kept on this
+        handle. With ``out``, the pixels are written into that array and
+        ``out`` is returned. ``out`` must have this array's shape and be
+        writeable, and it cannot share memory with a buffer the graph
+        reads. A different dtype is ``self.astype(out.dtype)``, which must
+        be a ``same_kind`` cast. The engine writes ``out`` directly when it
+        can bind it; any other ``out``, such as one with a negative stride,
+        is filled by a copy.
 
         An array that several row-by-row ops read is computed row by row as
         they need it, and computed again where its reads are far apart (a
@@ -2100,7 +2114,7 @@ class Array:
         """
         from .engines.graph import realize
 
-        return realize(self, force_recompute=force_recompute)
+        return realize(self, force_recompute=force_recompute, out=out)
 
     def __array__(self, dtype: Any = None) -> np.ndarray:
         """NumPy array protocol: getting the array materializes the graph."""
