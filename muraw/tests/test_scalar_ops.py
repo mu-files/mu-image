@@ -119,11 +119,16 @@ def test_a_value_per_channel_scales_each_channel_of_a_chw_array(dtype):
     _check(got, want)
 
 
+def _operator_chain(image):
+    """``(2 - image * gains) / 4 + 1``. The constants are float32, so NumPy
+    does not promote the chain to float64."""
+    gains = np.float32([0.5, 1.0, 2.0])
+    return (np.float32(2.0) - image * gains) / np.float32(4.0) + np.float32(1.0)
+
+
 def test_a_lazy_chain_of_operators_matches_numpy():
     src = np.random.default_rng(2).uniform(0, 1, (6, 8, 3)).astype(np.float32)
-    got = (2.0 - mi.Array(src) * [0.5, 1.0, 2.0]) / 4.0 + 1.0
-    want = (np.float32(2.0) - src * np.float32([0.5, 1.0, 2.0])) / np.float32(4.0)
-    _check(got, want + np.float32(1.0))
+    _check(_operator_chain(mi.Array(src)), _operator_chain(src))
 
 
 def test_a_constant_of_strings_is_rejected():

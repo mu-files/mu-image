@@ -141,16 +141,19 @@ def test_sparse_meshgrid_sum_builds_no_full_grid():
     _check(got, np.asarray(x) + np.asarray(y))
 
 
-def test_vignette_matches_numpy():
-    height, width = 6, 9
-    cx, cy = (width - 1) / 2, (height - 1) / 2
-    x, y = mi.meshgrid(mi.arange(width), mi.arange(height))
-    got = (x - cx) * (x - cx) + (y - cy) * (y - cy)
-    xx, yy = np.meshgrid(np.arange(width, dtype=np.float32), np.arange(height, dtype=np.float32))
-    want = (xx - np.float32(cx)) * (xx - np.float32(cx)) + (yy - np.float32(cy)) * (
-        yy - np.float32(cy)
+def _vignette(lib, height, width):
+    """Squared distance from the center, from ``lib.meshgrid`` and ``lib.arange``."""
+    cx = np.float32((width - 1) / 2)
+    cy = np.float32((height - 1) / 2)
+    x, y = lib.meshgrid(
+        lib.arange(width, dtype=np.float32),
+        lib.arange(height, dtype=np.float32),
     )
-    _check(got, want)
+    return (x - cx) * (x - cx) + (y - cy) * (y - cy)
+
+
+def test_vignette_matches_numpy():
+    _check(_vignette(mi, 6, 9), _vignette(np, 6, 9))
 
 
 def test_shapes_that_do_not_broadcast_raise():

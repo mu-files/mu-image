@@ -8,12 +8,24 @@ import pytest
 import muimage as mi
 
 
-def _vectors(kind: str):
+def _coordinate_vectors(lib, kind: str):
     """A 7-sample x and a 4-sample y, so a swapped axis changes the shape."""
     if kind == "linspace":
-        return mi.linspace(-1.0, 1.0, 7), mi.linspace(0.0, 3.0, 4)
-    if kind == "arange":
-        return mi.arange(7), mi.arange(10, 14)
+        return (
+            lib.linspace(-1.0, 1.0, 7, dtype=np.float32),
+            lib.linspace(0.0, 3.0, 4, dtype=np.float32),
+        )
+    return lib.arange(7, dtype=np.float32), lib.arange(10, 14, dtype=np.float32)
+
+
+def _grids(lib, kind, indexing, sparse):
+    """``lib.meshgrid`` of the ``kind`` coordinate vectors."""
+    x, y = _coordinate_vectors(lib, kind)
+    return lib.meshgrid(x, y, sparse=sparse, indexing=indexing)
+
+
+def _graph_vectors(kind: str):
+    """Vectors that exist only as a muimage graph or an ingested buffer."""
     if kind == "lazy":
         return mi.arange(7) * 0.5 - 1.0, mi.linspace(0.0, 1.0, 4) * 3.0
     return (
@@ -26,17 +38,27 @@ def _vectors(kind: str):
 @pytest.mark.parametrize("indexing", ["xy", "ij"])
 @pytest.mark.parametrize("sparse", [False, True])
 def test_meshgrid_matches_numpy(kind, indexing, sparse):
-    x, y = _vectors(kind)
-    expect = np.meshgrid(
-        np.asarray(x), np.asarray(y), sparse=sparse, indexing=indexing
-    )
-    got = mi.meshgrid(x, y, sparse=sparse, indexing=indexing)
+    if kind in ("linspace", "arange"):
+        got = _grids(mi, kind, indexing, sparse)
+        expect = _grids(np, kind, indexing, sparse)
+    else:
+        x, y = _graph_vectors(kind)
+        got = mi.meshgrid(x, y, sparse=sparse, indexing=indexing)
+        expect = np.meshgrid(np.asarray(x), np.asarray(y), sparse=sparse, indexing=indexing)
     assert isinstance(got, tuple) and len(got) == 2
     for grid, want in zip(got, expect):
         assert isinstance(grid, mi.Array)
         assert grid.shape == want.shape
         assert grid.dtype == np.float32
-        np.testing.assert_array_equal(np.asarray(grid), want)
+        pixels = np.asarray(grid)
+        if kind == "linspace":
+            # linspace is computed in float32, so a sample can differ from
+            # NumPy's float64 result cast to float32 by a few rounding steps.
+            scale = max(1.0, float(np.max(np.abs(want))))
+            atol = 4 * float(np.finfo(np.float32).eps) * scale
+            np.testing.assert_allclose(pixels, want, rtol=0, atol=atol)
+        else:
+            np.testing.assert_array_equal(pixels, want)
 
 
 def test_meshgrid_rejects_a_rank_2_input():

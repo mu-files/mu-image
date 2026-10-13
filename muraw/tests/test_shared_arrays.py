@@ -14,29 +14,33 @@ def _random(shape, seed):
     return np.random.default_rng(seed).random(shape, dtype=np.float32)
 
 
-def _square_of_difference_mi(rows, row):
-    _, y = mi.meshgrid(mi.arange(row.shape[1]), mi.arange(rows))
-    y = y * 1.5
-    c = mi.Array(row) * 0.5
-    return ((y - c) * (y - c)).realize()
+def _row_index_and_scale(lib, rows, row):
+    """The row index, scaled, and ``row`` scaled.
+
+    ``row`` is an ``Array`` when ``lib`` is muimage, and the source ndarray
+    when ``lib`` is NumPy.
+    """
+    _, y = lib.meshgrid(
+        lib.arange(row.shape[1], dtype=np.float32),
+        lib.arange(rows, dtype=np.float32),
+    )
+    return y * np.float32(1.5), row * np.float32(0.5)
 
 
-def _square_of_difference_np(rows, row):
-    cols = row.shape[1]
-    _, y = np.meshgrid(np.arange(cols, dtype=np.float32), np.arange(rows, dtype=np.float32))
-    y = y * 1.5
-    c = row * 0.5
+def _square_of_difference(lib, rows, row):
+    """``(y - c) * (y - c)`` from ``_row_index_and_scale``."""
+    y, c = _row_index_and_scale(lib, rows, row)
     return (y - c) * (y - c)
 
 
 def test_square_of_a_difference_matches_numpy():
     """`y` is each pixel's row index, computed in the graph."""
     row = _random((1, 61), 1)
-    got = _square_of_difference_mi(37, row)
-    expected = _square_of_difference_np(37, row)
+    got = _square_of_difference(mi, 37, mi.Array(row))
+    expected = _square_of_difference(np, 37, row)
     assert got.dtype == np.float32
     assert expected.dtype == np.float32
-    np.testing.assert_array_equal(got, expected)
+    np.testing.assert_array_equal(got.realize(), expected)
 
 
 def _best_time(run, repeats=5):
@@ -55,19 +59,19 @@ def test_square_of_a_difference_is_faster_than_numpy():
     rows = 3000
     row = _random((1, 4000), 3)
     np.testing.assert_array_equal(
-        _square_of_difference_mi(rows, row), _square_of_difference_np(rows, row)
+        _square_of_difference(mi, rows, mi.Array(row)).realize(),
+        _square_of_difference(np, rows, row),
     )
-    mi_time = _best_time(lambda: _square_of_difference_mi(rows, row))
-    np_time = _best_time(lambda: _square_of_difference_np(rows, row))
+    mi_time = _best_time(lambda: _square_of_difference(mi, rows, mi.Array(row)).realize())
+    np_time = _best_time(lambda: _square_of_difference(np, rows, row))
     print(f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms")
     assert mi_time < np_time, f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
 
 
 def _square_of_difference_each_realized(rows, row):
-    _, y = mi.meshgrid(mi.arange(row.shape[1]), mi.arange(rows))
-    y = y * 1.5
+    """The square of a difference with every intermediate realized."""
+    y, c = _row_index_and_scale(mi, rows, mi.Array(row))
     y.realize()
-    c = mi.Array(row) * 0.5
     c.realize()
     first = y - c
     first.realize()
@@ -85,9 +89,10 @@ def test_square_of_a_difference_is_faster_than_realizing_each_step():
     rows = 3000
     row = _random((1, 4000), 3)
     np.testing.assert_array_equal(
-        _square_of_difference_mi(rows, row), _square_of_difference_each_realized(rows, row)
+        _square_of_difference(mi, rows, mi.Array(row)).realize(),
+        _square_of_difference_each_realized(rows, row),
     )
-    fused_time = _best_time(lambda: _square_of_difference_mi(rows, row))
+    fused_time = _best_time(lambda: _square_of_difference(mi, rows, mi.Array(row)).realize())
     each_time = _best_time(lambda: _square_of_difference_each_realized(rows, row))
     message = f"one graph {fused_time * 1e3:.1f} ms, each step realized {each_time * 1e3:.1f} ms"
     print(message)
@@ -101,11 +106,17 @@ def test_array_read_twice_by_one_op_matches_numpy():
     np.testing.assert_array_equal((y + y).realize(), expected)
 
 
+def _flip_and_source(lib, image):
+    """``flipud(image * 2) + image * 2``."""
+    scaled = image * np.float32(2.0)
+    return lib.flipud(scaled) + scaled
+
+
 def test_flip_and_its_source_match_numpy():
     image = _random((37, 61), 5)
-    y = mi.Array(image) * 2.0
-    expected = np.flipud(image * 2.0) + image * 2.0
-    np.testing.assert_array_equal((mi.flipud(y) + y).realize(), expected)
+    got = _flip_and_source(mi, mi.Array(image))
+    expected = _flip_and_source(np, image)
+    np.testing.assert_array_equal(got.realize(), expected)
 
 
 def test_realizing_a_shared_array_first_gives_the_same_pixels():
@@ -136,13 +147,19 @@ def test_demosaic_output_read_by_two_ops_matches_realizing_it_first(algorithm):
     np.testing.assert_array_equal(got, expected)
 
 
+def _rotation_and_source(lib, image):
+    """``rot90(image * 2) + image * 2``."""
+    scaled = image * np.float32(2.0)
+    return lib.rot90(scaled) + scaled
+
+
 def test_array_read_by_a_rotation_and_an_add_matches_numpy():
     """A rotation is a tiled op, so the array it shares with the add is
     written to a buffer between the two."""
     image = _random((41, 41), 8)
-    y = mi.Array(image) * 2.0
-    expected = np.rot90(image * 2.0) + image * 2.0
-    np.testing.assert_array_equal((mi.rot90(y) + y).realize(), expected)
+    got = _rotation_and_source(mi, mi.Array(image))
+    expected = _rotation_and_source(np, image)
+    np.testing.assert_array_equal(got.realize(), expected)
 
 
 def test_chw_array_read_twice_matches_numpy():
@@ -192,11 +209,17 @@ def test_integer_flip_and_its_source_match_numpy(dtype):
     np.testing.assert_array_equal(got, expected)
 
 
+def _two_chains(first, second):
+    """``(first * 2 - 1) * 3 + (second - 0.5) * 4``, with float32 constants."""
+    scaled = (first * np.float32(2.0) - np.float32(1.0)) * np.float32(3.0)
+    return scaled + (second - np.float32(0.5)) * np.float32(4.0)
+
+
 def test_two_chains_joined_match_numpy():
     """Two chains on two inputs, then one add: the engine runs them as one
     stage."""
     first = _random((37, 61), 13)
     second = _random((37, 61), 14)
-    got = ((mi.Array(first) * 2.0 - 1.0) * 3.0 + (mi.Array(second) - 0.5) * 4.0).realize()
-    expected = (first * 2.0 - 1.0) * 3.0 + (second - 0.5) * 4.0
-    np.testing.assert_array_equal(got, expected)
+    got = _two_chains(mi.Array(first), mi.Array(second))
+    expected = _two_chains(first, second)
+    np.testing.assert_array_equal(got.realize(), expected)
