@@ -743,12 +743,15 @@ def realize(
     dtype the result is ``root.astype(out.dtype)``, which must be a
     ``same_kind`` cast; a ``root`` realized earlier is cast that way too.
     When the engine runs, ``out`` cannot share memory with a buffer it
-    reads. When ``out`` is a buffer the engine can bind, the engine writes
-    it, and it is neither sealed nor kept on ``root``. Otherwise the result
-    is copied into ``out``, as for a negative stride. With
-    ``force_recompute``, a cache ``root`` already had is dropped unless the
-    new pixels replace it, so a later ``realize()`` never returns the old
-    pixels.
+    reads. The engine writes ``out`` when it can bind that buffer, and when
+    ``out`` flips or permutes the axes of a buffer it can bind: ``root``
+    gets the same flip and transpose, and the engine writes that buffer.
+    Anything else is copied into
+    ``out``, including a negative stride that skips elements, such as
+    ``[:, ::-2]``. The written buffer is neither sealed nor kept on
+    ``root``. With ``force_recompute``, a cache ``root`` already had is
+    dropped unless the new pixels replace it, so a later ``realize()``
+    never returns the old pixels.
 
     An array the caller realized earlier has ``_data``, which is handed to
     the engine as an extra bind. The engine skips a producer when that
@@ -776,6 +779,10 @@ def realize(
             root = requested.astype(out.dtype)
     if root._data is not None and not force_recompute:
         return _result(_as_numpy_shape(root), out)
+
+    bound = None
+    if out is not None:
+        root, bound = _prepare_output(root, out)
 
     source = root
     while source._node is not None and source._node.op == "reshape":
@@ -825,7 +832,6 @@ def realize(
 
     if out is not None and any(np.shares_memory(out, buf) for buf in values.values()):
         raise ValueError("realize out= cannot be an input of the graph")
-    bound = out if out is not None and _engine_can_write(root.meta, out) else None
     _run_op_arrays(op_arrays, values, root, output=bound)
 
     root_pixels = values.get(id(root))
@@ -877,13 +883,29 @@ def _check_realize_out(root: Array, out: np.ndarray) -> None:
         supported_dtype(out.dtype)
 
 
-def _engine_can_write(meta: ArrayMeta, out: np.ndarray) -> bool:
-    """True when the engine can write ``out``, which has ``meta``'s shape and
-    dtype, as its output buffer.
+def _prepare_output(root: Array, out: np.ndarray) -> Tuple[Array, Optional[np.ndarray]]:
+    """The graph to run and the buffer the engine writes.
 
-    A 1D result's buffer is ``(1, N)``, so an ``(N,)`` ``out`` is copied
-    into instead.
+    The buffer is ``out`` when the engine can bind it, or the buffer under
+    ``out`` that ``bound_output`` finds. ``None`` means the engine writes
+    its own buffer and the pixels are copied into ``out``.
     """
+    if _engine_can_write(root.meta, out):
+        return root, out
+    from .core.binding import bound_output
+
+    laid = bound_output(root, out)
+    return laid if laid is not None else (root, None)
+
+
+def _engine_can_write(meta: ArrayMeta, out: np.ndarray) -> bool:
+    """True when the engine can write ``out`` as ``meta``'s buffer.
+
+    ``out`` has to have ``meta``'s buffer shape and dtype. A 1D result's
+    buffer is ``(1, N)``, so an ``(N,)`` ``out`` is copied into instead.
+    """
+    if out.dtype != meta.dtype or tuple(out.shape) != meta.buffer_shape:
+        return False
     from .core.binding import is_bindable
 
-    return not meta.is_1d and is_bindable(out, meta.channel_axis)
+    return is_bindable(out, meta.channel_axis)

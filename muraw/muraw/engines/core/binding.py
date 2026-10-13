@@ -5,7 +5,9 @@
 ``is_bindable`` says whether the engine can bind an ndarray's memory as it
 is. ``bound_source`` reads an array the engine cannot bind as an op over a
 buffer it can: a view of a packed parent, an orientation of a row/column
-swap, or a transpose of a permutation of the axes.
+swap, or a transpose of a permutation of the axes. ``bound_output`` finds
+the buffer under a flipped or permuted ``realize(out=)`` array, so the
+engine writes it.
 """
 
 from __future__ import annotations
@@ -94,6 +96,39 @@ def bound_source(arr: np.ndarray, channel_axis: Optional[int]) -> Optional[Array
     if source is None and arr.ndim == 3:
         source = _permuted_source(arr, channel_axis)
     return source
+
+
+def bound_output(result: Array, out: np.ndarray) -> Optional[Tuple[Array, np.ndarray]]:
+    """The array to run and the buffer to write so ``out`` shows ``result``,
+    or ``None`` to copy into ``out``.
+
+    ``out`` is read in memory order: each negatively strided axis flipped
+    back and the axes sorted by stride. ``result`` gets the same flip and
+    transpose, and the engine writes that buffer, a view of ``out``, when
+    ``is_bindable`` accepts it. A stride that skips elements, such as
+    ``[:, ::-2]``, is not bindable. The engine reads no channels on axis 1
+    of 3 axes, and a 4-axis buffer must keep its axes in order.
+    """
+    flipped = tuple(
+        axis for axis in range(out.ndim) if out.strides[axis] < 0 and out.shape[axis] > 1
+    )
+    unflipped = out[
+        tuple(slice(None, None, -1) if axis in flipped else slice(None) for axis in range(out.ndim))
+    ]
+    order = tuple(sorted(range(out.ndim), key=lambda axis: -abs(unflipped.strides[axis])))
+    if out.ndim == 3 and order.index(result.meta.channel_axis) == 1:
+        return None
+    if out.ndim == 4 and order != (0, 1, 2, 3):
+        return None
+    import muimage as mi
+
+    produced = mi.flip(result, flipped) if flipped else result
+    if order != tuple(range(out.ndim)):
+        produced = mi.transpose(produced, order)
+    buffer = unflipped.transpose(order)
+    if not is_bindable(buffer, produced.meta.channel_axis):
+        return None
+    return produced, buffer
 
 
 class _Memory:

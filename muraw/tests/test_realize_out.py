@@ -1,7 +1,8 @@
 """``realize(out=)`` writes the caller's buffer, or copies into it.
 
-The engine writes ``out`` itself when that buffer is one it can bind.
-Anything else, including a negative stride, is the engine's own buffer
+The engine writes ``out`` itself when that buffer is one it can bind,
+including a layout ``Array`` reads without a copy. Anything else,
+including a stride that skips elements, is the engine's own buffer
 copied in with ``np.copyto``. ``out`` is neither sealed nor kept on the
 handle.
 """
@@ -175,23 +176,200 @@ def test_a_realized_input_cannot_be_out():
         later.realize(out=cached)
 
 
+def _assert_layout_write(image, out, expected, monkeypatch):
+    """The engine's output shares memory with ``out``, and ``out`` holds ``expected``."""
+    written = _capture_engine_output(monkeypatch)
+    got = image.realize(out=out)
+    assert got is out
+    assert len(written) == 1 and np.shares_memory(written[0], out)
+    assert out.flags.writeable
+    assert image._data is None
+    np.testing.assert_array_equal(out, expected)
+    return written[0]
+
+
+def _flip(parent, kind):
+    if kind == "rows":
+        return parent[::-1]
+    if kind == "cols":
+        return parent[:, ::-1]
+    if kind == "both":
+        return parent[::-1, ::-1]
+    if kind == "channels":
+        return parent[..., ::-1]
+    raise ValueError(kind)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize("kind", ["rows", "cols", "both"])
+def test_a_whole_axis_flip_is_the_buffer_the_engine_writes(dtype, kind, monkeypatch):
+    """A span op writes a row flip, a column flip, or both, with no copy."""
+    src = np.arange(4 * 6, dtype=dtype).reshape(4, 6)
+    parent = np.empty(src.shape, dtype=dtype)
+    out = _flip(parent, kind)
+    _assert_layout_write(_scaled(Array(src)), out, _scaled(src), monkeypatch)
+    assert parent.flags.writeable
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.float32])
+def test_reversed_channels_are_the_buffer_the_engine_writes(dtype, monkeypatch):
+    """A channel reversal is a flip of the last axis, written into the parent."""
+    src = np.arange(4 * 5 * 3, dtype=dtype).reshape(4, 5, 3)
+    parent = np.empty(src.shape, dtype=dtype)
+    out = _flip(parent, "channels")
+    _assert_layout_write(_scaled(Array(src)), out, _scaled(src), monkeypatch)
+    np.testing.assert_array_equal(parent, _scaled(src)[..., ::-1])
+
+
+def test_an_rgb_result_is_written_into_bgr(monkeypatch):
+    """A packed RGB result is written into ``bgr`` through ``bgr[..., ::-1]``."""
+    rgb = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
+    bgr = np.empty(rgb.shape, np.uint8)
+    out = bgr[..., ::-1]
+    _assert_layout_write(_scaled(Array(rgb)), out, _scaled(rgb), monkeypatch)
+    np.testing.assert_array_equal(bgr, _scaled(rgb)[..., ::-1])
+    assert bgr.flags.writeable
+
+
+def _layout_case(layout):
+    """``(source, channel_axis, buffer, out)`` for one ``out`` layout.
+
+    ``buffer`` is the caller's memory, filled with ``-1``, and ``out`` the
+    part of it the result goes to: the whole buffer, or slot 1 of a batch.
+    """
+    height, width, channels = 4, 5, 3
+    packed = np.arange(height * width * channels, dtype=np.float32).reshape(
+        height, width, channels
+    )
+    chw = np.ascontiguousarray(np.moveaxis(packed, -1, 0))
+    if layout == "HWC":
+        buffer = np.full(packed.shape, -1, np.float32)
+        return packed, 2, buffer, buffer
+    if layout == "CHW":
+        buffer = np.full(chw.shape, -1, np.float32)
+        return chw, 0, buffer, buffer
+    if layout == "NHWC slot":
+        buffer = np.full((2,) + packed.shape, -1, np.float32)
+        return packed, 2, buffer, buffer[1]
+    if layout == "NCHW slot":
+        buffer = np.full((2,) + chw.shape, -1, np.float32)
+        return chw, 0, buffer, buffer[1]
+    if layout == "HWC into an NCHW slot":
+        buffer = np.full((2,) + chw.shape, -1, np.float32)
+        return packed, 2, buffer, np.moveaxis(buffer[1], 0, -1)
+    raise ValueError(layout)
+
+
+def _flipped(out, channel_axis, kind):
+    """``out`` with its rows or its columns reversed, or ``out`` itself."""
+    if kind == "whole":
+        return out
+    rows_axis, cols_axis = (axis for axis in range(3) if axis != channel_axis)
+    axis = rows_axis if kind == "rows" else cols_axis
+    return np.flip(out, axis)
+
+
+@pytest.mark.parametrize("kind", ["whole", "rows", "cols"])
+@pytest.mark.parametrize(
+    "layout", ["HWC", "CHW", "NHWC slot", "NCHW slot", "HWC into an NCHW slot"]
+)
+def test_each_layout_and_its_flips_are_the_buffer_the_engine_writes(
+    layout, kind, monkeypatch
+):
+    """The engine writes ``out``'s memory for each layout, flipped or not, and
+    a batch slot leaves the other slot alone."""
+    src, channel_axis, buffer, slot = _layout_case(layout)
+    out = _flipped(slot, channel_axis, kind)
+    _assert_layout_write(
+        _scaled(Array(src, channel_axis=channel_axis)), out, _scaled(src), monkeypatch
+    )
+    if buffer.ndim == 4:
+        np.testing.assert_array_equal(buffer[0], -1)
+
+
+@pytest.mark.parametrize("kind", ["whole", "frames"])
+def test_a_4_axis_out_is_the_buffer_the_engine_writes(kind, monkeypatch):
+    """An ``(N, H, W, C)`` result is written into an ``(N, H, W, C)`` ``out``,
+    and into one whose frames are reversed."""
+    src = np.arange(2 * 4 * 5 * 3, dtype=np.float32).reshape(2, 4, 5, 3)
+    buffer = np.empty(src.shape, np.float32)
+    out = buffer if kind == "whole" else buffer[::-1]
+    _assert_layout_write(_scaled(Array(src)), out, _scaled(src), monkeypatch)
+
+
+def test_a_flip_after_orientation_is_the_buffer_the_engine_writes(monkeypatch):
+    """The engine writes ``out`` when a row flip follows an orientation."""
+    src = np.arange(4 * 6, dtype=np.float32).reshape(4, 6)
+    image = mi.orientation(_scaled(Array(src)), orientation=6)
+    parent = np.empty(image.shape, np.float32)
+    out = parent[::-1]
+    _assert_layout_write(image, out, np.rot90(_scaled(src), -1), monkeypatch)
+
+
+def test_a_moveaxis_out_is_the_buffer_the_engine_writes(monkeypatch):
+    """``moveaxis`` of a CHW buffer is written as that buffer, with a transpose."""
+    src = np.arange(4 * 6 * 3, dtype=np.float32).reshape(4, 6, 3)
+    chw = np.empty((3, 4, 6), np.float32)
+    out = np.moveaxis(chw, 0, -1)
+    written = _assert_layout_write(_scaled(Array(src)), out, _scaled(src), monkeypatch)
+    assert written.shape == chw.shape
+    np.testing.assert_array_equal(chw, np.moveaxis(_scaled(src), -1, 0))
+    assert chw.flags.writeable
+
+
+def test_a_rot90_out_is_the_buffer_the_engine_writes(monkeypatch):
+    """``np.rot90`` is a flip and a permutation, and the engine writes the parent."""
+    src = np.arange(6 * 4 * 3, dtype=np.float32).reshape(6, 4, 3)
+    parent = np.empty((4, 6, 3), np.float32)
+    out = np.rot90(parent)
+    assert out.shape == src.shape
+    _assert_layout_write(_scaled(Array(src)), out, _scaled(src), monkeypatch)
+    np.testing.assert_array_equal(parent, np.rot90(_scaled(src), -1))
+
+
+def test_a_transpose_out_is_the_buffer_the_engine_writes(monkeypatch):
+    """A 2D ``out`` that is ``parent.T`` is written as ``parent``."""
+    src = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    parent = np.empty((5, 4), np.float32)
+    out = parent.T
+    _assert_layout_write(_scaled(Array(src)), out, _scaled(src), monkeypatch)
+    np.testing.assert_array_equal(parent, _scaled(src).T)
+
+
 def test_a_negative_stride_is_copied_into(monkeypatch):
-    """A flipped ``out`` is not the engine's buffer; ``copyto`` fills the view."""
+    """A flipped ``out`` that skips elements is not the engine's buffer."""
     src = np.arange(12, dtype=np.float32).reshape(3, 4)
-    buf = np.empty_like(src)
-    out = buf[::-1]
+    buf = np.zeros((3, 8), np.float32)
+    out = buf[:, ::-2]
     written = _capture_engine_output(monkeypatch)
     image = _scaled(Array(src))
     got = image.realize(out=out)
     assert got is out
-    assert len(written) == 1 and written[0] is not out
+    assert len(written) == 1 and not np.shares_memory(written[0], out)
     np.testing.assert_array_equal(out, _scaled(src))
+    np.testing.assert_array_equal(buf[:, ::2], 0)
     assert image._data is not None and image._data is not out
     assert not image._data.flags.writeable
     assert out.flags.writeable
     again = image.realize()
     assert len(written) == 1
     assert again is image._data
+
+
+def test_an_already_realized_flip_is_copied(monkeypatch):
+    """A cache hit copies into a flipped ``out`` and does not run the engine."""
+    src = np.arange(12, dtype=np.float32).reshape(3, 4)
+    image = _scaled(Array(src))
+    cached = image.realize()
+    parent = np.empty_like(cached)
+    out = parent[::-1]
+    written = _capture_engine_output(monkeypatch)
+    got = image.realize(out=out)
+    assert written == []
+    assert got is out
+    np.testing.assert_array_equal(out, cached)
+    assert image._data is cached
+    assert parent.flags.writeable
 
 
 def test_an_already_realized_array_copies_into_out(monkeypatch):

@@ -2103,9 +2103,10 @@ class Array:
         ``out`` is returned. ``out`` must have this array's shape and be
         writeable, and it cannot share memory with a buffer the graph
         reads. A different dtype is ``self.astype(out.dtype)``, which must
-        be a ``same_kind`` cast. The engine writes ``out`` directly when it
-        can bind it; any other ``out``, such as one with a negative stride,
-        is filled by a copy.
+        be a ``same_kind`` cast. The engine writes ``out`` when it can bind
+        it, or the buffer under it when ``out`` flips or permutes that
+        buffer's axes. Any other ``out``, such as ``[:, ::-2]``, is filled
+        by a copy.
 
         An array that several row-by-row ops read is computed row by row as
         they need it, and computed again where its reads are far apart (a
