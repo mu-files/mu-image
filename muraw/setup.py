@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
 
-from setuptools import setup, Extension
-import numpy as np
 import os
 import platform
 import sys
+
+import numpy as np
+from setuptools import Extension, setup
 
 
 def _is_android():

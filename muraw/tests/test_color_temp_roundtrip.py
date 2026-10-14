@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
 
-import math
 import pytest
 
 from muraw.raw_render import (
     colortemp_to_uv,
-    uvUCS_to_xy,
-    xy_to_uvUCS,
-    uv_to_colortemp,
     temp_tint_to_xy,
+    uv_to_colortemp,
+    uvUCS_to_xy,
     xy_to_temp_tint,
+    xy_to_uvUCS,
 )
 
 
@@ -69,8 +68,9 @@ def test_temp_tint_to_xy_roundtrip(temp: int, tint: int):
 
 def test_acr3_curve_basic():
     """Verify get_acr3_curve produces valid tone curve."""
-    from muraw.raw_render import get_acr3_curve
     import numpy as np
+
+    from muraw.raw_render import get_acr3_curve
 
     for num_points in [256, 512, 1024, 4096]:
         curve = get_acr3_curve(num_points)
@@ -84,8 +84,9 @@ def test_acr3_curve_basic():
 
 def test_bradford_adaptation_basic():
     """Verify compute_bradford_adaptation produces valid adaptation matrices."""
-    from muraw.raw_render import compute_bradford_adaptation, D50_xy, D65_xy
     import numpy as np
+
+    from muraw.raw_render import D50_xy, D65_xy, compute_bradford_adaptation
 
     # D50 -> D65 should produce a non-identity matrix
     adapt = compute_bradford_adaptation(D50_xy, D65_xy)

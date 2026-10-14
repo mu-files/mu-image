@@ -38,7 +38,6 @@ def calculate_preview_scale(image_shape, target_dim=1024):
     Returns:
         PreviewScale enum value
     """
-    import math
     from muraw import dngio
 
     h, w = image_shape[:2]

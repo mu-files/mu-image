@@ -20,6 +20,9 @@ execute the graph; pipeline code calls ``mi.<op>``, not ``engines.*``.
 
 from __future__ import annotations
 
+# Catalog first, then array. The star import defines every catalog op;
+# the array names that follow (tile, take, matmul, …) are wrappers and
+# must win. isort would reverse that (I001 is ignored for this file).
 from muraw.engines import ops as _catalog
 from muraw.engines.graph import emit, flush, op
 from muraw.engines.ops import *  # noqa: F401,F403 — generated __all__ is the catalog surface
@@ -29,13 +32,18 @@ from muraw.array import (
     ArrayMeta,
     add,
     arange,
+    broadcast_to,
+    composite,
+    concatenate,
     divide,
+    dstack,
     expand_dims,
     flip,
     fliplr,
     flipud,
     full,
     full_like,
+    hstack,
     linspace,
     matmul,
     meshgrid,
@@ -44,11 +52,6 @@ from muraw.array import (
     ones,
     ones_like,
     permute_dims,
-    broadcast_to,
-    composite,
-    concatenate,
-    dstack,
-    hstack,
     repeat,
     reshape,
     rot90,

@@ -13,13 +13,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 import tifffile
-
-from muraw.dngio import DngFile, IfdPageSpec, write_dng, SubFileType
 from conftest import (
     DNG_VALIDATE_PATH,
     compute_diff_stats,
     run_dng_validate,
 )
+
+from muraw.dngio import DngFile, IfdPageSpec, SubFileType, write_dng
 
 # Output directory for this test
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_subifd_roundtrip"
@@ -151,7 +151,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                                 f"NewRawImageDigest was lost in roundtrip for IFD {i}: "
                                 f"source had digest but roundtrip doesn't"
                             )
-                        print(f"    ✓ NewRawImageDigest preserved in roundtrip")
+                        print("    ✓ NewRawImageDigest preserved in roundtrip")
             except Exception as e:
                 pytest.fail(f"write_dng failed for IFD {i}: {e}")
 

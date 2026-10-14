@@ -12,11 +12,11 @@ This module provides:
 
 from __future__ import annotations
 
-import numpy as np
 import threading
-from enum import Enum, auto
+from enum import Enum
 from typing import Any
 
+import numpy as np
 
 # =============================================================================
 # Constants
@@ -355,7 +355,7 @@ class LUT:
             if convert_srgb_gamma_to_linear:
                 # Convert from sRGB gamma space to linear space
                 # The curve is defined in sRGB gamma space but needs to be applied to linear pixels
-                from muraw.raw_render import ColorSpaceLUT, ColorSpace
+                from muraw.raw_render import ColorSpace, ColorSpaceLUT
 
                 srgb_decode = ColorSpaceLUT(
                     ColorSpace.SRGB_GAMMA, inverse=True, size=size

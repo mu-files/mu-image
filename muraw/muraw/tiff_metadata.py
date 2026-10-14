@@ -9,15 +9,16 @@ This module provides classes for creating and parsing TIFF/DNG metadata tags.
 from __future__ import annotations
 
 import logging
-import numpy as np
-
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, IntEnum
 from fractions import Fraction
 from typing import Any, Self, Type
 
-from .deps import defusedxml_proxy, tifffile_proxy as tifffile
+import numpy as np
+
+from .deps import defusedxml_proxy
+from .deps import tifffile_proxy as tifffile
 
 logger = logging.getLogger(__name__)
 
@@ -1589,7 +1590,7 @@ def _get_time_impl(tag_source: Any, time_type: str = "original") -> datetime | N
                     minutes = int(offset_str[4:6]) if len(offset_str) >= 6 else 0
                     total_seconds = sign * (hours * 3600 + minutes * 60)
 
-                    from datetime import timezone, timedelta
+                    from datetime import timedelta, timezone
 
                     tz = timezone(timedelta(seconds=total_seconds))
                     dt_obj = dt_obj.replace(tzinfo=tz)
@@ -2104,7 +2105,7 @@ class XmpMetadata:
             merged_attrs.update(other)
         return type(self).from_attributes(merged_attrs)
 
-    def _parse(self, xmp_data: str) -> Dict[str, Any]:
+    def _parse(self, xmp_data: str) -> dict[str, Any]:
         """Parse all XMP attributes and sequences from the XMP metadata into a dictionary.
 
         Returns:

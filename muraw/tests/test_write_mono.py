@@ -7,24 +7,26 @@ Validates that single-channel (monochrome) DNGs can be written and validated.
 """
 
 import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
 from tifffile import COMPRESSION
 
 # Suppress tifffile warnings about "shaped series shape does not match page shape"
 logging.getLogger("tifffile").setLevel(logging.CRITICAL)
 
+from conftest import OutputPathManager, compute_diff_stats, run_dng_validate
+
 from muraw.dngio import (
-    write_dng_from_array,
     DngFile,
     IfdDataSpec,
     PageEncoding,
     PreviewParams,
     PyramidParams,
+    write_dng_from_array,
 )
 from muraw.tiff_metadata import MetadataTags
-from conftest import run_dng_validate, OutputPathManager, compute_diff_stats
 
 # Test output path manager - set persistent=True to keep outputs, False for tmp_path
 output_path_manager = OutputPathManager(persistent=True)
@@ -403,7 +405,7 @@ def test_write_mono_3d_shape(tmp_path):
         assert raw_data.shape == (height, width)
         assert np.array_equal(raw_data, gray_ramp_2d)
 
-    print(f"  ✓ Monochrome 3D shape DNG validated successfully")
+    print("  ✓ Monochrome 3D shape DNG validated successfully")
 
 
 def test_write_mono_with_metadata(tmp_path):
@@ -442,4 +444,4 @@ def test_write_mono_with_metadata(tmp_path):
         raw_data = main_page.asarray()
         assert np.array_equal(raw_data, gray_ramp)
 
-    print(f"  ✓ Monochrome DNG with metadata validated successfully")
+    print("  ✓ Monochrome DNG with metadata validated successfully")

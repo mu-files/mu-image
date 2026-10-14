@@ -3,10 +3,12 @@
 
 """DNG compression utilities for tiled and stripped image data."""
 
-import numpy as np
 from typing import Any
 
-from .deps import imagecodecs_proxy as imagecodecs, tifffile_proxy as tifffile
+import numpy as np
+
+from .deps import imagecodecs_proxy as imagecodecs
+from .deps import tifffile_proxy as tifffile
 
 
 def swizzle_cfa_data(

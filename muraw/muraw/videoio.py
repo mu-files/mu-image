@@ -5,20 +5,20 @@
 
 import io
 import logging
-import numpy as np
 import os
 import shutil
 import tempfile
-
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import numpy as np
+
 from .deps import cv2_proxy as cv2
 
 # Package imports
-from .imgio import decode_image, ImageSequencePipeline
-from .processing import ProcessingPipeline, DEFAULT_PIPELINE_CALLABLE
+from .imgio import ImageSequencePipeline, decode_image
+from .processing import DEFAULT_PIPELINE_CALLABLE
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
         """
         # Check for video encoding dependencies early
         try:
-            import av
+            import av  # noqa: F401
         except ImportError as e:
             raise ImportError(
                 "Video encoding requires PyAV (av package).\n"
@@ -414,7 +414,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
                 logger.info(f"Copying video to final destination: {output_path}")
                 shutil.copy2(temp_path, output_path)
                 temp_path.unlink()
-                logger.info(f"Cleaned up temporary file")
+                logger.info("Cleaned up temporary file")
             except Exception as e:
                 logger.error(
                     f"Failed to copy video to final destination ({type(e).__name__}): {e}"

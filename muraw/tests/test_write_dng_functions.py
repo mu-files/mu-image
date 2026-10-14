@@ -8,29 +8,31 @@ creating IfdPageSpecs, writing to a new DNG, and comparing metadata and pixels.
 """
 
 import logging
-import numpy as np
 import subprocess
 import sys
 from pathlib import Path
+
+import numpy as np
 from tifffile import COMPRESSION
 
 # Suppress tifffile warnings about "shaped series shape does not match page shape"
 logging.getLogger("tifffile").setLevel(logging.CRITICAL)
 
+import cv2
+from conftest import compute_diff_stats, run_dng_validate
+
 from muraw.dngio import (
-    write_dng,
-    write_dng_from_page,
     DngFile,
     IfdPageSpec,
     PageEncoding,
-    SubFileType,
-    create_dng_from_page,
     PreviewParams,
     PreviewScale,
     PyramidParams,
+    SubFileType,
+    create_dng_from_page,
+    write_dng,
+    write_dng_from_page,
 )
-from conftest import run_dng_validate, compute_diff_stats
-import cv2
 
 # Test output configuration
 USE_PERSISTENT_OUTPUT = False
@@ -80,7 +82,7 @@ def compare_page_metadata(src, out_page, spec=None, extra_skip_tags=None):
     Returns:
         tuple: (compared_count, mismatches) where mismatches is a list of mismatch descriptions
     """
-    from muraw.tiff_metadata import resolve_tag, MetadataTags
+    from muraw.tiff_metadata import MetadataTags, resolve_tag
 
     # Get tag codes from both pages
     src_tags = src if isinstance(src, MetadataTags) else src.get_page_tags()
@@ -174,7 +176,7 @@ def compare_page_metadata(src, out_page, spec=None, extra_skip_tags=None):
         if tag_name == "XMP":
             if src_val != out_val:
                 # Print first 500 chars of each to see the difference
-                print(f"\n      XMP DIFF:")
+                print("\n      XMP DIFF:")
                 print(f"        Source (first 500): {src_val[:500]}")
                 print(f"        Output (first 500): {out_val[:500]}")
                 mismatches.append(f"{tag_name}: XMP content differs")
@@ -219,7 +221,7 @@ def test_complete_file_roundtrip(tmp_path):
     assert source_path.exists(), f"Source file not found: {source_path}"
 
     print(f"\n{'=' * 80}")
-    print(f"Testing complete file roundtrip")
+    print("Testing complete file roundtrip")
     print(f"Source: {source_path}")
     print(f"Output: {output_path}")
     print(f"{'=' * 80}\n")
@@ -344,11 +346,11 @@ def test_complete_file_roundtrip(tmp_path):
             print(f"\n  Comparing page {i}:")
 
             # Compare metadata
-            print(f"    Metadata comparison:")
+            print("    Metadata comparison:")
             compared_count, mismatches = compare_page_metadata(src_page, out_page, spec)
 
             if mismatches:
-                print(f"      Tag mismatches:")
+                print("      Tag mismatches:")
                 for mismatch in mismatches:
                     print(f"        - {mismatch}")
                 raise AssertionError(
@@ -358,7 +360,7 @@ def test_complete_file_roundtrip(tmp_path):
             print(f"      ✓ All {compared_count} compared tags match")
 
             # Compare decoded pixels
-            print(f"    Pixel comparison:")
+            print("    Pixel comparison:")
 
             # Decode both pages to RGB
             src_rgb = src_page.decode_to_rgb(output_dtype=np.uint16)
@@ -391,7 +393,7 @@ def test_complete_file_roundtrip(tmp_path):
                 f"(expected 0.0% - exact match)"
             )
 
-            print(f"      ✓ Pixels match exactly (0.0% difference)")
+            print("      ✓ Pixels match exactly (0.0% difference)")
 
     # Step 9: Test CLI metadata command
     print("\nStep 9: Testing 'dng metadata' CLI command...")
@@ -469,9 +471,9 @@ def test_complete_file_roundtrip(tmp_path):
     output_normalized = normalize_metadata(output_metadata_result.stdout, exif_tags)
 
     if source_normalized == output_normalized:
-        print(f"  ✓ CLI metadata matches (excluding ImageDescription and IFDs 4-5)")
+        print("  ✓ CLI metadata matches (excluding ImageDescription and IFDs 4-5)")
     else:
-        print(f"  ✗ CLI metadata mismatch - ALL DIFFERENCES:")
+        print("  ✗ CLI metadata mismatch - ALL DIFFERENCES:")
         src_lines = source_normalized.split("\n")
         out_lines = output_normalized.split("\n")
 
@@ -492,7 +494,7 @@ def test_complete_file_roundtrip(tmp_path):
         assert False, f"CLI metadata comparison failed: {len(diffs)} differences found"
 
     print(f"\n{'=' * 80}")
-    print(f"✓ Complete file roundtrip test PASSED")
+    print("✓ Complete file roundtrip test PASSED")
     print(f"{'=' * 80}\n")
 
 
@@ -519,7 +521,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
     assert source_path.exists(), f"Source file not found: {source_path}"
 
     print(f"\n{'=' * 80}")
-    print(f"Testing write_dng_from_page with pyramid generation")
+    print("Testing write_dng_from_page with pyramid generation")
     print(f"Source: {source_path}")
     print(f"Output: {output_path}")
     print(f"{'=' * 80}\n")
@@ -593,7 +595,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
 
         output_ifd0 = output_pages[0]
 
-        print(f"\n  Output structure:")
+        print("\n  Output structure:")
         for i, page in enumerate(output_pages):
             print(
                 f"    Page {i}: is_ifd0={page.is_ifd0}, photometric={page.photometric_name}, "
@@ -602,8 +604,8 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
 
         # Compare IFD0 metadata
         # IFD0 should have merged tags from source IFD0 and source page 4
-        print(f"\n  Comparing IFD0 metadata:")
-        print(f"    Note: IFD0 merges tags from source IFD0 and source SubIFD 3")
+        print("\n  Comparing IFD0 metadata:")
+        print("    Note: IFD0 merges tags from source IFD0 and source SubIFD 3")
 
         # Additional tags to skip when upleveling a preview SubIFD to main IFD0
         extra_skip = {
@@ -626,7 +628,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
         )
 
         if mismatches:
-            print(f"      Tag mismatches:")
+            print("      Tag mismatches:")
             for mismatch in mismatches:
                 print(f"        - {mismatch}")
             raise AssertionError(f"IFD0: {len(mismatches)} tag mismatches found")
@@ -634,7 +636,7 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
         print(f"      ✓ All {compared_count} compared tags match")
 
         # Compare pixels for each level
-        print(f"\n  Comparing decoded pixels:")
+        print("\n  Comparing decoded pixels:")
 
         for i, out_page in enumerate(output_pages):
             print(
@@ -678,10 +680,10 @@ def test_write_dng_from_page_with_pyramid(tmp_path):
                     f"(expected < {mean_threshold}%)"
                 )
 
-            print(f"      ✓ Pixels match within tolerance")
+            print("      ✓ Pixels match within tolerance")
 
     print(f"\n{'=' * 80}")
-    print(f"✓ write_dng_from_page with pyramid test PASSED")
+    print("✓ write_dng_from_page with pyramid test PASSED")
     print(f"{'=' * 80}\n")
 
 
@@ -706,7 +708,7 @@ def test_render_raw_scaling_consistency(tmp_path):
         output_dir = tmp_path
 
     print(f"\n{'=' * 80}")
-    print(f"Testing render_raw scaling consistency")
+    print("Testing render_raw scaling consistency")
     print(f"Source: {test_file}")
     print(f"{'=' * 80}\n")
 
@@ -809,9 +811,9 @@ def test_render_raw_scaling_consistency(tmp_path):
 
             dump_dir = output_dir / "pixel_comparison_dumps"
             shutil.copy(test4_path, dump_dir / "test4_preview.dng")
-            print(f"        - test4_preview.dng")
+            print("        - test4_preview.dng")
             assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%"
-        print(f"  ✓ Renders match within threshold")
+        print("  ✓ Renders match within threshold")
 
         # Test 5: create_dng_from_page with JXL compression and pyramid
         print("\nTest 5: create_dng_from_page(IfdPageSpec with JXL, pyramid)...")
@@ -866,9 +868,9 @@ def test_render_raw_scaling_consistency(tmp_path):
 
             dump_dir = output_dir / "pixel_comparison_dumps"
             shutil.copy(test5_path, dump_dir / "test5_pyramid_resized.dng")
-            print(f"        - test5_pyramid_resized.dng")
+            print("        - test5_pyramid_resized.dng")
             assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%"
-        print(f"  ✓ Resized render matches within threshold")
+        print("  ✓ Resized render matches within threshold")
 
         # Also check pyramid level 2 (second pyramid level after main)
         print("\n  Rendering pyramid level 2...")
@@ -894,12 +896,12 @@ def test_render_raw_scaling_consistency(tmp_path):
 
             dump_dir = output_dir / "pixel_comparison_dumps"
             shutil.copy(test5_path, dump_dir / "test5_pyramid_level2.dng")
-            print(f"        - test5_pyramid_level2.dng")
+            print("        - test5_pyramid_level2.dng")
             assert False, f"Renders differ too much: mean={diff_stats['mean']:.2f}%"
-        print(f"  ✓ Pyramid level 2 matches within threshold")
+        print("  ✓ Pyramid level 2 matches within threshold")
 
     print(f"\n{'=' * 80}")
-    print(f"✓ All render_raw scaling consistency tests PASSED")
+    print("✓ All render_raw scaling consistency tests PASSED")
     print(f"{'=' * 80}\n")
 
 

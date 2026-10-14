@@ -8,22 +8,23 @@ is correctly parsed and applied during rendering, comparing output against both
 Photoshop-rendered TIFF files and dng_validate output.
 """
 
-import pytest
-import numpy as np
-from pathlib import Path
-import tifffile
-import imagecodecs
 import logging
+from pathlib import Path
 
-from muraw.dngio import DngFile, decode_dng
-from muraw.raw_render import DemosaicAlgorithm
+import imagecodecs
+import numpy as np
+import pytest
+import tifffile
 from conftest import (
+    DNG_VALIDATE_PATH,
+    OutputPathManager,
     compute_diff_stats,
     core_image_available_for_tests,
     run_dng_validate,
-    DNG_VALIDATE_PATH,
-    OutputPathManager,
 )
+
+from muraw.dngio import DngFile, decode_dng
+from muraw.raw_render import DemosaicAlgorithm
 
 # Suppress tifffile logging about Photoshop TIFF metadata inconsistencies
 logging.getLogger("tifffile").setLevel(logging.CRITICAL)
@@ -369,7 +370,7 @@ def test_muraw_vs_photoshop(
 
     threshold = muraw_ps_thresh
     if threshold >= 1.8:
-        request.applymarker(pytest.mark.xfail(reason=f"MURAW vs Photoshop diff > 1.8%"))
+        request.applymarker(pytest.mark.xfail(reason="MURAW vs Photoshop diff > 1.8%"))
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
     jxl_path = DNGFILES_DIR / f"{file_stem}.jxl"
@@ -449,7 +450,7 @@ def test_coreimage_vs_photoshop(
         threshold = ci_ps_thresh
         if threshold >= 1.8:
             request.applymarker(
-                pytest.mark.xfail(reason=f"Core Image vs Photoshop diff > 1.8%")
+                pytest.mark.xfail(reason="Core Image vs Photoshop diff > 1.8%")
             )
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
@@ -523,7 +524,7 @@ def test_muraw_vs_dng_validate(
     threshold = muraw_dngval_thresh
     if threshold >= 1.8:
         request.applymarker(
-            pytest.mark.xfail(reason=f"MURAW vs dng_validate diff > 1.8%")
+            pytest.mark.xfail(reason="MURAW vs dng_validate diff > 1.8%")
         )
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
@@ -602,7 +603,7 @@ def test_coreimage_vs_dng_validate(
         threshold = ci_dngval_thresh
         if threshold >= 1.8:
             request.applymarker(
-                pytest.mark.xfail(reason=f"Core Image vs dng_validate diff > 1.8%")
+                pytest.mark.xfail(reason="Core Image vs dng_validate diff > 1.8%")
             )
 
     dng_path = DNGFILES_DIR / f"{file_stem}.dng"
@@ -675,7 +676,7 @@ def test_cli_batch_convert_vs_photoshop(
     threshold = muraw_ps_thresh
     if threshold >= 1.8:
         request.applymarker(
-            pytest.mark.xfail(reason=f"CLI batch-convert vs Photoshop diff > 1.8%")
+            pytest.mark.xfail(reason="CLI batch-convert vs Photoshop diff > 1.8%")
         )
 
     jxl_path = DNGFILES_DIR / f"{file_stem}.jxl"

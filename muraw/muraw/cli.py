@@ -79,6 +79,7 @@ def cli(verbose, timing):
 def convert_image(input_file, output_file, bit_depth):
     """Convert image file to another format."""
     import numpy as np
+
     from .imgio import convert_imgformat
 
     success = convert_imgformat(
@@ -184,12 +185,14 @@ def dng():
 @click.option("--summary", is_flag=True, help="Show only IFD summary and exit")
 def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     """Display DNG file metadata."""
-    import re
     import os
-    from tifffile import PHOTOMETRIC, COMPRESSION
+    import re
+
+    from tifffile import COMPRESSION, PHOTOMETRIC
+
+    from .common import enum_display_name
     from .dngio import DngFile
     from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY, SubFileType
-    from .common import enum_display_name
 
     try:
         f = DngFile(input_file)
@@ -491,7 +494,8 @@ def _display_tag(
         issue_number: Validation issue number (if tag is in wrong IFD)
     """
     import numpy as np
-    from .tiff_metadata import XmpMetadata, TiffType
+
+    from .tiff_metadata import TiffType, XmpMetadata
 
     def echo(text):
         """Helper to echo with indentation."""
@@ -689,9 +693,8 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
       muraw dng raw-stage input.dng output.tif camera-rgb --ifd subifd2
       muraw dng raw-stage input.dng output.tif raw --demosaic EA
     """
-    import numpy as np
-    from .dngio import DngFile
     from . import raw_render
+    from .dngio import DngFile
 
     # Parse IFD specification before opening file
     ifd_index, ifd_name = _parse_ifd_spec(ifd)
@@ -874,10 +877,11 @@ def dng_copy(
 
     Apply scale, demosaic (CFA to LINEAR_RAW), strip tags, and/or generate preview.
     """
-    from . import dngio
-    from .tiff_metadata import MetadataTags
     import muraw
+
+    from . import dngio
     from .common import PerfTimer
+    from .tiff_metadata import MetadataTags
 
     timer = PerfTimer("dng_copy", start_time=muraw._app_start_time)
 
@@ -1043,10 +1047,11 @@ def dng_convert(
 ):
     """Convert DNG file to image file (.tif, .jpg, .png, .jxl) with processing options."""
     import numpy as np
+
     from .common import PerfTimer
     from .dngio import DngFile
-    from .tiff_metadata import Orientation
     from .imgio import convert_dng
+    from .tiff_metadata import Orientation
 
     # Map bit depth to numpy dtype
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
@@ -1090,7 +1095,7 @@ def dng_convert(
 
                 rgb = file_arg.decode_to_rgb(output_dtype=output_dtype)
                 if rgb is None:
-                    click.echo(f"Error: Failed to decode preview page", err=True)
+                    click.echo("Error: Failed to decode preview page", err=True)
                     sys.exit(1)
 
                 # Write with metadata (set Orientation=HORIZONTAL since preview is already rotated)
@@ -1098,7 +1103,7 @@ def dng_convert(
                 metadata.add_tag("Orientation", Orientation.HORIZONTAL)
                 success = write_image(rgb, output_file, metadata=metadata)
                 if not success:
-                    click.echo(f"Error: Failed to write output file", err=True)
+                    click.echo("Error: Failed to write output file", err=True)
                     sys.exit(1)
             else:
                 # Raw page: use convert_dng for full rendering pipeline
@@ -1154,6 +1159,7 @@ def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict[str, 
     Only includes non-None values in the rendering params.
     """
     from dataclasses import dataclass
+
     from .csv import CsvReader
 
     @dataclass
@@ -1248,6 +1254,7 @@ def run_batch_copy_dng(
     import io
     import time
     from datetime import timedelta
+
     from .dngio import (
         DngFile,
         IfdPageSpec,
@@ -1255,8 +1262,8 @@ def run_batch_copy_dng(
         PreviewParams,
         PreviewScale,
         PyramidParams,
-        write_dng_from_page,
         write_dng,
+        write_dng_from_page,
     )
     from .imgio import ImageSequencePipeline
     from .tiff_metadata import MetadataTags, SubFileType
@@ -1587,8 +1594,10 @@ def run_batch_convert(
     """
     import io
     import time
+
     import numpy as np
-    from .dngio import decode_dng, DngFile
+
+    from .dngio import DngFile, decode_dng
     from .imgio import ImageSequencePipeline, write_image
 
     output_path = Path(output_folder)
@@ -1750,7 +1759,7 @@ def batch_convert_dngs(
             sys.exit(1)
         click.echo(f"Found {len(dng_files)} DNG files in {input}")
     else:
-        click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
+        click.echo("Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
 
     click.echo(f"Converting {len(dng_files)} DNGs to {output_format.upper()}...")
@@ -1793,7 +1802,7 @@ def batch_convert_dngs(
                 f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s"
             )
 
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to convert DNGs")
         sys.exit(1)
 
@@ -1846,8 +1855,10 @@ def run_batch_to_video(
     """
     import io
     import time
+
     import numpy as np
-    from .dngio import decode_dng, DngFile
+
+    from .dngio import DngFile, decode_dng
     from .videoio import VideoEncodePipeline
 
     base_params = rendering_params or {}
@@ -2068,7 +2079,7 @@ def convert_dngs_to_video(
             sys.exit(1)
         click.echo(f"Found {len(dng_files)} DNG files in {input}")
     else:
-        click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
+        click.echo("Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
 
     click.echo(f"Encoding {len(dng_files)} DNGs to {output_mp4}...")
@@ -2158,7 +2169,7 @@ def auth(credentials, token_path, force):
         client = GooglePhotosClient(credentials_path=creds_path, token_path=token_path)
 
         if client.authenticate(force_reauth=force):
-            click.echo(f"✓ Successfully authenticated")
+            click.echo("✓ Successfully authenticated")
             click.echo(f"✓ Token saved to: {client.token_path}")
             click.echo(
                 "\nYou can now use 'muraw google-photos upload' for automated uploads"

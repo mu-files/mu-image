@@ -4,7 +4,6 @@
 import csv
 import logging
 import threading
-
 from dataclasses import asdict, fields
 from datetime import datetime, timedelta
 from pathlib import Path

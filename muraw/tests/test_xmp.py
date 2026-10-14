@@ -8,13 +8,12 @@ from pathlib import Path
 import pytest
 
 from muraw.dngio import DngFile, IfdDataSpec, write_dng_from_array
-from muraw.tiff_metadata import MetadataTags, XmpMetadata
 from muraw.raw_render import (
+    add_supported_xmp_from_dict,
     supported_xmp_from_dict,
     supported_xmp_to_dict,
-    add_supported_xmp_from_dict,
 )
-
+from muraw.tiff_metadata import MetadataTags, XmpMetadata
 
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 DNG_FILENAME = "asi676mc_1.dng"
@@ -234,7 +233,7 @@ def test_xmp_roundtrip_dng_file():
         assert "0.5" not in tone_curve_xml
         assert "0.25" not in tone_curve_xml
 
-        print(f"Verified XMP XML format: tone curve points stored as 0-255 integers")
+        print("Verified XMP XML format: tone curve points stored as 0-255 integers")
 
         # Convert to dict for comparison
         result_dict = supported_xmp_to_dict(retrieved_xmp)
@@ -264,7 +263,7 @@ def test_xmp_roundtrip_dng_file():
         # Check tiff:Orientation
         assert result_dict["tiff:Orientation"] == xmp_dict["tiff:Orientation"]
 
-        print(f"Successfully round-tripped XMP through DNG file!")
+        print("Successfully round-tripped XMP through DNG file!")
         print(f"Original XMP keys: {sorted(xmp_dict.keys())}")
         print(f"Retrieved XMP keys: {sorted(result_dict.keys())}")
         print(f"DNG file available for validation: {dng_path}")

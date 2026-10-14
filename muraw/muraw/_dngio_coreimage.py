@@ -5,18 +5,19 @@ from __future__ import annotations
 
 import io
 import logging
-import numpy as np
 import os
+from typing import IO, TYPE_CHECKING, Any
 
-from typing import TYPE_CHECKING, Any, IO
+import numpy as np
 
 # Package imports
 from numpy.typing import DTypeLike
+
 from .splines import CubicSpline
 
 if TYPE_CHECKING:
-    from .dngio import DngFile
     from .array import Array
+    from .dngio import DngFile
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +25,20 @@ logger = logging.getLogger(__name__)
 
 # PyObjC imports - these will only work on macOS
 try:
+    import Foundation  # noqa: F401
     import Quartz
-    import Foundation
-    from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint, NSData
+    from Foundation import NSURL, NSData, NSMutableData, NSNumber, NSPoint, NSValue  # noqa: F401
     from Quartz import (
-        CIFilter,
+        CGColorSpaceCreateWithICCProfile,
         CIContext,
+        CIFilter,
         NSColorSpace,
+        kCIContextUseSoftwareRenderer,
+        kCIContextWorkingColorSpace,
         kCIFormatRGBA8,
         kCIFormatRGBA16,
-        kCIFormatRGBAh,
         kCIFormatRGBAf,
-        kCIContextWorkingColorSpace,
-        CGColorSpaceCreateWithICCProfile,
-        kCIContextUseSoftwareRenderer,
+        kCIFormatRGBAh,
     )
 
     core_image_available = True
@@ -111,7 +112,7 @@ def _create_tone_curve_filter(spline_curve: CubicSpline):
     Returns:
         CIFilter instance configured with tone curve points, or None if invalid
     """
-    from Quartz import CIVector, CIFilter
+    from Quartz import CIFilter, CIVector
 
     num_points = len(spline_curve.points)
 
@@ -163,7 +164,7 @@ def _strip_unique_camera_model(dng_data: bytes) -> bytes:
     Returns:
         Modified DNG data with UniqueCameraModel tag zeroed out
     """
-    from tifffile import TiffFile, TIFF
+    from tifffile import TIFF, TiffFile
 
     UNIQUE_CAMERA_MODEL = TIFF.TAGS["UniqueCameraModel"]
 
@@ -451,6 +452,7 @@ def decode_dng_coreimage(
         Call ``.realize()`` at encode/write/display edges.
     """
     from pathlib import Path
+
     from . import dngio
 
     DngFile = dngio.DngFile

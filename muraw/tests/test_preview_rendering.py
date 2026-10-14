@@ -8,14 +8,15 @@ Validates that:
 2. API correctly raises errors when methods are called on inappropriate page types
 """
 
-import pytest
-import numpy as np
 from pathlib import Path
+
 import cv2
+import numpy as np
+import pytest
 import tifffile
+from conftest import compute_diff_stats
 
 from muraw.dngio import DngFile
-from conftest import compute_diff_stats
 
 # Test data directory
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"
@@ -205,7 +206,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 # Compute difference statistics
                 stats = compute_diff_stats(preview, expected)
 
-                print(f"     Comparison vs downsampled main render:")
+                print("     Comparison vs downsampled main render:")
                 print(f"       Mean diff:  {stats['mean']:.3f}%")
                 print(f"       P99 diff:   {stats['p99']:.3f}%")
                 print(f"       Max diff:   {stats['max']:.3f}%")
@@ -228,7 +229,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 diff_path = test_output_dir / f"ifd{i}_linear_raw_diff.tif"
                 tifffile.imwrite(str(diff_path), diff_vis)
 
-                print(f"     ✓ Passed thresholds")
+                print("     ✓ Passed thresholds")
 
             except Exception as e:
                 pytest.fail(f"LINEAR_RAW preview comparison failed for IFD {i}: {e}")
@@ -263,7 +264,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
 
         # Compare previews against each other if multiple exist
         if len(decoded_previews) > 1:
-            print(f"\n   Comparing RGB/YCBCR previews against each other...")
+            print("\n   Comparing RGB/YCBCR previews against each other...")
 
             # Find largest preview
             largest_idx = max(
@@ -324,14 +325,14 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 diff_path = test_output_dir / f"ifd{i}_vs_ifd{largest_ifd}_diff.tif"
                 tifffile.imwrite(str(diff_path), diff_vis)
 
-                print(f"       ✓ Passed thresholds")
+                print("       ✓ Passed thresholds")
         else:
             print(
-                f"     Only one RGB/YCBCR preview found, skipping inter-preview comparison"
+                "     Only one RGB/YCBCR preview found, skipping inter-preview comparison"
             )
 
         # Step 6: Test DngFile.get_preview_rgb() API
-        print(f"\n6. Testing DngFile.get_preview_rgb() API...")
+        print("\n6. Testing DngFile.get_preview_rgb() API...")
 
         ifd0 = pages[0]
 
@@ -342,7 +343,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
             if api_preview is None:
                 # Should only return None if IFD0 is not a preview
                 print(
-                    f"   get_preview_rgb() returned None - verifying IFD0 is not a preview..."
+                    "   get_preview_rgb() returned None - verifying IFD0 is not a preview..."
                 )
                 assert ifd0.photometric_name not in ("RGB", "YCBCR"), (
                     f"get_preview_rgb() returned None but IFD0 is {ifd0.photometric_name} (should be a preview)"
@@ -353,7 +354,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
             else:
                 # Returned a preview - verify IFD0 is actually RGB/YCBCR
                 print(
-                    f"   get_preview_rgb() returned preview - verifying IFD0 is RGB/YCBCR..."
+                    "   get_preview_rgb() returned preview - verifying IFD0 is RGB/YCBCR..."
                 )
                 assert ifd0.photometric_name in ("RGB", "YCBCR"), (
                     f"get_preview_rgb() returned data but IFD0 is {ifd0.photometric_name} (not a preview)"
@@ -402,7 +403,7 @@ def test_preview_pages_match_main_render(output_dir: Path):
                 tifffile.imwrite(str(api_path), api_preview)
                 tifffile.imwrite(str(page_path), page_preview)
 
-                print(f"     ✓ APIs return identical results")
+                print("     ✓ APIs return identical results")
 
         except Exception as e:
             pytest.fail(f"DngFile.get_preview_rgb() API test failed: {e}")
@@ -419,7 +420,7 @@ def test_decode_to_rgb_on_raw_page():
         pytest.skip(f"Test file not available: {test_file}")
 
     with DngFile(test_file) as dng:
-        pages = dng.get_flattened_pages()
+        pages = dng.get_flattened_pages()  # noqa: F841
 
         # Find a CFA page (main page)
         main_page = dng.get_main_page()

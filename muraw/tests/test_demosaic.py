@@ -3,16 +3,16 @@
 
 """Test demosaic algorithms for consistency across bit depths."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
 import tifffile
-
-from muraw.dngio import DngFile
-from muraw.array import Array
-from muraw.raw_render import demosaic, DemosaicAlgorithm
 from conftest import compute_diff_stats
 
+from muraw.array import Array
+from muraw.dngio import DngFile
+from muraw.raw_render import DemosaicAlgorithm, demosaic
 
 # Test file path
 TEST_DNG = Path(__file__).parent / "dngfiles" / "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng"

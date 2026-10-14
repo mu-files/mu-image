@@ -7,44 +7,44 @@ Validates DNG encoding/decoding fidelity across compression methods and
 photometric interpretations (CFA vs LINEAR_RAW).
 """
 
-import io
 import logging
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pytest
-import cv2
-from pathlib import Path
 from tifffile import COMPRESSION
 
 # Suppress tifffile warnings about "shaped series shape does not match page shape"
 # These are harmless warnings when reading dng_validate output TIFFs
 logging.getLogger("tifffile").setLevel(logging.CRITICAL)
 
+from muraw.array import Array
 from muraw.dngio import (
-    write_dng_from_array,
-    write_dng,
     DngFile,
     IfdDataSpec,
     IfdPageSpec,
     PageEncoding,
-    decode_dng,
+    write_dng,
+    write_dng_from_array,
 )
-from muraw.array import Array
 from muraw.raw_render import DemosaicAlgorithm
 
 try:
     from muraw._dngio_coreimage import core_image_available
 except ImportError:
     core_image_available = False
-from muraw.tiff_metadata import MetadataTags
+from conftest import (
+    OutputPathManager,
+    compute_diff_stats,
+    generate_rgb_ramp,
+    run_dng_validate,
+    sample_as_cfa,
+)
+
 from muraw.raw_render import convert_colorspace
 from muraw.splines import ColorSpace
-from conftest import (
-    generate_rgb_ramp,
-    sample_as_cfa,
-    compute_diff_stats,
-    run_dng_validate,
-    OutputPathManager,
-)
+from muraw.tiff_metadata import MetadataTags
 
 # Test output path manager - set persistent=True to keep outputs, False for tmp_path
 output_path_manager = OutputPathManager(persistent=True)

@@ -1,10 +1,11 @@
 """Entry point for PyWebView build."""
 
-import webview
-import os
-import sys
 import platform
+import sys
 from pathlib import Path
+
+import webview
+
 from mu_dng_converter.webview_bridge import expose_to_window
 
 # App version - updated by CI from git tag

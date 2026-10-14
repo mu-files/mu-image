@@ -1,5 +1,6 @@
 ## High-performance image tools for Python
 
+[![CI](https://github.com/mu-files/mu-image/actions/workflows/publish.yml/badge.svg)](https://github.com/mu-files/mu-image/actions/workflows/publish.yml)
 [![License](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
 `mu-image` is a cross-platform toolkit for software engineers who process

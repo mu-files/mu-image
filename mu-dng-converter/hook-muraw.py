@@ -1,6 +1,6 @@
 # PyInstaller hook for muraw
 
-from PyInstaller.utils.hooks import collect_submodules, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
 # muraw / muimage plus deps (excluding those with dedicated hooks: astropy, imagecodecs)
 DEPS = [

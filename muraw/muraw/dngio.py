@@ -10,39 +10,41 @@ from __future__ import annotations
 
 import io
 import logging
-import numpy as np
-
 from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import auto, Enum, IntEnum
+from enum import Enum, IntEnum, auto
 from pathlib import Path
-from typing import Any, IO, Sequence, TypeAlias
+from typing import IO, Any, Sequence, TypeAlias
 
-from .deps import (
-    cv2_proxy as cv2,
-    imagecodecs_proxy as imagecodecs,
-    tifffile_proxy as tifffile,
-)
+import numpy as np
+from numpy.typing import DTypeLike
 
+import muimage as mi
 
 # Package imports
 from . import raw_render
-from .compress import compress_ifd, deswizzle_cfa_data
-import muimage as mi
-from .raw_render import DemosaicAlgorithm
-from numpy.typing import DTypeLike
-
 from .array import Array
 from .common import PerfTimer
+from .compress import compress_ifd, deswizzle_cfa_data
+from .deps import (
+    cv2_proxy as cv2,
+)
+from .deps import (
+    imagecodecs_proxy as imagecodecs,
+)
+from .deps import (
+    tifffile_proxy as tifffile,
+)
+from .raw_render import DemosaicAlgorithm
 from .tiff_metadata import (
+    TIFF_TAG_TYPE_REGISTRY,
     MetadataTags,
     Orientation,
     SubFileType,
-    TIFF_TAG_TYPE_REGISTRY,
     XmpMetadata,
     convert_tag_value,
-    resolve_tag,
     filter_tags_by_ifd_category,
+    resolve_tag,
 )
 
 # tifffile followups:
@@ -1625,8 +1627,9 @@ def write_dng(
             List of tuples (code, dtype, count, value, writeonce) ready for tifffile
         """
         import sys
-        from .tiff_metadata import normalize_array_to_target_byteorder
+
         from .raw_render import transcode_pgtm_if_needed
+        from .tiff_metadata import normalize_array_to_target_byteorder
 
         system_byteorder = "<" if sys.byteorder == "little" else ">"
 

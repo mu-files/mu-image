@@ -10,17 +10,17 @@ preserves and handles byte order information.
 Uses private tag codes (65000-65535) to avoid conflicts with standard TIFF tags.
 """
 
-import pytest
-import numpy as np
-from pathlib import Path
-import tempfile
 import struct
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
 import tifffile
 
-import sys
+from muraw.dngio import DngFile, IfdDataSpec, write_dng_from_array
 from muraw.tiff_metadata import MetadataTags
-from muraw.dngio import write_dng_from_array, DngFile, IfdDataSpec
-
 
 # Private tag codes (65000-65535 are reserved for private use)
 TAG_TEST_BYTE_ARRAY = 65000
@@ -188,6 +188,7 @@ def test_endian_roundtrip_matrix(
 
         # Read via MetadataTags (filter out managed tags to avoid warnings)
         from tifffile import TIFF
+
         from muraw.dngio import _TIFFWRITER_MANAGED_TAGS
 
         managed_codes = {
@@ -350,7 +351,7 @@ def test_float_array_native_byteorder_bug():
                 )
 
             if isinstance(read_value, tuple):
-                print(f"  Converting tuple to array")
+                print("  Converting tuple to array")
                 read_value = np.array(read_value, dtype=np.float32)
 
             if isinstance(read_value, np.ndarray):
@@ -361,7 +362,7 @@ def test_float_array_native_byteorder_bug():
             # This should FAIL because the values will be corrupted
             # Original first 5: [1.5, 2.5, 3.5, 4.5, 5.5]
             # Corrupted: [8.96831e-44, 4.60060e-41, ...] (garbage)
-            print(f"\nComparing first 5 values:")
+            print("\nComparing first 5 values:")
             print(f"  Expected: {original_values[:5]}")
             if isinstance(read_value, np.ndarray):
                 print(f"  Got:      {read_value[:5]}")

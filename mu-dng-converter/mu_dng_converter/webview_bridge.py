@@ -1,13 +1,12 @@
 """Bridge module for PyWebView JavaScript-Python communication."""
 
-import webview
-from webview import FileDialog
-import asyncio
-from pathlib import Path
 import json
 import platform
 import sys
-from typing import Dict, Any, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from webview import FileDialog
 
 
 def _get_config_dir() -> Path:

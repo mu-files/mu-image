@@ -18,13 +18,12 @@ import pytest
 
 from muraw.dngio import DngFile
 from muraw.tiff_metadata import (
+    LOCAL_TIFF_TAGS,
     TIFF_TAG_TYPE_REGISTRY,
     TagSpec,
     TiffType,
     encode_tag_value,
-    LOCAL_TIFF_TAGS,
 )
-
 
 DNGFILES_DIR = (
     Path(__file__).parent.parent.parent.parent / "mu-image-testdata" / "dngtestfiles"
@@ -210,7 +209,7 @@ class TestTagNameResolution:
                 assert isinstance(code, int), f"{tag_name} resolved to non-int: {code}"
 
         assert not unresolvable, (
-            f"Tags not resolvable via LOCAL_TIFF_TAGS:\n  " + "\n  ".join(unresolvable)
+            "Tags not resolvable via LOCAL_TIFF_TAGS:\n  " + "\n  ".join(unresolvable)
         )
 
 
@@ -341,7 +340,7 @@ class TestMatrixTagCount:
 
         errors = missing_count + wrong_count
         assert not errors, (
-            f"Matrix tags with incorrect count (causes reshape failures):\n  "
+            "Matrix tags with incorrect count (causes reshape failures):\n  "
             + "\n  ".join(errors)
         )
 

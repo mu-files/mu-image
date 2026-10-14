@@ -4,24 +4,23 @@
 from __future__ import annotations
 
 import logging
-import numpy as np
-
-from enum import Enum, IntEnum, StrEnum, auto
+from enum import IntEnum, StrEnum
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from numpy.typing import DTypeLike
 
 # Package imports
 import muimage as mi
+
 from .array import Array, ArrayLike, supported_dtype
 from .common import PerfTimer, enum_display_name
-from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
+from .splines import LUT, ColorSpace, ColorSpaceLUT, CubicSpline
 from .tiff_metadata import (
     CFA_PATTERN_TO_CODES,
     Illuminant,
     MetadataTags,
-    Orientation,
     XmpMetadata,
 )
 
@@ -4889,6 +4888,7 @@ def supported_xmp_from_dict(props: dict[str, Any]) -> "XmpMetadata":
         XmpMetadata instance
     """
     from datetime import datetime
+
     from .tiff_metadata import XmpMetadata
 
     # Build attributes dict with proper namespacing and type conversion

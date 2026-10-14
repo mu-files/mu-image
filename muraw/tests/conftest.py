@@ -123,9 +123,9 @@ def ensure_test_data():
         logger.warning("=" * 70)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
-            f"Failed to clone test data repository.\n"
-            f"Make sure you have internet access and git is installed.\n"
-            f"Repository: https://github.com/mu-files/mu-image-testdata.git"
+            "Failed to clone test data repository.\n"
+            "Make sure you have internet access and git is installed.\n"
+            "Repository: https://github.com/mu-files/mu-image-testdata.git"
         ) from e
 
 

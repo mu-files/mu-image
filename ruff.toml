@@ -20,3 +20,8 @@ select = ["F", "I"]
 
 [lint.isort]
 known-first-party = ["muraw", "muimage", "mu_dng_converter"]
+
+[lint.per-file-ignores]
+# Catalog star import must load first; array wrappers then overwrite
+# tile, take, matmul, and the other names that are not bare ops.
+"muraw/muimage/__init__.py" = ["I001"]

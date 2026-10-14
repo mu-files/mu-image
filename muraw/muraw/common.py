@@ -10,7 +10,6 @@ import sys
 import threading
 import time
 import weakref
-
 from enum import Enum
 from typing import Sequence, TypeVar
 

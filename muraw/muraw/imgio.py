@@ -4,24 +4,28 @@
 from __future__ import annotations
 
 import logging
-import numpy as np
-
 from pathlib import Path
-from typing import IO, Callable, Iterable, Any
+from typing import IO, Any, Callable, Iterable
+
+import numpy as np
+from numpy.typing import DTypeLike
+
+from .array import Array
+from .deps import (
+    cv2_proxy as cv2,
+)
+from .deps import (
+    imagecodecs_proxy as imagecodecs,
+)
+from .deps import (
+    tifffile_proxy as tifffile,
+)
 
 # Package imports
 from .dngio import DngFile, DngPage, decode_dng
 from .processing import DEFAULT_PIPELINE_CALLABLE, ProcessingPipeline
 from .raw_render import DemosaicAlgorithm
-from numpy.typing import DTypeLike
-
-from .array import Array
-from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category, TiffType
-from .deps import (
-    cv2_proxy as cv2,
-    imagecodecs_proxy as imagecodecs,
-    tifffile_proxy as tifffile,
-)
+from .tiff_metadata import MetadataTags, filter_tags_by_ifd_category
 
 logger = logging.getLogger(__name__)
 
@@ -513,7 +517,6 @@ class ImageSequencePipeline(ProcessingPipeline):
             Tuples of (index, file_path_str, file_bytes)
         """
         import logging
-        from pathlib import Path
 
         logger = logging.getLogger(__name__)
 

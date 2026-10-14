@@ -7,4 +7,4 @@ import time as _time
 _app_start_time = _time.perf_counter()
 
 # Start background loading of slow dependencies immediately
-from . import deps
+from . import deps  # noqa: F401

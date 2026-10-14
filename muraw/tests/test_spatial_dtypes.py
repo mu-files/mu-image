@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import muimage as mi
-from muraw.array import Array, SUPPORTED_DTYPES
+from muraw.array import SUPPORTED_DTYPES, Array
 from muraw.engines.core import _engine_load
 
 

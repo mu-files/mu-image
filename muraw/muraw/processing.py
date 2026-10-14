@@ -4,7 +4,6 @@
 import logging
 import queue
 import threading
-
 from typing import Any, Callable, Iterable
 
 logger = logging.getLogger(__name__)

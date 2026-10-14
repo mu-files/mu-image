@@ -26,8 +26,6 @@ from typing import (
 )
 
 import numpy as np
-
-from ..common import PerfTimer
 from numpy.typing import DTypeLike
 
 from ..array import (
@@ -39,6 +37,7 @@ from ..array import (
     reshaped_meta,
     supported_dtype,
 )
+from ..common import PerfTimer
 
 OutMetaFn = Callable[[Array, Dict[str, Any]], Any]
 GraphOutMetaFn = Callable[[Array, Dict[str, Any]], ArrayMeta]
@@ -512,7 +511,8 @@ def _orientation_flip(op: "EngineOp", x: Array, attrs: Dict[str, Any]) -> Array:
     which keeps the input's origin. The canvas relative to the origin is the
     same in both.
     """
-    from ..array import Array as ArrayType, _with_meta, flip
+    from ..array import Array as ArrayType
+    from ..array import _with_meta, flip
 
     x = ArrayType(x)
     _, flip_cols, flip_rows = _ORIENTATION[int(attrs["orientation"])]

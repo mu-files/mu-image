@@ -1,8 +1,8 @@
 # PyInstaller hook for imagecodecs to include all binary extensions
 
 from PyInstaller.utils.hooks import (
-    collect_dynamic_libs,
     collect_data_files,
+    collect_dynamic_libs,
     collect_submodules,
 )
 

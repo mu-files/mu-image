@@ -6,31 +6,28 @@
 Compares output from Python SDK pipeline (via CLI) vs Core Image pipeline.
 """
 
-import io
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pytest
-
-from muraw.imgio import (
-    convert_imgformat,
-    convert_imgformat_to_stream,
-    convert_dng_to_stream,
-    decode_image,
-)
-from muraw.dngio import DngFile
-import muimage as mi
-from muraw.array import Array
 from conftest import (
+    OutputPathManager,
     compute_diff_stats,
     core_image_available_for_tests,
-    OutputPathManager,
 )
 
+import muimage as mi
+from muraw.array import Array
+from muraw.dngio import DngFile
+from muraw.imgio import (
+    convert_dng_to_stream,
+    convert_imgformat,
+    convert_imgformat_to_stream,
+    decode_image,
+)
 
 # Path to the muraw CLI module
 MURAW_CLI = [sys.executable, "-m", "muraw.cli"]
@@ -485,8 +482,9 @@ def test_raw_stage(tmp_path):
             f"\nTesting raw-stage on: {page.photometric_name}, size={page.imagewidth}x{page.imagelength}"
         )
 
-        from muraw.raw_render import DemosaicAlgorithm
         import tifffile
+
+        from muraw.raw_render import DemosaicAlgorithm
 
         # Test each stage
         stages = ["raw", "camera-rgb"]

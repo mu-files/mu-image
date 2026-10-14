@@ -10,12 +10,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-
-from muraw.dngio import DngFile, IfdPageSpec, IfdDataSpec, SubFileType, write_dng
-from muraw.array import Array
-from muraw.raw_render import DemosaicAlgorithm
 from conftest import DNG_VALIDATE_PATH, compute_diff_stats, run_dng_validate
 
+from muraw.array import Array
+from muraw.dngio import DngFile, IfdDataSpec, IfdPageSpec, SubFileType, write_dng
+from muraw.raw_render import DemosaicAlgorithm
 
 OUTPUT_DIR = Path(__file__).parent / "test_outputs" / "test_pyramid_subifd"
 DNGFILES_DIR = Path(__file__).parent / "dngfiles"

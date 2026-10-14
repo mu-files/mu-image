@@ -3,37 +3,35 @@
 
 """Test Core Graphics metadata writing for all TIFF tag types."""
 
-import pytest
 import numpy as np
-import tifffile
-from pathlib import Path
+import pytest
 
 try:
-    from Foundation import NSNumber, NSString, NSData, NSArray, NSMutableDictionary
-    from Quartz import (
-        CGImageDestinationCreateWithURL,
-        CGImageDestinationAddImage,
-        CGImageDestinationFinalize,
-        CGImageCreate,
-        CGColorSpaceCreateWithName,
-        CGDataProviderCreateWithData,
-        kCGImagePropertyTIFFDictionary,
-        kCGImagePropertyExifDictionary,
-        kCGColorSpaceSRGB,
-    )
     from CoreFoundation import (
         CFURLCreateFromFileSystemRepresentation,
         kCFAllocatorDefault,
+    )
+    from Foundation import NSArray, NSData, NSMutableDictionary, NSNumber, NSString
+    from Quartz import (
+        CGColorSpaceCreateWithName,
+        CGDataProviderCreateWithData,
+        CGImageCreate,
+        CGImageDestinationAddImage,
+        CGImageDestinationCreateWithURL,
+        CGImageDestinationFinalize,
+        kCGColorSpaceSRGB,
+        kCGImagePropertyExifDictionary,
+        kCGImagePropertyTIFFDictionary,
     )
 
     COREGRAPHICS_AVAILABLE = True
 except ImportError:
     COREGRAPHICS_AVAILABLE = False
 
-from muraw.tiff_metadata import TIFF_TAG_TYPE_REGISTRY, TiffType
-
 # Import test utilities
 from conftest import OutputPathManager
+
+from muraw.tiff_metadata import TIFF_TAG_TYPE_REGISTRY, TiffType
 
 # Create output path manager for this test file (persistent outputs for debugging)
 output_path_manager = OutputPathManager(persistent=False)
@@ -432,14 +430,14 @@ def test_all_tag_types_coregraphics(tmp_path):
                 results_by_type[dtype.name]["failed"] += 1
 
     # Print summary
-    print(f"\n=== TIFF Test Results ===")
+    print("\n=== TIFF Test Results ===")
     print(f"Tags tested: {results['tested']}")
     print(f"Successfully written: {results['written']}")
     print(f"Successfully read back: {results['read_back']}")
     print(f"Failed: {len(results['failed'])}")
 
     # Print per-type summary
-    print(f"\n=== Results by Type ===")
+    print("\n=== Results by Type ===")
     for type_name in sorted(results_by_type.keys()):
         stats = results_by_type[type_name]
         print(

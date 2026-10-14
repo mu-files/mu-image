@@ -6,16 +6,15 @@ from typing import Dict, List
 
 import numpy as np
 import pytest
+from conftest import generate_rgb_ramp
 
 import muimage as mi
-from muraw.engines import get_default_engine, set_default_engine
+from muraw.array import Array, rot90, supported_dtype
+from muraw.engines import get_default_engine, graph, set_default_engine
 from muraw.engines.core import CoreEngine
-from muraw.engines import graph
 from muraw.engines.graph import EngineOp, OpMeta, flush
 from muraw.engines.ops import OPS_BY_NAME
 from muraw.raw_render import DemosaicAlgorithm, demosaic
-from muraw.array import Array, supported_dtype, rot90
-from conftest import generate_rgb_ramp
 
 
 def test_catalog_engine_ops_io():
@@ -659,8 +658,9 @@ def test_set_default_engine_stub():
 
 def test_core_binaries_path():
     """CoreEngine package ships platform-tagged abi3 extensions in _binaries/."""
-    import muraw.engines.core as core_pkg
     from pathlib import Path
+
+    import muraw.engines.core as core_pkg
 
     binaries = Path(core_pkg.__file__).resolve().parent / "_binaries"
     assert binaries.is_dir()

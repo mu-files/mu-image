@@ -54,8 +54,8 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
     # 1. Coordinate & Frame Check
     if "avm:Spatial.ReferenceValue" not in attrs:
         try:
-            from astropy.coordinates import SkyCoord
             from astropy import units as u
+            from astropy.coordinates import SkyCoord
 
             ra_val = header.get("RA") or header.get("OBJCTRA")
             dec_val = header.get("DEC") or header.get("OBJCTDEC")
@@ -363,8 +363,8 @@ def _build_metadata_tags(
         time_offset_seconds: signed seconds to add to the DATE-OBS datetime
         time_timezone: timezone offset string (e.g. "+02:00") for OffsetTime* tags
     """
-    from muraw.tiff_metadata import MetadataTags
     from muraw.raw_render import add_supported_xmp_from_dict
+    from muraw.tiff_metadata import MetadataTags
 
     tags = MetadataTags()
 

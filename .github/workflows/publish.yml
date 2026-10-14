@@ -39,12 +39,18 @@ jobs:
           - name: ubuntu
             os: ubuntu-latest
             cibw_build: "cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          - name: ubuntu-arm64
+            os: ubuntu-24.04-arm
+            cibw_build: "cp312-manylinux_aarch64 cp313-manylinux_aarch64"
           - name: macos
             os: macos-15
             cibw_build: "cp312-macosx_arm64 cp313-macosx_arm64"
           - name: windows
             os: windows-latest
             cibw_build: "cp312-win_amd64 cp313-win_amd64"
+          - name: windows-arm64
+            os: windows-11-arm
+            cibw_build: "cp312-win_arm64 cp313-win_arm64"
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +90,10 @@ jobs:
             os: ubuntu-latest
             artifact: wheels-ubuntu
             extras: "[all]"
+          - name: ubuntu-arm64
+            os: ubuntu-24.04-arm
+            artifact: wheels-ubuntu-arm64
+            extras: "[all]"
           - name: macos
             os: macos-15
             artifact: wheels-macos
@@ -91,6 +101,10 @@ jobs:
           - name: windows
             os: windows-latest
             artifact: wheels-windows
+            extras: "[all]"
+          - name: windows-arm64
+            os: windows-11-arm
+            artifact: wheels-windows-arm64
             extras: "[all]"
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +155,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: wheels-windows
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows-arm64
           path: dist
 
       - name: Publish to PyPI

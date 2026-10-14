@@ -3,9 +3,7 @@
 
 """Google Photos API integration for uploading images."""
 
-import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -262,7 +260,7 @@ class GooglePhotosClient:
         create_body = {
             "newMediaItems": [
                 {
-                    "description": f"Uploaded by muraw",
+                    "description": "Uploaded by muraw",
                     "simpleMediaItem": {
                         "uploadToken": upload_token,
                         "fileName": image_path.name,
