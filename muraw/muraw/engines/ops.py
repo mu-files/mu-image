@@ -413,6 +413,18 @@ tile = EngineOp(
     "key": "frame_reps",
     "optional": true,
     "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "row_repeats",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "col_repeats",
+    "optional": true,
+    "type": "i32"
   }
 ]''')),
     _infer_meta=graph._out_meta_tile,

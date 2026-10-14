@@ -644,9 +644,18 @@ def _expand_index_key(
             f"newaxis would give {rank} axes; an array has at most 4 (N, H, W, C)"
         )
     spatial = axes if ndim < 3 else [axes[axis] for axis in meta.spatial_axes]
-    if any(not isinstance(item, slice) for item in spatial):
-        raise TypeError(
-            "region must be slice objects; integer axes and masks are not supported"
+    for item in spatial:
+        if isinstance(item, slice):
+            continue
+        index = np.asarray(item)
+        if index.dtype.kind not in "iub":
+            raise IndexError(
+                "only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) "
+                f"and integer or boolean arrays are valid indices, got {item!r}"
+            )
+        raise NotImplementedError(
+            f"indexing the rows or columns with {item!r} is not supported; "
+            "only a slice is, for example a[i : i + 1] for row i"
         )
     return tuple(axes), tuple(new_axes)
 
@@ -1400,6 +1409,53 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
     )
 
 
+def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
+    """Repeat each element of ``a`` along ``axis``, like ``numpy.repeat``.
+
+    ``axis=None`` repeats the flattened array. On the channel axis and the
+    frame axis of a 4-axis stack, ``repeats`` may be one count or a count
+    per element, and a count may be 0. On the rows or the columns it must
+    be the same count for every row or column; a count per row or column
+    raises ``NotImplementedError``. Counts that leave the axis empty raise
+    ``ValueError``.
+    """
+    from .engines.graph import op
+
+    a = Array(a)
+    if axis is None:
+        a = reshape(a, -1)
+        axis = 0
+    meta = a.meta
+    axis = normalize_axis_index(operator.index(axis), meta.ndim, "repeat axis")
+    length = meta.shape[axis]
+    indices = np.repeat(np.arange(length), repeats)
+    if indices.size == 0:
+        raise ValueError("repeat counts leave the axis empty; mi.Array holds no empty arrays")
+    if axis == meta.channel_axis or (meta.ndim == 4 and axis == 0):
+        key = [slice(None)] * meta.ndim
+        key[axis] = indices.tolist()
+        return a[tuple(key)]
+    counts = np.bincount(indices, minlength=length)
+    along_rows = not meta.is_1d and axis == meta.spatial_axes[0]
+    if not (counts == counts[0]).all():
+        raise NotImplementedError(
+            f"repeat with a count per {'row' if along_rows else 'column'} is not "
+            "supported; pass one count for every row or column"
+        )
+    count = int(counts[0])
+    if count == 1:
+        return a
+    return op(
+        "tile",
+        a,
+        row_reps=1,
+        col_reps=1,
+        channel_reps=1,
+        row_repeats=count if along_rows else None,
+        col_repeats=None if along_rows else count,
+    )
+
+
 def broadcast_to(array: ArrayLike, shape: Any) -> "Array":
     """Stretch size-1 axes to ``shape``, like ``numpy.broadcast_to``.
 
@@ -2107,6 +2163,10 @@ class Array:
         """The same samples as a new shape, as ``ndarray.reshape``:
         ``a.reshape(2, 4, 3)`` or ``a.reshape((2, 4, 3))``."""
         return reshape(self, shape[0] if len(shape) == 1 else shape, order=order)
+
+    def repeat(self, repeats: Any, axis: Optional[int] = None) -> "Array":
+        """Repeat each element along ``axis``, as ``ndarray.repeat``."""
+        return repeat(self, repeats, axis)
 
     def swapaxes(self, axis1: int, axis2: int) -> "Array":
         """Swap two axes, as ``ndarray.swapaxes``."""

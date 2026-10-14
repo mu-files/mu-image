@@ -368,6 +368,10 @@ ops:
   # counts after NumPy's right-aligned padding with leading 1s, and
   # frame_reps (1 when omitted) repeats frames. Each must be >= 1. The
   # public mi.tile parses reps; this op takes the counts.
+  # row_repeats and col_repeats (1 when omitted) repeat each row and each
+  # column in place, as np.repeat, before the copies of row_reps and
+  # col_reps: dest column x reads source column
+  # (x % (width * col_repeats)) // col_repeats, and rows likewise.
   - name: tile
     needs_frame_index: true
     inputs:
@@ -386,6 +390,14 @@ ops:
         type: i32
         count: 1
       - key: frame_reps
+        type: i32
+        count: 1
+        optional: true
+      - key: row_repeats
+        type: i32
+        count: 1
+        optional: true
+      - key: col_repeats
         type: i32
         count: 1
         optional: true

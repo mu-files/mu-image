@@ -387,7 +387,8 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
 
 
 def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
-    """Geometry policy ``tile``: each axis grows by its repeat count.
+    """Geometry policy ``tile``: each axis grows by its repeat counts, the
+    rows and the columns by ``row_repeats`` and ``col_repeats`` too.
 
     The first copy keeps the source origin. Canvas grows to the right
     and down from that origin.
@@ -403,8 +404,14 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     frame_reps = int(attrs.get("frame_reps", 1))
     if frame_reps < 1:
         raise ValueError(f"tile: frame_reps {frame_reps} must be >= 1")
-    dest_h = x.meta.height * row_reps
-    dest_w = x.meta.width * col_reps
+    row_repeats = int(attrs.get("row_repeats", 1))
+    col_repeats = int(attrs.get("col_repeats", 1))
+    if min(row_repeats, col_repeats) < 1:
+        raise ValueError(
+            f"tile: row_repeats/col_repeats {[row_repeats, col_repeats]} must be >= 1"
+        )
+    dest_h = x.meta.height * row_repeats * row_reps
+    dest_w = x.meta.width * col_repeats * col_reps
     origin_row, origin_col = x.meta.origin
     return x.meta.with_size(
         height=dest_h,
