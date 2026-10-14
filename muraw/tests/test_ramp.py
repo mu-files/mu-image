@@ -72,9 +72,7 @@ def test_arange_integer_dtypes_fill_like_numpy():
             np.testing.assert_array_equal(got, np.arange(*args, dtype=dtype))
 
 
-def test_arange_rejects_empty_and_zero_step_and_a_list_and_complex():
-    with pytest.raises(ValueError, match="empty"):
-        mi.arange(5, 0)
+def test_arange_rejects_zero_step_and_a_list_and_complex():
     with pytest.raises(ZeroDivisionError):
         mi.arange(0, 1, 0)
     with pytest.raises(TypeError):
@@ -151,13 +149,28 @@ def test_linspace_broadcasts_a_scalar_and_keeps_a_length_one_sequence():
     _assert_ramp_close(seq, np.linspace([0.0], [1.0], 5, dtype=np.float32))
 
 
-def test_linspace_rejects_axis_rank_and_a_short_count():
+def test_linspace_rejects_axis_rank_and_a_negative_count():
     with pytest.raises(ValueError, match="axis"):
         mi.linspace(0, 1, 4, axis=-1)
     with pytest.raises(ValueError, match="1D"):
         mi.linspace([[0, 1]], [[1, 2]], 3)
-    with pytest.raises(ValueError, match="num"):
-        mi.linspace(0, 1, 0)
+    for lib in (np, mi):
+        with pytest.raises(ValueError, match="non-negative"):
+            lib.linspace(0, 1, -1)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda lib: lib.arange(5, 0),
+        lambda lib: lib.arange(0, 5, -1),
+        lambda lib: lib.linspace(0, 1, 0),
+        lambda lib: lib.linspace([0, 1], [1, 2], 0),
+        lambda lib: lib.linspace(0, 1, 0, endpoint=False),
+    ],
+)
+def test_an_empty_ramp_matches_numpy(call):
+    assert call(mi).realize().shape == call(np).shape
 
 
 def test_inserted_axis_on_a_concrete_array_matches_numpy():

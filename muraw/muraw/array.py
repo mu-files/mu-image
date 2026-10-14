@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass, replace
-from math import ceil
+from math import ceil, prod
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple
 
 import numpy as np
@@ -125,14 +125,17 @@ class ArrayMeta:
                     "not its channels"
                 )
             object.__setattr__(self, "channel_axis", axis)
-            if shape[axis] < 1:
-                raise ValueError(f"unsupported channel count: {shape[axis]}")
         elif self.channel_axis is not None:
             raise ValueError(
                 f"shape {shape} has no channel axis, got channel_axis={self.channel_axis}"
             )
-        if min(shape) < 1:
-            raise ValueError(f"shape dimensions must be at least 1, got {shape}")
+        if min(shape) < 0:
+            raise ValueError(f"negative dimensions are not allowed, got {shape}")
+
+    @property
+    def size(self) -> int:
+        """The number of elements, as ``ndarray.size``."""
+        return prod(self.shape)
 
     @property
     def spatial_axes(self) -> Tuple[int, int]:
@@ -362,27 +365,33 @@ def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
             f"signature {_MATMUL_SIGNATURE} (size {matrix.shape[0]} is different from "
             f"{input_channels})"
         )
-    if meta.ndim >= 3 and meta.channel_axis != meta.ndim - 1:
-        raise NotImplementedError(
-            f"matmul of shape {array.shape} with channel_axis {meta.channel_axis} is not "
-            "supported: NumPy sums over the last axis, which is not the channel axis. "
-            "Move the channels last with mi.moveaxis, or use np.matmul(x.realize(), matrix)"
-        )
     if meta.ndim == 1 and matrix.ndim == 1:
         raise NotImplementedError(
             "matmul of two 1D arrays is one number, which mi.Array does not hold; "
             "use np.dot(x.realize(), matrix)"
         )
     columns = matrix.shape[1] if matrix.ndim == 2 else 1
+    dtype = array.dtype
+    if _is_integer(dtype) and matrix.dtype.kind == "f":
+        dtype = np.dtype(np.float32)
+    out_shape = array.shape[:-1] + ((columns,) if matrix.ndim == 2 else ())
+    # A stack whose channels are summed away is (N, H, W): mono frames.
+    out_channel_axis = 0 if len(out_shape) == 3 and meta.ndim == 4 else None
+    if matrix.size == 0 or meta.size == 0:
+        # A sum over no channels is 0, as in NumPy.
+        return _emit_fill(_meta_from_shape(out_shape, dtype, out_channel_axis), 0)
+    if meta.ndim >= 3 and meta.channel_axis != meta.ndim - 1:
+        raise NotImplementedError(
+            f"matmul of shape {array.shape} with channel_axis {meta.channel_axis} is not "
+            "supported: NumPy sums over the last axis, which is not the channel axis. "
+            "Move the channels last with mi.moveaxis, or use np.matmul(x.realize(), matrix)"
+        )
     if max(input_channels, columns) > _MATMUL_MAX_CHANNELS:
         raise NotImplementedError(
             f"matmul with a matrix of shape {matrix.shape} is not supported: at most "
             f"{_MATMUL_MAX_CHANNELS} input and output channels. "
             "Use np.matmul(x.realize(), matrix)"
         )
-    dtype = array.dtype
-    if _is_integer(dtype) and matrix.dtype.kind == "f":
-        dtype = np.dtype(np.float32)
     if meta.ndim >= 3:
         pixels_shape = array.shape
     elif meta.ndim == 2:
@@ -396,9 +405,7 @@ def _matmul_array_first(array: "Array", matrix: np.ndarray) -> "Array":
         matrix=[float(value) for value in matrix.reshape(-1)],
         columns=columns,
     )
-    out_shape = array.shape[:-1] + ((columns,) if matrix.ndim == 2 else ())
-    # A stack whose channels are summed away is (N, H, W): mono frames.
-    return _reshape_layout(out, out_shape, 0 if len(out_shape) == 3 and meta.ndim == 4 else None)
+    return _reshape_layout(out, out_shape, out_channel_axis)
 
 
 def _matmul_matrix_first(matrix: np.ndarray, array: "Array") -> "Array":
@@ -528,10 +535,13 @@ def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, int]:
     start, stop, step = slc.indices(length)
     n = len(range(start, stop, step))
     if n == 0:
-        raise NotImplementedError(
-            f"{name}: slice results in an empty dimension; mi.Array holds no empty arrays"
-        )
+        raise _EmptySelection
     return start, n, step
+
+
+class _EmptySelection(Exception):
+    """An index selects nothing on one axis, so the result is empty.
+    ``Array.view`` catches it and returns an empty array."""
 
 
 def _as_axis_int(value: Any, name: str) -> int:
@@ -573,9 +583,7 @@ def _selection_key(
         start, stop, step = key.indices(size)
         indices = list(range(start, stop, step))
         if not indices:
-            raise NotImplementedError(
-                f"{what}s: slice results in an empty dimension; mi.Array holds no empty arrays"
-            )
+            raise _EmptySelection
     else:
         if isinstance(key, (np.ndarray, list, tuple)):
             index = np.asarray(key)
@@ -599,7 +607,7 @@ def _selection_key(
         else:
             raise TypeError(f"{what} index must be an int, a slice, or a sequence of ints")
         if not values:
-            raise NotImplementedError(f"{what}s: empty index; mi.Array holds no empty arrays")
+            raise _EmptySelection
         indices = [_wrap_index(value, size, axis, what) for value in values]
     if indices == list(range(size)):
         return None, rank_drop
@@ -648,7 +656,9 @@ def _expand_index_key(
     else:
         items = items + fill
     if any(not isinstance(item, slice) and np.ndim(item) > 0 for item in items):
-        _raise_what_numpy_raises(meta.shape, items)
+        if _raise_what_numpy_raises(meta.shape, items) == 0:
+            # NumPy checks no index when the index arrays select nothing.
+            raise _EmptySelection
         items = _gather_per_axis(items, empty_ellipsis_at)
 
     axes = []
@@ -670,7 +680,7 @@ def _expand_index_key(
     for item in spatial:
         if isinstance(item, slice):
             continue
-        index = np.asarray(item)
+        index = _index_array(item)
         if index.dtype.kind not in "iub":
             raise IndexError(
                 "only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) "
@@ -679,17 +689,28 @@ def _expand_index_key(
     return tuple(axes), tuple(new_axes)
 
 
+def _index_array(item: Any) -> np.ndarray:
+    """``item``, an index entry, as an ndarray. NumPy reads an empty list
+    as integer indices, which ``np.asarray`` would make float64."""
+    if isinstance(item, list) and not item:
+        return np.zeros(0, np.intp)
+    return np.asarray(item)
+
+
 def _is_int_index(item: Any) -> bool:
     return isinstance(item, (int, np.integer)) and not isinstance(item, (bool, np.bool_))
 
 
-def _raise_what_numpy_raises(shape: Tuple[int, ...], items: Tuple[Any, ...]) -> None:
+def _raise_what_numpy_raises(shape: Tuple[int, ...], items: Tuple[Any, ...]) -> int:
     """Index a stand-in of ``shape`` with ``items``, so a key NumPy rejects
     raises NumPy's own error. The stand-in has no memory of its own, and
     each slice is cut to one entry, so only the result of the index arrays
-    is allocated."""
+    is allocated. Returns the size of that result, which is 0 when the
+    result of ``items`` is empty because of its index arrays or an axis of
+    length 0."""
     stand_in = np.broadcast_to(np.zeros((), dtype=bool), shape)
-    stand_in[tuple(slice(0, 1) if isinstance(item, slice) else item for item in items)]
+    cut = tuple(slice(0, 1) if isinstance(item, slice) else item for item in items)
+    return stand_in[cut].size
 
 
 def _gather_per_axis(
@@ -717,7 +738,7 @@ def _gather_per_axis(
     arrays = [at for at in indexed if np.ndim(items[at]) > 0]
     if not arrays or indexed == arrays[:1]:
         return items
-    meshes = [np.asarray(items[at]) for at in arrays]
+    meshes = [_index_array(items[at]) for at in arrays]
     count = len(meshes)
     is_mesh = all(
         mesh.ndim == count
@@ -1005,10 +1026,23 @@ def _permute(array: "Array", order: Tuple[int, ...]) -> "Array":
         return array
     from .engines import ops as engine_ops
 
+    if meta.size == 0:
+        channel_axis = None if meta.channel_axis is None else order.index(meta.channel_axis)
+        if meta.ndim == 4:
+            # Axis 0 of a 4-axis array holds its frames.
+            channel_axis = 3
+        return _empty_array(
+            meta.copy(shape=tuple(meta.shape[axis] for axis in order), channel_axis=channel_axis)
+        )
     if meta.ndim == 2 or (
         order[meta.channel_axis] == meta.channel_axis and (meta.ndim < 4 or order[0] == 0)
     ):
         return engine_ops.orientation(array, orientation=5)
+    if meta.ndim == 4:
+        raise NotImplementedError(
+            f"a permutation {list(order)} of a 4-axis stack of shape {meta.shape} that "
+            "moves its frames or its channels is not supported"
+        )
     return engine_ops.transpose(array, axes=list(order))
 
 
@@ -1156,6 +1190,34 @@ def _with_meta(array: "Array", meta: ArrayMeta) -> "Array":
     return out
 
 
+def _empty_array(meta: ArrayMeta) -> "Array":
+    """A source Array described by ``meta``, which has no elements.
+
+    An empty array is never a node and never reaches an engine; its result
+    is this empty buffer.
+    """
+    out = object.__new__(Array)
+    out._meta = meta
+    out._data = _seal_ndarray(np.empty(meta.buffer_shape, meta.dtype))
+    out._node = None
+    return out
+
+
+def _empty_with_shape(like: "Array", shape: Tuple[int, ...], dtype: Any = None) -> "Array":
+    """An empty Array of ``shape``. A 3- or 4-axis result keeps ``like``'s
+    channel axis when ``like`` has as many axes, and puts it last otherwise.
+    """
+    channel_axis = like.meta.channel_axis if len(shape) == like.ndim else None
+    if len(shape) >= 3 and channel_axis is None:
+        channel_axis = len(shape) - 1
+    meta = ArrayMeta(
+        shape=tuple(int(n) for n in shape),
+        dtype=np.dtype(like.dtype if dtype is None else dtype),
+        channel_axis=channel_axis if len(shape) >= 3 else None,
+    )
+    return _empty_array(meta)
+
+
 def _dtype_from_fill(fill_value: Any) -> np.dtype:
     """Element type of ``fill_value`` when ``full(..., dtype=None)``."""
     if isinstance(fill_value, bool):
@@ -1193,6 +1255,9 @@ def _fill_samples(fill_value: Any, channels: int) -> list[float]:
 def _emit_fill(meta: ArrayMeta, fill_value: Any) -> "Array":
     import muimage as mi
 
+    if meta.size == 0:
+        _fill_samples(fill_value, meta.channels)
+        return _empty_array(meta)
     return mi.fill(
         Array(_meta=meta),
         value=_fill_samples(fill_value, meta.channels),
@@ -1236,6 +1301,8 @@ def _emit_ramp(
     """A 1D ``meta`` ramps along its columns; a 2D one down its rows."""
     from .engines.graph import op
 
+    if meta.size == 0:
+        return _empty_array(meta)
     along = "columns" if len(meta.shape) == 1 else "rows"
     attrs: dict[str, Any] = {"along": along, "start": start, "step": step}
     if stop is not None:
@@ -1276,9 +1343,7 @@ def arange(
     step_v = require_number(step, "step")
     if step_v == 0.0:
         raise ZeroDivisionError("arange step must not be 0")
-    count = ceil((stop_v - start_v) / step_v)
-    if count < 1:
-        raise ValueError(f"arange({start}, {stop}, {step}) is empty")
+    count = max(ceil((stop_v - start_v) / step_v), 0)
     numpy_dtype = supported_dtype(dtype)
     if np.issubdtype(numpy_dtype, np.integer):
         # NumPy stores start and start + step as the integer dtype, then
@@ -1342,15 +1407,15 @@ def linspace(
         axis_i = operator.index(axis)
     except TypeError as exc:
         raise TypeError("linspace num and axis must be ints") from exc
-    if count < 1:
-        raise ValueError(f"linspace num must be >= 1, got {count}")
+    if count < 0:
+        raise ValueError(f"Number of samples, {count}, must be non-negative.")
     if axis_i != 0:
         raise ValueError(f"linspace axis must be 0, got {axis_i}")
     if not isinstance(endpoint, (bool, np.bool_)):
         raise TypeError("linspace endpoint must be a bool")
     start_v, stop_v = _linspace_components(start, stop)
     scalar = np.ndim(start) == 0 and np.ndim(stop) == 0
-    if count == 1:
+    if count <= 1:
         step_v = np.zeros_like(start_v)
         stop_arg = None
     elif endpoint:
@@ -1490,8 +1555,8 @@ def _tile_reps(meta: ArrayMeta, reps: Any) -> tuple[int, int, int, int]:
         counts = (operator.index(reps),)
     if len(counts) > len(shape):
         raise ValueError(f"tile reps {reps!r} would add an axis on shape {shape}")
-    if any(count < 1 for count in counts):
-        raise ValueError(f"tile reps must be >= 1, got {reps!r}")
+    if any(count < 0 for count in counts):
+        raise ValueError("negative dimensions are not allowed")
     if len(shape) == 1:
         return 1, 1, counts[0], 1
     counts = (1,) * (len(shape) - len(counts)) + counts
@@ -1505,7 +1570,7 @@ def _tile_reps(meta: ArrayMeta, reps: Any) -> tuple[int, int, int, int]:
 def tile(array: ArrayLike, reps: Any) -> "Array":
     """Repeat ``array`` like ``numpy.tile``.
 
-    A count of 0 raises ``ValueError``. ``reps`` longer than the rank
+    A negative count raises ``ValueError``. ``reps`` longer than the rank
     raises too, except 3 counts on a 1D array: NumPy promotes ``(N,)``
     to ``(1, 1, N)``, so the length becomes the channel count.
     """
@@ -1525,6 +1590,16 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
         # NumPy promotes (N,) to (1, N), which is this array's buffer.
         array = _with_meta(array, array.meta.with_size(ndim=2))
     frame_reps, row_reps, col_reps, channel_reps = _tile_reps(array.meta, reps)
+    if 0 in (frame_reps, row_reps, col_reps, channel_reps):
+        meta = array.meta
+        return _empty_array(
+            meta.with_size(
+                height=meta.height * row_reps,
+                width=meta.width * col_reps,
+                channels=meta.channels * channel_reps,
+                frames=meta.frames * frame_reps,
+            )
+        )
     return op(
         "tile",
         array,
@@ -1539,8 +1614,7 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     """Repeat each element of ``a`` along ``axis``, like ``numpy.repeat``.
 
     ``axis=None`` repeats the flattened array. ``repeats`` may be one count
-    or a count per element, and a count may be 0. Counts that leave the
-    axis empty raise ``NotImplementedError``: an ``Array`` is never empty.
+    or a count per element, and a count may be 0.
     """
     from .engines.graph import op
 
@@ -1553,9 +1627,9 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     length = meta.shape[axis]
     indices = np.repeat(np.arange(length), repeats)
     if indices.size == 0:
-        raise NotImplementedError(
-            "repeat counts leave the axis empty; mi.Array holds no empty arrays"
-        )
+        shape = list(meta.shape)
+        shape[axis] = 0
+        return _empty_with_shape(a, tuple(shape))
     counts = np.bincount(indices, minlength=length)
     spatial = axis != meta.channel_axis and not (meta.ndim == 4 and axis == 0)
     if not spatial or not (counts == counts[0]).all():
@@ -1581,8 +1655,7 @@ def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "ra
     ``axis=None`` takes from the flattened array. ``mode`` is ``"raise"``,
     ``"wrap"``, or ``"clip"``, as in NumPy. ``indices`` is one int, which
     drops the axis, or a 1-D sequence of ints; an index array with more
-    axes raises ``NotImplementedError``, and so do no indices: an
-    ``Array`` is never empty.
+    axes raises ``NotImplementedError``.
     """
     a = Array(a)
     if axis is None:
@@ -1596,9 +1669,9 @@ def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "ra
             "only one int or a 1-D sequence is"
         )
     if src_indices.size == 0:
-        raise NotImplementedError(
-            "take of no indices leaves the axis empty; mi.Array holds no empty arrays"
-        )
+        shape = list(a.shape)
+        shape[axis] = 0
+        return _empty_with_shape(a, tuple(shape))
     taken = _take_along(a, src_indices.reshape(-1).tolist(), axis)
     return squeeze(taken, axis) if src_indices.ndim == 0 else taken
 
@@ -1773,6 +1846,8 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
             raise ValueError(
                 f"composite origin for shape {base.shape} must be {expected}, got {origin!r}"
             )
+        if source.meta.size == 0:
+            continue
         sources.append(source)
         tops.append(operator.index(row))
         lefts.append(operator.index(col))
@@ -1781,6 +1856,8 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
             dest_channels.extend(operator.index(channel) for channel in channels[0])
         else:
             dest_channels.extend(range(source.meta.channels))
+    if placements and not sources:
+        return base
     attrs: dict[str, Any] = {"tops": tops, "lefts": lefts}
     if scattered:
         attrs["dest_channels"] = dest_channels
@@ -1796,6 +1873,21 @@ def _image_sequence(name: str, arrays: Sequence[ArrayLike]) -> list["Array"]:
     if not items:
         raise ValueError(f"need at least one array to {name}")
     return items
+
+
+def _empty_join(
+    join: Callable[[list[np.ndarray]], np.ndarray], images: Sequence["Array"]
+) -> "Array":
+    """The result of ``join``, a NumPy join such as ``np.concatenate``, of
+    ``images``, which are all empty. NumPy joins empty stand-ins, so it
+    checks the shapes and gives the result's shape and dtype."""
+    joined = join([np.empty(image.shape, image.dtype) for image in images])
+    dtype = supported_dtype(joined.dtype)
+    if joined.ndim > 4:
+        raise NotImplementedError(
+            f"the result has {joined.ndim} axes; an array has at most 4 (N, H, W, C)"
+        )
+    return _empty_with_shape(images[0], joined.shape, dtype)
 
 
 def _join_channels(name: str, images: Sequence["Array"], channel_axis: int) -> "Array":
@@ -1881,6 +1973,8 @@ def concatenate(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
     ``255.0``.
     """
     images = _image_sequence("concatenate", arrays)
+    if all(image.meta.size == 0 for image in images):
+        return _empty_join(lambda stand_ins: np.concatenate(stand_ins, axis=axis), images)
     shapes = [tuple(image.shape) for image in images]
     if len({image.ndim for image in images}) != 1:
         raise ValueError(
@@ -1912,6 +2006,8 @@ def stack(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
     origin, and canvas match ``concatenate``.
     """
     images = _image_sequence("stack", arrays)
+    if all(image.meta.size == 0 for image in images):
+        return _empty_join(lambda stand_ins: np.stack(stand_ins, axis=axis), images)
     if len({tuple(image.shape) for image in images}) != 1:
         shapes = [tuple(image.shape) for image in images]
         raise ValueError(f"stack inputs must have the same shape, got shapes {shapes}")
@@ -1956,6 +2052,8 @@ def dstack(arrays: Sequence[ArrayLike]) -> "Array":
     ``concatenate``.
     """
     images = _image_sequence("dstack", arrays)
+    if all(image.meta.size == 0 for image in images):
+        return _empty_join(np.dstack, images)
     if all(image.ndim == 3 for image in images):
         return concatenate(images, axis=2)
     for image in images:
@@ -2022,6 +2120,9 @@ class Array:
                 raise ValueError("source Array cannot also have an op node")
             arr = np.asarray(data)
             meta = meta_from_array(arr, channel_axis)
+            if meta.size == 0:
+                self._take_fields(_empty_array(meta), meta)
+                return
             repeated = _repeated_axes(arr)
             if repeated is not None:
                 core, reps = repeated
@@ -2186,6 +2287,46 @@ class Array:
             )
         if any(v is not None for v in (left, top, width, height)):
             raise TypeError("cannot mix a slice region with left, top, width, height")
+        if self._meta.size == 0:
+            return self._empty_view(region)
+        try:
+            return self._view_region(region, oob_valid=oob_valid, reset_origin=reset_origin)
+        except _EmptySelection:
+            return self._empty_view(region)
+        except NotImplementedError:
+            # A key this array cannot gather still gives NumPy's result
+            # when that result is empty.
+            if self._indexed_shape(region) is None:
+                raise
+            return self._empty_view(region)
+
+    def _indexed_shape(self, region: Any) -> Optional[Tuple[int, ...]]:
+        """The shape of NumPy's result of indexing this array with
+        ``region`` when it is empty, else ``None``. NumPy indexes a
+        stand-in of this array's shape, which holds one byte, so it raises
+        what NumPy raises; only its result is allocated."""
+        stand_in = np.broadcast_to(np.zeros((), bool), self.shape)
+        shape = stand_in[region].shape
+        return shape if prod(shape) == 0 else None
+
+    def _empty_view(self, region: Any) -> "Array":
+        """The empty result of indexing this array with ``region``."""
+        shape = self._indexed_shape(region)
+        if shape is None:
+            raise NotImplementedError(
+                f"indexing an empty array of shape {self.shape} with {region!r} "
+                "gives a result that is not empty, which is not supported"
+            )
+        if len(shape) > 4:
+            raise NotImplementedError(
+                f"indexing gives {len(shape)} axes; an array has at most 4 (N, H, W, C)"
+            )
+        return _empty_with_shape(self, shape)
+
+    def _view_region(
+        self, region: Any, *, oob_valid: bool, reset_origin: bool
+    ) -> "Array":
+        """``view`` of an index key ``region``, when no axis is empty."""
         axes, new_axes = _expand_index_key(region, self._meta)
         source, axes, squeezed = _take_spatial_indices(self, axes)
         meta = source._meta
@@ -2295,6 +2436,15 @@ class Array:
         """
         import muimage as mi
 
+        if self._meta.size == 0:
+            # The result holds only constants, which NumPy places from the
+            # shape alone. NumPy rejects a mode that reads pixels.
+            kwargs = {"constant_values": constant_values} if mode == "constant" else {}
+            padded = np.pad(np.empty(self.shape, self.dtype), pad_width, mode, **kwargs)
+            if padded.size == 0:
+                return _empty_with_shape(self, padded.shape)
+            axis = self._meta.channel_axis
+            return Array(padded, channel_axis=-1 if axis is None else axis)
         if self._meta.is_1d:
             left, right = (
                 int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)

@@ -122,16 +122,14 @@ def test_array_ingests_two_and_five_channels():
     np.testing.assert_array_equal(Array(five).realize(), five)
 
 
-def test_zeros_rejects_zero_channels():
-    with pytest.raises(ValueError, match="channel count"):
-        mi.zeros((2, 2, 0))
-
-
-def test_zeros_rejects_zero_size():
-    with pytest.raises(ValueError, match="at least 1"):
-        mi.zeros((0, 4))
-    with pytest.raises(ValueError, match="at least 1"):
-        mi.zeros((3, 0))
+@pytest.mark.parametrize("shape", [(2, 2, 0), (0, 4), (3, 0), (0,)])
+def test_an_empty_fill_matches_numpy(shape):
+    for make in (
+        lambda lib: lib.zeros(shape, np.float32),
+        lambda lib: lib.ones(shape, np.uint8),
+        lambda lib: lib.full(shape, 7.0, np.float32),
+    ):
+        np.testing.assert_array_equal(make(mi).realize(), make(np))
 
 
 @pytest.mark.parametrize("shape", ["ab", True, (2.5, 3)])
@@ -141,8 +139,7 @@ def test_initializers_reject_non_int_shape(shape):
             make(shape)
 
 
-def test_array_rejects_zero_size():
-    with pytest.raises(ValueError, match="at least 1"):
-        Array(np.zeros((0, 4), dtype=np.float32))
-    with pytest.raises(ValueError, match="at least 1"):
-        Array(np.zeros((3, 0, 3), dtype=np.float32))
+@pytest.mark.parametrize("shape", [(0, 4), (3, 0, 3), (0,), (0, 2, 2, 3)])
+def test_an_empty_source_realizes_to_its_shape(shape):
+    src = np.zeros(shape, dtype=np.float32)
+    np.testing.assert_array_equal(Array(src).realize(), src)

@@ -104,7 +104,17 @@ def test_tile_rejects_non_integer_reps(reps):
         mi.tile(Array(src), reps)
 
 
-def test_tile_rejects_zero_reps():
+@pytest.mark.parametrize("reps", [(0, 2), 0, (2, 0, 1)])
+def test_tile_of_zero_reps_matches_numpy(reps):
+    src = np.arange(12, dtype=np.float32).reshape(2, 3, 2)
+    for lib, x in ((np, src), (mi, Array(src))):
+        result = lib.tile(x, reps)
+        result = result.realize() if lib is mi else result
+        assert result.shape == np.tile(src, reps).shape
+
+
+def test_tile_rejects_negative_reps():
     src = np.zeros((2, 3), dtype=np.float32)
-    with pytest.raises(ValueError, match=">= 1"):
-        mi.tile(Array(src), (0, 2))
+    for lib, x in ((np, src), (mi, Array(src))):
+        with pytest.raises(ValueError, match="negative"):
+            lib.tile(x, (-1, 2))

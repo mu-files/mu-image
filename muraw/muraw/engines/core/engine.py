@@ -127,6 +127,11 @@ class CoreEngine:
         for t in all_arrays:
             m = t.meta
             check_engine_layout(m)
+            if m.size == 0:
+                raise NotImplementedError(
+                    f"CoreEngine cannot run an array of shape {m.shape}; an empty "
+                    "array has no node to run"
+                )
             origin_row, origin_col = m.origin
             # The engine reads a CHW array as frames on axis 0 with one
             # channel each, a 4-axis stack as frames on axis 0, and any

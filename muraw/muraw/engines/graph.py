@@ -23,6 +23,7 @@ from numpy.typing import DTypeLike
 from ..array import (
     Array,
     ArrayMeta,
+    _empty_array,
     _meta_from_shape,
     _seal_ndarray,
     reshaped_meta,
@@ -565,7 +566,10 @@ def check_engine_layout(meta: ArrayMeta) -> None:
 
     The engine reads the channels of a 3-axis array last, ``(H, W, C)``, or
     first, ``(C, H, W)``, never on axis 1. A 4-axis stack is ``(N, H, W, C)``.
+    An empty array is never sent to the engine, so it may have any layout.
     """
+    if meta.size == 0:
+        return
     if meta.ndim == 3 and meta.channel_axis == 1:
         raise NotImplementedError(
             f"shape {meta.shape} with channel_axis 1 is not supported; put the "
@@ -719,6 +723,14 @@ def emit(engine_op: EngineOp, x: Array, /, *more: Array, **attrs: Any) -> Array:
     coerced = _validate_attrs(name, engine_op._attr_specs, attrs)
     out_meta = engine_op.infer_out_meta(x, coerced, *more)
     check_engine_layout(out_meta)
+    if out_meta.size == 0:
+        return _empty_array(out_meta)
+    empty = [index for index, inp in enumerate(inputs) if inp.meta.size == 0]
+    if empty:
+        raise NotImplementedError(
+            f"op {name!r}: input {empty[0]} of shape {inputs[empty[0]].shape} is "
+            f"empty and the result of shape {out_meta.shape} is not"
+        )
     node = OpNode(
         op=name,
         inputs=inputs,

@@ -317,16 +317,12 @@ def test_reverse_slice_rgb_keeps_all_channels():
     )
 
 
-def test_empty_slice_is_rejected():
-    t = Array(_mono())
-    with pytest.raises(NotImplementedError, match="empty dimension"):
-        t.view(np.s_[1:4:-1, :])
-    with pytest.raises(NotImplementedError, match="empty dimension"):
-        t.view(np.s_[20:10, :])
-    with pytest.raises(NotImplementedError, match="empty dimension"):
-        t.view(np.s_[10:20:-1, :])
-    with pytest.raises(NotImplementedError, match="empty dimension"):
-        t.view(np.s_[2:2, :])
+@pytest.mark.parametrize(
+    "key", [np.s_[1:4:-1, :], np.s_[20:10, :], np.s_[10:20:-1, :], np.s_[2:2, :], np.s_[:, 3:3]]
+)
+def test_empty_slice_matches_numpy(key):
+    src = _mono()
+    np.testing.assert_array_equal(Array(src)[key].realize(), src[key])
 
 
 def test_ellipsis_fills_remaining_axes():

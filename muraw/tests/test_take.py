@@ -136,9 +136,11 @@ def test_take_with_an_index_array_of_two_axes_raises():
         _take(mi, mi.Array(_image((3, 3), np.float32)), [[0, 1], [1, 2]], 0)
 
 
-def test_take_of_no_indices_raises():
-    with pytest.raises(NotImplementedError, match="empty"):
-        _take(mi, mi.Array(_image((3, 3), np.float32)), [], 0)
+@pytest.mark.parametrize("axis", [0, 1, 2, None])
+def test_take_of_no_indices_is_empty(axis):
+    x = _image((3, 4, 2), np.float32)
+    got = _take(mi, mi.Array(x), [], axis)
+    np.testing.assert_array_equal(got.realize(), _take(np, x, [], axis))
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.float32])

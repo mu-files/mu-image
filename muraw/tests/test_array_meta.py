@@ -54,10 +54,15 @@ def test_rejects_a_channel_axis_below_three_axes(shape):
         _meta(shape, 0)
 
 
-@pytest.mark.parametrize("shape", [(0,), (0, 4), (3, 0), (2, 2, 0)])
-def test_rejects_an_axis_below_one(shape):
-    with pytest.raises(ValueError, match="at least 1|channel count"):
-        _meta(shape)
+@pytest.mark.parametrize("shape", [(0,), (0, 4), (3, 0), (2, 2, 0), (0, 2, 2, 3)])
+def test_holds_an_axis_of_zero(shape):
+    meta = _meta(shape)
+    assert (meta.shape, meta.size) == (shape, 0)
+
+
+def test_rejects_a_negative_axis():
+    with pytest.raises(ValueError, match="negative"):
+        _meta((2, -1))
 
 
 @pytest.mark.parametrize("shape", [(), (2, 2, 2, 2, 2)])

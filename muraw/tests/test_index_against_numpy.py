@@ -1,7 +1,8 @@
 """Indexing with generated keys against NumPy.
 
-Every key either gives NumPy's result or raises ``NotImplementedError``.
-When NumPy raises, ``mi`` raises the same exception type. Keys are drawn
+Every key either gives NumPy's result or raises ``NotImplementedError``,
+and a key whose result is empty and has at most 4 axes gives it. When NumPy raises, ``mi``
+raises the same exception type. Keys are drawn
 from a fixed seed: slices with steps, ints, negative and out-of-range
 indices, lists, int arrays, boolean masks, ``None``, ``...`` and
 ``np.ix_`` meshes, on every layout ``mi`` holds.
@@ -21,6 +22,11 @@ LAYOUTS = {
     "chw": ((3, 4, 5), 0),
     "stack": ((2, 4, 5, 3), 3),
     "1d": ((7,), None),
+    "hw_no_rows": ((0, 6), None),
+    "hwc_no_channels": ((4, 5, 0), 2),
+    "chw_no_columns": ((3, 4, 0), 0),
+    "stack_no_frames": ((0, 4, 5, 3), 3),
+    "1d_empty": ((0,), None),
 }
 CASES_PER_LAYOUT = 400
 
@@ -39,6 +45,8 @@ def _slice(rng, size):
 
 
 def _index_list(rng, size):
+    if size == 0 or rng.random() < 0.05:
+        return [] if rng.random() < 0.5 else np.zeros(0, np.intp)
     count = int(rng.integers(1, 5))
     low = -size - (1 if rng.random() < 0.1 else 0)
     high = size + (1 if rng.random() < 0.1 else 0)
@@ -56,7 +64,9 @@ def _item(rng, size):
     if kind < 4:
         return _slice(rng, size)
     if kind < 6:
-        return int(rng.integers(-size - (rng.random() < 0.1), size + (rng.random() < 0.1)))
+        low = -size - (rng.random() < 0.1)
+        high = size + (rng.random() < 0.1)
+        return int(rng.integers(low, high)) if low < high else 0
     if kind < 8:
         return _index_list(rng, size)
     if kind < 9:
@@ -109,7 +119,9 @@ def test_index_matches_numpy_or_raises_not_implemented(layout):
             continue
         try:
             got = np.asarray(_index(mi, source, key))
-        except NotImplementedError:
+        except NotImplementedError as error:
+            if expect.size == 0 and expect.ndim <= 4:
+                mismatches.append(f"{key!r}: NumPy gives empty {expect.shape}, mi {error!r}")
             continue
         except Exception as error:
             mismatches.append(f"{key!r}: NumPy gives shape {expect.shape}, mi raises {error!r}")

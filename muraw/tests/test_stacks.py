@@ -244,7 +244,7 @@ def test_swapping_the_rows_and_columns_of_a_stack_matches_numpy():
 
 def test_unsupported_stack_ops_raise():
     stack = Array(_stack())
-    with pytest.raises(ValueError, match="axes must have 3 elements"):
+    with pytest.raises(NotImplementedError, match="4-axis stack"):
         mi.transpose(stack, (2, 1, 0, 3))
     with pytest.raises(NotImplementedError, match="composite of a 4-axis stack"):
         mi.composite(stack, ((0, 0), Array(_stack(1, 2, 2, 3))))
