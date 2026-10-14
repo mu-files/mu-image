@@ -557,27 +557,39 @@ def _selection_key(
 ) -> Tuple[Optional[list[int]], bool]:
     """The source indices that ``key``, the index on axis ``axis`` of
     length ``size``, reads, and whether it drops that axis. ``what`` names
-    the axis's entries in errors: ``"channel"`` or ``"frame"``.
+    the axis's entries in errors: ``"row"``, ``"column"``, ``"channel"``,
+    or ``"frame"``.
 
     The list is ``None`` when it is identity ``0..size-1``. An integer
     index drops the axis, as in NumPy; a slice or a sequence keeps it,
-    even for one entry.
+    even for one entry. A boolean mask reads the indices where it is
+    true. An index array of more than one axis raises
+    ``NotImplementedError``.
     """
-    rank_drop = isinstance(key, (int, np.integer)) and not isinstance(
-        key, (bool, np.bool_)
-    )
+    rank_drop = _is_int_index(key)
     if isinstance(key, slice):
         start, stop, step = key.indices(size)
         indices = list(range(start, stop, step))
         if not indices:
             raise ValueError(f"{what}s: slice results in an empty dimension")
     else:
-        if isinstance(key, np.ndarray):
-            if key.dtype == np.bool_ or key.ndim != 1:
-                raise TypeError(f"{what} index must be a 1-d sequence of ints")
-            values = key.tolist()
-        elif isinstance(key, (list, tuple)):
-            values = list(key)
+        if isinstance(key, (np.ndarray, list, tuple)):
+            index = np.asarray(key)
+            if index.dtype.kind == "b" and index.ndim == 1:
+                if index.size != size:
+                    raise IndexError(
+                        f"boolean index did not match indexed array along axis {axis}; "
+                        f"size of axis is {size} but size of corresponding boolean axis "
+                        f"is {index.size}"
+                    )
+                index = np.flatnonzero(index)
+            if index.ndim > 1:
+                raise NotImplementedError(
+                    f"indexing with an index array of shape {index.shape} is not "
+                    "supported; only a 1-D index array is"
+                )
+            rank_drop = index.ndim == 0
+            values = index.reshape(-1).tolist()
         elif rank_drop:
             values = [int(key)]
         else:
@@ -605,9 +617,9 @@ def _expand_index_key(
     ``(H, W)[:, None, :]`` gives ``(1,)`` and ``(N,)[None, :, None]`` gives
     ``(0, 2)``. The result may have at most 4 axes.
 
-    The rows and the columns must be slices. The channel axis, and the
-    frame axis of a 4-axis stack, may be an int (which drops that axis), a
-    slice, or a sequence of ints.
+    Every axis may be an int (which drops that axis), a slice, or a
+    sequence of ints. The rows and the columns may also be a boolean mask;
+    ``_take_spatial_indices`` lowers what is not a slice there.
     """
     ndim = meta.ndim
     items: Tuple[Any, ...] = key if isinstance(key, tuple) else (key,)
@@ -653,11 +665,53 @@ def _expand_index_key(
                 "only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) "
                 f"and integer or boolean arrays are valid indices, got {item!r}"
             )
-        raise NotImplementedError(
-            f"indexing the rows or columns with {item!r} is not supported; "
-            "only a slice is, for example a[i : i + 1] for row i"
-        )
     return tuple(axes), tuple(new_axes)
+
+
+def _is_int_index(item: Any) -> bool:
+    return isinstance(item, (int, np.integer)) and not isinstance(item, (bool, np.bool_))
+
+
+def _take_spatial_indices(
+    a: "Array", axes: Tuple[Any, ...]
+) -> Tuple["Array", Tuple[Any, ...], Tuple[int, ...]]:
+    """Lower what is not a slice on the rows or the columns of ``axes``,
+    the key ``_expand_index_key`` gives for ``a``, to a slice.
+
+    An index array becomes a ``take`` of ``a`` on that axis. An int
+    becomes the slice of that one row or column, and its axis is listed
+    for the caller to squeeze after the view. Returns the array to view,
+    the new key, and the axes to squeeze.
+
+    An index array alongside another int or index array raises
+    ``NotImplementedError``: NumPy then pairs the arrays or moves the axis
+    to the front of the result.
+    """
+    meta = a.meta
+    spatial = range(meta.ndim) if meta.ndim < 3 else meta.spatial_axes
+    indexed = sum(not isinstance(item, slice) for item in axes)
+    key = list(axes)
+    squeezed = []
+    for axis in spatial:
+        if isinstance(axes[axis], slice):
+            continue
+        size = meta.shape[axis]
+        what = "row" if meta.ndim > 1 and axis == spatial[0] else "column"
+        indices, drops_axis = _selection_key(axes[axis], size, axis, what)
+        if drops_axis:
+            start = indices[0] if indices else 0
+            key[axis] = slice(start, start + 1)
+            squeezed.append(axis)
+            continue
+        if indexed > 1:
+            raise NotImplementedError(
+                "indexing with an index array and another int or index array is not "
+                "supported; index one axis at a time, for example a[rows][:, cols]"
+            )
+        if indices is not None:
+            a = _take_along(a, indices, axis)
+        key[axis] = slice(None)
+    return a, tuple(key), tuple(squeezed)
 
 
 @dataclass(frozen=True)
@@ -1412,12 +1466,9 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
 def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     """Repeat each element of ``a`` along ``axis``, like ``numpy.repeat``.
 
-    ``axis=None`` repeats the flattened array. On the channel axis and the
-    frame axis of a 4-axis stack, ``repeats`` may be one count or a count
-    per element, and a count may be 0. On the rows or the columns it must
-    be the same count for every row or column; a count per row or column
-    raises ``NotImplementedError``. Counts that leave the axis empty raise
-    ``ValueError``.
+    ``axis=None`` repeats the flattened array. ``repeats`` may be one count
+    or a count per element, and a count may be 0. Counts that leave the
+    axis empty raise ``ValueError``.
     """
     from .engines.graph import op
 
@@ -1431,17 +1482,11 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     indices = np.repeat(np.arange(length), repeats)
     if indices.size == 0:
         raise ValueError("repeat counts leave the axis empty; mi.Array holds no empty arrays")
-    if axis == meta.channel_axis or (meta.ndim == 4 and axis == 0):
-        key = [slice(None)] * meta.ndim
-        key[axis] = indices.tolist()
-        return a[tuple(key)]
     counts = np.bincount(indices, minlength=length)
+    spatial = axis != meta.channel_axis and not (meta.ndim == 4 and axis == 0)
+    if not spatial or not (counts == counts[0]).all():
+        return _take_along(a, indices.tolist(), axis)
     along_rows = not meta.is_1d and axis == meta.spatial_axes[0]
-    if not (counts == counts[0]).all():
-        raise NotImplementedError(
-            f"repeat with a count per {'row' if along_rows else 'column'} is not "
-            "supported; pass one count for every row or column"
-        )
     count = int(counts[0])
     if count == 1:
         return a
@@ -1453,6 +1498,52 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
         channel_reps=1,
         row_repeats=count if along_rows else None,
         col_repeats=None if along_rows else count,
+    )
+
+
+def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "raise") -> "Array":
+    """The elements of ``a`` at ``indices`` along ``axis``, like ``numpy.take``.
+
+    ``axis=None`` takes from the flattened array. ``mode`` is ``"raise"``,
+    ``"wrap"``, or ``"clip"``, as in NumPy. ``indices`` is one int, which
+    drops the axis, or a 1-D sequence of ints; an index array with more
+    axes raises ``NotImplementedError``. No indices raise ``ValueError``.
+    """
+    a = Array(a)
+    if axis is None:
+        a = reshape(a, -1)
+        axis = 0
+    axis = normalize_axis_index(operator.index(axis), a.meta.ndim, "take axis")
+    src_indices = np.take(np.arange(a.meta.shape[axis]), indices, mode=mode)
+    if src_indices.ndim > 1:
+        raise NotImplementedError(
+            f"take with indices of shape {src_indices.shape} is not supported; "
+            "only one int or a 1-D sequence is"
+        )
+    if src_indices.size == 0:
+        raise ValueError("take of no indices leaves the axis empty; mi.Array holds no empty arrays")
+    taken = _take_along(a, src_indices.reshape(-1).tolist(), axis)
+    return squeeze(taken, axis) if src_indices.ndim == 0 else taken
+
+
+def _take_along(a: "Array", indices: list[int], axis: int) -> "Array":
+    """``a`` gathered at ``indices`` on ``axis``. Every index is in
+    ``0 .. a.shape[axis] - 1``."""
+    from .engines.graph import op
+
+    meta = a.meta
+    if indices == list(range(meta.shape[axis])):
+        return a
+    if axis == meta.channel_axis or (meta.ndim == 4 and axis == 0):
+        key: list[Any] = [slice(None)] * meta.ndim
+        key[axis] = indices
+        return a[tuple(key)]
+    along_rows = not meta.is_1d and axis == meta.spatial_axes[0]
+    return op(
+        "take",
+        a,
+        row_indices=indices if along_rows else None,
+        col_indices=None if along_rows else indices,
     )
 
 
@@ -2007,29 +2098,44 @@ class Array:
         if any(v is not None for v in (left, top, width, height)):
             raise TypeError("cannot mix a slice region with left, top, width, height")
         axes, new_axes = _expand_index_key(region, self._meta)
-        if self._meta.is_1d:
-            row = _reshape_layout(self, (1, self._meta.width))
+        source, axes, squeezed = _take_spatial_indices(self, axes)
+        meta = source._meta
+        if meta.is_1d:
+            row = _reshape_layout(source, (1, meta.width))
             window = _window_from_slices(row._meta, slice(None), axes[0])
             viewed = row._view_window(
                 window, oob_valid=oob_valid, reset_origin=reset_origin
             )
             shape = [viewed.meta.width]
         else:
-            if self._meta.channel_axis is None:
-                window = _window_from_slices(self._meta, *axes)
+            if meta.channel_axis is None:
+                window = _window_from_slices(meta, *axes)
             else:
-                rows_axis, cols_axis = self._meta.spatial_axes
+                rows_axis, cols_axis = meta.spatial_axes
                 window = _window_from_slices(
-                    self._meta,
+                    meta,
                     axes[rows_axis],
                     axes[cols_axis],
-                    axes[self._meta.channel_axis],
-                    axes[0] if self._meta.ndim == 4 else None,
+                    axes[meta.channel_axis],
+                    axes[0] if meta.ndim == 4 else None,
                 )
-            viewed = self._view_window(
+            viewed = source._view_window(
                 window, oob_valid=oob_valid, reset_origin=reset_origin
             )
             shape = list(viewed.shape)
+        # The viewed array has every axis of the key that an int does not
+        # drop, and each squeezed row or column as length 1.
+        kept = [
+            axis
+            for axis, item in enumerate(axes)
+            if isinstance(item, slice) or np.ndim(item) > 0
+        ]
+        shape = [size for size, axis in zip(shape, kept) if axis not in squeezed]
+        if not shape and not new_axes:
+            raise NotImplementedError(
+                "indexing every axis with an int gives a scalar, which mi.Array does "
+                "not hold; slice one axis instead, for example a[i, j : j + 1]"
+            )
         for position in new_axes:
             shape.insert(position, 1)
         return _reshape_layout(viewed, tuple(shape))
@@ -2167,6 +2273,10 @@ class Array:
     def repeat(self, repeats: Any, axis: Optional[int] = None) -> "Array":
         """Repeat each element along ``axis``, as ``ndarray.repeat``."""
         return repeat(self, repeats, axis)
+
+    def take(self, indices: Any, axis: Optional[int] = None, mode: str = "raise") -> "Array":
+        """The elements at ``indices`` along ``axis``, as ``ndarray.take``."""
+        return take(self, indices, axis, mode=mode)
 
     def swapaxes(self, axis1: int, axis2: int) -> "Array":
         """Swap two axes, as ``ndarray.swapaxes``."""

@@ -423,6 +423,33 @@ def _out_meta_tile(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     )
 
 
+def _out_meta_take(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    """Geometry policy ``take``: the rows and columns are the lengths of
+    ``row_indices`` and ``col_indices``, each axis unchanged without its
+    list. The result is its own canvas at origin ``(0, 0)``, as a view
+    with a step.
+    """
+    sizes = {"row_indices": x.meta.height, "col_indices": x.meta.width}
+    dest = {}
+    for key, size in sizes.items():
+        indices = attrs.get(key)
+        if indices is None:
+            dest[key] = size
+            continue
+        if len(indices) == 0:
+            raise ValueError(f"take: {key} is empty")
+        if any(not 0 <= int(index) < size for index in indices):
+            raise IndexError(f"take: {key} has an index out of bounds for size {size}")
+        dest[key] = len(indices)
+    dest_h, dest_w = dest["row_indices"], dest["col_indices"]
+    return x.meta.with_size(
+        height=dest_h,
+        width=dest_w,
+        origin=(0, 0),
+        canvas=(0, 0, dest_w, dest_h),
+    )
+
+
 # TIFF orientation code → (swap H and W, flip x, flip y) of the map from
 # dest to source.
 _ORIENTATION = {

@@ -402,6 +402,26 @@ ops:
         count: 1
         optional: true
 
+  # Gather rows and columns by index, as np.take along each axis: dest
+  # row y reads source row row_indices[y], and dest column x reads source
+  # column col_indices[x]. A missing list is the identity. Every index is
+  # in range of the source; indices may repeat, skip, and reorder.
+  - name: take
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: take
+    attrs:
+      - key: row_indices
+        type: i32_array
+        count: 0
+        optional: true
+      - key: col_indices
+        type: i32_array
+        count: 0
+        optional: true
+
   # TIFF/EXIF orientation 1–8: emit meta via geometry: orientation.
   - name: orientation
     inputs:

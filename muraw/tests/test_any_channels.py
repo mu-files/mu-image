@@ -115,17 +115,9 @@ def test_view_rgba_to_bgra():
     assert not np.array_equal(got, src[:, :, ::-1])
 
 
-def test_view_rejects_spatial_fancy_and_mono_channel():
+def test_view_rejects_bad_indices_and_mono_channel():
     src = _hwc(5)
     t = Array(src)
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        t.view(([0, 1], slice(None), slice(None)))
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        Array(_hwc(3))[[0, 1], :, :]
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        Array(_hwc(3))[:, 2]
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        Array(_hwc(3))[np.ones(src.shape[0], bool)]
     with pytest.raises(IndexError, match="valid indices"):
         Array(_hwc(3))[1.5]
     mono_np = np.zeros((4, 6), dtype=np.float32)

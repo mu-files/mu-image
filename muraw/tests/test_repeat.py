@@ -1,8 +1,9 @@
 """repeat: ``np.repeat`` on every axis.
 
-The rows and the columns are the ``tile`` op with ``row_repeats`` or
-``col_repeats``; the channels and the frames of a stack are a ``view``
-that reads each index its count of times.
+One count on the rows or the columns is the ``tile`` op with
+``row_repeats`` or ``col_repeats``, and a count per row or column is the
+``take`` op. The channels and the frames of a stack are a ``view`` that
+reads each index its count of times.
 
 Value checks call the same function with ``mi`` and with ``np``.
 """
@@ -122,7 +123,24 @@ def test_repeat_that_leaves_an_axis_empty_raises(repeats, axis):
         _repeat(mi, mi.Array(_image((2, 2, 3), np.float32)), repeats, axis)
 
 
-@pytest.mark.parametrize("axis", [0, 1])
-def test_repeat_with_a_count_per_row_or_column_raises(axis):
-    with pytest.raises(NotImplementedError, match="count per"):
-        _repeat(mi, mi.Array(_image((2, 2), np.float32)), [1, 2], axis)
+@pytest.mark.parametrize("dtype", [np.uint8, np.float32])
+@pytest.mark.parametrize(
+    "shape, axis, repeats",
+    [
+        ((3, 4), 0, [1, 0, 3]),
+        ((3, 4), 1, [2, 1, 0, 1]),
+        ((3, 4, 3), 1, [0, 2, 2, 1]),
+        ((2, 3, 4, 3), 1, [3, 1, 1]),
+        ((5,), 0, [1, 2, 0, 1, 3]),
+    ],
+)
+def test_repeat_with_a_count_per_row_or_column_matches_numpy(shape, axis, repeats, dtype):
+    x = _image(shape, dtype)
+    got = _repeat(mi, mi.Array(x), repeats, axis)
+    np.testing.assert_array_equal(got.realize(), _repeat(np, x, repeats, axis))
+
+
+def test_repeat_with_a_count_per_column_on_chw_matches_numpy():
+    x = _image((3, 4, 5), np.float32)
+    got = _repeat(mi, Array(x, channel_axis=0), [1, 2, 0, 1, 3], 2)
+    np.testing.assert_array_equal(got.realize(), _repeat(np, x, [1, 2, 0, 1, 3], 2))

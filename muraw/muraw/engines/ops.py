@@ -430,6 +430,30 @@ tile = EngineOp(
     _infer_meta=graph._out_meta_tile,
 )
 
+take = EngineOp(
+    meta=OpMeta(name='take', requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r'''[
+  {
+    "count": 0,
+    "key": "row_indices",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "col_indices",
+    "optional": true,
+    "type": "i32_array"
+  }
+]''')),
+    _infer_meta=graph._out_meta_take,
+)
+
 orientation = EngineOp(
     meta=OpMeta(name='orientation', requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1340,6 +1364,7 @@ OPS_BY_NAME = {
     'view': view,
     'pad': pad,
     'tile': tile,
+    'take': take,
     'orientation': orientation,
     'transpose': transpose,
     'reshape': reshape,
@@ -1402,6 +1427,7 @@ __all__ = [
     'rgb_transform',
     'sub_scalar',
     'subtract',
+    'take',
     'tile',
     'transpose',
     'view',

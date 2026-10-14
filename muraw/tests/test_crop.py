@@ -258,7 +258,7 @@ def test_slice_rejects_step_and_mixed_args():
         t.view(np.s_[1:3, :], left=0)
     with pytest.raises(TypeError, match="slice region or left"):
         t.view(left=1, top=1)
-    with pytest.raises(NotImplementedError, match="rows or columns"):
+    with pytest.raises(IndexError, match="out of bounds"):
         t.view(((2, 4), (1, 5)))
     rgb = Array(np.zeros((4, 6, 3), dtype=np.float32))
     np.testing.assert_array_equal(
