@@ -111,5 +111,11 @@ if rcd_extension:
 setup(
     ext_modules=ext_modules,
     include_package_data=False,
-    package_data={"muraw.engines.core": host_core_binaries()},
+    # All package-data lives here. A [tool.setuptools.package-data] table
+    # in pyproject.toml replaces this dict, which dropped the host binary
+    # from wheels and left only ops.yaml.
+    package_data={
+        "muraw.engines": ["catalog/ops.yaml"],
+        "muraw.engines.core": host_core_binaries(),
+    },
 )

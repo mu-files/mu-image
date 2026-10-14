@@ -76,13 +76,11 @@ packages = [
     # Public import spelling for the graph (`import muimage as mi`).
     "muimage",
 ]
-# Host-only abi3 CoreEngine extension selection is in setup.py (package_data).
-# A "_binaries/*" glob here would put every platform's .pyd in every Windows
-# wheel, and delvewheel then rejects the other arch. MANIFEST.in still ships
-# all engines/core/_binaries/* in the sdist.
-
-[tool.setuptools.package-data]
-"muraw.engines" = ["catalog/ops.yaml"]
+# Host-only CoreEngine binary and ops.yaml are in setup.py package_data.
+# Do not add [tool.setuptools.package-data] here: that table replaces the
+# setup.py dict, so a "_binaries/*" glob ships every arch (delvewheel
+# rejects the other Windows .pyd) and a yaml-only table ships no binary.
+# MANIFEST.in still ships all engines/core/_binaries/* in the sdist.
 
 
 [tool.pytest.ini_options]
