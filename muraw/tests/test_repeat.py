@@ -119,7 +119,7 @@ def test_repeat_rejects_what_numpy_rejects(repeats, axis, error):
 
 @pytest.mark.parametrize("repeats, axis", [(0, 0), ([0, 0, 0], 2)])
 def test_repeat_that_leaves_an_axis_empty_raises(repeats, axis):
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(NotImplementedError, match="empty"):
         _repeat(mi, mi.Array(_image((2, 2, 3), np.float32)), repeats, axis)
 
 

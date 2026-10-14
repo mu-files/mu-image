@@ -137,7 +137,7 @@ def test_take_with_an_index_array_of_two_axes_raises():
 
 
 def test_take_of_no_indices_raises():
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(NotImplementedError, match="empty"):
         _take(mi, mi.Array(_image((3, 3), np.float32)), [], 0)
 
 
@@ -202,6 +202,8 @@ def test_nearest_resize_by_one_and_a_half_matches_numpy(shape):
         (slice(None), [-8]),
         (5, slice(None)),
         np.array([True, False]),
+        (np.array([[True], [False], [True], [True], [False]]), np.array([[0, 1]])),
+        ([0, 1, 2], [0, 1]),
     ],
 )
 def test_index_rejects_what_numpy_rejects(key):
@@ -216,14 +218,79 @@ def test_index_rejects_what_numpy_rejects(key):
     "shape, key",
     [
         ((4, 5), ([0, 1], [2, 3])),
-        ((4, 5), ([0, 1], 2)),
-        ((4, 5, 3), (slice(None), [0, 1], 2)),
         ((4, 5), np.array([[0, 1], [1, 2]])),
+        ((4, 5), (np.array([[0], [1]]), np.array([[2, 3]]).T)),
+        ((4, 5, 3), (1, slice(None), [0, 2])),
+        ((2, 4, 5, 3), ([0, 1], slice(None), slice(None), [0, 2])),
+        ((2, 4, 5, 3), (np.array([[0], [1]]), slice(None), slice(None), np.array([[0, 2]]))),
     ],
 )
 def test_index_arrays_numpy_pairs_or_moves_raise(shape, key):
     with pytest.raises(NotImplementedError):
         _index(mi, mi.Array(_image(shape, np.float32)), key)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.float32])
+@pytest.mark.parametrize(
+    "shape, key",
+    [
+        ((5, 7), np.ix_([4, 0, 0, 2], [6, 1, 1])),
+        ((5, 7), np.ix_([3], [2])),
+        ((4, 6, 3), np.ix_([3, 1], [5, 5, 0])),
+        ((4, 6, 3), np.ix_([3, 1], [5, 5, 0], [2, 1, 0])),
+        ((4, 6, 3), np.ix_([0, 2], [1, 4]) + (1,)),
+        ((2, 4, 6, 3), np.ix_([1, 0], [3, 3], [0, 5, 2])),
+        ((2, 4, 6, 3), (1,) + np.ix_([3, 0], [2, 4])),
+        ((5, 7), (np.array([[4], [0]]), np.array([[1, 6, 6]]))),
+        ((5, 7), ([0, 2], 3)),
+        ((4, 6, 3), (slice(None), [0, 1], 2)),
+        ((4, 6, 3), ([0, 2], slice(None), 1)),
+    ],
+)
+def test_index_with_an_open_mesh_matches_numpy(shape, key, dtype):
+    x = _image(shape, dtype)
+    got = _index(mi, mi.Array(x), key)
+    np.testing.assert_array_equal(got.realize(), _index(np, x, key))
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        (slice(None),) + np.ix_([3, 0, 0], [4, 1]),
+        np.ix_([2, 0], [1, 1, 3], [4, 0]),
+    ],
+)
+def test_index_with_an_open_mesh_on_chw_matches_numpy(key):
+    x = _image((3, 4, 5), np.float32)
+    got = _index(mi, Array(x, channel_axis=0), key)
+    np.testing.assert_array_equal(got.realize(), _index(np, x, key))
+
+
+def test_index_with_an_open_mesh_removes_bad_lines():
+    raw = _image((6, 8), np.uint16)
+    bad_rows = np.isin(np.arange(6), [2])
+    bad_cols = np.isin(np.arange(8), [0, 5])
+    key = np.ix_(~bad_rows, ~bad_cols)
+    got = _index(mi, mi.Array(raw), key)
+    np.testing.assert_array_equal(got.realize(), _index(np, raw, key))
+
+
+def test_index_with_an_open_mesh_crops_to_a_mask_box():
+    image = _image((6, 8, 3), np.float32)
+    valid = np.zeros((6, 8), dtype=bool)
+    valid[1:4, 2:7] = True
+    key = np.ix_(valid.any(axis=1), valid.any(axis=0))
+    got = _index(mi, mi.Array(image), key)
+    np.testing.assert_array_equal(got.realize(), _index(np, image, key))
+
+
+def test_index_with_an_open_mesh_is_one_take_node():
+    source = mi.Array(_image((5, 7, 3), np.float32))
+    got = source[np.ix_([4, 0], [6, 1, 1])]
+    assert got._node.op == "take"
+    assert got._node.inputs == (source,)
+    np.testing.assert_array_equal(got._node.attrs["row_indices"], [4, 0])
+    np.testing.assert_array_equal(got._node.attrs["col_indices"], [6, 1, 1])
 
 
 def test_index_of_every_axis_with_an_int_raises():

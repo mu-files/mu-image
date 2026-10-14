@@ -126,11 +126,11 @@ def test_view_rejects_bad_indices_and_mono_channel():
         mono[:, :, 0]
     np.testing.assert_array_equal(mono[None, :, :].realize(), mono_np[None, :, :])
     np.testing.assert_array_equal(mono[:, None, :].realize(), mono_np[:, None, :])
-    with pytest.raises(IndexError, match="newaxis"):
+    with pytest.raises(NotImplementedError, match="newaxis"):
         Array(np.zeros((2, 2, 3, 1), dtype=np.float32))[:, :, :, None]
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(NotImplementedError, match="empty"):
         t[:, :, 1:4:-1]
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(NotImplementedError, match="empty"):
         t[:, :, []]
     with pytest.raises(IndexError, match="out of bounds"):
         mi.view(

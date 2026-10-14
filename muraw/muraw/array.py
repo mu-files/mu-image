@@ -528,7 +528,9 @@ def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, int]:
     start, stop, step = slc.indices(length)
     n = len(range(start, stop, step))
     if n == 0:
-        raise ValueError(f"{name}: slice results in an empty dimension")
+        raise NotImplementedError(
+            f"{name}: slice results in an empty dimension; mi.Array holds no empty arrays"
+        )
     return start, n, step
 
 
@@ -571,7 +573,9 @@ def _selection_key(
         start, stop, step = key.indices(size)
         indices = list(range(start, stop, step))
         if not indices:
-            raise ValueError(f"{what}s: slice results in an empty dimension")
+            raise NotImplementedError(
+                f"{what}s: slice results in an empty dimension; mi.Array holds no empty arrays"
+            )
     else:
         if isinstance(key, (np.ndarray, list, tuple)):
             index = np.asarray(key)
@@ -595,7 +599,7 @@ def _selection_key(
         else:
             raise TypeError(f"{what} index must be an int, a slice, or a sequence of ints")
         if not values:
-            raise ValueError(f"{what}s: empty index")
+            raise NotImplementedError(f"{what}s: empty index; mi.Array holds no empty arrays")
         indices = [_wrap_index(value, size, axis, what) for value in values]
     if indices == list(range(size)):
         return None, rank_drop
@@ -617,9 +621,10 @@ def _expand_index_key(
     ``(H, W)[:, None, :]`` gives ``(1,)`` and ``(N,)[None, :, None]`` gives
     ``(0, 2)``. The result may have at most 4 axes.
 
-    Every axis may be an int (which drops that axis), a slice, or a
-    sequence of ints. The rows and the columns may also be a boolean mask;
-    ``_take_spatial_indices`` lowers what is not a slice there.
+    Every axis may be an int (which drops that axis), a slice, an index
+    array, or a boolean mask. ``_gather_per_axis`` decides which index
+    arrays NumPy reads one axis at a time, and ``_take_spatial_indices``
+    lowers what is not a slice on the rows and the columns.
     """
     ndim = meta.ndim
     items: Tuple[Any, ...] = key if isinstance(key, tuple) else (key,)
@@ -634,11 +639,17 @@ def _expand_index_key(
             f"but {n_explicit} were indexed"
         )
     fill = (slice(None),) * (ndim - n_explicit)
+    empty_ellipsis_at = None
     if n_ellipsis == 1:
-        ellipsis_at = items.index(Ellipsis)
+        ellipsis_at = next(at for at, item in enumerate(items) if item is Ellipsis)
         items = items[:ellipsis_at] + fill + items[ellipsis_at + 1 :]
+        if not fill:
+            empty_ellipsis_at = ellipsis_at
     else:
         items = items + fill
+    if any(not isinstance(item, slice) and np.ndim(item) > 0 for item in items):
+        _raise_what_numpy_raises(meta.shape, items)
+        items = _gather_per_axis(items, empty_ellipsis_at)
 
     axes = []
     new_axes = []
@@ -649,10 +660,10 @@ def _expand_index_key(
             rank += 1
             continue
         axes.append(item)
-        if not isinstance(item, (int, np.integer)):
+        if isinstance(item, slice) or np.ndim(item) > 0:
             rank += 1
     if rank > 4:
-        raise IndexError(
+        raise NotImplementedError(
             f"newaxis would give {rank} axes; an array has at most 4 (N, H, W, C)"
         )
     spatial = axes if ndim < 3 else [axes[axis] for axis in meta.spatial_axes]
@@ -672,26 +683,88 @@ def _is_int_index(item: Any) -> bool:
     return isinstance(item, (int, np.integer)) and not isinstance(item, (bool, np.bool_))
 
 
+def _raise_what_numpy_raises(shape: Tuple[int, ...], items: Tuple[Any, ...]) -> None:
+    """Index a stand-in of ``shape`` with ``items``, so a key NumPy rejects
+    raises NumPy's own error. The stand-in has no memory of its own, and
+    each slice is cut to one entry, so only the result of the index arrays
+    is allocated."""
+    stand_in = np.broadcast_to(np.zeros((), dtype=bool), shape)
+    stand_in[tuple(slice(0, 1) if isinstance(item, slice) else item for item in items)]
+
+
+def _gather_per_axis(
+    items: Tuple[Any, ...], empty_ellipsis_at: Optional[int] = None
+) -> Tuple[Any, ...]:
+    """``items``, a key with one entry per axis and its ``None`` entries,
+    with each index array as the 1-D list it gathers on its own axis.
+    ``empty_ellipsis_at`` is the position of the entry that followed an
+    ``...`` that stood for no axes; NumPy still counts it as separating
+    the entries on either side.
+
+    When a key has an index array and another int or index array, NumPy
+    broadcasts them together. The result is a gather on each axis in turn
+    only when the arrays form an open mesh, as ``np.ix_`` builds: K arrays
+    of K axes, array ``k`` of length 1 on every axis but ``k``. A single
+    1-D array or 1-D boolean mask is a mesh of one. NumPy also has to keep
+    the gathered axes where the gather puts them: in place when the
+    indexed entries are adjacent in the key, and in front of the other
+    axes when a slice or a ``None`` separates them. Any other key raises
+    ``NotImplementedError``.
+    """
+    indexed = [
+        at for at, item in enumerate(items) if item is not None and not isinstance(item, slice)
+    ]
+    arrays = [at for at in indexed if np.ndim(items[at]) > 0]
+    if not arrays or indexed == arrays[:1]:
+        return items
+    meshes = [np.asarray(items[at]) for at in arrays]
+    count = len(meshes)
+    is_mesh = all(
+        mesh.ndim == count
+        and (count == 1 or mesh.dtype.kind != "b")
+        and all(size == 1 for dim, size in enumerate(mesh.shape) if dim != k)
+        for k, mesh in enumerate(meshes)
+    )
+    if not is_mesh:
+        shapes = ", ".join(str(mesh.shape) for mesh in meshes)
+        raise NotImplementedError(
+            f"indexing with index arrays of shapes {shapes} is not supported; only one "
+            "1-D index array is, or an open mesh such as np.ix_(rows, cols)"
+        )
+    adjacent = indexed == list(range(indexed[0], indexed[-1] + 1)) and not (
+        empty_ellipsis_at is not None and indexed[0] < empty_ellipsis_at <= indexed[-1]
+    )
+    kept_before_last_array = any(
+        item is None or isinstance(item, slice) for item in items[: arrays[-1]]
+    )
+    if not adjacent and kept_before_last_array:
+        raise NotImplementedError(
+            "indexing with index arrays on axes that are not adjacent is not supported; "
+            "NumPy moves the indexed axes to the front. Index one axis at a time, for "
+            "example a[rows][:, :, chans]"
+        )
+    key = list(items)
+    for at, mesh in zip(arrays, meshes):
+        key[at] = mesh.reshape(-1)
+    return tuple(key)
+
+
 def _take_spatial_indices(
     a: "Array", axes: Tuple[Any, ...]
 ) -> Tuple["Array", Tuple[Any, ...], Tuple[int, ...]]:
     """Lower what is not a slice on the rows or the columns of ``axes``,
     the key ``_expand_index_key`` gives for ``a``, to a slice.
 
-    An index array becomes a ``take`` of ``a`` on that axis. An int
-    becomes the slice of that one row or column, and its axis is listed
-    for the caller to squeeze after the view. Returns the array to view,
-    the new key, and the axes to squeeze.
-
-    An index array alongside another int or index array raises
-    ``NotImplementedError``: NumPy then pairs the arrays or moves the axis
-    to the front of the result.
+    The index lists on the rows and the columns become one ``take`` of
+    ``a``. An int becomes the slice of that one row or column, and its
+    axis is listed for the caller to squeeze after the view. Returns the
+    array to view, the new key, and the axes to squeeze.
     """
     meta = a.meta
     spatial = range(meta.ndim) if meta.ndim < 3 else meta.spatial_axes
-    indexed = sum(not isinstance(item, slice) for item in axes)
     key = list(axes)
     squeezed = []
+    lists: dict[int, Optional[list[int]]] = {}
     for axis in spatial:
         if isinstance(axes[axis], slice):
             continue
@@ -703,14 +776,13 @@ def _take_spatial_indices(
             key[axis] = slice(start, start + 1)
             squeezed.append(axis)
             continue
-        if indexed > 1:
-            raise NotImplementedError(
-                "indexing with an index array and another int or index array is not "
-                "supported; index one axis at a time, for example a[rows][:, cols]"
-            )
-        if indices is not None:
-            a = _take_along(a, indices, axis)
+        lists[axis] = indices
         key[axis] = slice(None)
+    if meta.is_1d:
+        a = _take_spatial(a, None, lists.get(0))
+    else:
+        rows_axis, cols_axis = spatial
+        a = _take_spatial(a, lists.get(rows_axis), lists.get(cols_axis))
     return a, tuple(key), tuple(squeezed)
 
 
@@ -1468,7 +1540,7 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
 
     ``axis=None`` repeats the flattened array. ``repeats`` may be one count
     or a count per element, and a count may be 0. Counts that leave the
-    axis empty raise ``ValueError``.
+    axis empty raise ``NotImplementedError``: an ``Array`` is never empty.
     """
     from .engines.graph import op
 
@@ -1481,7 +1553,9 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     length = meta.shape[axis]
     indices = np.repeat(np.arange(length), repeats)
     if indices.size == 0:
-        raise ValueError("repeat counts leave the axis empty; mi.Array holds no empty arrays")
+        raise NotImplementedError(
+            "repeat counts leave the axis empty; mi.Array holds no empty arrays"
+        )
     counts = np.bincount(indices, minlength=length)
     spatial = axis != meta.channel_axis and not (meta.ndim == 4 and axis == 0)
     if not spatial or not (counts == counts[0]).all():
@@ -1507,7 +1581,8 @@ def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "ra
     ``axis=None`` takes from the flattened array. ``mode`` is ``"raise"``,
     ``"wrap"``, or ``"clip"``, as in NumPy. ``indices`` is one int, which
     drops the axis, or a 1-D sequence of ints; an index array with more
-    axes raises ``NotImplementedError``. No indices raise ``ValueError``.
+    axes raises ``NotImplementedError``, and so do no indices: an
+    ``Array`` is never empty.
     """
     a = Array(a)
     if axis is None:
@@ -1521,7 +1596,9 @@ def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "ra
             "only one int or a 1-D sequence is"
         )
     if src_indices.size == 0:
-        raise ValueError("take of no indices leaves the axis empty; mi.Array holds no empty arrays")
+        raise NotImplementedError(
+            "take of no indices leaves the axis empty; mi.Array holds no empty arrays"
+        )
     taken = _take_along(a, src_indices.reshape(-1).tolist(), axis)
     return squeeze(taken, axis) if src_indices.ndim == 0 else taken
 
@@ -1529,22 +1606,34 @@ def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "ra
 def _take_along(a: "Array", indices: list[int], axis: int) -> "Array":
     """``a`` gathered at ``indices`` on ``axis``. Every index is in
     ``0 .. a.shape[axis] - 1``."""
-    from .engines.graph import op
-
     meta = a.meta
-    if indices == list(range(meta.shape[axis])):
-        return a
     if axis == meta.channel_axis or (meta.ndim == 4 and axis == 0):
+        if indices == list(range(meta.shape[axis])):
+            return a
         key: list[Any] = [slice(None)] * meta.ndim
         key[axis] = indices
         return a[tuple(key)]
-    along_rows = not meta.is_1d and axis == meta.spatial_axes[0]
-    return op(
-        "take",
-        a,
-        row_indices=indices if along_rows else None,
-        col_indices=None if along_rows else indices,
-    )
+    if not meta.is_1d and axis == meta.spatial_axes[0]:
+        return _take_spatial(a, indices, None)
+    return _take_spatial(a, None, indices)
+
+
+def _take_spatial(
+    a: "Array", row_indices: Optional[list[int]], col_indices: Optional[list[int]]
+) -> "Array":
+    """One ``take`` of ``a``: dest row ``y`` reads source row
+    ``row_indices[y]`` and dest column ``x`` reads source column
+    ``col_indices[x]``. A list that is ``None`` or the identity leaves that
+    axis as it is; ``a`` itself when both do."""
+    from .engines.graph import op
+
+    if row_indices == list(range(a.meta.height)):
+        row_indices = None
+    if col_indices == list(range(a.meta.width)):
+        col_indices = None
+    if row_indices is None and col_indices is None:
+        return a
+    return op("take", a, row_indices=row_indices, col_indices=col_indices)
 
 
 def broadcast_to(array: ArrayLike, shape: Any) -> "Array":

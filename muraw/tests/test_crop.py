@@ -240,9 +240,9 @@ def test_newaxis_anywhere_matches_numpy(src, key):
 
 
 def test_newaxis_past_four_axes_raises():
-    with pytest.raises(IndexError, match="newaxis"):
+    with pytest.raises(NotImplementedError, match="newaxis"):
         Array(_MONO)[None, :, :, None, None]
-    with pytest.raises(IndexError, match="newaxis"):
+    with pytest.raises(NotImplementedError, match="newaxis"):
         Array(_RGB)[None, None]
 
 
@@ -319,13 +319,13 @@ def test_reverse_slice_rgb_keeps_all_channels():
 
 def test_empty_slice_is_rejected():
     t = Array(_mono())
-    with pytest.raises(ValueError, match="empty dimension"):
+    with pytest.raises(NotImplementedError, match="empty dimension"):
         t.view(np.s_[1:4:-1, :])
-    with pytest.raises(ValueError, match="empty dimension"):
+    with pytest.raises(NotImplementedError, match="empty dimension"):
         t.view(np.s_[20:10, :])
-    with pytest.raises(ValueError, match="empty dimension"):
+    with pytest.raises(NotImplementedError, match="empty dimension"):
         t.view(np.s_[10:20:-1, :])
-    with pytest.raises(ValueError, match="empty dimension"):
+    with pytest.raises(NotImplementedError, match="empty dimension"):
         t.view(np.s_[2:2, :])
 
 
