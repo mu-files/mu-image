@@ -105,8 +105,9 @@ def test_concatenate_is_a_composite_over_a_fill():
     assert first is mono
     assert second is rgb
     np.testing.assert_array_equal(got._node.attrs["dest_channels"], [0, 1, 2, 3])
-    np.testing.assert_array_equal(got._node.attrs["tops"], [0, 0])
-    np.testing.assert_array_equal(got._node.attrs["lefts"], [0, 0])
+    np.testing.assert_array_equal(got._node.attrs["dest_channels_source"], [0, 1])
+    np.testing.assert_array_equal(got._node.attrs["by_position"], [0, 0, 0, 0])
+    np.testing.assert_array_equal(got._node.attrs["by_position_source"], [0, 1])
 
 
 def test_a_mixed_dtype_concatenate_casts_the_inputs_that_differ():
@@ -203,15 +204,13 @@ def test_a_row_join_is_a_composite_at_the_running_heights():
     assert first is top
     assert second is bottom
     assert "dest_channels" not in got._node.attrs
-    np.testing.assert_array_equal(got._node.attrs["tops"], [0, 2])
-    np.testing.assert_array_equal(got._node.attrs["lefts"], [0, 0])
+    np.testing.assert_array_equal(got._node.attrs["by_position"], [0, 0, 2, 0])
 
 
 def test_a_column_join_is_a_composite_at_the_running_widths():
     got = _concat(mi, [mi.zeros((2, 3), np.uint8), mi.zeros((2, 5), np.uint8)], 1)
     assert got.shape == (2, 8)
-    np.testing.assert_array_equal(got._node.attrs["tops"], [0, 0])
-    np.testing.assert_array_equal(got._node.attrs["lefts"], [0, 3])
+    np.testing.assert_array_equal(got._node.attrs["by_position"], [0, 0, 0, 3])
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.float32])

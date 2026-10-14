@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 # names its channels by these frame attrs instead.
 _FRAME_ATTRS = {
     "dest_channels": "dest_frames",
+    "dest_channels_source": "dest_frames_source",
     "src_channels": "src_frames",
     "channel_reps": "frame_reps",
     "channel_before": "frame_before",

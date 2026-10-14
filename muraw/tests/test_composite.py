@@ -258,3 +258,136 @@ def test_a_call_without_a_source_raises():
     base = Array(np.zeros((2, 2), np.float32))
     with pytest.raises(ValueError, match="at least"):
         base.composite()
+
+
+def _assigned(base, chw, *placements):
+    """``base`` with each placement written by NumPy assignment. ``base``
+    and each source are ndarrays in the base's layout; an origin entry is
+    an int offset or an index list or mask."""
+    out = base.copy()
+    for (row, col), src in placements:
+        height, width = src.shape[1:3] if chw and src.ndim == 3 else src.shape[:2]
+        if isinstance(row, int) and isinstance(col, int):
+            key = (slice(row, row + height), slice(col, col + width))
+        elif isinstance(row, int):
+            key = (slice(row, row + height), np.asarray(col))
+        elif isinstance(col, int):
+            key = (np.asarray(row), slice(col, col + width))
+        else:
+            key = np.ix_(row, col)
+        out[(slice(None), *key) if chw else key] = src
+    return out
+
+
+def _composited(base, chw, *placements):
+    """The same placements as ``_assigned``, through ``mi.composite``."""
+    wrap = _chw if chw else Array
+    sources = [(origin, wrap(src) if src.ndim == 3 else src) for origin, src in placements]
+    return wrap(base).composite(*sources).realize()
+
+
+def _assert_lists_match(base_shape, *placements):
+    """Packed and CHW, from the same packed samples."""
+    base = _image(base_shape, np.float32)
+    np.testing.assert_array_equal(
+        _composited(base, False, *placements), _assigned(base, False, *placements)
+    )
+    if base.ndim == 3:
+        planar = base.transpose(2, 0, 1).copy()
+        chw_placements = [
+            (origin, src.transpose(2, 0, 1).copy() if src.ndim == 3 else src)
+            for origin, src in placements
+        ]
+        np.testing.assert_array_equal(
+            _composited(planar, True, *chw_placements),
+            _assigned(planar, True, *chw_placements),
+        )
+
+
+def test_index_lists_on_both_axes_match_np_ix():
+    for channels in ((), (3,)):
+        src = _image((3, 4, *channels), np.float32)
+        _assert_lists_match((7, 9, *channels), (([5, 0, 2], [8, 1, 6, 2]), src))
+        _assert_lists_match((7, 9, *channels), (([6, 5, 4], [3, 2, 1, 0]), src))
+
+
+def test_an_index_list_on_one_axis_matches_assignment():
+    src = _image((3, 4, 3), np.float32)
+    _assert_lists_match((7, 9, 3), (([6, 0, 3], 2), src))
+    _assert_lists_match((7, 9, 3), ((1, [8, 0, 4, 2]), src))
+    _assert_lists_match((7, 9), (([6, 0, 3], 2), src[..., 0]))
+
+
+def test_repeated_indices_write_the_later_source_row_and_column():
+    src = _image((3, 4, 3), np.float32)
+    _assert_lists_match((5, 6, 3), (([1, 3, 1], [0, 5, 0, 2]), src))
+
+
+def test_negative_indices_count_from_the_end():
+    src = _image((2, 3), np.float32)
+    base = _image((6, 7), np.float32)
+    expected = _assigned(base, False, (([4, 1], [6, 0, 2]), src))
+    got = _composited(base, False, (([-2, 1], [-1, 0, -5]), src))
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_a_boolean_mask_selects_rows_and_columns():
+    rows = np.array([True, False, True, False, False, True])
+    cols = np.array([False, True, True, False, False, True, False])
+    src = _image((3, 3, 3), np.float32)
+    _assert_lists_match((6, 7, 3), ((rows, cols), src))
+    _assert_lists_match((6, 7, 3), ((rows, 4), src))
+
+
+def test_a_listed_source_over_and_under_a_rect_source():
+    listed = _image((3, 4, 3), np.float32)
+    rect = _image((3, 3, 3), np.float32)
+    _assert_lists_match((7, 9, 3), (([5, 0, 2], [8, 1, 6, 2]), listed), ((1, 1), rect))
+    _assert_lists_match((7, 9, 3), ((1, 1), rect), (([5, 0, 2], [8, 1, 6, 2]), listed))
+    _assert_lists_match(
+        (7, 9, 3), (([5, 0, 2], [8, 1, 6, 2]), listed), (([2, 3, 4], 0), rect)
+    )
+
+
+def test_one_array_placed_several_ways():
+    """One ``mi.Array`` placed by an offset, by index lists, and by an
+    offset again is three inputs of the node, each with its own entry."""
+    src = _image((2, 3, 3), np.float32)
+    origins = ((0, 0), ([5, 3], [7, 4, 6]), (2, 2))
+    for chw in (False, True):
+        base = _image((6, 8, 3), np.float32)
+        samples = src
+        if chw:
+            base, samples = base.transpose(2, 0, 1).copy(), src.transpose(2, 0, 1).copy()
+        placed = (_chw if chw else Array)(samples)
+        got = (_chw if chw else Array)(base).composite(*((origin, placed) for origin in origins))
+        assert all(source is placed for source in got._node.inputs[1:])
+        expected = _assigned(base, chw, *((origin, samples) for origin in origins))
+        np.testing.assert_array_equal(got.realize(), expected)
+
+
+def test_a_consecutive_list_is_an_offset():
+    src = _image((2, 3), np.float32)
+    got = mi.composite(np.zeros((5, 6), np.float32), (([1, 2], [3, 4, 5]), src))
+    assert "by_row_col" not in got._node.attrs
+    np.testing.assert_array_equal(got._node.attrs["by_position"], [1, 3])
+    expected = np.zeros((5, 6), np.float32)
+    expected[1:3, 3:6] = src
+    np.testing.assert_array_equal(got.realize(), expected)
+
+
+def test_bad_index_lists_raise_what_numpy_raises():
+    src = _image((2, 3), np.float32)
+    cases = [
+        (IndexError, ([0, 6], 0)),
+        (IndexError, ([-7, 0], 0)),
+        (IndexError, (np.array([True, False]), 0)),
+        (ValueError, ([0, 1, 2], 0)),
+        (IndexError, ([0.0, 1.0], 0)),
+    ]
+    for error, origin in cases:
+        base = np.zeros((6, 7), np.float32)
+        with pytest.raises(error):
+            _assigned(base, False, (origin, src))
+        with pytest.raises(error):
+            _composited(base, False, (origin, src))

@@ -189,18 +189,27 @@ ops:
         geometry: broadcast
     attrs: []
 
-  # The base (input 0) with sources written over it, as NumPy's
-  # out[top:top + h, left:left + w, channels] = source for each source in
-  # input order, so a later source overwrites an earlier one. Source i
-  # (input i + 1) has its first pixel at row tops[i] and column lefts[i].
-  # dest_channels lists the dest channel of each channel of source 0, then
-  # of source 1, and so on. When it is absent, each source channel is
-  # written to the dest channel of the same index. A repeated dest channel
-  # takes the later source channel, as in NumPy. dest_frames does the same
-  # for frames: the dest frame of each frame of source 0, then of source 1,
-  # and so on, each source frame to the dest frame of the same index when
-  # it is absent. A source must fit inside the base. A source less
-  # precise than the base is converted to the base's dtype.
+  # The base (input 0) with sources written over it, in input order, so a
+  # later source overwrites an earlier one. Source i is input i + 1.
+  #
+  # Each per-source parameter is a table and a _source list that names the
+  # source of each entry, in the table's order. A source has at most one
+  # entry in a table, and the entries fill it end to end; the order of the
+  # entries does not change which source is drawn over which.
+  #
+  # Each source is placed by exactly one of:
+  # - by_position: entry (top, left), as
+  #   out[top:top + h, left:left + w] = source. The source must fit
+  #   inside the base.
+  # - by_row_col: entry rows then cols, h dest rows and then w dest
+  #   columns, as out[np.ix_(rows, cols)] = source. Every index is inside
+  #   the base, and a later duplicate in one list replaces an earlier one.
+  #
+  # dest_channels: entry the dest channel of each source channel. A source
+  # with no entry writes channel c to dest channel c. A repeated dest
+  # channel takes the later source channel, as in NumPy. dest_frames does
+  # the same for frames. A source less precise than the base is converted
+  # to the base's dtype.
   - name: composite
     needs_frame_index: true
     inputs:
@@ -210,17 +219,35 @@ ops:
     outputs:
       - channels: same
     attrs:
-      - key: tops
+      - key: by_position
         type: i32_array
         count: 0
-      - key: lefts
+        optional: true
+      - key: by_position_source
         type: i32_array
         count: 0
+        optional: true
+      - key: by_row_col
+        type: i32_array
+        count: 0
+        optional: true
+      - key: by_row_col_source
+        type: i32_array
+        count: 0
+        optional: true
       - key: dest_channels
         type: i32_array
         count: 0
         optional: true
+      - key: dest_channels_source
+        type: i32_array
+        count: 0
+        optional: true
       - key: dest_frames
+        type: i32_array
+        count: 0
+        optional: true
+      - key: dest_frames_source
         type: i32_array
         count: 0
         optional: true

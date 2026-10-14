@@ -165,12 +165,26 @@ composite = EngineOp(
     _attr_specs=tuple(json.loads(r'''[
   {
     "count": 0,
-    "key": "tops",
+    "key": "by_position",
+    "optional": true,
     "type": "i32_array"
   },
   {
     "count": 0,
-    "key": "lefts",
+    "key": "by_position_source",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "by_row_col",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "by_row_col_source",
+    "optional": true,
     "type": "i32_array"
   },
   {
@@ -181,7 +195,19 @@ composite = EngineOp(
   },
   {
     "count": 0,
+    "key": "dest_channels_source",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
     "key": "dest_frames",
+    "optional": true,
+    "type": "i32_array"
+  },
+  {
+    "count": 0,
+    "key": "dest_frames_source",
     "optional": true,
     "type": "i32_array"
   }

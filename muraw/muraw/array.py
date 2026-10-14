@@ -1777,6 +1777,47 @@ def meshgrid(
     return broadcast_to(first, shape), broadcast_to(second, shape)
 
 
+def _placement_axis(
+    entry: Any, dest_len: int, src_len: int, axis: str
+) -> Tuple[int, Optional[list[int]]]:
+    """One entry of a composite origin, as ``(start, indices)``. An int is
+    the first of ``src_len`` consecutive dest indices, ``(entry, None)``.
+    A 1D list, ndarray or boolean mask is the dest index of each source
+    index, as a NumPy index of an axis of ``dest_len``; a list of
+    consecutive ascending indices is returned as its start."""
+    if _is_int_index(entry):
+        return operator.index(entry), None
+    if isinstance(entry, Array):
+        raise NotImplementedError(
+            f"composite {axis} index from an mi.Array is not supported; pass a list "
+            "or an ndarray"
+        )
+    if not isinstance(entry, (list, tuple, np.ndarray)) or np.ndim(entry) == 0:
+        raise NotImplementedError(
+            f"composite {axis} origin must be an int, a 1D index list or a boolean "
+            f"mask, got {entry!r}"
+        )
+    indices = np.arange(dest_len)[_index_array(entry)]
+    if indices.ndim != 1:
+        raise NotImplementedError(
+            f"composite {axis} index of shape {indices.shape} is not supported; "
+            "pass a 1D index list"
+        )
+    if len(indices) != src_len:
+        if src_len == 1:
+            raise NotImplementedError(
+                f"composite source of length 1 on the {axis} axis is not repeated over "
+                f"{len(indices)} indices; repeat it first with mi.broadcast_to"
+            )
+        raise ValueError(
+            f"could not broadcast a source of length {src_len} on the {axis} axis "
+            f"into {len(indices)} indices"
+        )
+    if len(indices) and np.array_equal(indices, indices[0] + np.arange(len(indices))):
+        return int(indices[0]), None
+    return 0, [int(index) for index in indices]
+
+
 def composite(base: ArrayLike, *placements: tuple) -> "Array":
     """Write each source onto ``base``. ``base`` is unchanged.
 
@@ -1796,6 +1837,20 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
         ((r, c), src, chans)   packed: out[r:r+h, c:c+w, chans] = src
                                CHW:    out[chans, r:r+h, c:c+w] = src
 
+    Either entry of the origin may instead be a list of dest indices, one
+    per source row or column (packed shown; CHW adds ``:`` first)::
+
+        (([5, 0, 2], [8, 1, 6, 2]), src)   out[np.ix_([5, 0, 2], [8, 1, 6, 2])] = src
+        (([5, 0, 2], c), src)              out[[5, 0, 2], c:c+w] = src
+        ((r, [8, 1, 6, 2]), src)           out[r:r+h, [8, 1, 6, 2]] = src
+
+    Here ``src`` has 3 rows and 4 columns: source row 0 goes to dest row
+    5, row 1 to row 0, row 2 to row 2. A list may also be a boolean mask
+    of the base's rows or columns, with as many ``True`` entries as the
+    source has rows or columns. Negative indices count from the end.
+    Where a list repeats an index, the later source row or column is the
+    one written.
+
     A source has the base's layout. A 2D source is one channel and fits
     either layout. A 3D source of the other layout raises ``ValueError``;
     transpose it first.
@@ -1805,10 +1860,17 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
     base = Array(base)
     base_chw = base.meta.channel_axis == 0
     sources: list[Array] = []
-    tops: list[int] = []
-    lefts: list[int] = []
-    dest_channels: list[int] = []
-    scattered = False
+    # Each table attr, as its entries end to end and the source of each
+    # entry; the engine reads the source list as the attr's ``_source``.
+    tables: dict[str, tuple[list[int], list[int]]] = {
+        key: ([], []) for key in ("by_position", "by_row_col", "dest_channels")
+    }
+
+    def add_entry(key: str, entry: Sequence[int]) -> None:
+        table, entry_sources = tables[key]
+        table.extend(entry)
+        entry_sources.append(len(sources) - 1)
+
     for placement in placements:
         if (
             not isinstance(placement, tuple)
@@ -1846,21 +1908,27 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
             raise ValueError(
                 f"composite origin for shape {base.shape} must be {expected}, got {origin!r}"
             )
+        top, rows = _placement_axis(row, base.meta.height, source.meta.height, "row")
+        left, cols = _placement_axis(col, base.meta.width, source.meta.width, "column")
         if source.meta.size == 0:
             continue
         sources.append(source)
-        tops.append(operator.index(row))
-        lefts.append(operator.index(col))
-        if channels:
-            scattered = True
-            dest_channels.extend(operator.index(channel) for channel in channels[0])
+        if rows is None and cols is None:
+            add_entry("by_position", (top, left))
         else:
-            dest_channels.extend(range(source.meta.channels))
+            if rows is None:
+                rows = list(range(top, top + source.meta.height))
+            if cols is None:
+                cols = list(range(left, left + source.meta.width))
+            add_entry("by_row_col", rows + cols)
+        if channels:
+            add_entry("dest_channels", [operator.index(channel) for channel in channels[0]])
     if placements and not sources:
         return base
-    attrs: dict[str, Any] = {"tops": tops, "lefts": lefts}
-    if scattered:
-        attrs["dest_channels"] = dest_channels
+    attrs: dict[str, Any] = {}
+    for key, (table, entry_sources) in tables.items():
+        if entry_sources:
+            attrs[key], attrs[f"{key}_source"] = table, entry_sources
     return composite_op(base, *sources, **attrs)
 
 
