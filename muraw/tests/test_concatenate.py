@@ -1,4 +1,5 @@
-"""Channel joins: concatenate, stack, and dstack are one composite over a fill.
+"""Joins: concatenate, stack, vstack, hstack, and dstack are one composite
+over a fill, along the channels, the rows, or the columns.
 
 Value checks call the same function with ``mi`` and with ``np``.
 """
@@ -165,14 +166,119 @@ def test_concatenate_of_a_different_number_of_axes_raises():
         _different_ranks(mi)
 
 
-def test_joining_rows_or_columns_raises():
-    images = [mi.zeros((2, 3), np.float32), mi.zeros((2, 3), np.float32)]
-    for axis in (0, -1):
-        with pytest.raises(NotImplementedError, match="mi.stack"):
-            mi.concatenate(images, axis=axis)
-    rgb = [mi.zeros((2, 3, 3), np.float32)] * 2
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        mi.concatenate(rgb, axis=0)
+def _concat(lib, arrays, axis):
+    """``lib.concatenate`` of ``arrays`` along ``axis``."""
+    return lib.concatenate(arrays, axis=axis)
+
+
+def _chw(array):
+    """``array`` as an ``mi`` input with its channels on axis 0."""
+    return Array(array, channel_axis=0)
+
+
+def _i420(lib, y, u, v):
+    """Planar 4:2:0: the Y plane, then the U and V planes, each read as
+    rows of Y's width."""
+    height, width = y.shape
+    rows = height // 4
+    return lib.concatenate([y, lib.reshape(u, (rows, width)), lib.reshape(v, (rows, width))])
+
+
+def _nv12(lib, y, u, v):
+    """The Y plane, then one half-height plane of interleaved U and V."""
+    height, width = y.shape
+    return lib.concatenate([y, lib.reshape(lib.dstack([u, v]), (height // 2, width))])
+
+
+def test_a_row_join_is_a_composite_at_the_running_heights():
+    top = mi.zeros((2, 4, 3), np.float32) * 2
+    bottom = mi.full((3, 4, 3), 1, np.float32)
+    got = _concat(mi, [top, bottom], 0)
+    assert got.shape == (5, 4, 3)
+    assert got.meta.origin == (0, 0)
+    assert got.meta.canvas == (0, 0, 4, 5)
+    assert got._node.op == "composite"
+    base, first, second = got._node.inputs
+    assert base._node.op == "fill"
+    assert first is top
+    assert second is bottom
+    assert "dest_channels" not in got._node.attrs
+    np.testing.assert_array_equal(got._node.attrs["tops"], [0, 2])
+    np.testing.assert_array_equal(got._node.attrs["lefts"], [0, 0])
+
+
+def test_a_column_join_is_a_composite_at_the_running_widths():
+    got = _concat(mi, [mi.zeros((2, 3), np.uint8), mi.zeros((2, 5), np.uint8)], 1)
+    assert got.shape == (2, 8)
+    np.testing.assert_array_equal(got._node.attrs["tops"], [0, 0])
+    np.testing.assert_array_equal(got._node.attrs["lefts"], [0, 3])
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.float32])
+@pytest.mark.parametrize(
+    "shapes, axis",
+    [
+        ([(2, 5), (3, 5)], 0),
+        ([(3, 2), (3, 4)], 1),
+        ([(3, 2), (3, 4)], -1),
+        ([(2, 4, 3), (3, 4, 3)], 0),
+        ([(2, 4, 3), (2, 1, 3)], 1),
+        ([(2, 4, 1), (2, 2, 1), (2, 3, 1)], 1),
+    ],
+)
+def test_rows_and_columns_match_numpy(shapes, axis, dtype):
+    arrays = [_image(shape, dtype) for shape in shapes]
+    np.testing.assert_array_equal(_concat(mi, arrays, axis).realize(), _concat(np, arrays, axis))
+
+
+@pytest.mark.parametrize("shapes, axis", [([(3, 2, 4), (3, 5, 4)], 1), ([(3, 2, 4), (3, 2, 1)], -1)])
+def test_rows_and_columns_of_chw_match_numpy(shapes, axis):
+    arrays = [_image(shape, np.uint8) for shape in shapes]
+    got = _concat(mi, [_chw(array) for array in arrays], axis)
+    assert got.meta.channel_axis == 0
+    np.testing.assert_array_equal(got.realize(), _concat(np, arrays, axis))
+
+
+def test_a_1d_concatenate_matches_numpy():
+    arrays = [_image((4,), np.uint8), _image((3,), np.uint8)]
+    np.testing.assert_array_equal(_concat(mi, arrays, 0).realize(), _concat(np, arrays, 0))
+
+
+def test_a_mixed_dtype_row_join_matches_numpy():
+    arrays = [_image((2, 5), np.float32), _image((1, 5), np.uint8)]
+    got = _concat(mi, arrays, 0)
+    assert got.dtype == np.float32
+    np.testing.assert_array_equal(got.realize(), _concat(np, arrays, 0))
+
+
+def test_a_lazy_row_join_matches_numpy():
+    image = _image((2, 3), np.float32)
+    lazy = mi.Array(image) + 1
+    np.testing.assert_array_equal(
+        _concat(mi, [lazy, lazy], 0).realize(), _concat(np, [image + 1, image + 1], 0)
+    )
+
+
+def test_a_mismatch_on_another_axis_raises():
+    arrays = [_image((2, 3), np.uint8), _image((2, 4), np.uint8)]
+    with pytest.raises(ValueError):
+        _concat(np, arrays, 0)
+    with pytest.raises(ValueError, match="every axis but axis 0"):
+        _concat(mi, arrays, 0)
+
+
+def test_inputs_with_their_channels_on_different_axes_raise():
+    image = _image((3, 2, 4), np.uint8)
+    with pytest.raises(NotImplementedError, match="moveaxis"):
+        mi.concatenate([_chw(image), image], axis=1)
+
+
+def test_i420_and_nv12_assemble_in_one_graph():
+    y = _image((8, 12), np.uint8)
+    u = _image((4, 6), np.uint8)
+    v = _image((4, 6), np.uint8)
+    np.testing.assert_array_equal(_i420(mi, y, u, v).realize(), _i420(np, y, u, v))
+    np.testing.assert_array_equal(_nv12(mi, y, u, v).realize(), _nv12(np, y, u, v))
 
 
 def test_stack_along_axis_0_matches_numpy():
@@ -197,6 +303,31 @@ def test_stack_restacks_rgb_as_bgr():
     np.testing.assert_array_equal(_stack_bgr(mi).realize(), _stack_bgr(np))
 
 
+@pytest.mark.parametrize("axis", [0, 1, -1])
+def test_a_stack_of_1d_arrays_matches_numpy(axis):
+    rows = [_image((4,), np.uint8) for _ in range(3)]
+    np.testing.assert_array_equal(mi.stack(rows, axis=axis).realize(), np.stack(rows, axis=axis))
+
+
+def test_a_stack_of_different_shapes_raises():
+    rows = [_image((3,), np.uint8), _image((4,), np.uint8)]
+    with pytest.raises(ValueError):
+        np.stack(rows)
+    with pytest.raises(ValueError, match="same shape"):
+        mi.stack(rows)
+
+
+def test_vstack_and_hstack_match_numpy():
+    row = _image((4,), np.uint8)
+    rows = _image((2, 4), np.uint8)
+    np.testing.assert_array_equal(mi.vstack([row, rows]).realize(), np.vstack([row, rows]))
+    np.testing.assert_array_equal(mi.hstack([row, row]).realize(), np.hstack([row, row]))
+    left, right = _image((2, 3), np.uint8), _image((2, 4), np.uint8)
+    np.testing.assert_array_equal(mi.hstack([left, right]).realize(), np.hstack([left, right]))
+    rgb = [_image((2, 3, 3), np.uint8), _image((1, 3, 3), np.uint8)]
+    np.testing.assert_array_equal(mi.vstack(rgb).realize(), np.vstack(rgb))
+
+
 def test_stack_rejects_an_rgb_input():
     with pytest.raises(NotImplementedError, match=r"\(H, W\)"):
         mi.stack([mi.zeros((2, 3, 3), np.float32)])
@@ -210,16 +341,21 @@ def test_dstack_promotes_a_row_and_joins_packed_channels():
     np.testing.assert_array_equal(_dstack(mi, packed).realize(), _dstack(np, packed))
 
 
-def test_chw_inputs_along_the_last_axis_raise():
-    chw = Array(mi.zeros((3, 2, 4), np.float32).realize(), channel_axis=0)
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        mi.concatenate([chw, chw], axis=-1)
-    with pytest.raises(NotImplementedError, match="rows or columns"):
-        mi.dstack([chw])
+def test_dstack_of_chw_inputs_joins_their_columns():
+    arrays = [_image((3, 2, 4), np.uint8), _image((3, 2, 1), np.uint8)]
+    got = mi.dstack([_chw(array) for array in arrays])
+    assert got.meta.channel_axis == 0
+    np.testing.assert_array_equal(got.realize(), np.dstack(arrays))
+
+
+def test_dstack_of_a_chw_input_and_a_2d_input_names_moveaxis():
+    chw = _chw(_image((3, 2, 4), np.uint8))
+    with pytest.raises(NotImplementedError, match="moveaxis"):
+        mi.dstack([chw, _image((3, 2), np.uint8)])
 
 
 def test_an_empty_sequence_raises():
-    for name in ("concatenate", "stack", "dstack"):
+    for name in ("concatenate", "stack", "vstack", "hstack", "dstack"):
         for lib in (np, mi):
             with pytest.raises(ValueError, match="at least one"):
                 getattr(lib, name)([])

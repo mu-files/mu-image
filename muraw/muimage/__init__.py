@@ -48,6 +48,7 @@ from muraw.array import (
     composite,
     concatenate,
     dstack,
+    hstack,
     reshape,
     rot90,
     squeeze,
@@ -56,6 +57,7 @@ from muraw.array import (
     swapaxes,
     tile,
     transpose,
+    vstack,
     zeros,
     zeros_like,
 )
@@ -88,6 +90,7 @@ __all__ = [
     "composite",
     "concatenate",
     "dstack",
+    "hstack",
     "reshape",
     "rot90",
     "squeeze",
@@ -96,6 +99,7 @@ __all__ = [
     "swapaxes",
     "tile",
     "transpose",
+    "vstack",
     "zeros",
     "zeros_like",
 ]

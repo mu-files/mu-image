@@ -1593,20 +1593,60 @@ def _join_channels(name: str, images: Sequence["Array"], channel_axis: int) -> "
     return composite(base, *placements)
 
 
-def concatenate(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
-    """Join 3-axis arrays along their channel axis, as ``np.concatenate``.
+def _join_rows_or_columns(name: str, images: Sequence["Array"], axis: int) -> "Array":
+    """One ``fill`` of the result, with each image written after the images
+    before it along ``axis``, the rows or the columns axis of every image.
 
-    ``axis`` is the channel axis of every input: ``-1`` for ``(H, W, C)``
-    and ``0``, NumPy's default, for ``(C, H, W)``. Joining rows or columns is not supported.
-    The inputs share a height and a width. The result is its own array at
-    origin ``(0, 0)``, with a canvas the size of the result.
+    The images have one layout and match on every other axis, as in NumPy.
+    A 1D image's one axis is its columns. Dtype, origin, and canvas are as
+    in ``_join_channels``.
+    """
+    first = images[0].meta
+    for image in images[1:]:
+        if any(
+            size != first_size
+            for index, (size, first_size) in enumerate(zip(image.shape, first.shape))
+            if index != axis
+        ):
+            shapes = [tuple(image.shape) for image in images]
+            raise ValueError(
+                f"{name} inputs must match on every axis but axis {axis}, got shapes {shapes}"
+            )
+    along_rows = not first.is_1d and axis == first.spatial_axes[0]
+    dtype = supported_dtype(np.result_type(*(image.dtype for image in images)))
+    placed = [image.astype(dtype) for image in images]
+    shape = list(first.shape)
+    shape[axis] = sum(image.shape[axis] for image in placed)
+    base = _emit_fill(_meta_from_shape(tuple(shape), dtype, first.channel_axis), 0)
+    offset = 0
+    placements = []
+    for image in placed:
+        if first.is_1d:
+            origin: Tuple[int, ...] = (offset,)
+        elif along_rows:
+            origin = (offset, 0)
+        else:
+            origin = (0, offset)
+        placements.append((origin, image))
+        offset += image.shape[axis]
+    return composite(base, *placements)
+
+
+def concatenate(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
+    """Join arrays along an existing axis, as ``np.concatenate``.
+
+    The inputs have the same number of axes and match on every axis but
+    ``axis``, which may be the channel axis, the rows, or the columns. A
+    3-axis input has the same channel axis as the others. The result is
+    its own array at origin ``(0, 0)``, with a canvas the size of the
+    result.
 
     The dtype is NumPy's promotion. uint8 ``255`` joined with float32 is
     ``255.0``.
     """
     images = _image_sequence("concatenate", arrays)
+    shapes = [tuple(image.shape) for image in images]
     if len({image.ndim for image in images}) != 1:
-        shapes = [tuple(image.shape) for image in images]
         raise ValueError(
             f"concatenate inputs must have the same number of axes, got shapes {shapes}"
         )
@@ -1615,49 +1655,80 @@ def concatenate(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
         raise NotImplementedError(
             f"concatenate of a 4-axis stack is not supported (shape {images[0].shape})"
         )
+    if len({image.meta.channel_axis for image in images}) != 1:
+        raise NotImplementedError(
+            f"concatenate of arrays with their channels on different axes is not "
+            f"supported, got shapes {shapes}; give them one layout with mi.moveaxis"
+        )
     resolved = normalize_axis_index(axis, ndim, "concatenate axis")
-    for image in images:
-        if image.meta.channel_axis != resolved:
-            hint = "; join (H, W) arrays as channels with mi.stack" if ndim < 3 else ""
-            raise NotImplementedError(
-                f"concatenate along axis {axis} of shape {image.shape} joins its rows "
-                f"or columns, which is not supported{hint}"
-            )
-    return _join_channels("concatenate", images, resolved)
+    if resolved == images[0].meta.channel_axis:
+        return _join_channels("concatenate", images, resolved)
+    return _join_rows_or_columns("concatenate", images, resolved)
 
 
 def stack(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
-    """Stack ``(H, W)`` arrays along a new axis, as ``np.stack``.
+    """Stack 1D or ``(H, W)`` arrays along a new axis, as ``np.stack``.
 
-    ``K`` arrays give ``(K, H, W)`` for ``axis`` ``0``, NumPy's default,
-    and ``(H, W, K)`` for ``axis`` ``-1``. The inputs share a shape. Dtype, origin, and
-    canvas match ``concatenate``.
+    ``K`` arrays of shape ``(N,)`` give ``(K, N)`` for ``axis`` ``0``,
+    NumPy's default, and ``(N, K)`` for ``axis`` ``1``. ``K`` arrays of
+    shape ``(H, W)`` give ``(K, H, W)`` for ``axis`` ``0`` and
+    ``(H, W, K)`` for ``axis`` ``-1``. The inputs share a shape. Dtype,
+    origin, and canvas match ``concatenate``.
     """
     images = _image_sequence("stack", arrays)
-    for image in images:
-        if image.ndim != 2:
-            raise NotImplementedError(
-                f"stack of shape {image.shape} is not supported; only (H, W) "
-                "arrays can be stacked"
-            )
+    if len({tuple(image.shape) for image in images}) != 1:
+        shapes = [tuple(image.shape) for image in images]
+        raise ValueError(f"stack inputs must have the same shape, got shapes {shapes}")
+    ndim = images[0].ndim
+    if ndim == 1:
+        resolved = normalize_axis_index(axis, 2, "stack axis")
+        new_shape = (1, -1) if resolved == 0 else (-1, 1)
+        return _join_rows_or_columns(
+            "stack", [image.reshape(new_shape) for image in images], resolved
+        )
+    if ndim != 2:
+        raise NotImplementedError(
+            f"stack of shape {images[0].shape} is not supported; only 1D and (H, W) "
+            "arrays can be stacked"
+        )
     resolved = normalize_axis_index(axis, 3, "stack axis")
     return _join_channels("stack", images, resolved)
+
+
+def vstack(arrays: Sequence[ArrayLike]) -> "Array":
+    """Join arrays along axis 0, as ``np.vstack``. A ``(N,)`` input is the
+    row ``(1, N)``. Dtype, origin, and canvas match ``concatenate``."""
+    images = _image_sequence("vstack", arrays)
+    rows = [image.reshape(1, -1) if image.ndim == 1 else image for image in images]
+    return concatenate(rows, axis=0)
+
+
+def hstack(arrays: Sequence[ArrayLike]) -> "Array":
+    """Join arrays along axis 1, as ``np.hstack``, or along axis 0 when the
+    first input is 1D. Dtype, origin, and canvas match ``concatenate``."""
+    images = _image_sequence("hstack", arrays)
+    return concatenate(images, axis=0 if images[0].ndim == 1 else 1)
 
 
 def dstack(arrays: Sequence[ArrayLike]) -> "Array":
     """Join arrays along axis 2, as ``np.dstack``.
 
-    A ``(N,)`` input is one channel of a one-row image, a ``(H, W)`` input
-    is one channel, and a 3-axis input must be ``(H, W, C)``. Dtype,
-    origin, and canvas match ``concatenate``.
+    A ``(N,)`` input is one channel of a one-row image and a ``(H, W)``
+    input is one channel. When every input has 3 axes, this is
+    ``concatenate`` along axis 2: the channels of ``(H, W, C)`` inputs,
+    the columns of ``(C, H, W)`` inputs. Dtype, origin, and canvas match
+    ``concatenate``.
     """
     images = _image_sequence("dstack", arrays)
+    if all(image.ndim == 3 for image in images):
+        return concatenate(images, axis=2)
     for image in images:
         if image.ndim >= 3 and image.meta.channel_axis != 2:
             raise NotImplementedError(
                 f"dstack of shape {image.shape} with channel_axis "
-                f"{image.meta.channel_axis} joins its rows or columns, which is "
-                "not supported"
+                f"{image.meta.channel_axis} and a 1D or 2D input is not supported; "
+                "a 1D or 2D input is joined as one channel, so put the channels "
+                "last with mi.moveaxis"
             )
     return _join_channels("dstack", images, 2)
 
