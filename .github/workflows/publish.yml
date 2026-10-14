@@ -48,9 +48,8 @@ jobs:
           - name: windows
             os: windows-latest
             cibw_build: "cp312-win_amd64 cp313-win_amd64"
-          - name: windows-arm64
-            os: windows-11-arm
-            cibw_build: "cp312-win_arm64 cp313-win_arm64"
+          # win_arm64 waits on opencv-python-headless publishing that wheel.
+          # The engine binary is in the sdist; revisit when opencv is optional.
     steps:
       - uses: actions/checkout@v4
 
@@ -102,10 +101,6 @@ jobs:
             os: windows-latest
             artifact: wheels-windows
             extras: "[all]"
-          - name: windows-arm64
-            os: windows-11-arm
-            artifact: wheels-windows-arm64
-            extras: "[all]"
     steps:
       - uses: actions/checkout@v4
 
@@ -155,11 +150,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: wheels-windows
-          path: dist
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: wheels-windows-arm64
           path: dist
 
       - name: Publish to PyPI
