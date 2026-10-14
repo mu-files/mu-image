@@ -77,11 +77,12 @@ packages = [
     "muimage",
 ]
 # Host-only abi3 CoreEngine extension selection is in setup.py (package_data).
-# MANIFEST.in still ships all engines/core/_binaries/* in the sdist.
+# A "_binaries/*" glob here would put every platform's .pyd in every Windows
+# wheel, and delvewheel then rejects the other arch. MANIFEST.in still ships
+# all engines/core/_binaries/* in the sdist.
 
 [tool.setuptools.package-data]
 "muraw.engines" = ["catalog/ops.yaml"]
-"muraw.engines.core" = ["_binaries/*"]
 
 
 [tool.pytest.ini_options]
