@@ -16,6 +16,14 @@ from conftest import compute_diff_stats
 # Test file path
 TEST_DNG = Path(__file__).parent / "dngfiles" / "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng"
 
+# Center window for dtype and agreement checks. Even, so an RGGB CFA stays
+# RGGB. Those checks do not need the full 4024x6048 frame.
+_CONSISTENCY_SIZE = 512
+
+# Bayer-phase window. A flat patch demosaics to the same color for every
+# phase, so the window is the even-grid block with the largest sample std.
+_PATTERN_SIZE = 128
+
 
 def is_rcd_available():
     """Check if RCD demosaicing is available (GPL-licensed, optional)."""
@@ -41,15 +49,51 @@ def get_available_algorithms():
     return algorithms
 
 
-@pytest.fixture
-def cfa_data():
-    """Load CFA data from test DNG file."""
+def _center_window(cfa, size):
+    """Even-aligned center crop, so the Bayer phase of ``cfa`` is unchanged.
+
+    The window starts on an even row and column, so its top-left pixel is
+    the same Bayer site as ``cfa``'s. The slice is a hard crop: pixels past
+    the window are not part of it.
+    """
+    image = Array(cfa)
+    height, width = image.shape
+    top = ((height - size) // 2) & ~1
+    left = ((width - size) // 2) & ~1
+    return image[top : top + size, left : left + size]
+
+
+def _textured_window(cfa, size):
+    """Even-grid ``size`` block with the largest sample std."""
+    best_std = -1.0
+    best_origin = (0, 0)
+    height, width = cfa.shape
+    for y0 in range(0, height - size + 1, size):
+        for x0 in range(0, width - size + 1, size):
+            std = float(cfa[y0:y0 + size, x0:x0 + size].std())
+            if std > best_std:
+                best_std = std
+                best_origin = (y0, x0)
+    y0, x0 = best_origin
+    return np.ascontiguousarray(cfa[y0:y0 + size, x0:x0 + size])
+
+
+@pytest.fixture(scope="module")
+def cfa_full():
+    """Load the full CFA from the test DNG file."""
     if not TEST_DNG.exists():
         pytest.skip(f"Test file not found: {TEST_DNG}")
-    
+
     with DngFile(TEST_DNG) as dng:
         cfa_t, cfa_pattern = dng.get_cfa()
         return cfa_t.realize(), cfa_pattern
+
+
+@pytest.fixture(scope="module")
+def cfa_data(cfa_full):
+    """Center view of the CFA for the dtype and agreement checks."""
+    cfa, cfa_pattern = cfa_full
+    return _center_window(cfa, _CONSISTENCY_SIZE), cfa_pattern
 
 
 def test_demosaic_uint8_consistency(cfa_data):
@@ -208,40 +252,25 @@ def test_demosaic_invalid_pattern(cfa_data):
         demosaic(Array(cfa), "INVALID_PATTERN", algorithm=DemosaicAlgorithm.BILINEAR).realize()
 
 
-def test_demosaic_cfa_pattern_consistency(cfa_data):
-    """Test that demosaic works correctly for all four CFA patterns.
-    
+def _check_cfa_patterns(cfa_u16, algorithms):
+    """Demosaic each Bayer phase and compare it to the same crop of RGGB.
+
     The four Bayer patterns are:
     RGGB:  RG    GRBG:  GR    GBRG:  GB    BGGR:  BG
            GB           BG           RG           GR
-    
-    We can create the other three patterns from RGGB by cropping by (x,y):
-    - GRBG: crop by (1,0) - shift left by 1 column
-    - GBRG: crop by (0,1) - shift up by 1 row
-    - BGGR: crop by (1,1) - shift left 1 column and up 1 row
-    
-    For each pattern, we demosaic the cropped CFA and compare against the
-    corresponding crop of the original demosaic result.
+
+    The other three come from RGGB by cropping:
+    - GRBG: crop by (1, 0), one column left
+    - GBRG: crop by (0, 1), one row up
+    - BGGR: crop by (1, 1), one column left and one row up
     """
-    cfa, cfa_pattern = cfa_data
-    
-    # Ensure we start with RGGB pattern
-    assert cfa_pattern == "RGGB", f"Test expects RGGB pattern, got {cfa_pattern}"
-    
-    # Convert to uint16 for testing
-    cfa_u16 = Array(cfa).convert_type("uint16")
-    
-    # Pattern transformations: (crop_x, crop_y) -> new_pattern
     pattern_crops = {
-        "RGGB": (0, 0),  # Original, no crop
-        "BGGR": (1, 1),  # Shift left 1 column and up 1 row
-        "GBRG": (0, 1),  # Shift up by 1 row
-        "GRBG": (1, 0),  # Shift left by 1 column
+        "RGGB": (0, 0),
+        "BGGR": (1, 1),
+        "GBRG": (0, 1),
+        "GRBG": (1, 0),
     }
-    
-    # Test each algorithm for the reference
-    algorithms = [DemosaicAlgorithm.BILINEAR] + get_available_algorithms()
-    
+
     for ref_algorithm in algorithms:
         # Demosaic the original RGGB pattern with reference algorithm
         reference_rgb = demosaic(cfa_u16, "RGGB", algorithm=ref_algorithm).realize()
@@ -328,6 +357,25 @@ def test_demosaic_cfa_pattern_consistency(cfa_data):
                         # Mean difference should be < 96 (out of 65535, ~0.15%)
                         assert mean_interior_diff < 96, \
                             f"{ref_algorithm}->{test_algorithm} {pattern_name}: cross-algorithm mean diff {mean_interior_diff:.2f} > 100"
+
+
+def test_demosaic_cfa_pattern_consistency(cfa_full):
+    """A Bayer phase shift of the CFA matches the same shift of the demosaic.
+
+    Algorithms that reproduce the shift exactly, and every pair of them, run
+    on the highest-variance 128 window. RCD's misses are sparse and its mean
+    bound is over the whole frame, so RCD is compared only with itself, on
+    the full CFA.
+    """
+    cfa, cfa_pattern = cfa_full
+    assert cfa_pattern == "RGGB", f"Test expects RGGB pattern, got {cfa_pattern}"
+
+    algorithms = [DemosaicAlgorithm.BILINEAR] + get_available_algorithms()
+    exact = [algorithm for algorithm in algorithms if algorithm != DemosaicAlgorithm.RCD]
+    textured = _textured_window(cfa, _PATTERN_SIZE)
+    _check_cfa_patterns(Array(textured).convert_type("uint16"), exact)
+    if DemosaicAlgorithm.RCD in algorithms:
+        _check_cfa_patterns(Array(cfa).convert_type("uint16"), [DemosaicAlgorithm.RCD])
 
 
 @pytest.mark.parametrize(
