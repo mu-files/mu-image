@@ -109,6 +109,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                                       rendering_params={'highlight_preserving_exposure': False})
                 if decoded is None:
                     pytest.fail(f"page.render_raw returned None for IFD {i}")
+                decoded = np.asarray(decoded)
                 tifffile.imwrite(str(muraw_tif), decoded)
                 print(f"    -> {muraw_tif.name} ({decoded.shape})")
             except Exception as e:
@@ -150,6 +151,7 @@ def test_subifd_roundtrip(dng_path: Path, output_dir: Path):
                     roundtrip_decoded = roundtrip_dng_file.render_raw(output_dtype=np.uint16, strict=False, use_xmp=False,
                                                                   rendering_params={'highlight_preserving_exposure': False})
                 if roundtrip_decoded is not None:
+                    roundtrip_decoded = np.asarray(roundtrip_decoded)
                     tifffile.imwrite(str(roundtrip_muraw_tif), roundtrip_decoded)
                     print(f"    -> {roundtrip_muraw_tif.name} ({roundtrip_decoded.shape})")
                 else:

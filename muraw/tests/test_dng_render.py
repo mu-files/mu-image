@@ -155,6 +155,7 @@ def test_muraw_vs_photoshop(
         )
 
     assert result is not None, f"MURAW rendering failed for {file_stem}"
+    result = np.asarray(result)
 
     # Save rendered output
     tifffile.imwrite(str(output_dir / f"{file_stem}_muraw.tif"), result)
@@ -216,6 +217,7 @@ def test_coreimage_vs_photoshop(
     )
 
     assert result is not None, f"Core Image rendering failed for {file_stem}"
+    result = np.asarray(result)
 
     # Save rendered output
     tifffile.imwrite(str(output_dir / f"{file_stem}_coreimage.tif"), result)

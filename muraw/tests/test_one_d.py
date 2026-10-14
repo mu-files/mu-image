@@ -8,7 +8,7 @@ import pytest
 import muimage as mi
 from muraw.array import Array, fliplr, flipud, rot90
 from muraw.engines.ops import OPS_BY_NAME
-from muraw.raw_render import cfa_demosaic_eager
+from muraw.raw_render import _demosaic_vng_rcd_opencv
 
 V = np.arange(8, dtype=np.float32)
 
@@ -148,9 +148,9 @@ def test_requires_2d_catalog_ops_raise(name):
         OPS_BY_NAME[name](Array(V))
 
 
-def test_cfa_demosaic_eager_rejects_1d():
+def test_demosaic_vng_rcd_opencv_rejects_1d():
     with pytest.raises(ValueError, match="expected 2D CFA"):
-        cfa_demosaic_eager(V, "RGGB")
+        _demosaic_vng_rcd_opencv(V, "RGGB")
 
 
 def test_rgb_ops_reject_1d_by_channel_count():

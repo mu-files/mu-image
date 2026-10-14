@@ -927,16 +927,16 @@ def test_realize_in_the_middle_matches_one_realize():
     np.testing.assert_array_equal(split, whole)
 
 
-def test_cfa_demosaic_eager_matches_demosaic():
-    from muraw.raw_render import cfa_demosaic_eager
+def test_demosaic_vng_rcd_opencv_matches_demosaic():
+    from muraw.raw_render import _demosaic_vng_rcd_opencv
 
     rng = np.random.default_rng(4)
     cfa = rng.integers(0, 1000, size=(16, 16), dtype=np.uint16)
-    out = cfa_demosaic_eager(cfa, "RGGB", "VNG")
+    out = _demosaic_vng_rcd_opencv(cfa, "RGGB", "VNG")
     ref = demosaic(Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.VNG).realize()
     np.testing.assert_array_equal(out, ref)
 
-    out_ea = cfa_demosaic_eager(cfa, "RGGB", "OPENCV_EA")
+    out_ea = _demosaic_vng_rcd_opencv(cfa, "RGGB", "OPENCV_EA")
     ref_ea = demosaic(
         Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.OPENCV_EA
     ).realize()

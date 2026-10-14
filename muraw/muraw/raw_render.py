@@ -13,7 +13,7 @@ from numpy.typing import DTypeLike
 
 # Package imports
 import muimage as mi
-from .array import Array, supported_dtype
+from .array import Array, ArrayLike, supported_dtype
 from .common import PerfTimer, enum_display_name
 from .splines import CubicSpline, ColorSpace, ColorSpaceLUT, LUT
 from .deps import cv2_proxy as cv2
@@ -384,12 +384,12 @@ def compute_xmp_crop_bounds(
     return top, left, bottom, right
 
 
-def cfa_demosaic_eager(
-    arr: np.ndarray,
+def _demosaic_vng_rcd_opencv(
+    cfa: ArrayLike,
     cfa_pattern: str,
     algorithm: str = "VNG",
 ) -> np.ndarray:
-    """Demosaic a CFA ndarray with ``VNG``, ``RCD`` or ``OPENCV_EA``.
+    """Demosaic a CFA with ``VNG``, ``RCD`` or ``OPENCV_EA``.
 
     ``VNG`` needs uint16 input and ``RCD`` float32; ``OPENCV_EA`` needs uint8
     or uint16. The caller (``demosaic``) converts to them.
@@ -399,14 +399,17 @@ def cfa_demosaic_eager(
     """
     if algorithm in ("BILINEAR", "EA", "EA_FAST"):
         raise ValueError(
-            f"cfa_demosaic_eager does not run {algorithm}; "
+            f"_demosaic_vng_rcd_opencv does not run {algorithm}; "
             f"use mi.cfa_demosaic(algorithm={algorithm.lower()!r})"
         )
 
+    arr = np.asarray(cfa)
     if arr.ndim == 3 and arr.shape[2] == 1:
         arr = arr[:, :, 0]
     if arr.ndim != 2:
-        raise ValueError(f"cfa_demosaic_eager: expected 2D CFA, got shape {arr.shape}")
+        raise ValueError(
+            f"_demosaic_vng_rcd_opencv: expected 2D CFA, got shape {arr.shape}"
+        )
 
     if algorithm == "RCD":
         try:
@@ -419,14 +422,18 @@ def cfa_demosaic_eager(
             ) from e
         if arr.dtype != np.float32:
             raise ValueError(f"RCD kernel requires float32 CFA, got {arr.dtype}")
+        demosaic_step = PerfTimer.step("rcd_demosaic")
         out = _rcd.rcd_demosaic(arr, cfa_pattern)
+        demosaic_step.close()
 
     elif algorithm == "VNG":
         from . import _vng
 
         if arr.dtype != np.uint16:
             raise ValueError(f"VNG kernel requires uint16 CFA, got {arr.dtype}")
+        demosaic_step = PerfTimer.step("vng_demosaic")
         out = _vng.vng_demosaic(arr, cfa_pattern)
+        demosaic_step.close()
 
     elif algorithm == "OPENCV_EA":
         bayer_map_bgr = {
@@ -441,11 +448,13 @@ def cfa_demosaic_eager(
             )
         if cfa_pattern not in bayer_map_bgr:
             raise ValueError(f"Unsupported CFA pattern for OPENCV_EA: {cfa_pattern}")
+        demosaic_step = PerfTimer.step("opencv_ea_demosaic")
         out = cv2.demosaicing(arr, bayer_map_bgr[cfa_pattern])
+        demosaic_step.close()
 
     else:
         raise ValueError(
-            f"cfa_demosaic_eager: unknown algorithm {algorithm!r}; "
+            f"_demosaic_vng_rcd_opencv: unknown algorithm {algorithm!r}; "
             "expected one of ['VNG', 'RCD', 'OPENCV_EA']"
         )
 
@@ -524,10 +533,7 @@ def demosaic(
     else:
         raise ValueError(f"Unsupported demosaic algorithm: {algorithm}")
 
-    cfa = work.realize()
-    demosaic_step = PerfTimer.step("cfa_demosaic_eager")
-    rgb = Array(cfa_demosaic_eager(cfa, cfa_pattern, algorithm.name))
-    demosaic_step.close()
+    rgb = Array(_demosaic_vng_rcd_opencv(work, cfa_pattern, algorithm.name))
     return rgb.convert_type(out_dtype, clip_max=clip_max)
 
 
@@ -2435,14 +2441,16 @@ def _compute_camera_white(color_matrix: np.ndarray, white_xy: tuple[float, float
 
 
 def rgb_channel_luts(
-    arr: np.ndarray,
+    rgb: ArrayLike,
     lut_r: np.ndarray,
     lut_g: np.ndarray,
     lut_b: np.ndarray,
 ) -> np.ndarray:
     """Apply independent 1D LUTs to R, G, B planes (float [0, 1] domain)."""
+    arr = np.asarray(rgb)
     if arr.ndim != 3 or arr.shape[2] != 3:
         raise ValueError(f"rgb_channel_luts: expected HxWx3, got {arr.shape}")
+    luts_step = PerfTimer.step("rgb_channel_luts")
     out = np.empty_like(arr, dtype=np.float32)
     for i, lut in enumerate((lut_r, lut_g, lut_b)):
         lut = np.asarray(lut, dtype=np.float32).reshape(-1)
@@ -2450,11 +2458,12 @@ def rgb_channel_luts(
         out[:, :, i] = np.interp(
             arr[:, :, i].astype(np.float32, copy=False), x, lut
         )
+    luts_step.close()
     return out
 
 
 def radial_distortion(
-    arr: np.ndarray,
+    image: ArrayLike,
     k1: float,
     k2: float,
     k3: float,
@@ -2468,6 +2477,8 @@ def radial_distortion(
     if focal_length_mm is None or float(focal_length_mm) <= 0.0:
         raise ValueError("focal_length_mm is required for radial distortion correction")
 
+    arr = np.asarray(image)
+    distortion_step = PerfTimer.step("radial_distortion")
     height, width = arr.shape[:2]
     cx = float(center_x) * width
     cy = float(center_y) * height
@@ -2493,7 +2504,7 @@ def radial_distortion(
     x_distorted = cx + scale * (x_coords - cx) * distortion_factor
     y_distorted = cy + scale * (y_coords - cy) * distortion_factor
 
-    return cv2.remap(
+    out = cv2.remap(
         arr,
         x_distorted,
         y_distorted,
@@ -2501,6 +2512,8 @@ def radial_distortion(
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
     )
+    distortion_step.close()
+    return out
 
 
 def apply_post_rendering_operations(
@@ -2556,17 +2569,14 @@ def apply_post_rendering_operations(
 
     if has_per_channel:
         identity = np.linspace(0.0, 1.0, 4096, dtype=np.float32)
-        rgb_pixels = rgb_output.realize()
-        luts_step = PerfTimer.step("rgb_channel_luts")
         rgb_output = Array(
             rgb_channel_luts(
-                rgb_pixels,
+                rgb_output,
                 lut_r=channel_luts[0] if channel_luts[0] is not None else identity,
                 lut_g=channel_luts[1] if channel_luts[1] is not None else identity,
                 lut_b=channel_luts[2] if channel_luts[2] is not None else identity,
             )
         )
-        luts_step.close()
 
     if "crlcp:PerspectiveModel" in rendering_params:
         perspective_model = rendering_params["crlcp:PerspectiveModel"]
@@ -2614,11 +2624,9 @@ def apply_post_rendering_operations(
                     f"scale_factor: {scale_factor}, center: ({center_x}, {center_y}), "
                     f"focal_length: {focal_length_mm}mm"
                 )
-                rgb_pixels = rgb_output.realize()
-                distortion_step = PerfTimer.step("radial_distortion")
                 rgb_output = Array(
                     radial_distortion(
-                        rgb_pixels,
+                        rgb_output,
                         k1=radial_params["k1"],
                         k2=radial_params["k2"],
                         k3=radial_params["k3"],
@@ -2629,7 +2637,6 @@ def apply_post_rendering_operations(
                         sensor_width_mm=sensor_width_mm,
                     )
                 )
-                distortion_step.close()
                 logger.debug("Applied radial distortion correction")
 
     h, w = rgb_output.meta.height, rgb_output.meta.width
