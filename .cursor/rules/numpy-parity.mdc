@@ -1,0 +1,37 @@
+---
+description: Every mi call either gives NumPy's result or raises NotImplementedError
+alwaysApply: true
+---
+
+# NumPy parity
+
+A call that NumPy accepts gives NumPy's result in `mi`, or it raises
+`NotImplementedError`. A call that NumPy rejects raises the same
+exception type in `mi`. Never a silently different result, and never a
+different exception.
+
+- A limit of `mi` (no empty arrays, at most 4 axes, a key form not built
+  yet) is `NotImplementedError`, even where a `ValueError` or
+  `IndexError` reads more naturally. The message names the limit and,
+  where there is one, the call that works instead.
+- Validation NumPy also does is left to NumPy or matches its exception
+  type. Where the shapes are small, call NumPy on the arguments (for
+  example `np.take(np.arange(n), indices, mode=mode)`, or an index of a
+  zero-stride `np.broadcast_to` stand-in) so the error is NumPy's own.
+- Do not reject an argument NumPy accepts with a hand-written type check;
+  NumPy accepts float counts in `np.repeat` and float indices in
+  `np.take`.
+
+```python
+# ❌ BAD: NumPy returns an empty array; mi raises a different exception
+raise ValueError("rows: slice results in an empty dimension")
+
+# ✅ GOOD: the same limit, as a limit
+raise NotImplementedError(
+    "rows: slice results in an empty dimension; mi.Array holds no empty arrays"
+)
+```
+
+Where the rules interact (indexing, reshape, broadcasting, joins), check
+the invariant with generated inputs against NumPy, as
+`muraw/tests/test_index_against_numpy.py` does for indexing.
