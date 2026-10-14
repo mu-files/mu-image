@@ -182,7 +182,9 @@ def _i420(lib, y, u, v):
     rows of Y's width."""
     height, width = y.shape
     rows = height // 4
-    return lib.concatenate([y, lib.reshape(u, (rows, width)), lib.reshape(v, (rows, width))])
+    return lib.concatenate(
+        [y, lib.reshape(u, (rows, width)), lib.reshape(v, (rows, width))]
+    )
 
 
 def _nv12(lib, y, u, v):
@@ -227,10 +229,14 @@ def test_a_column_join_is_a_composite_at_the_running_widths():
 )
 def test_rows_and_columns_match_numpy(shapes, axis, dtype):
     arrays = [_image(shape, dtype) for shape in shapes]
-    np.testing.assert_array_equal(_concat(mi, arrays, axis).realize(), _concat(np, arrays, axis))
+    np.testing.assert_array_equal(
+        _concat(mi, arrays, axis).realize(), _concat(np, arrays, axis)
+    )
 
 
-@pytest.mark.parametrize("shapes, axis", [([(3, 2, 4), (3, 5, 4)], 1), ([(3, 2, 4), (3, 2, 1)], -1)])
+@pytest.mark.parametrize(
+    "shapes, axis", [([(3, 2, 4), (3, 5, 4)], 1), ([(3, 2, 4), (3, 2, 1)], -1)]
+)
 def test_rows_and_columns_of_chw_match_numpy(shapes, axis):
     arrays = [_image(shape, np.uint8) for shape in shapes]
     got = _concat(mi, [_chw(array) for array in arrays], axis)
@@ -240,7 +246,9 @@ def test_rows_and_columns_of_chw_match_numpy(shapes, axis):
 
 def test_a_1d_concatenate_matches_numpy():
     arrays = [_image((4,), np.uint8), _image((3,), np.uint8)]
-    np.testing.assert_array_equal(_concat(mi, arrays, 0).realize(), _concat(np, arrays, 0))
+    np.testing.assert_array_equal(
+        _concat(mi, arrays, 0).realize(), _concat(np, arrays, 0)
+    )
 
 
 def test_a_mixed_dtype_row_join_matches_numpy():
@@ -305,7 +313,9 @@ def test_stack_restacks_rgb_as_bgr():
 @pytest.mark.parametrize("axis", [0, 1, -1])
 def test_a_stack_of_1d_arrays_matches_numpy(axis):
     rows = [_image((4,), np.uint8) for _ in range(3)]
-    np.testing.assert_array_equal(mi.stack(rows, axis=axis).realize(), np.stack(rows, axis=axis))
+    np.testing.assert_array_equal(
+        mi.stack(rows, axis=axis).realize(), np.stack(rows, axis=axis)
+    )
 
 
 def test_a_stack_of_different_shapes_raises():
@@ -319,10 +329,16 @@ def test_a_stack_of_different_shapes_raises():
 def test_vstack_and_hstack_match_numpy():
     row = _image((4,), np.uint8)
     rows = _image((2, 4), np.uint8)
-    np.testing.assert_array_equal(mi.vstack([row, rows]).realize(), np.vstack([row, rows]))
-    np.testing.assert_array_equal(mi.hstack([row, row]).realize(), np.hstack([row, row]))
+    np.testing.assert_array_equal(
+        mi.vstack([row, rows]).realize(), np.vstack([row, rows])
+    )
+    np.testing.assert_array_equal(
+        mi.hstack([row, row]).realize(), np.hstack([row, row])
+    )
     left, right = _image((2, 3), np.uint8), _image((2, 4), np.uint8)
-    np.testing.assert_array_equal(mi.hstack([left, right]).realize(), np.hstack([left, right]))
+    np.testing.assert_array_equal(
+        mi.hstack([left, right]).realize(), np.hstack([left, right])
+    )
     rgb = [_image((2, 3, 3), np.uint8), _image((1, 3, 3), np.uint8)]
     np.testing.assert_array_equal(mi.vstack(rgb).realize(), np.vstack(rgb))
 

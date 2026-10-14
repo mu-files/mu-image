@@ -24,55 +24,56 @@ logger = logging.getLogger(__name__)
 
 
 def letterbox_frame(
-    img: np.ndarray,
-    target_resolution: tuple[int, int],
-    interpolation: int = None
+    img: np.ndarray, target_resolution: tuple[int, int], interpolation: int = None
 ) -> np.ndarray:
     """Resize image to target resolution while preserving aspect ratio.
-    
+
     Scales the image to fit within target_resolution, then centers it on a
     black canvas. This produces letterboxing (black bars top/bottom) or
     pillarboxing (black bars left/right) as needed.
-    
+
     Args:
         img: Input image array (H, W, C)
         target_resolution: Target (width, height) in pixels
         interpolation: OpenCV interpolation method (default: INTER_AREA for downscaling)
-    
+
     Returns:
         Image at exact target_resolution with aspect ratio preserved
     """
     if interpolation is None:
         interpolation = cv2.INTER_AREA
-    
+
     current_height, current_width = img.shape[:2]
     target_width, target_height = target_resolution
-    
+
     # If already at target resolution, return as-is
     if (current_width, current_height) == target_resolution:
         return img
-    
+
     # Calculate scale to maintain aspect ratio
     scale_w = target_width / current_width
     scale_h = target_height / current_height
     scale = min(scale_w, scale_h)
-    
+
     # Calculate new dimensions
     new_width = int(current_width * scale)
     new_height = int(current_height * scale)
-    
+
     # Create black canvas at target resolution
     canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
-    
+
     # Calculate centered position
     y_offset = (target_height - new_height) // 2
     x_offset = (target_width - new_width) // 2
-    
+
     # Resize directly into canvas region (avoids copy)
-    cv2.resize(img, (new_width, new_height), 
-               dst=canvas[y_offset:y_offset+new_height, x_offset:x_offset+new_width],
-               interpolation=interpolation)
-    
+    cv2.resize(
+        img,
+        (new_width, new_height),
+        dst=canvas[y_offset : y_offset + new_height, x_offset : x_offset + new_width],
+        interpolation=interpolation,
+    )
+
     return canvas
 
 
@@ -81,56 +82,55 @@ def add_text_overlay(
     text: str,
     position: str = "bottom-left",
     font_scale: float | None = None,
-    max_chars: int = 30
+    max_chars: int = 30,
 ) -> np.ndarray:
     """Add text overlay with white background to image.
-    
+
     Args:
         img: Input image (H, W, 3)
         text: Text to display (will be truncated to max_chars)
         position: Position on frame ("top-left", "top-right", "bottom-left", "bottom-right")
         font_scale: Font scale factor. If None, auto-scale to ~2% of frame height
         max_chars: Maximum characters to display (default: 30)
-    
+
     Returns:
         Image with text overlay
     """
-    
+
     # Truncate text if needed
     if len(text) > max_chars:
         text = text[:max_chars]
-    
+
     # Auto-scale font to ~2% of frame height if not specified
     height, width = img.shape[:2]
-    resolved_font_scale = (
-        height * 0.02 / 30 if font_scale is None else font_scale
-    )
-    
+    resolved_font_scale = height * 0.02 / 30 if font_scale is None else font_scale
+
     # Render at 2x resolution for better quality, then downsample
     supersample = 2
     font_scale_hires = resolved_font_scale * supersample
-    
+
     font = cv2.FONT_HERSHEY_DUPLEX  # Cleaner, more modern font
     thickness = max(1, int(font_scale_hires * 1.5))  # Slightly thinner for cleaner look
-    
+
     # Get text size for max_chars to ensure fixed box size (at high res)
     max_text = "A" * max_chars  # Use 'A' as representative character
     (max_text_width_hires, text_height_hires), baseline_hires = cv2.getTextSize(
-        max_text, font, font_scale_hires, thickness)
-    
+        max_text, font, font_scale_hires, thickness
+    )
+
     # Calculate padding (2 char widths left/right, 0.5 char height top/bottom) at high res
     char_width_hires = max_text_width_hires / max_chars
     pad_x_hires = int(char_width_hires * 2)
     pad_y_hires = int(text_height_hires * 0.5)
-    
+
     # Calculate fixed background box dimensions based on max_chars (at high res)
     box_width_hires = max_text_width_hires + 2 * pad_x_hires
     box_height_hires = text_height_hires + 2 * pad_y_hires + baseline_hires
-    
+
     # Final dimensions at normal resolution
     box_width = box_width_hires // supersample
     box_height = box_height_hires // supersample
-    
+
     # Calculate position
     margin = 10
     if position == "bottom-left":
@@ -147,19 +147,15 @@ def add_text_overlay(
         y = margin
     else:
         raise ValueError(f"Invalid position: {position}")
-    
+
     # Create high-resolution overlay for better text quality
     overlay_hires = np.zeros((box_height_hires, box_width_hires, 3), dtype=np.uint8)
-    
+
     # Draw white background rectangle at high res
     cv2.rectangle(
-        overlay_hires,
-        (0, 0),
-        (box_width_hires, box_height_hires),
-        (255, 255, 255),
-        -1
+        overlay_hires, (0, 0), (box_width_hires, box_height_hires), (255, 255, 255), -1
     )
-    
+
     # Draw black text at high resolution (left-aligned within the box)
     text_x_hires = pad_x_hires
     text_y_hires = pad_y_hires + text_height_hires
@@ -171,29 +167,31 @@ def add_text_overlay(
         font_scale_hires,
         (0, 0, 0),
         thickness,
-        cv2.LINE_AA
+        cv2.LINE_AA,
     )
-    
+
     # Downsample to final resolution for smooth appearance
-    overlay_final = cv2.resize(overlay_hires, (box_width, box_height), interpolation=cv2.INTER_AREA)
-    
+    overlay_final = cv2.resize(
+        overlay_hires, (box_width, box_height), interpolation=cv2.INTER_AREA
+    )
+
     # Blend overlay with original image
-    img[y:y+box_height, x:x+box_width] = overlay_final
-    
+    img[y : y + box_height, x : x + box_width] = overlay_final
+
     return img
 
 
 class VideoEncodePipeline(ImageSequencePipeline):
     """Pipeline for encoding a sequence of images to a video file.
-    
+
     Extends ImageSequencePipeline with video-specific functionality:
     - Inherits default producer from ImageSequencePipeline (reads files to blobs)
     - Custom consumer decodes source format and creates in-memory frames ready for video encoding
     - Custom writer buffers frames and encodes them to video in order using PyAV
-    
+
     Each of producer, consumer, writer can be overridden by passing custom
     callables to __init__ or by subclassing and overriding the default_* methods.
-    
+
     Example usage:
         pipeline = VideoEncodePipeline(
             source_files=["/path/to/img1.dng", "/path/to/img2.dng", ...],
@@ -203,7 +201,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
         )
         pipeline.run()
     """
-    
+
     def __init__(
         self,
         source_files: list[str | Path] = None,
@@ -220,7 +218,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
         on_task_done: Callable[[int, int], bool] = None,
     ):
         """Initialize the video encoding pipeline.
-        
+
         Args:
             source_files: List of image file paths to encode. Required if using
                 default producer.
@@ -246,7 +244,7 @@ class VideoEncodePipeline(ImageSequencePipeline):
             task_name: Descriptive name for logging.
             on_task_done: Optional callback(completed, total) -> bool. Called after
                 each consumer task. Return True to cancel.
-        
+
         Raises:
             ImportError: If av (PyAV) package is not installed
         """
@@ -259,17 +257,17 @@ class VideoEncodePipeline(ImageSequencePipeline):
                 "Install with: pip install muraw[all]\n"
                 "Or install av directly: pip install av"
             ) from e
-        
+
         self.output_path = Path(output_path) if output_path else None
         self.resolution = resolution
         self.use_temp_file = use_temp_file
-        
+
         # Temp file path (set during run if use_temp_file is True)
         self._temp_path: Path | None = None
-        
+
         # Container metadata (set via set_metadata(), applied before container close)
         self._container_metadata: dict[str, str] = {}
-        
+
         # Parse config with defaults
         config = config or {}
         self.codec = config.get("codec", "hevc")
@@ -277,11 +275,11 @@ class VideoEncodePipeline(ImageSequencePipeline):
         self.bit_depth = config.get("bit_depth", 8)
         self.frame_rate = config.get("frame_rate", 30)
         self.overlay_text = config.get("overlay_text", False)
-        
+
         # Validate bit depth
         if self.bit_depth not in (8, 10):
             raise ValueError(f"bit_depth must be 8 or 10, got {self.bit_depth}")
-        
+
         # Determine output dtype and pixel format based on bit depth
         if self.bit_depth == 10:
             output_dtype = np.uint16
@@ -291,22 +289,28 @@ class VideoEncodePipeline(ImageSequencePipeline):
             output_dtype = np.uint8
             self.pix_fmt = "yuv420p"
             self.input_format = "rgb24"
-        
+
         # PyAV container and stream (initialized in _setup_encoder)
         self._container = None
         self._stream = None
-        
+
         # Buffered writer state
         self._next_expected_index = 0
         self._frame_buffer = {}
         self._failed_frames = set()
-        
+
         # Use our default methods if not explicitly provided
         # Sentinel value allows caller to explicitly pass None to disable
-        actual_producer = self.default_producer if producer is DEFAULT_PIPELINE_CALLABLE else producer
-        actual_consumer = self.default_consumer if consumer is DEFAULT_PIPELINE_CALLABLE else consumer
-        actual_writer = self.default_writer if writer is DEFAULT_PIPELINE_CALLABLE else writer
-        
+        actual_producer = (
+            self.default_producer if producer is DEFAULT_PIPELINE_CALLABLE else producer
+        )
+        actual_consumer = (
+            self.default_consumer if consumer is DEFAULT_PIPELINE_CALLABLE else consumer
+        )
+        actual_writer = (
+            self.default_writer if writer is DEFAULT_PIPELINE_CALLABLE else writer
+        )
+
         # Call parent ImageSequencePipeline.__init__
         # Pass actual callables (not None) to avoid parent using its defaults
         super().__init__(
@@ -321,38 +325,39 @@ class VideoEncodePipeline(ImageSequencePipeline):
             task_name=task_name,
             on_task_done=on_task_done,
         )
-    
+
     def _setup_encoder(self):
         """Initialize PyAV container and video stream."""
         import av
-        
+
         if self.output_path is None:
             raise ValueError("output_path is required for video encoding")
         if self.resolution is None:
             raise ValueError("resolution must be set before encoding")
-        
+
         width, height = self.resolution
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Determine encoding path (temp file or direct)
         if self.use_temp_file:
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.mp4', prefix='video_encode_')
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4", prefix="video_encode_")
             os.close(temp_fd)
             self._temp_path = Path(temp_path)
             encode_path = self._temp_path
             logger.info(f"Encoding to temporary file: {self._temp_path}")
         else:
             encode_path = self.output_path
-        
+
         self._container = av.open(str(encode_path), mode="w")
         self._stream = self._container.add_stream(
-            self.codec, rate=Fraction(self.frame_rate).limit_denominator())
+            self.codec, rate=Fraction(self.frame_rate).limit_denominator()
+        )
         self._stream.width = width
         self._stream.height = height
         self._stream.pix_fmt = self.pix_fmt
-        
+
         options = {"crf": str(self.crf)}
-        
+
         # Control encoder output
         if self.codec == "h264":
             options["preset"] = "medium"
@@ -367,17 +372,17 @@ class VideoEncodePipeline(ImageSequencePipeline):
             else:
                 # Use Main profile for 8-bit (better QuickTime compatibility)
                 x265_params.append("profile=main")
-            
+
             options["preset"] = "medium"
             options["x265-params"] = ":".join(x265_params)
-        
+
         self._stream.options = options
-        
+
         logger.info(
             f"Video encoder initialized: {width}x{height} @ {self.frame_rate}fps "
             f"(codec={self.codec}, crf={self.crf}, {self.bit_depth}-bit)"
         )
-    
+
     def _finalize_encoder(self):
         """Flush and close the PyAV container."""
         container = self._container
@@ -388,110 +393,121 @@ class VideoEncodePipeline(ImageSequencePipeline):
             # Flush encoder
             for packet in stream.encode():
                 container.mux(packet)
-            
+
             # Apply container metadata before closing
             for key, value in self._container_metadata.items():
                 container.metadata[key] = value
                 logger.debug(f"Set container metadata {key}={value}")
-            
+
             container.close()
             self._container = None
-        
+
         # Copy from temp file to final destination if needed
         temp_path = self._temp_path
         output_path = self.output_path
         if temp_path is not None:
             if output_path is None:
-                raise RuntimeError("output_path is required when encoding to a temporary file")
+                raise RuntimeError(
+                    "output_path is required when encoding to a temporary file"
+                )
             try:
                 logger.info(f"Copying video to final destination: {output_path}")
                 shutil.copy2(temp_path, output_path)
                 temp_path.unlink()
                 logger.info(f"Cleaned up temporary file")
             except Exception as e:
-                logger.error(f"Failed to copy video to final destination ({type(e).__name__}): {e}")
+                logger.error(
+                    f"Failed to copy video to final destination ({type(e).__name__}): {e}"
+                )
                 logger.info(f"Video remains at temporary location: {temp_path}")
                 raise
             finally:
                 self._temp_path = None
-        
+
         logger.info(f"Video saved to {output_path}")
-    
+
     @property
     def failed_frames(self) -> set[int]:
         """Set of frame indices that failed to decode."""
         return self._failed_frames
-    
+
     def set_metadata(self, key: str, value: str) -> None:
         """Set a metadata key-value pair on the output video container.
-        
+
         Args:
             key: Metadata key (e.g., 'creation_time')
             value: Metadata value
         """
         self._container_metadata[key] = value
-    
-    def default_consumer(self, task: tuple[int, str, bytes]) -> tuple[int, np.ndarray | None]:
+
+    def default_consumer(
+        self, task: tuple[int, str, bytes]
+    ) -> tuple[int, np.ndarray | None]:
         """Default consumer: decodes image blob using decode_image.
-        
+
         Args:
             task: Tuple of (index, file_path, blob)
-            
+
         Returns:
             Tuple of (index, decoded_image) or (index, None) on failure
         """
         index, file_path, blob = task
         try:
             img = decode_image(io.BytesIO(blob), output_dtype=self.output_dtype)
-            
+
             if img is None:
-                logger.warning(f"Frame {index}: Failed to decode {Path(file_path).name}")
+                logger.warning(
+                    f"Frame {index}: Failed to decode {Path(file_path).name}"
+                )
                 self._failed_frames.add(index)
                 return (index, None)
 
             img = img.realize()
-            
+
             # Resize with aspect ratio preservation if resolution is set
             if self.resolution is not None:
                 img = letterbox_frame(img, self.resolution)
-            
+
             # Add filename overlay if requested
             if self.overlay_text:
                 filename = Path(file_path).name
                 img = add_text_overlay(img, filename, position="bottom-left")
-            
+
             return (index, img)
         except Exception as e:
-            logger.warning(f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}")
+            logger.warning(
+                f"Frame {index}: Error processing {Path(file_path).name} ({type(e).__name__}): {e}"
+            )
             self._failed_frames.add(index)
             return (index, None)
-    
+
     def default_writer(self, result: tuple[int, np.ndarray | None]) -> None:
         """Default writer: buffers frames and encodes them in order.
-        
+
         Args:
             result: Tuple of (index, image) from consumer
         """
         if result is None:
             return
-        
+
         index, img = result
-        
+
         # Add to buffer
         self._frame_buffer[index] = img
-        
+
         # Encode all consecutive frames starting from next expected index
         while self._next_expected_index in self._frame_buffer:
             current_index = self._next_expected_index
             img = self._frame_buffer.pop(current_index)
-            
+
             # Skip failed frames
             if img is None:
                 self._next_expected_index += 1
                 continue
-            
+
             # Encode frame
             import av
+
             stream = self._stream
             container = self._container
             if stream is None or container is None:
@@ -499,28 +515,28 @@ class VideoEncodePipeline(ImageSequencePipeline):
             frame = av.VideoFrame.from_ndarray(img, format=self.input_format)
             for packet in stream.encode(frame):
                 container.mux(packet)
-            
+
             self._next_expected_index += 1
-    
+
     def run(self):
         """Run the video encoding pipeline.
-        
+
         Sets up the encoder before processing and finalizes it after.
         """
         logger.info(
             f"Starting video encode: {len(self.source_files)} images -> {self.output_path}"
         )
-        
+
         # Set up encoder
         self._setup_encoder()
-        
+
         try:
             # Run the base pipeline
             super().run()
         finally:
             # Always finalize encoder
             self._finalize_encoder()
-        
+
         # Report stats
         stats = self.get_queue_stats()
         failed_count = len(self._failed_frames)

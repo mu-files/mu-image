@@ -62,10 +62,14 @@ def test_square_of_a_difference_is_faster_than_numpy():
         _square_of_difference(mi, rows, mi.Array(row)).realize(),
         _square_of_difference(np, rows, row),
     )
-    mi_time = _best_time(lambda: _square_of_difference(mi, rows, mi.Array(row)).realize())
+    mi_time = _best_time(
+        lambda: _square_of_difference(mi, rows, mi.Array(row)).realize()
+    )
     np_time = _best_time(lambda: _square_of_difference(np, rows, row))
     print(f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms")
-    assert mi_time < np_time, f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
+    assert mi_time < np_time, (
+        f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
+    )
 
 
 def _square_of_difference_each_realized(rows, row):
@@ -92,7 +96,9 @@ def test_square_of_a_difference_is_faster_than_realizing_each_step():
         _square_of_difference(mi, rows, mi.Array(row)).realize(),
         _square_of_difference_each_realized(rows, row),
     )
-    fused_time = _best_time(lambda: _square_of_difference(mi, rows, mi.Array(row)).realize())
+    fused_time = _best_time(
+        lambda: _square_of_difference(mi, rows, mi.Array(row)).realize()
+    )
     each_time = _best_time(lambda: _square_of_difference_each_realized(rows, row))
     message = f"one graph {fused_time * 1e3:.1f} ms, each step realized {each_time * 1e3:.1f} ms"
     print(message)
@@ -141,7 +147,9 @@ def test_demosaic_output_read_by_two_ops_matches_realizing_it_first(algorithm):
     demosaiced = mi.cfa_demosaic(mi.Array(cfa), cfa_pattern="RGGB", algorithm=algorithm)
     got = (mi.rgb_matrix_3x3(demosaiced, matrix=_MATRIX) + demosaiced * 0.1).realize()
     realized = mi.Array(
-        mi.cfa_demosaic(mi.Array(cfa), cfa_pattern="RGGB", algorithm=algorithm).realize()
+        mi.cfa_demosaic(
+            mi.Array(cfa), cfa_pattern="RGGB", algorithm=algorithm
+        ).realize()
     )
     expected = (mi.rgb_matrix_3x3(realized, matrix=_MATRIX) + realized * 0.1).realize()
     np.testing.assert_array_equal(got, expected)
@@ -166,7 +174,9 @@ def test_chw_array_read_twice_matches_numpy():
     chw = _random((3, 23, 37), 9)
     y = mi.Array(chw, channel_axis=0) * 2.0 - 0.5
     expected_y = chw * 2.0 - 0.5
-    np.testing.assert_array_equal((y * y + y).realize(), expected_y * expected_y + expected_y)
+    np.testing.assert_array_equal(
+        (y * y + y).realize(), expected_y * expected_y + expected_y
+    )
 
 
 def _saturate(values, dtype):

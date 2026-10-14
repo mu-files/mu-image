@@ -99,10 +99,12 @@ cv2_proxy: Any = LibraryBackgroundLoader("cv2")
 # that were already loaded with immediate=True.
 _ALL_PROXIES = (tifffile_proxy, imagecodecs_proxy, defusedxml_proxy, cv2_proxy)
 
+
 def _background_load_all():
     for proxy in _ALL_PROXIES:
         if not object.__getattribute__(proxy, "_bg_event").is_set():
             proxy._bg_load()
+
 
 threading.Thread(
     target=_background_load_all, daemon=True, name="BackgroundModuleLoader"

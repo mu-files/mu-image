@@ -269,9 +269,7 @@ def gen_ops_py(doc: dict[str, Any]) -> str:
         lines.append(f"    _in_channels={_in_channels_expr(inputs)},")
         lines.append(f"    _n_inputs={len(inputs)},")
         lines.append(f"    _variable_input={_has_variable_input(inputs)},")
-        lines.append(
-            f"    _attr_specs=tuple(json.loads(r'''{attrs_json}''')),"
-        )
+        lines.append(f"    _attr_specs=tuple(json.loads(r'''{attrs_json}''')),")
         lines.append(f"    _infer_meta={_infer_meta_expr(out_spec)},")
         lines.append(")")
         lines.append("")
@@ -303,9 +301,7 @@ def validate_ops(ops: list[dict[str, Any]]) -> None:
                 "(catalog is portable interface only)"
             )
         if "inputs" not in op or not op.get("outputs"):
-            raise ValueError(
-                f"op {op['name']!r}: inputs and outputs are required"
-            )
+            raise ValueError(f"op {op['name']!r}: inputs and outputs are required")
         if not isinstance(op["inputs"], list):
             raise ValueError(f"op {op['name']!r}: inputs must be a list")
         if len(op["outputs"]) != 1:
@@ -328,10 +324,14 @@ def _validate_input_entries(op: dict[str, Any]) -> None:
             raise ValueError(f"op {name!r}: inputs[{index}] must be a map")
         channels = entry.get("channels", "any")
         if channels != "any" and not isinstance(channels, int):
-            raise ValueError(f"op {name!r}: inputs[{index}].channels must be an int or any")
+            raise ValueError(
+                f"op {name!r}: inputs[{index}].channels must be an int or any"
+            )
         variable = entry.get("variable", False)
         if not isinstance(variable, bool):
-            raise ValueError(f"op {name!r}: inputs[{index}].variable must be true or false")
+            raise ValueError(
+                f"op {name!r}: inputs[{index}].variable must be true or false"
+            )
         if variable and index != len(entries) - 1:
             raise ValueError(f"op {name!r}: only the last input entry may be variable")
 

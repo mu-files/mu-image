@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 try:
     import Quartz
     import Foundation
-    from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint, NSData 
+    from Foundation import NSURL, NSMutableData, NSNumber, NSValue, NSPoint, NSData
     from Quartz import (
         CIFilter,
         CIContext,
@@ -39,6 +39,7 @@ try:
         CGColorSpaceCreateWithICCProfile,
         kCIContextUseSoftwareRenderer,
     )
+
     core_image_available = True
 except ImportError:
     core_image_available = False
@@ -51,43 +52,59 @@ RAW_FILTER_OPTION_MAP = {
     "boostAmount": ("kCIInputBoostKey", "float"),
     "boostShadowAmount": ("kCIInputBoostShadowAmountKey", "float"),
     "colorNoiseReductionAmount": ("kCIInputColorNoiseReductionAmountKey", "float"),
-    "contrastAmount": ("kCIInputContrastKey", "float"), # Standard CIFilter key
+    "contrastAmount": ("kCIInputContrastKey", "float"),  # Standard CIFilter key
     "detailAmount": ("kCIInputNoiseReductionDetailAmountKey", "float"),
     "exposure": ("kCIInputEVKey", "float"),
     "extendedDynamicRangeAmount": ("kCIInputExtendedDynamicRangeAmountKey", "float"),
     "localToneMapAmount": ("kCIInputLocalToneMapAmountKey", "float"),
-    "luminanceNoiseReductionAmount": ("kCIInputLuminanceNoiseReductionAmountKey", "float"),
+    "luminanceNoiseReductionAmount": (
+        "kCIInputLuminanceNoiseReductionAmountKey",
+        "float",
+    ),
     "moireReductionAmount": ("kCIInputMoireAmountKey", "float"),
     "neutralTemperature": ("kCIInputNeutralTemperatureKey", "float"),
     "neutralTint": ("kCIInputNeutralTintKey", "float"),
     "noiseReductionAmount": ("kCIInputNoiseReductionAmountKey", "float"),
-    "noiseReductionContrastAmount": ("kCIInputNoiseReductionContrastAmountKey", "float"),
-    "noiseReductionSharpnessAmount": ("kCIInputNoiseReductionSharpnessAmountKey", "float"),
+    "noiseReductionContrastAmount": (
+        "kCIInputNoiseReductionContrastAmountKey",
+        "float",
+    ),
+    "noiseReductionSharpnessAmount": (
+        "kCIInputNoiseReductionSharpnessAmountKey",
+        "float",
+    ),
     "scaleFactor": ("kCIInputScaleFactorKey", "float"),
     "shadowBias": ("kCIInputBiasKey", "float"),
     "sharpnessAmount": ("kCIInputSharpnessKey", "float"),
-
     # Bools
-    "isChromaticNoiseTrackingEnabled": ("kCIInputEnableChromaticNoiseTrackingKey", "bool"),
+    "isChromaticNoiseTrackingEnabled": (
+        "kCIInputEnableChromaticNoiseTrackingKey",
+        "bool",
+    ),
     "isDraftModeEnabled": ("kCIInputAllowDraftModeKey", "bool"),
     "isEDRModeEnabled": ("kCIInputEnableEDRModeKey", "bool"),
-    "isGamutMappingEnabled": ("kCIInputDisableGamutMapKey", "bool_inverted"), # True means set kCIInputDisableGamutMapKey to False
+    "isGamutMappingEnabled": (
+        "kCIInputDisableGamutMapKey",
+        "bool_inverted",
+    ),  # True means set kCIInputDisableGamutMapKey to False
     "isLensCorrectionEnabled": ("kCIInputEnableVendorLensCorrectionKey", "bool"),
     "isSharpeningEnabled": ("kCIInputEnableSharpeningKey", "bool"),
     "ignoreImageOrientation": ("kCIInputIgnoreImageOrientationKey", "bool"),
-
     # Integers
     "imageOrientation": ("kCIInputImageOrientationKey", "int"),
-
     # CGPoints (expected as (x, y) tuples)
-    "neutralChromaticity": (("kCIInputNeutralChromaticityXKey", "kCIInputNeutralChromaticityYKey"), "point_xy_floats"),
+    "neutralChromaticity": (
+        ("kCIInputNeutralChromaticityXKey", "kCIInputNeutralChromaticityYKey"),
+        "point_xy_floats",
+    ),
     "neutralLocation": ("kCIInputNeutralLocationKey", "point_nsvalue"),
 }
+
 
 def _create_tone_curve_filter(spline_curve: CubicSpline):
     """
     Create a CIToneCurve filter from a CubicSpline object.
-    
+
     Args:
         spline_curve: CubicSpline object with normalized 0-1 points
 
@@ -95,78 +112,85 @@ def _create_tone_curve_filter(spline_curve: CubicSpline):
         CIFilter instance configured with tone curve points, or None if invalid
     """
     from Quartz import CIVector, CIFilter
-    
+
     num_points = len(spline_curve.points)
-    
+
     # Validate point count
     if num_points < 2:
-        logger.warning(f"Invalid tone curve: {num_points} points provided. "
-                      f"Minimum 2 points required. Skipping tone curve.")
+        logger.warning(
+            f"Invalid tone curve: {num_points} points provided. "
+            f"Minimum 2 points required. Skipping tone curve."
+        )
         return None
-    
+
     # CIToneCurve requires exactly 5 points - resample if needed
     if num_points == 5:
         final_points = spline_curve.points
     else:
         resampled = spline_curve.resample(5)
         final_points = resampled.points
-    
+
     # Create tone curve filter
     tone_curve_filter = CIFilter.filterWithName_("CIToneCurve")
-    
+
     # Set the 5 points
     for i in range(5):
         x, y = final_points[i]
         vector = CIVector.vectorWithX_Y_(float(x), float(y))
         tone_curve_filter.setValue_forKey_(vector, f"inputPoint{i}")
-    
+
     return tone_curve_filter
+
 
 def _strip_unique_camera_model(dng_data: bytes) -> bytes:
     """Strip UniqueCameraModel tag from DNG data to avoid Core Image camera-specific processing.
-    
+
     When Core Image (CIRAWFilter) recognizes a known camera model via the UniqueCameraModel
     tag (e.g., "Sony ILCE-7C"), it applies camera-specific processing that can produce
     images significantly different to Adobe's dng_validate reference output.
-    
+
     Investigation findings:
     - Original camera DNGs with UniqueCameraModel: Core Image renders correctly
     - DNGs rewritten by tifffile with UniqueCameraModel: Core Image renders ~7% differently
     - DNGs with UniqueCameraModel stripped or set to unknown model: renders correctly
-    
+
     Uses tifffile to locate the tag, then patches the raw bytes to zero out the tag ID.
     This preserves the original compression and file structure.
-    
+
     Args:
         dng_data: Raw DNG file bytes
-        
+
     Returns:
         Modified DNG data with UniqueCameraModel tag zeroed out
     """
     from tifffile import TiffFile, TIFF
-    
+
     UNIQUE_CAMERA_MODEL = TIFF.TAGS["UniqueCameraModel"]
-    
+
     try:
         input_buffer = io.BytesIO(dng_data)
-        
+
         with TiffFile(input_buffer) as tif:
             # Check IFD0 for UniqueCameraModel tag
             if tif.pages and UNIQUE_CAMERA_MODEL in tif.pages[0].tags:
                 tag = tif.pages[0].tags[UNIQUE_CAMERA_MODEL]
                 # tag.offset is the file offset of the tag entry (12 bytes: code, dtype, count, value/offset)
                 tag_offset = tag.offset
-                
+
                 # Zero out the tag code (first 2 bytes of the 12-byte entry)
                 data = bytearray(dng_data)
-                data[tag_offset:tag_offset+2] = b'\x00\x00'
-                logger.debug("Stripped UniqueCameraModel tag from DNG data for Core Image processing")
+                data[tag_offset : tag_offset + 2] = b"\x00\x00"
+                logger.debug(
+                    "Stripped UniqueCameraModel tag from DNG data for Core Image processing"
+                )
                 return bytes(data)
-        
+
         return dng_data
-        
+
     except Exception as e:
-        logger.warning(f"Failed to strip UniqueCameraModel ({type(e).__name__}): {e}. Using original data.")
+        logger.warning(
+            f"Failed to strip UniqueCameraModel ({type(e).__name__}): {e}. Using original data."
+        )
         return dng_data
 
 
@@ -203,7 +227,7 @@ class CoreImageContext:
                 logger.debug("Using ProPhoto RGB (ROMM RGB) working color space")
         except Exception as e:
             logger.warning(f"Failed to load ProPhoto profile ({type(e).__name__}): {e}")
-        
+
         # Fallback to sRGB if ProPhoto load fails
         if not working_space_ns:
             srgb_space = NSColorSpace.sRGBColorSpace()
@@ -250,7 +274,7 @@ def render_dng_coreimage(
     """
     Processes a DNG file by creating a temporary Core Image context for the operation.
     This ensures no state is carried over between calls.
-    
+
     Args:
         dng_input: Path to DNG file or file-like object containing DNG data
         raw_filter_options: Dictionary of Core Image raw filter options
@@ -258,7 +282,7 @@ def render_dng_coreimage(
         output_dtype: Output NumPy data type. Supported: np.uint8, np.uint16, np.float16, np.float32.
         use_system_camera_profiles: If True, use macOS built-in camera profiles. If False,
             strip UniqueCameraModel tag to force generic DNG processing.
-    
+
     Returns:
         Tuple of (RGB image array with shape (height, width, 3) and specified dtype, colorspace name).
         Colorspace name is one of: "prophoto" or "srgb".
@@ -278,14 +302,16 @@ def render_dng_coreimage(
                 raw_options = {}
                 for key, value in options_copy.items():
                     if key not in RAW_FILTER_OPTION_MAP:
-                        logger.warning(f"Unknown RAW filter option key: {key}. Skipping.")
+                        logger.warning(
+                            f"Unknown RAW filter option key: {key}. Skipping."
+                        )
                         continue
 
                     quartz_key_name_or_tuple, value_type = RAW_FILTER_OPTION_MAP[key]
 
                     try:
                         objc_value = None
-                        
+
                         if value_type == "float":
                             objc_value = NSNumber.numberWithFloat_(float(value))
                         elif value_type == "bool":
@@ -302,39 +328,52 @@ def render_dng_coreimage(
                             key_x_name, key_y_name = quartz_key_name_or_tuple
                             quartz_key_x = getattr(Quartz, key_x_name)
                             quartz_key_y = getattr(Quartz, key_y_name)
-                            raw_options[quartz_key_x] = NSNumber.numberWithFloat_(float(value[0]))
-                            raw_options[quartz_key_y] = NSNumber.numberWithFloat_(float(value[1]))
-                        
+                            raw_options[quartz_key_x] = NSNumber.numberWithFloat_(
+                                float(value[0])
+                            )
+                            raw_options[quartz_key_y] = NSNumber.numberWithFloat_(
+                                float(value[1])
+                            )
+
                         # Common case: single key-value pair
                         if objc_value is not None:
                             quartz_key = getattr(Quartz, quartz_key_name_or_tuple)
                             raw_options[quartz_key] = objc_value
                     except AttributeError:
-                        logger.warning(f"Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping.")
+                        logger.warning(
+                            f"Quartz constant for '{quartz_key_name_or_tuple}' not found. Skipping."
+                        )
                     except Exception as e:
-                        logger.warning(f"Error processing option {key} with value {value} ({type(e).__name__}): {e}. Skipping.")
+                        logger.warning(
+                            f"Error processing option {key} with value {value} ({type(e).__name__}): {e}. Skipping."
+                        )
 
                 # --- Create CIRAWFilter ---
                 # Always read DNG data and strip UniqueCameraModel to avoid CI camera-specific processing
                 if isinstance(dng_input, (str, os.PathLike)):
-                    with open(dng_input, 'rb') as f:
+                    with open(dng_input, "rb") as f:
                         dng_data = f.read()
                 elif hasattr(dng_input, "read"):
                     dng_data = dng_input.read()
                 else:
-                    raise TypeError("dng_input must be a file path or a file-like object.")
-                
+                    raise TypeError(
+                        "dng_input must be a file path or a file-like object."
+                    )
+
                 if not dng_data:
                     raise ValueError("DNG data is empty.")
-                
+
                 # Optionally strip UniqueCameraModel to force generic processing
                 if not use_system_camera_profiles:
                     dng_data = _strip_unique_camera_model(dng_data)
-                
+
                 from Quartz import kCGImageSourceTypeIdentifierHint
+
                 raw_options[kCGImageSourceTypeIdentifierHint] = "com.adobe.raw-image"
                 ns_data = NSData.dataWithBytes_length_(dng_data, len(dng_data))
-                raw_filter = CIFilter.filterWithImageData_options_(ns_data, raw_options or None)
+                raw_filter = CIFilter.filterWithImageData_options_(
+                    ns_data, raw_options or None
+                )
 
                 if not raw_filter:
                     raise RuntimeError("Failed to create CIRAWFilter.")
@@ -355,14 +394,14 @@ def render_dng_coreimage(
                     np.uint8: (kCIFormatRGBA8, 1),
                     np.uint16: (kCIFormatRGBA16, 2),
                 }
-                
+
                 if output_dtype not in dtype_to_format:
                     supported_types = list(dtype_to_format.keys())
                     raise ValueError(
                         f"Unsupported output dtype: {output_dtype}. "
                         f"Supported types: {supported_types}"
                     )
-                
+
                 pixel_format, bytes_per_channel = dtype_to_format[output_dtype]
                 row_bytes = width * 4 * bytes_per_channel  # 4 channels (RGBA)
                 bitmap_buffer = NSMutableData.dataWithLength_(height * row_bytes)
@@ -386,7 +425,9 @@ def render_dng_coreimage(
                 return rgba[:, :, :3], context.colorspace_name
 
             except Exception as e:
-                raise RuntimeError(f"An error occurred during Core Image processing: {e}") from e
+                raise RuntimeError(
+                    f"An error occurred during Core Image processing: {e}"
+                ) from e
 
 
 def decode_dng_coreimage(
@@ -397,41 +438,44 @@ def decode_dng_coreimage(
 ) -> "Array":
     """
     Decode a DNG file to a ``Array`` using Core Image processing.
-    
+
     Args:
         file: Path to DNG file, file-like object containing DNG data, or DngFile instance
         use_xmp: Whether to read XMP metadata for default values
         output_dtype: Output element type.
         rendering_params: Optional dict to override rendering parameters.
             See dngio.decode_dng() for full list of supported keys.
-    
+
     Returns:
         RGB ``Array`` with shape (height, width, 3) and specified dtype.
         Call ``.realize()`` at encode/write/display edges.
     """
     from pathlib import Path
     from . import dngio
+
     DngFile = dngio.DngFile
-    
+
     try:
         # Create or use DngFile - DngFile.__init__ handles file normalization and seeking
         dng_file = file if isinstance(file, DngFile) else DngFile(file)
         dng_input = dng_file.filehandle
-        
+
         # Import raw_render for parameter extraction
         from . import raw_render
         from .array import Array
-        
+
         # Build rendering parameters dict from XMP and overrides (filters out NOOP values)
         extracted_params = raw_render.supported_xmp_to_dict(dng_file) if use_xmp else {}
-        
+
         # Merge rendering_params overrides (with validation)
         if rendering_params is not None:
             # Core Image specific parameters (not from XMP)
-            coreimage_specific_params = {'orientation'}
+            coreimage_specific_params = {"orientation"}
             # Combine XMP params and CI-specific params
-            supported_params = raw_render.SUPPORTED_XMP_PARAMS | coreimage_specific_params
-            
+            supported_params = (
+                raw_render.SUPPORTED_XMP_PARAMS | coreimage_specific_params
+            )
+
             for key, value in rendering_params.items():
                 if key not in supported_params:
                     raise ValueError(
@@ -439,20 +483,20 @@ def decode_dng_coreimage(
                         f"Supported: {supported_params}"
                     )
                 extracted_params[key] = value
-        
+
         # Map parameter names to Core Image option names
         # Only temperature, tint, exposure, and orientation go to Core Image
         # All tone curves and lens corrections go to apply_post_rendering_operations
         ci_options = {}
-        if 'Temperature' in extracted_params:
-            ci_options['neutralTemperature'] = extracted_params['Temperature']
-        if 'Tint' in extracted_params:
-            ci_options['neutralTint'] = extracted_params['Tint']
-        if 'Exposure2012' in extracted_params:
-            ci_options['exposure'] = extracted_params['Exposure2012']
-        if 'orientation' in extracted_params:
-            ci_options['imageOrientation'] = extracted_params['orientation']
-        
+        if "Temperature" in extracted_params:
+            ci_options["neutralTemperature"] = extracted_params["Temperature"]
+        if "Tint" in extracted_params:
+            ci_options["neutralTint"] = extracted_params["Tint"]
+        if "Exposure2012" in extracted_params:
+            ci_options["exposure"] = extracted_params["Exposure2012"]
+        if "orientation" in extracted_params:
+            ci_options["imageOrientation"] = extracted_params["orientation"]
+
         # Format file and options for logging
         if isinstance(file, io.BytesIO):
             file_desc = "BytesIO buffer"
@@ -460,18 +504,20 @@ def decode_dng_coreimage(
             file_desc = str(file)
         else:
             file_desc = type(file).__name__
-        
+
         formatted_opts = {}
         for key, value in ci_options.items():
             if isinstance(value, (float, np.floating)):
                 formatted_opts[key] = f"{float(value):.3f}"
             else:
                 formatted_opts[key] = value
-        logger.debug(f"Processing {file_desc} with Core Image options: {formatted_opts}")
+        logger.debug(
+            f"Processing {file_desc} with Core Image options: {formatted_opts}"
+        )
 
         # Ensure file pointer is at beginning for Core Image processing
         # (XMP reading above may have moved the pointer)
-        dng_input.seek(0) 
+        dng_input.seek(0)
 
         # Process with Core Image
         ci_output, colorspace_name = render_dng_coreimage(
@@ -480,12 +526,14 @@ def decode_dng_coreimage(
             use_gpu=False,
             output_dtype=np.float32,
         )
-        
+
         if ci_output is None:
             raise RuntimeError(f"Failed to process DNG file: {file}")
-        
-        logger.debug(f"Core Image output shape: {ci_output.shape}, dtype: {ci_output.dtype}, colorspace: {colorspace_name}")
-        
+
+        logger.debug(
+            f"Core Image output shape: {ci_output.shape}, dtype: {ci_output.dtype}, colorspace: {colorspace_name}"
+        )
+
         # Map colorspace name to ColorSpace enum for apply_post_rendering_operations
         if colorspace_name == "prophoto":
             # ProPhoto with gamma 1.8
@@ -495,23 +543,20 @@ def decode_dng_coreimage(
             source_colorspace = raw_render.ColorSpace.SRGB_GAMMA
         else:
             raise ValueError(f"Unknown colorspace: {colorspace_name}")
-        
+
         # Convert Core Image output to ProPhoto linear for post-rendering
         rgb_prophoto_linear = raw_render.convert_colorspace(
-            Array(ci_output),
-            source_colorspace,
-            raw_render.ColorSpace.PROPHOTO_LINEAR
+            Array(ci_output), source_colorspace, raw_render.ColorSpace.PROPHOTO_LINEAR
         )
-        
+
         # Apply all tone curves and lens corrections in ProPhoto linear
         if extracted_params:
             rgb_output = raw_render.apply_post_rendering_operations(
-                rgb_prophoto_linear,
-                extracted_params
+                rgb_prophoto_linear, extracted_params
             )
         else:
             rgb_output = rgb_prophoto_linear
-        
+
         # Convert to sRGB gamma with output dtype (deferred)
         result = raw_render.convert_colorspace(
             rgb_output,
@@ -519,13 +564,13 @@ def decode_dng_coreimage(
             raw_render.ColorSpace.SRGB_GAMMA,
             dst_dtype=output_dtype,
         )
-        
+
         logger.debug(
             f"Successfully decoded DNG to Array "
             f"{result.meta.height}x{result.meta.width} dtype={result.meta.dtype}"
         )
         return result
-                
+
     except Exception as e:
         logger.warning(f"Error decoding {file} ({type(e).__name__}): {e}")
         logger.debug(f"Error decoding {file} ({type(e).__name__}): {e}", exc_info=True)

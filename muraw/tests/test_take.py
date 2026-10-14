@@ -111,7 +111,9 @@ def test_take_with_one_int_drops_the_axis(axis):
 def test_take_method_on_a_lazy_input():
     x = _image((4, 5, 3), np.float32)
     got = _take_method_after_scale(mi, mi.Array(x))
-    np.testing.assert_allclose(got.realize(), _take_method_after_scale(np, x), rtol=1e-6)
+    np.testing.assert_allclose(
+        got.realize(), _take_method_after_scale(np, x), rtol=1e-6
+    )
 
 
 @pytest.mark.parametrize(
@@ -171,13 +173,17 @@ def test_take_of_no_indices_is_empty(axis):
         ((2, 4, 6, 3), np.array([False, True])),
     ],
 )
-def test_index_with_an_index_array_or_int_on_rows_or_columns_matches_numpy(shape, key, dtype):
+def test_index_with_an_index_array_or_int_on_rows_or_columns_matches_numpy(
+    shape, key, dtype
+):
     x = _image(shape, dtype)
     got = _index(mi, mi.Array(x), key)
     np.testing.assert_array_equal(got.realize(), _index(np, x, key))
 
 
-@pytest.mark.parametrize("key", [[2, 0], (slice(None), [3, 3, 1]), (slice(None), slice(None), [4, 0])])
+@pytest.mark.parametrize(
+    "key", [[2, 0], (slice(None), [3, 3, 1]), (slice(None), slice(None), [4, 0])]
+)
 def test_index_with_an_index_array_on_chw_matches_numpy(key):
     x = _image((3, 4, 5), np.float32)
     got = _index(mi, Array(x, channel_axis=0), key)
@@ -187,7 +193,9 @@ def test_index_with_an_index_array_on_chw_matches_numpy(key):
 def test_index_rows_then_columns_matches_numpy():
     x = _image((6, 8, 3), np.float32)
     got = _rows_then_columns(mi, mi.Array(x), [5, 0, 2], [7, 7, 1, 0])
-    np.testing.assert_array_equal(got.realize(), _rows_then_columns(np, x, [5, 0, 2], [7, 7, 1, 0]))
+    np.testing.assert_array_equal(
+        got.realize(), _rows_then_columns(np, x, [5, 0, 2], [7, 7, 1, 0])
+    )
 
 
 @pytest.mark.parametrize("shape", [(10, 14), (10, 14, 3)])
@@ -224,7 +232,10 @@ def test_index_rejects_what_numpy_rejects(key):
         ((4, 5), (np.array([[0], [1]]), np.array([[2, 3]]).T)),
         ((4, 5, 3), (1, slice(None), [0, 2])),
         ((2, 4, 5, 3), ([0, 1], slice(None), slice(None), [0, 2])),
-        ((2, 4, 5, 3), (np.array([[0], [1]]), slice(None), slice(None), np.array([[0, 2]]))),
+        (
+            (2, 4, 5, 3),
+            (np.array([[0], [1]]), slice(None), slice(None), np.array([[0, 2]])),
+        ),
     ],
 )
 def test_index_arrays_numpy_pairs_or_moves_raise(shape, key):

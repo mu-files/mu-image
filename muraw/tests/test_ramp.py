@@ -21,7 +21,9 @@ def _assert_ramp_close(got, ref):
     else:
         scale = max(1.0, float(np.max(np.abs(ref.astype(np.float64)))))
         atol = 4 * float(np.finfo(got.dtype).eps) * scale
-    np.testing.assert_allclose(got.astype(np.float64), ref.astype(np.float64), rtol=0, atol=atol)
+    np.testing.assert_allclose(
+        got.astype(np.float64), ref.astype(np.float64), rtol=0, atol=atol
+    )
 
 
 def _numpy_arange(*args):
@@ -37,7 +39,9 @@ def test_arange_stop_only():
 
 def test_arange_start_stop_and_negative_step():
     np.testing.assert_array_equal(mi.arange(2, 8).realize(), _numpy_arange(2, 8))
-    np.testing.assert_array_equal(mi.arange(5, 0, -1).realize(), _numpy_arange(5, 0, -1))
+    np.testing.assert_array_equal(
+        mi.arange(5, 0, -1).realize(), _numpy_arange(5, 0, -1)
+    )
 
 
 def test_arange_float_step():
@@ -135,10 +139,14 @@ def test_linspace_colors_match_numpy_and_the_image_indexes():
 
     row = mi.linspace(C0, C1, 6)[None, ...]
     assert row.shape == (1, 6, 3)
-    _assert_ramp_close(row.realize(), np.linspace(C0, C1, 6, dtype=np.float32)[None, ...])
+    _assert_ramp_close(
+        row.realize(), np.linspace(C0, C1, 6, dtype=np.float32)[None, ...]
+    )
     column = mi.linspace(C0, C1, 5)[:, None, :]
     assert column.shape == (5, 1, 3)
-    _assert_ramp_close(column.realize(), np.linspace(C0, C1, 5, dtype=np.float32)[:, None, :])
+    _assert_ramp_close(
+        column.realize(), np.linspace(C0, C1, 5, dtype=np.float32)[:, None, :]
+    )
 
 
 def test_linspace_broadcasts_a_scalar_and_keeps_a_length_one_sequence():

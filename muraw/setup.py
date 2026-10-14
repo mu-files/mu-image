@@ -12,7 +12,9 @@ def _is_android():
     if sys.platform == "android" or hasattr(sys, "getandroidapilevel"):
         return True
     # Termux reports Linux. The Android dynamic linker is on the device.
-    return os.path.exists("/system/bin/linker64") or os.path.exists("/system/bin/linker")
+    return os.path.exists("/system/bin/linker64") or os.path.exists(
+        "/system/bin/linker"
+    )
 
 
 def host_core_binaries():
@@ -21,7 +23,9 @@ def host_core_binaries():
     machine = platform.machine().lower()
     if _is_android():
         if machine not in ("arm64", "aarch64"):
-            raise RuntimeError(f"Android {machine} is not a supported CoreEngine target")
+            raise RuntimeError(
+                f"Android {machine} is not a supported CoreEngine target"
+            )
         name = "_core_engine.android-aarch64.abi3.so"
     elif system == "Windows":
         if machine in ("arm64", "aarch64"):
@@ -41,56 +45,58 @@ def host_core_binaries():
     return [f"_binaries/{name}"]
 
 
-if sys.platform == 'win32':
+if sys.platform == "win32":
     common_compile_args = [
-        '/O2',
-        '/fp:fast',
-        '/GL',
+        "/O2",
+        "/fp:fast",
+        "/GL",
     ]
     common_link_args = [
-        '/LTCG',
+        "/LTCG",
     ]
 else:
     is_ci = (
-        os.environ.get('CI') == 'true'
-        or os.environ.get('GITHUB_ACTIONS') == 'true'
-        or os.environ.get('CIBUILDWHEEL') == '1'
+        os.environ.get("CI") == "true"
+        or os.environ.get("GITHUB_ACTIONS") == "true"
+        or os.environ.get("CIBUILDWHEEL") == "1"
     )
 
     common_compile_args = [
-        '-O3',
-        '-ffast-math',
-        '-funroll-loops',
-        '-flto',
-        '-fomit-frame-pointer',
-        '-fno-strict-aliasing',
+        "-O3",
+        "-ffast-math",
+        "-funroll-loops",
+        "-flto",
+        "-fomit-frame-pointer",
+        "-fno-strict-aliasing",
     ]
 
     if not is_ci:
-        common_compile_args.extend([
-            '-march=native',
-            '-mtune=native',
-        ])
+        common_compile_args.extend(
+            [
+                "-march=native",
+                "-mtune=native",
+            ]
+        )
 
     common_link_args = [
-        '-flto',
+        "-flto",
     ]
 
 # VNG demosaic extension (stays in public; LGPL/CDDL)
 vng_extension = Extension(
-    'muraw._vng',
-    sources=['c-src/demosaic/vng.c'],
+    "muraw._vng",
+    sources=["c-src/demosaic/vng.c"],
     include_dirs=[np.get_include()],
     extra_compile_args=common_compile_args,
     extra_link_args=common_link_args,
 )
 
 # RCD extension - only built if user has renamed rcd.txt to rcd.c (GPL code)
-rcd_source = 'c-src/demosaic/rcd.c'
+rcd_source = "c-src/demosaic/rcd.c"
 rcd_extension = None
 if os.path.exists(rcd_source):
     rcd_extension = Extension(
-        'muraw._rcd',
+        "muraw._rcd",
         sources=[rcd_source],
         include_dirs=[np.get_include()],
         extra_compile_args=common_compile_args,

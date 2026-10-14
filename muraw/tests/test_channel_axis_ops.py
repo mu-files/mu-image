@@ -31,7 +31,9 @@ def _op_names(t: Array) -> list[str]:
 def test_rgb_op_on_chw_raises_and_runs_after_moveaxis():
     chw = _chw()
     x = Array(chw, channel_axis=0)
-    with pytest.raises(ValueError, match=r"shape \(3, 6, 9\).*mi\.moveaxis\(x, 0, -1\)"):
+    with pytest.raises(
+        ValueError, match=r"shape \(3, 6, 9\).*mi\.moveaxis\(x, 0, -1\)"
+    ):
         mi.rgb_matrix_3x3(x, matrix=_MATRIX)
     got = mi.rgb_matrix_3x3(mi.moveaxis(x, 0, -1), matrix=_MATRIX).realize()
     np.testing.assert_allclose(got, np.moveaxis(chw, 0, -1) @ _MATRIX.T, rtol=1e-6)
@@ -93,7 +95,9 @@ def test_chw_pad_with_channel_widths_matches_numpy(mode):
     kwargs = {"constant_values": 0.5} if mode == "constant" else {}
     got = Array(chw, channel_axis=0).pad(pad_width, mode=mode, **kwargs)
     assert got.meta.channel_axis == 0
-    np.testing.assert_array_equal(got.realize(), np.pad(chw, pad_width, mode=mode, **kwargs))
+    np.testing.assert_array_equal(
+        got.realize(), np.pad(chw, pad_width, mode=mode, **kwargs)
+    )
 
 
 @pytest.mark.parametrize("mode", ["edge", "reflect"])
@@ -108,20 +112,25 @@ def test_chw_pad_constants_per_axis_match_numpy():
     pad_width = ((1, 1), (2, 2), (3, 3))
     constants = ((7, 8), (1, 2), (3, 4))
     got = Array(chw, channel_axis=0).pad(pad_width, constant_values=constants)
-    np.testing.assert_array_equal(got.realize(), np.pad(chw, pad_width, constant_values=constants))
+    np.testing.assert_array_equal(
+        got.realize(), np.pad(chw, pad_width, constant_values=constants)
+    )
 
 
 @pytest.mark.parametrize("reps", [(2, 1, 1), (2, 2, 3), (1, 2), 3], ids=str)
 def test_chw_tile_matches_numpy(reps):
     chw = _chw()
-    np.testing.assert_array_equal(mi.tile(Array(chw, channel_axis=0), reps).realize(), np.tile(chw, reps))
+    np.testing.assert_array_equal(
+        mi.tile(Array(chw, channel_axis=0), reps).realize(), np.tile(chw, reps)
+    )
 
 
 def test_chw_broadcast_matches_numpy():
     chw = _chw()
     one_channel = Array(chw[:1], channel_axis=0)
     np.testing.assert_array_equal(
-        mi.broadcast_to(one_channel, (3, 6, 9)).realize(), np.broadcast_to(chw[:1], (3, 6, 9))
+        mi.broadcast_to(one_channel, (3, 6, 9)).realize(),
+        np.broadcast_to(chw[:1], (3, 6, 9)),
     )
     repeated = np.broadcast_to(chw[:1], (4, 6, 9))
     np.testing.assert_array_equal(Array(repeated, channel_axis=0).realize(), repeated)
@@ -134,7 +143,10 @@ def test_legacy_full_frame_ops_rejected_on_chw_and_run_after_moveaxis(name):
     def run(x: Array) -> Array:
         if name == "fix_vignette":
             return mi.fix_vignette(
-                x, params=np.array([0.1, 0.0, 0.0, 0.0, 0.0]), center_x=0.5, center_y=0.5
+                x,
+                params=np.array([0.1, 0.0, 0.0, 0.0, 0.0]),
+                center_x=0.5,
+                center_y=0.5,
             )
         if name == "warp_rectilinear":
             return mi.warp_rectilinear(
@@ -207,7 +219,9 @@ def test_random_index_matches_numpy(channel_axis, seed):
         _random_channel_key(rng) if axis == channel_axis else _random_slice(rng, length)
         for axis, length in enumerate(src.shape)
     )
-    np.testing.assert_array_equal(Array(src, channel_axis=channel_axis)[key].realize(), src[key])
+    np.testing.assert_array_equal(
+        Array(src, channel_axis=channel_axis)[key].realize(), src[key]
+    )
 
 
 @pytest.mark.parametrize("channel_axis", [0, 2])

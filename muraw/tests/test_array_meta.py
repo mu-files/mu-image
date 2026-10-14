@@ -132,7 +132,11 @@ def test_view_node_buffer_matches_the_ingest_meta(arr):
 
 def test_with_size_sets_other_fields():
     meta = _meta((2, 5)).with_size(height=3, dtype=np.uint16, origin=(1, 2))
-    assert (meta.shape, meta.dtype, meta.origin) == ((3, 5), np.dtype(np.uint16), (1, 2))
+    assert (meta.shape, meta.dtype, meta.origin) == (
+        (3, 5),
+        np.dtype(np.uint16),
+        (1, 2),
+    )
 
 
 def test_array_ndim_matches_shape():

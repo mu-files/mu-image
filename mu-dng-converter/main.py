@@ -36,7 +36,9 @@ terms."""
 def _get_config_dir() -> Path:
     """Get the application config directory (platform-specific)."""
     if platform.system() == "Darwin":
-        config_dir = Path.home() / "Library" / "Application Support" / "mu-dng-converter"
+        config_dir = (
+            Path.home() / "Library" / "Application Support" / "mu-dng-converter"
+        )
     elif platform.system() == "Windows":
         config_dir = Path.home() / "AppData" / "Local" / "mu-dng-converter"
     else:
@@ -64,6 +66,7 @@ def _set_macos_icon():
     """Set the macOS Dock icon to the app icon."""
     try:
         from AppKit import NSApplication, NSImage
+
         icon_path = Path(__file__).parent / "assets" / "icon.png"
         if icon_path.exists():
             app = NSApplication.sharedApplication()
@@ -73,10 +76,13 @@ def _set_macos_icon():
         pass
 
 
-def _set_macos_window_constraints(title: str, width: int, min_height: int, max_height: int):
+def _set_macos_window_constraints(
+    title: str, width: int, min_height: int, max_height: int
+):
     """Constrain the native NSWindow to a fixed width while allowing vertical resize."""
     try:
         from AppKit import NSApplication
+
         app = NSApplication.sharedApplication()
         for window in app.windows():
             if window.title() == title:
@@ -90,6 +96,7 @@ def _set_macos_window_constraints(title: str, width: int, min_height: int, max_h
 def main():
     """Main PyWebView application."""
     import setproctitle
+
     setproctitle.setproctitle("mu-dng-converter")
 
     # Set macOS Dock icon immediately, before any window is created
@@ -99,7 +106,7 @@ def main():
     # Get the absolute path to the web directory
     web_dir = Path(__file__).parent / "web"
     index_file = web_dir / "index.html"
-    
+
     # Create the main application window
     window = webview.create_window(
         title="mu DNG Converter",
@@ -109,7 +116,7 @@ def main():
         resizable=True,
         min_size=(760, 500),
         text_select=True,
-        js_api=expose_to_window
+        js_api=expose_to_window,
     )
 
     # Apply native macOS window constraints after PyWebView initialises
@@ -124,6 +131,7 @@ def main():
 
     # Start the webview
     webview.start()
+
 
 if __name__ == "__main__":
     main()

@@ -38,7 +38,9 @@ def test_rot90_any_axes_matches_numpy(channel_axis, axes, k):
     src = np.moveaxis(_rgb(), -1, channel_axis).copy()
     first, second = (axis % 3 for axis in axes)
     swapped = {first: second, second: first}
-    turned_channel_axis = channel_axis if k == 2 else swapped.get(channel_axis, channel_axis)
+    turned_channel_axis = (
+        channel_axis if k == 2 else swapped.get(channel_axis, channel_axis)
+    )
     if turned_channel_axis == 1:
         with pytest.raises(NotImplementedError, match="channel_axis 1"):
             rot90(Array(src, channel_axis=channel_axis), k, axes)
@@ -107,7 +109,9 @@ def test_flip_rejects_an_axis_out_of_range_like_numpy():
 
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
 def test_rot90_then_fliplr_matches_numpy(src):
-    np.testing.assert_array_equal(fliplr(rot90(Array(src), 1)), np.fliplr(np.rot90(src, 1)))
+    np.testing.assert_array_equal(
+        fliplr(rot90(Array(src), 1)), np.fliplr(np.rot90(src, 1))
+    )
 
 
 def test_flips_and_rot180_are_views():
@@ -188,22 +192,39 @@ _SHAPES = {"1d": _V, "mono": _mono(), "mono1": _mono()[..., None], "rgb": _rgb()
 # returns None when the permutation would move the channel axis at that rank.
 _SPATIAL_CALLS = [
     ("transpose_2d", lambda m, a, ndim: m.transpose(a, (1, 0)) if ndim == 2 else None),
-    ("transpose_3d", lambda m, a, ndim: m.transpose(a, (1, 0, 2)) if ndim == 3 else None),
-    ("transpose_negative", lambda m, a, ndim: m.transpose(a, (-2, -3, -1)) if ndim == 3 else None),
+    (
+        "transpose_3d",
+        lambda m, a, ndim: m.transpose(a, (1, 0, 2)) if ndim == 3 else None,
+    ),
+    (
+        "transpose_negative",
+        lambda m, a, ndim: m.transpose(a, (-2, -3, -1)) if ndim == 3 else None,
+    ),
     ("transpose_identity", lambda m, a, ndim: m.transpose(a, tuple(range(ndim)))),
     ("transpose_none", lambda m, a, ndim: m.transpose(a)),
-    ("permute_dims", lambda m, a, ndim: m.permute_dims(a, (1, 0, 2)) if ndim == 3 else None),
+    (
+        "permute_dims",
+        lambda m, a, ndim: m.permute_dims(a, (1, 0, 2)) if ndim == 3 else None,
+    ),
     ("swapaxes", lambda m, a, ndim: m.swapaxes(a, 0, 1) if ndim >= 2 else None),
-    ("swapaxes_negative", lambda m, a, ndim: m.swapaxes(a, -2, 0) if ndim == 2 else None),
+    (
+        "swapaxes_negative",
+        lambda m, a, ndim: m.swapaxes(a, -2, 0) if ndim == 2 else None,
+    ),
     ("swapaxes_same", lambda m, a, ndim: m.swapaxes(a, 0, -ndim)),
     ("moveaxis", lambda m, a, ndim: m.moveaxis(a, 0, 1) if ndim >= 2 else None),
-    ("moveaxis_sequence", lambda m, a, ndim: m.moveaxis(a, (0, 1), (1, 0)) if ndim >= 2 else None),
+    (
+        "moveaxis_sequence",
+        lambda m, a, ndim: m.moveaxis(a, (0, 1), (1, 0)) if ndim >= 2 else None,
+    ),
     ("moveaxis_1d", lambda m, a, ndim: m.moveaxis(a, 0, -1) if ndim == 1 else None),
 ]
 
 
 @pytest.mark.parametrize("shape", list(_SHAPES), ids=list(_SHAPES))
-@pytest.mark.parametrize("call", [c for _, c in _SPATIAL_CALLS], ids=[n for n, _ in _SPATIAL_CALLS])
+@pytest.mark.parametrize(
+    "call", [c for _, c in _SPATIAL_CALLS], ids=[n for n, _ in _SPATIAL_CALLS]
+)
 def test_spatial_permutations_match_numpy(shape, call):
     import muimage as mi
 
@@ -244,7 +265,9 @@ def test_spatial_permutations_emit_one_orientation():
 
 # The permutations of an (H, W, C) array that do not move its channels to
 # axis 1.
-_PERMUTATIONS = [order for order in itertools.permutations(range(3)) if order.index(2) != 1]
+_PERMUTATIONS = [
+    order for order in itertools.permutations(range(3)) if order.index(2) != 1
+]
 
 
 @pytest.mark.parametrize("order", _PERMUTATIONS)
@@ -283,7 +306,9 @@ def test_permutations_compose_into_one_node():
     got = mi.swapaxes(mi.moveaxis(t, -1, 0), 1, 2)
     assert _op_names(got) == ["transpose"]
     assert list(got._node.attrs["axes"]) == [2, 1, 0]
-    np.testing.assert_array_equal(got.realize(), np.swapaxes(np.moveaxis(_rgb(), -1, 0), 1, 2))
+    np.testing.assert_array_equal(
+        got.realize(), np.swapaxes(np.moveaxis(_rgb(), -1, 0), 1, 2)
+    )
 
 
 def test_channel_axis_follows_the_channels():
@@ -330,13 +355,18 @@ def test_an_op_that_would_put_the_channels_on_axis_1_raises(call):
 @pytest.mark.parametrize(
     "make, expect",
     [
-        (lambda m: m.expand_dims(Array(_mono()), 1), lambda: np.expand_dims(_mono(), 1)),
+        (
+            lambda m: m.expand_dims(Array(_mono()), 1),
+            lambda: np.expand_dims(_mono(), 1),
+        ),
         (
             lambda m: m.expand_dims((Array(_rgb()) * 2)[:, :, 0], 1),
             lambda: np.expand_dims(_rgb()[:, :, 0] * 2, 1),
         ),
         (
-            lambda m: Array(np.ascontiguousarray(np.moveaxis(_rgb(), -1, 1)), channel_axis=1),
+            lambda m: Array(
+                np.ascontiguousarray(np.moveaxis(_rgb(), -1, 1)), channel_axis=1
+            ),
             lambda: np.moveaxis(_rgb(), -1, 1),
         ),
     ],
@@ -371,7 +401,6 @@ def test_swapping_rows_and_columns_of_a_chw_array_runs_per_channel():
     np.testing.assert_array_equal((got * 2.0).realize(), np.swapaxes(chw, 1, 2) * 2.0)
 
 
-
 @pytest.mark.parametrize("src", [_mono(), _rgb()], ids=["mono", "rgb"])
 def test_ops_before_and_after_swapaxes_match_numpy(src):
     import muimage as mi
@@ -397,7 +426,11 @@ _SIZE_ONE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("src, call", [(s, c) for _, s, c in _SIZE_ONE_CASES], ids=[n for n, _, _ in _SIZE_ONE_CASES])
+@pytest.mark.parametrize(
+    "src, call",
+    [(s, c) for _, s, c in _SIZE_ONE_CASES],
+    ids=[n for n, _, _ in _SIZE_ONE_CASES],
+)
 @pytest.mark.parametrize("lazy", [False, True], ids=["source", "lazy"])
 def test_expand_dims_and_squeeze_match_numpy(src, call, lazy):
     import muimage as mi
@@ -572,7 +605,15 @@ def test_ndarray_input_is_ingested():
         lambda m, a: m.moveaxis(a, 0, 3),
         lambda m, a: m.moveaxis(a, (0, 0), (1, 2)),
     ],
-    ids=["repeated", "too_few", "out_of_range", "swap_out_of_range", "count_mismatch", "move_out_of_range", "move_repeated"],
+    ids=[
+        "repeated",
+        "too_few",
+        "out_of_range",
+        "swap_out_of_range",
+        "count_mismatch",
+        "move_out_of_range",
+        "move_repeated",
+    ],
 )
 def test_invalid_axes_raise_like_numpy(call):
     import muimage as mi
@@ -599,7 +640,13 @@ def test_1d_transpose_with_bad_axis_raises_like_numpy():
         lambda m, a: m.swapaxes(a, 0, 2),
         lambda m, a: m.permute_dims(a, (2, 1, 0)),
     ],
-    ids=["transpose_none", "transpose_chw", "moveaxis_chw", "swapaxes_cwh", "permute_dims"],
+    ids=[
+        "transpose_none",
+        "transpose_chw",
+        "moveaxis_chw",
+        "swapaxes_cwh",
+        "permute_dims",
+    ],
 )
 def test_moving_the_channel_axis_matches_numpy(call):
     import muimage as mi
@@ -622,7 +669,9 @@ def test_astype_is_numeric_cast():
 def test_convert_type_rescales_pixel_range():
     src = np.array([[0, 128, 255]], dtype=np.uint8)
     out = Array(src).convert_type("float32").realize()
-    np.testing.assert_allclose(out, np.array([[0.0, 128.0 / 255.0, 1.0]], dtype=np.float32))
+    np.testing.assert_allclose(
+        out, np.array([[0.0, 128.0 / 255.0, 1.0]], dtype=np.float32)
+    )
 
 
 def test_convert_type_src_bits_scales_count_valued_float():

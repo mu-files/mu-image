@@ -30,7 +30,10 @@ def _catalog_op(name, channels, **props):
         (_catalog_op("cfa_thing", 1, is_cfa=True), "requires requires_2d"),
         (_catalog_op("cfa_thing", "any", is_cfa=True, requires_2d=True), "channels: 1"),
         (_catalog_op("rgb_thing", 1, is_rgb=True), "channels: 3"),
-        (_catalog_op("rgb_thing", 3, is_rgb=True, is_cfa=True, requires_2d=True), "both true"),
+        (
+            _catalog_op("rgb_thing", 3, is_rgb=True, is_cfa=True, requires_2d=True),
+            "both true",
+        ),
     ],
 )
 def test_gen_ops_rejects_property_violations(op, message):
@@ -85,7 +88,10 @@ def _normalize_attrs(channels):
 @pytest.mark.parametrize(
     ("op_name", "src"),
     [
-        ("rgb_normalize_raw", np.array([[[100, 600, 1100], [350, 850, 1600]]], dtype=np.uint16)),
+        (
+            "rgb_normalize_raw",
+            np.array([[[100, 600, 1100], [350, 850, 1600]]], dtype=np.uint16),
+        ),
         ("cfa_normalize_raw", np.array([[100, 600], [1100, 1600]], dtype=np.uint16)),
     ],
     ids=["rgb", "mono"],

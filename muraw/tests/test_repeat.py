@@ -135,7 +135,9 @@ def test_repeat_that_leaves_an_axis_empty_matches_numpy(repeats, axis):
         ((5,), 0, [1, 2, 0, 1, 3]),
     ],
 )
-def test_repeat_with_a_count_per_row_or_column_matches_numpy(shape, axis, repeats, dtype):
+def test_repeat_with_a_count_per_row_or_column_matches_numpy(
+    shape, axis, repeats, dtype
+):
     x = _image(shape, dtype)
     got = _repeat(mi, mi.Array(x), repeats, axis)
     np.testing.assert_array_equal(got.realize(), _repeat(np, x, repeats, axis))

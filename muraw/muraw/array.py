@@ -40,7 +40,9 @@ if TYPE_CHECKING:
 
 
 # The dtypes an Array can hold. Their names match the native ``MuImgDType`` names.
-SUPPORTED_DTYPES = tuple(np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16))
+SUPPORTED_DTYPES = tuple(
+    np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16)
+)
 
 
 def supported_dtype(value: DTypeLike) -> np.dtype:
@@ -117,7 +119,11 @@ class ArrayMeta:
         object.__setattr__(self, "shape", shape)
         if len(shape) >= 3:
             ndim = len(shape)
-            axis = ndim - 1 if self.channel_axis is None else operator.index(self.channel_axis)
+            axis = (
+                ndim - 1
+                if self.channel_axis is None
+                else operator.index(self.channel_axis)
+            )
             axis = normalize_axis_index(axis, ndim, "channel_axis")
             if ndim == 4 and axis == 0:
                 raise ValueError(
@@ -482,7 +488,9 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
     shape = np.broadcast_shapes(first.shape, second.shape)
     channel_axis = None
     if len(shape) == 3:
-        channel_axis = next(a.meta.channel_axis for a in (first, second) if a.meta.ndim == 3)
+        channel_axis = next(
+            a.meta.channel_axis for a in (first, second) if a.meta.ndim == 3
+        )
     operands = []
     for operand in (first, second):
         padded = (1,) * (len(shape) - operand.meta.ndim) + operand.shape
@@ -560,7 +568,9 @@ def _wrap_index(value: Any, size: int, axis: int, what: str) -> int:
     raw = int(value)
     index = raw + size if raw < 0 else raw
     if index < 0 or index >= size:
-        raise IndexError(f"index {value} is out of bounds for axis {axis} with size {size}")
+        raise IndexError(
+            f"index {value} is out of bounds for axis {axis} with size {size}"
+        )
     return index
 
 
@@ -605,7 +615,9 @@ def _selection_key(
         elif rank_drop:
             values = [int(key)]
         else:
-            raise TypeError(f"{what} index must be an int, a slice, or a sequence of ints")
+            raise TypeError(
+                f"{what} index must be an int, a slice, or a sequence of ints"
+            )
         if not values:
             raise _EmptySelection
         indices = [_wrap_index(value, size, axis, what) for value in values]
@@ -698,7 +710,9 @@ def _index_array(item: Any) -> np.ndarray:
 
 
 def _is_int_index(item: Any) -> bool:
-    return isinstance(item, (int, np.integer)) and not isinstance(item, (bool, np.bool_))
+    return isinstance(item, (int, np.integer)) and not isinstance(
+        item, (bool, np.bool_)
+    )
 
 
 def _raise_what_numpy_raises(shape: Tuple[int, ...], items: Tuple[Any, ...]) -> int:
@@ -733,7 +747,9 @@ def _gather_per_axis(
     ``NotImplementedError``.
     """
     indexed = [
-        at for at, item in enumerate(items) if item is not None and not isinstance(item, slice)
+        at
+        for at, item in enumerate(items)
+        if item is not None and not isinstance(item, slice)
     ]
     arrays = [at for at in indexed if np.ndim(items[at]) > 0]
     if not arrays or indexed == arrays[:1]:
@@ -1027,15 +1043,21 @@ def _permute(array: "Array", order: Tuple[int, ...]) -> "Array":
     from .engines import ops as engine_ops
 
     if meta.size == 0:
-        channel_axis = None if meta.channel_axis is None else order.index(meta.channel_axis)
+        channel_axis = (
+            None if meta.channel_axis is None else order.index(meta.channel_axis)
+        )
         if meta.ndim == 4:
             # Axis 0 of a 4-axis array holds its frames.
             channel_axis = 3
         return _empty_array(
-            meta.copy(shape=tuple(meta.shape[axis] for axis in order), channel_axis=channel_axis)
+            meta.copy(
+                shape=tuple(meta.shape[axis] for axis in order),
+                channel_axis=channel_axis,
+            )
         )
     if meta.ndim == 2 or (
-        order[meta.channel_axis] == meta.channel_axis and (meta.ndim < 4 or order[0] == 0)
+        order[meta.channel_axis] == meta.channel_axis
+        and (meta.ndim < 4 or order[0] == 0)
     ):
         return engine_ops.orientation(array, orientation=5)
     if meta.ndim == 4:
@@ -1105,7 +1127,9 @@ def expand_dims(a: ArrayLike, axis: Any) -> "Array":
     out_ndim = len(axes) + a.meta.ndim
     new_axes = normalize_axis_tuple(axes, out_ndim)
     sizes = iter(a.shape)
-    shape = tuple(1 if position in new_axes else next(sizes) for position in range(out_ndim))
+    shape = tuple(
+        1 if position in new_axes else next(sizes) for position in range(out_ndim)
+    )
     if len(shape) > 4:
         raise ValueError(
             f"expand_dims of shape {a.shape} gives {len(shape)} axes; an Array has at most 4"
@@ -1135,7 +1159,9 @@ def squeeze(a: ArrayLike, axis: Any = None) -> "Array":
                 "cannot select an axis to squeeze out which has size not equal to one"
             )
         removed = set(axes)
-    shape = tuple(size for position, size in enumerate(a.shape) if position not in removed)
+    shape = tuple(
+        size for position, size in enumerate(a.shape) if position not in removed
+    )
     if not shape:
         raise ValueError(f"squeeze of shape {a.shape} would leave no axes")
     return _reshape_layout(a, shape)
@@ -1157,7 +1183,9 @@ def _as_shape(shape: Any, size: Optional[int] = None) -> Tuple[int, ...]:
         else:
             dims = tuple(operator.index(dim) for dim in shape)
     except TypeError:
-        raise TypeError(f"shape must be an int or a sequence of ints, got {shape!r}") from None
+        raise TypeError(
+            f"shape must be an int or a sequence of ints, got {shape!r}"
+        ) from None
     if size is not None and -1 in dims:
         unknown = dims.index(-1)
         others = dims[:unknown] + dims[unknown + 1 :]
@@ -1203,7 +1231,9 @@ def _empty_array(meta: ArrayMeta) -> "Array":
     return out
 
 
-def _empty_with_shape(like: "Array", shape: Tuple[int, ...], dtype: Any = None) -> "Array":
+def _empty_with_shape(
+    like: "Array", shape: Tuple[int, ...], dtype: Any = None
+) -> "Array":
     """An empty Array of ``shape``. A 3- or 4-axis result keeps ``like``'s
     channel axis when ``like`` has as many axes, and puts it last otherwise.
     """
@@ -1436,7 +1466,9 @@ def linspace(
     )
 
 
-def full_like(array: "Array", fill_value: Any, dtype: DTypeLike | None = None) -> "Array":
+def full_like(
+    array: "Array", fill_value: Any, dtype: DTypeLike | None = None
+) -> "Array":
     """Lazy constant with ``array``'s shape. ``dtype`` defaults to the reference."""
     et = array.dtype if dtype is None else supported_dtype(dtype)
     return full(array.shape, fill_value, dtype=et)
@@ -1509,7 +1541,9 @@ def reshape(a: ArrayLike, /, shape: Any, order: str = "C") -> "Array":
     """
     a = Array(a)
     if order != "C":
-        raise NotImplementedError(f"reshape order {order!r} is not supported; use order='C'")
+        raise NotImplementedError(
+            f"reshape order {order!r} is not supported; use order='C'"
+        )
     return _reshape_layout(a, _as_shape(shape, int(np.prod(a.shape))))
 
 
@@ -1649,7 +1683,9 @@ def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     )
 
 
-def take(a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "raise") -> "Array":
+def take(
+    a: ArrayLike, indices: Any, axis: Optional[int] = None, mode: str = "raise"
+) -> "Array":
     """The elements of ``a`` at ``indices`` along ``axis``, like ``numpy.take``.
 
     ``axis=None`` takes from the flattened array. ``mode`` is ``"raise"``,
@@ -1755,17 +1791,13 @@ def meshgrid(
     input is an image, not a coordinate vector.
     """
     if indexing not in ("xy", "ij"):
-        raise ValueError(
-            f"meshgrid indexing must be 'xy' or 'ij', got {indexing!r}"
-        )
+        raise ValueError(f"meshgrid indexing must be 'xy' or 'ij', got {indexing!r}")
     if len(xi) != 2:
         raise ValueError(f"meshgrid takes two 1D arrays, got {len(xi)}")
     x, y = (Array(vector) for vector in xi)
     for name, vector in (("x", x), ("y", y)):
         if len(vector.shape) != 1:
-            raise ValueError(
-                f"meshgrid {name} must be 1D, got shape {vector.shape}"
-            )
+            raise ValueError(f"meshgrid {name} must be 1D, got shape {vector.shape}")
     if indexing == "xy":
         first, second = x[None, :], y[:, None]
         shape = (y.shape[0], x.shape[0])
@@ -1922,7 +1954,9 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
                 cols = list(range(left, left + source.meta.width))
             add_entry("by_row_col", rows + cols)
         if channels:
-            add_entry("dest_channels", [operator.index(channel) for channel in channels[0]])
+            add_entry(
+                "dest_channels", [operator.index(channel) for channel in channels[0]]
+            )
     if placements and not sources:
         return base
     attrs: dict[str, Any] = {}
@@ -1936,7 +1970,9 @@ def _image_sequence(name: str, arrays: Sequence[ArrayLike]) -> list["Array"]:
     """The arrays in ``arrays``. An ndarray is the sequence of its first-axis
     slices, as in NumPy. An ``Array`` is lazy and is not iterated."""
     if isinstance(arrays, (Array, str, bytes)):
-        raise TypeError(f"{name} takes a sequence of arrays, got {type(arrays).__name__}")
+        raise TypeError(
+            f"{name} takes a sequence of arrays, got {type(arrays).__name__}"
+        )
     items = [Array(item) for item in arrays]
     if not items:
         raise ValueError(f"need at least one array to {name}")
@@ -2042,7 +2078,9 @@ def concatenate(arrays: Sequence[ArrayLike], axis: int = 0) -> "Array":
     """
     images = _image_sequence("concatenate", arrays)
     if all(image.meta.size == 0 for image in images):
-        return _empty_join(lambda stand_ins: np.concatenate(stand_ins, axis=axis), images)
+        return _empty_join(
+            lambda stand_ins: np.concatenate(stand_ins, axis=axis), images
+        )
     shapes = [tuple(image.shape) for image in images]
     if len({image.ndim for image in images}) != 1:
         raise ValueError(
@@ -2161,7 +2199,9 @@ class Array:
             if origin is not None:
                 raise ValueError("origin= is only valid when ingesting a source buffer")
             if channel_axis != -1:
-                raise ValueError("channel_axis= is only valid when ingesting a source buffer")
+                raise ValueError(
+                    "channel_axis= is only valid when ingesting a source buffer"
+                )
             if _meta is not None or _node is not None:
                 raise ValueError("Array(Array) cannot take _meta= or _node=")
             return data
@@ -2260,7 +2300,9 @@ class Array:
     def meta(self) -> ArrayMeta:
         return self._meta
 
-    def _scalar_op(self, name: str, other: ArithmeticOperand, reverse: bool = False) -> "Array":
+    def _scalar_op(
+        self, name: str, other: ArithmeticOperand, reverse: bool = False
+    ) -> "Array":
         """``self`` and ``other`` with the scalar op ``name``, or the op
         between two arrays when ``other`` is an Array or a constant that is
         not one value or one per channel. ``reverse`` puts ``other`` first.
@@ -2290,7 +2332,9 @@ class Array:
                 if reverse:
                     attrs["reverse"] = True
                 return op(name, self.astype(dtype), **attrs)
-            channel_axis = self.meta.channel_axis if const.ndim == self.meta.ndim else None
+            channel_axis = (
+                self.meta.channel_axis if const.ndim == self.meta.ndim else None
+            )
             other = Array(
                 np.ascontiguousarray(const, dtype=dtype),
                 channel_axis=channel_axis,
@@ -2358,7 +2402,9 @@ class Array:
         if self._meta.size == 0:
             return self._empty_view(region)
         try:
-            return self._view_region(region, oob_valid=oob_valid, reset_origin=reset_origin)
+            return self._view_region(
+                region, oob_valid=oob_valid, reset_origin=reset_origin
+            )
         except _EmptySelection:
             return self._empty_view(region)
         except NotImplementedError:
@@ -2517,7 +2563,9 @@ class Array:
             left, right = (
                 int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)
             )
-            consts = [float(v) for v in _expand_pad(constant_values, "constant_values", 1)]
+            consts = [
+                float(v) for v in _expand_pad(constant_values, "constant_values", 1)
+            ]
             return mi.pad(
                 self,
                 top=0,
@@ -2546,7 +2594,9 @@ class Array:
         if ndim >= 3:
             attrs["channel_before"], attrs["channel_after"] = sides[4:]
         if ndim == 4 and any(all_sides[:2]):
-            attrs["frame_before"], attrs["frame_after"] = (int(v) for v in all_sides[:2])
+            attrs["frame_before"], attrs["frame_after"] = (
+                int(v) for v in all_sides[:2]
+            )
             consts += [float(v) for v in all_consts[:2]]
         return mi.pad(self, mode=mode, constant_values=consts, **attrs)
 
@@ -2568,7 +2618,9 @@ class Array:
         With no axes, every axis is reversed, so ``(H, W, C)`` becomes
         ``(C, W, H)``. A 1D array is returned unchanged, as in NumPy.
         """
-        if len(axes) == 1 and (axes[0] is None or not isinstance(axes[0], (int, np.integer))):
+        if len(axes) == 1 and (
+            axes[0] is None or not isinstance(axes[0], (int, np.integer))
+        ):
             axes = () if axes[0] is None else tuple(axes[0])
         return transpose(self, axes or None)
 
@@ -2581,7 +2633,9 @@ class Array:
         """Repeat each element along ``axis``, as ``ndarray.repeat``."""
         return repeat(self, repeats, axis)
 
-    def take(self, indices: Any, axis: Optional[int] = None, mode: str = "raise") -> "Array":
+    def take(
+        self, indices: Any, axis: Optional[int] = None, mode: str = "raise"
+    ) -> "Array":
         """The elements at ``indices`` along ``axis``, as ``ndarray.take``."""
         return take(self, indices, axis, mode=mode)
 

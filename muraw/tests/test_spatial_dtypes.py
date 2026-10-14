@@ -31,7 +31,9 @@ def _realize_ops(monkeypatch, array: Array) -> tuple[np.ndarray, list[str]]:
 @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES, ids=lambda dt: dt.name)
 def test_view_all_dtypes(dtype, monkeypatch):
     src = _src(dtype)
-    got, ops = _realize_ops(monkeypatch, Array(src).view(left=1, top=1, width=3, height=2))
+    got, ops = _realize_ops(
+        monkeypatch, Array(src).view(left=1, top=1, width=3, height=2)
+    )
     assert ops == ["view"]
     np.testing.assert_array_equal(got, src[1:3, 1:4])
 
@@ -51,9 +53,7 @@ def test_pad_all_dtypes(dtype, monkeypatch):
 @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES, ids=lambda dt: dt.name)
 def test_orientation_all_dtypes(dtype, monkeypatch):
     src = _src(dtype)
-    got, ops = _realize_ops(
-        monkeypatch, mi.orientation(Array(src), orientation=6)
-    )
+    got, ops = _realize_ops(monkeypatch, mi.orientation(Array(src), orientation=6))
     assert ops == ["orientation"]
     np.testing.assert_array_equal(got, np.ascontiguousarray(np.rot90(src, -1)))
 

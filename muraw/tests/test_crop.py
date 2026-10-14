@@ -205,7 +205,9 @@ def test_newaxis_lifts_mono_to_rank3():
     assert dropped.shape == (2, 3)
     assert dropped._node.op == "reshape"
     assert dropped._node.inputs == (filled,)
-    np.testing.assert_array_equal(filled.realize(), np.zeros((2, 3, 1), dtype=np.float32))
+    np.testing.assert_array_equal(
+        filled.realize(), np.zeros((2, 3, 1), dtype=np.float32)
+    )
     np.testing.assert_array_equal(dropped.realize(), np.zeros((2, 3), dtype=np.float32))
 
 
@@ -318,7 +320,14 @@ def test_reverse_slice_rgb_keeps_all_channels():
 
 
 @pytest.mark.parametrize(
-    "key", [np.s_[1:4:-1, :], np.s_[20:10, :], np.s_[10:20:-1, :], np.s_[2:2, :], np.s_[:, 3:3]]
+    "key",
+    [
+        np.s_[1:4:-1, :],
+        np.s_[20:10, :],
+        np.s_[10:20:-1, :],
+        np.s_[2:2, :],
+        np.s_[:, 3:3],
+    ],
 )
 def test_empty_slice_matches_numpy(key):
     src = _mono()

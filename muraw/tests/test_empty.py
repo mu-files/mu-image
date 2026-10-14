@@ -98,7 +98,9 @@ def _check(call, x, source):
 def test_every_call_on_an_empty_array_matches_numpy(layout):
     shape, channel_axis = EMPTY[layout]
     x = np.zeros(shape, np.float32)
-    source = mi.Array(x) if channel_axis is None else mi.Array(x, channel_axis=channel_axis)
+    source = (
+        mi.Array(x) if channel_axis is None else mi.Array(x, channel_axis=channel_axis)
+    )
     differ = {name: _check(call, x, source) for name, call in CALLS.items()}
     differ = {name: why for name, why in differ.items() if why is not None}
     assert not differ, "\n".join(f"{name}: {why}" for name, why in differ.items())
@@ -118,7 +120,10 @@ def _join(lib, pieces, axis):
     ],
 )
 def test_a_join_skips_its_empty_pieces(shapes, axis):
-    pieces = [np.arange(np.prod(shape), dtype=np.float32).reshape(shape) + 1 for shape in shapes]
+    pieces = [
+        np.arange(np.prod(shape), dtype=np.float32).reshape(shape) + 1
+        for shape in shapes
+    ]
     got = _join(mi, [mi.Array(piece) for piece in pieces], axis)
     np.testing.assert_array_equal(got.realize(), _join(np, pieces, axis))
 
@@ -133,7 +138,9 @@ def _accumulate(lib, rows):
 
 def test_an_accumulator_that_starts_empty_matches_numpy():
     rows = np.arange(12, dtype=np.float32).reshape(4, 3)
-    np.testing.assert_array_equal(_accumulate(mi, mi.Array(rows)).realize(), _accumulate(np, rows))
+    np.testing.assert_array_equal(
+        _accumulate(mi, mi.Array(rows)).realize(), _accumulate(np, rows)
+    )
 
 
 @pytest.mark.parametrize(
@@ -148,8 +155,15 @@ def test_an_accumulator_that_starts_empty_matches_numpy():
 def test_a_constant_pad_of_an_empty_array_matches_numpy(shape, width, constant_values):
     x = np.zeros(shape, np.float32)
     channel_axis = 0 if len(shape) == 3 and shape[0] == 0 else -1
-    got = _pad(mi, mi.Array(x, channel_axis=channel_axis), width, constant_values=constant_values)
-    np.testing.assert_array_equal(got.realize(), _pad(np, x, width, constant_values=constant_values))
+    got = _pad(
+        mi,
+        mi.Array(x, channel_axis=channel_axis),
+        width,
+        constant_values=constant_values,
+    )
+    np.testing.assert_array_equal(
+        got.realize(), _pad(np, x, width, constant_values=constant_values)
+    )
 
 
 def test_a_pad_that_reads_an_empty_axis_raises_what_numpy_raises():

@@ -44,10 +44,14 @@ def test_a_later_source_overwrites_the_overlap():
     expected = base.copy()
     expected[1:5, 1:5] = 1
     expected[2:5, 3:6] = 2
-    got = Array(base).composite(
-        ((1, 1), np.full((4, 4), 1, np.float32)),
-        ((2, 3), np.full((3, 3), 2, np.float32)),
-    ).realize()
+    got = (
+        Array(base)
+        .composite(
+            ((1, 1), np.full((4, 4), 1, np.float32)),
+            ((2, 3), np.full((3, 3), 2, np.float32)),
+        )
+        .realize()
+    )
     np.testing.assert_array_equal(got, expected)
 
 
@@ -64,7 +68,9 @@ def test_a_view_and_a_lazy_source_match_their_pixels():
     viewed = other[:4, :5, :3]
     expected = base.copy()
     expected[:] = viewed
-    np.testing.assert_array_equal(Array(base).composite(((0, 0), viewed)).realize(), expected)
+    np.testing.assert_array_equal(
+        Array(base).composite(((0, 0), viewed)).realize(), expected
+    )
 
     strided = other[::2, ::-1, :3]
     canvas = np.zeros(strided.shape, np.uint8)
@@ -139,7 +145,9 @@ def test_a_one_dimensional_origin_is_the_column():
     src = np.array([9, 8, 7], np.float32)
     expected = base.copy()
     expected[2:5] = src
-    np.testing.assert_array_equal(Array(base).composite(((2,), src)).realize(), expected)
+    np.testing.assert_array_equal(
+        Array(base).composite(((2,), src)).realize(), expected
+    )
 
 
 def test_the_result_keeps_the_base_origin_and_leaves_the_base_unchanged():
@@ -194,7 +202,9 @@ def test_the_same_placements_on_a_packed_and_a_chw_base():
 def test_three_mono_sources_stack_into_chw_channels():
     channels = [_image((3, 4), np.float32) for _ in range(3)]
     base = _chw(np.zeros((3, 3, 4), np.float32))
-    got = base.composite(*(((0, 0), mono, [c]) for c, mono in enumerate(channels))).realize()
+    got = base.composite(
+        *(((0, 0), mono, [c]) for c, mono in enumerate(channels))
+    ).realize()
     np.testing.assert_array_equal(got, np.stack(channels, axis=0))
 
 
@@ -214,10 +224,14 @@ def test_a_packed_base_takes_planes_from_a_chw_array():
     expected = base.copy()
     expected[:, :, 0] = planes[0]
     expected[:, :, 2] = planes[2]
-    got = Array(base).composite(
-        ((0, 0), planes[0], [0]),
-        ((0, 0), planes[2], [2]),
-    ).realize()
+    got = (
+        Array(base)
+        .composite(
+            ((0, 0), planes[0], [0]),
+            ((0, 0), planes[2], [2]),
+        )
+        .realize()
+    )
     np.testing.assert_array_equal(got, expected)
 
 
@@ -228,10 +242,14 @@ def test_a_chw_base_takes_a_region_from_packed_channels():
     expected = base.copy()
     expected[0, 1:5, 2:7] = packed[:, :, 0]
     expected[2, 1:5, 2:7] = packed[:, :, 2]
-    got = _chw(base).composite(
-        ((1, 2), packed[:, :, 0], [0]),
-        ((1, 2), packed[:, :, 2], [2]),
-    ).realize()
+    got = (
+        _chw(base)
+        .composite(
+            ((1, 2), packed[:, :, 0], [0]),
+            ((1, 2), packed[:, :, 2], [2]),
+        )
+        .realize()
+    )
     np.testing.assert_array_equal(got, expected)
 
 
@@ -282,7 +300,9 @@ def _assigned(base, chw, *placements):
 def _composited(base, chw, *placements):
     """The same placements as ``_assigned``, through ``mi.composite``."""
     wrap = _chw if chw else Array
-    sources = [(origin, wrap(src) if src.ndim == 3 else src) for origin, src in placements]
+    sources = [
+        (origin, wrap(src) if src.ndim == 3 else src) for origin, src in placements
+    ]
     return wrap(base).composite(*sources).realize()
 
 
@@ -358,9 +378,14 @@ def test_one_array_placed_several_ways():
         base = _image((6, 8, 3), np.float32)
         samples = src
         if chw:
-            base, samples = base.transpose(2, 0, 1).copy(), src.transpose(2, 0, 1).copy()
+            base, samples = (
+                base.transpose(2, 0, 1).copy(),
+                src.transpose(2, 0, 1).copy(),
+            )
         placed = (_chw if chw else Array)(samples)
-        got = (_chw if chw else Array)(base).composite(*((origin, placed) for origin in origins))
+        got = (_chw if chw else Array)(base).composite(
+            *((origin, placed) for origin in origins)
+        )
         assert all(source is placed for source in got._node.inputs[1:])
         expected = _assigned(base, chw, *((origin, samples) for origin in origins))
         np.testing.assert_array_equal(got.realize(), expected)

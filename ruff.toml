@@ -1,0 +1,22 @@
+# Ruff for the mu-image repo (muraw and mu-dng-converter).
+# CI installs ruff 0.17.0. The formatter is the Black-compatible ruff
+# format: 88 columns, double quotes, target Python 3.12.
+
+required-version = ">=0.17"
+
+target-version = "py312"
+line-length = 88
+src = ["muraw", "mu-dng-converter"]
+
+[lint]
+# Pyflakes and isort. Layout is the formatter's job.
+# Ruff 0.17's full default set is much wider (bugbear, tryceratops,
+# bandit, pyupgrade, and others). Those stay off until we choose that
+# cleanup; turning them on today would rewrite exception handling and
+# annotations across the tree. The pycodestyle error codes are off too:
+# this tree imports after startup setup on purpose, and the binary
+# parsers use semicolon statements.
+select = ["F", "I"]
+
+[lint.isort]
+known-first-party = ["muraw", "muimage", "mu_dng_converter"]

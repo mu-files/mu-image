@@ -10,7 +10,9 @@ import muimage as mi
 from muraw.array import Array
 
 
-def _stack(frames: int = 3, height: int = 6, width: int = 8, channels: int = 3) -> np.ndarray:
+def _stack(
+    frames: int = 3, height: int = 6, width: int = 8, channels: int = 3
+) -> np.ndarray:
     shape = (frames, height, width, channels)
     return np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
 
@@ -200,7 +202,11 @@ def test_a_broadcast_stack_is_tiled_on_ingest():
     ("pad_width", "mode", "constant_values"),
     [
         (((0, 0), (1, 2), (3, 0), (0, 0)), "constant", 7.0),
-        (((1, 2), (0, 0), (0, 0), (0, 0)), "constant", ((5.0, 6.0), (0, 0), (0, 0), (0, 0))),
+        (
+            ((1, 2), (0, 0), (0, 0), (0, 0)),
+            "constant",
+            ((5.0, 6.0), (0, 0), (0, 0), (0, 0)),
+        ),
         (((1, 1), (1, 0), (0, 1), (0, 0)), "edge", 0),
         (((0, 0), (0, 0), (0, 0), (1, 1)), "constant", 9.0),
         (((1, 0), (0, 0), (0, 0), (1, 0)), "constant", 4.0),
@@ -232,7 +238,9 @@ def test_expand_dims_of_an_image_is_a_stack():
     image = _stack(1, 3, 4, 3)[0]
     out = mi.expand_dims(Array(image) * 1, 0)
     assert out.shape == (1, 3, 4, 3)
-    np.testing.assert_array_equal((out + Array(_stack(2, 3, 4, 3))).realize(), image + _stack(2, 3, 4, 3))
+    np.testing.assert_array_equal(
+        (out + Array(_stack(2, 3, 4, 3))).realize(), image + _stack(2, 3, 4, 3)
+    )
 
 
 def test_swapping_the_rows_and_columns_of_a_stack_matches_numpy():

@@ -46,7 +46,7 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
                 # Skip pyavm's internal non-standard keys
                 if key == "Spatial.ReferenceDimension":
                     continue
-                attrs[f'avm:{key}'] = val
+                attrs[f"avm:{key}"] = val
     except Exception:
         pass  # pyavm may fail on incomplete headers
 
@@ -76,14 +76,25 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
         scale_val = header.get("SCALE") or header.get("CDELT2")
         if scale_val:
             try:
-                deg_scale = float(scale_val) if float(scale_val) < 0.01 else float(scale_val) / 3600.0
+                deg_scale = (
+                    float(scale_val)
+                    if float(scale_val) < 0.01
+                    else float(scale_val) / 3600.0
+                )
                 attrs["avm:Spatial.Scale"] = [-deg_scale, deg_scale]
             except (ValueError, TypeError):
                 pass
 
     # 4. Rotation Check (independent)
     # Check both standard name and pyavm's internal names (RotationRef, PositionAngle)
-    if not any(k in attrs for k in ("avm:Spatial.Rotation", "avm:Spatial.RotationRef", "avm:Spatial.PositionAngle")):
+    if not any(
+        k in attrs
+        for k in (
+            "avm:Spatial.Rotation",
+            "avm:Spatial.RotationRef",
+            "avm:Spatial.PositionAngle",
+        )
+    ):
         rot_val = header.get("CROTA1") or header.get("CROTA2") or header.get("ROTATANG")
         if rot_val is not None:
             try:
@@ -97,7 +108,10 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
         naxis2 = header.get("NAXIS2") or header.get("IMAGEH")
         if naxis1 and naxis2:
             try:
-                attrs["avm:Spatial.ReferencePixel"] = [float(naxis1) / 2.0, float(naxis2) / 2.0]
+                attrs["avm:Spatial.ReferencePixel"] = [
+                    float(naxis1) / 2.0,
+                    float(naxis2) / 2.0,
+                ]
             except (ValueError, TypeError):
                 pass
 
@@ -126,11 +140,7 @@ def fits_header_to_avm_xmp(header) -> dict[str, Any]:
     if exptime is not None:
         attrs.setdefault("avm:TemporalIntegrationTime", str(float(exptime)))
 
-    observer = (
-        header.get("OBSERVER")
-        or header.get("AUTHOR")
-        or header.get("CREATOR")
-    )
+    observer = header.get("OBSERVER") or header.get("AUTHOR") or header.get("CREATOR")
     if observer and str(observer).strip():
         attrs.setdefault("avm:Creator", str(observer).strip())
 
@@ -191,24 +201,28 @@ def print_fits_info(fits_path: Path) -> None:
 
 # ZWO ASI676MC gain table: (camera_gain, e-/ADU)
 # Source: https://www.zwoastro.com/product/asi676mc/
-_ASI676MC_GAIN_TABLE = np.array([
-    [0, 2.55],
-    [50, 1.50],
-    [100, 0.85],
-    [150, 0.50],
-    [200, 0.30],
-])
+_ASI676MC_GAIN_TABLE = np.array(
+    [
+        [0, 2.55],
+        [50, 1.50],
+        [100, 0.85],
+        [150, 0.50],
+        [200, 0.30],
+    ]
+)
 
 # ZWO ASI676MC blue white balance table: (wb_b, balance)
 # Derived from piecewise calibration, neutral at wb_b=100 (app default)
-_ASI676MC_WB_BLUE_TABLE = np.array([
-    [1, 0.01],
-    [50, 0.59],
-    [55, 0.73],
-    [65, 0.87],
-    [75, 1.00],
-    [100, 1.34],
-])
+_ASI676MC_WB_BLUE_TABLE = np.array(
+    [
+        [1, 0.01],
+        [50, 0.59],
+        [55, 0.73],
+        [65, 0.87],
+        [75, 1.00],
+        [100, 1.34],
+    ]
+)
 
 
 def _gain_to_iso(gain: float, gain_table: np.ndarray) -> int:
@@ -254,9 +268,7 @@ def _parse_fits_datetime(date_str: str) -> datetime | None:
     return None
 
 
-def compute_image_stats(
-    data, white_level: int = 65535, percentiles=(1, 50)
-) -> dict:
+def compute_image_stats(data, white_level: int = 65535, percentiles=(1, 50)) -> dict:
     """Compute percentile values from raw CFA data via histogram.
 
     Args:
@@ -270,7 +282,9 @@ def compute_image_stats(
     """
     num_bins = min(white_level, 10000)
     hist, bin_edges = np.histogram(
-        data.ravel(), bins=num_bins, range=(0, white_level),
+        data.ravel(),
+        bins=num_bins,
+        range=(0, white_level),
     )
     cdf = np.cumsum(hist).astype(np.float64) / np.sum(hist)
 
@@ -282,9 +296,7 @@ def compute_image_stats(
     # Clipping check
     clip_threshold = 0.975 * white_level
     clip_idx = np.searchsorted(bin_edges[:-1], clip_threshold)
-    fraction_bright = 1.0 - (
-        cdf[clip_idx - 1] if clip_idx > 0 else 0.0
-    )
+    fraction_bright = 1.0 - (cdf[clip_idx - 1] if clip_idx > 0 else 0.0)
     result["clipped"] = fraction_bright > 0.25
 
     return result
@@ -327,6 +339,7 @@ def _build_camera_tags(tags, header) -> None:
     else:
         if gain is not None:
             tags.add_tag("ISOSpeedRatings", int(gain))
+
 
 def _build_metadata_tags(
     header,
@@ -607,7 +620,6 @@ def run_batch_fits_to_dng(
     def fits_consumer(task):
         index, file_path, blob = task
         try:
-
             from muraw.tiff_metadata import normalize_array_to_target_byteorder
 
             with astropy_fits.open(io.BytesIO(blob)) as hdul:
@@ -618,7 +630,7 @@ def run_batch_fits_to_dng(
             # DNG spec: unsigned 8-32 bits/sample, or float16/float32
             # (signed integers not supported - SampleFormat must be 1 or 3)
             if data is not None:
-                data = normalize_array_to_target_byteorder(data, '<')
+                data = normalize_array_to_target_byteorder(data, "<")
                 supported = (np.uint8, np.uint16, np.uint32, np.float16, np.float32)
                 if data.dtype == np.float64:
                     _log(f"Converting float64 → float32: {Path(file_path).name}")
@@ -631,7 +643,9 @@ def run_batch_fits_to_dng(
                 elif data.dtype not in supported:
                     # Check for structured arrays (interferometry, tables, etc.)
                     if data.dtype.names is not None:
-                        raise ValueError(f"Structured array (not image data): fields={list(data.dtype.names)}")
+                        raise ValueError(
+                            f"Structured array (not image data): fields={list(data.dtype.names)}"
+                        )
                     raise ValueError(f"Unsupported dtype: {data.dtype}")
 
             # DNG compression not supported for 32-bit or float data
@@ -693,9 +707,7 @@ def run_batch_fits_to_dng(
             encoding = PageEncoding(
                 compression=file_comp_enum,
                 compression_args=file_comp_args,
-                tile_size=(
-                    (256, 256) if file_comp_enum != COMPRESSION.NONE else None
-                ),
+                tile_size=((256, 256) if file_comp_enum != COMPRESSION.NONE else None),
             )
 
             data_spec = IfdDataSpec(
@@ -738,10 +750,7 @@ def run_batch_fits_to_dng(
             )
             return (index, file_path, dng_buf.getvalue())
         except Exception as e:
-            msg = (
-                f"Error: {Path(file_path).name}"
-                f" ({type(e).__name__}): {e}"
-            )
+            msg = f"Error: {Path(file_path).name} ({type(e).__name__}): {e}"
             _log(msg)
             counts.inc("errored")
             return (index, file_path, None)
@@ -761,10 +770,7 @@ def run_batch_fits_to_dng(
                 f.write(blob)
             counts.inc("written")
         except Exception as e:
-            msg = (
-                f"Write failed: {Path(file_path).name}"
-                f" ({type(e).__name__}): {e}"
-            )
+            msg = f"Write failed: {Path(file_path).name} ({type(e).__name__}): {e}"
             _log(msg)
             counts.inc("errored")
 
@@ -799,9 +805,7 @@ def run_batch_fits_to_dng(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert FITS CFA data to DNG"
-    )
+    parser = argparse.ArgumentParser(description="Convert FITS CFA data to DNG")
     parser.add_argument(
         "input",
         type=Path,
@@ -931,7 +935,8 @@ def main():
         help="Print FITS header info and exit (no conversion)",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="count",
         default=0,
         help="Verbosity: -v INFO (pipeline stats), -vv DEBUG",
@@ -939,10 +944,12 @@ def main():
     args = parser.parse_args()
 
     import setproctitle
+
     setproctitle.setproctitle("mu-dng-fits")
 
     if args.verbose:
         import logging
+
         level = logging.DEBUG if args.verbose >= 2 else logging.INFO
         logging.basicConfig(level=level, format="%(message)s")
 
@@ -960,9 +967,7 @@ def main():
     # Resolve input file list
     if args.input.is_dir():
         fits_files = sorted(
-            p
-            for p in args.input.iterdir()
-            if p.suffix.lower() in (".fits", ".fit")
+            p for p in args.input.iterdir() if p.suffix.lower() in (".fits", ".fit")
         )
         if not fits_files:
             print(
@@ -990,10 +995,12 @@ def main():
     wb_xy = None
     if args.wb_temperature is not None:
         from muraw.raw_render import temp_tint_to_xy
+
         wb_xy = temp_tint_to_xy(args.wb_temperature, args.wb_tint)
 
     # Demosaic algorithm
     from muraw.raw_render import DemosaicAlgorithm
+
     demosaic_algorithm = DemosaicAlgorithm.lookup(args.demosaic_algorithm)
 
     # Parse --strip-tag options, supporting comma-separated lists
@@ -1010,10 +1017,14 @@ def main():
     extra_tags = None
     if args.tag:
         from muraw.tiff_metadata import MetadataTags
+
         extra_tags = MetadataTags()
         for tag_spec in args.tag:
             if "=" not in tag_spec:
-                print(f"ERROR: Invalid tag format '{tag_spec}'. Use NAME=VALUE", file=sys.stderr)
+                print(
+                    f"ERROR: Invalid tag format '{tag_spec}'. Use NAME=VALUE",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             name, value = tag_spec.split("=", 1)
             try:
@@ -1028,7 +1039,9 @@ def main():
         try:
             time_offset_seconds = parse_time_shift(args.time_shift)
         except (ValueError, IndexError):
-            print(f"ERROR: Could not parse time shift: {args.time_shift}", file=sys.stderr)
+            print(
+                f"ERROR: Could not parse time shift: {args.time_shift}", file=sys.stderr
+            )
             sys.exit(1)
 
     def _log(msg):
@@ -1083,10 +1096,14 @@ def main():
     qs = result["queue_stats"]
     if "task_queue" in qs:
         q = qs["task_queue"]
-        print(f"  Task queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
+        print(
+            f"  Task queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s"
+        )
     if "writer_queue" in qs:
         q = qs["writer_queue"]
-        print(f"  Writer queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s")
+        print(
+            f"  Writer queue: avg_depth={q['avg_depth']:.1f}, empty={q['empty_time']:.1f}s"
+        )
 
 
 if __name__ == "__main__":

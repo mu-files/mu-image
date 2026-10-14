@@ -104,7 +104,13 @@ _ROW = np.arange(8, dtype=np.float32)
         np.array([1.0, 2.0, 3.0], dtype=np.float32)[None, None, :],
         np.arange(6, dtype=np.float32).reshape(2, 3)[:, :, None],
     ],
-    ids=["row_newaxis", "row_broadcast", "column_newaxis", "pixel_newaxis", "channel_newaxis"],
+    ids=[
+        "row_newaxis",
+        "row_broadcast",
+        "column_newaxis",
+        "pixel_newaxis",
+        "channel_newaxis",
+    ],
 )
 def test_length_one_axis_binds_without_a_copy(src):
     """NumPy gives an axis of length 1 an arbitrary stride, often 0."""

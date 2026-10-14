@@ -48,7 +48,9 @@ def is_bindable(arr: np.ndarray, channel_axis: Optional[int] = None) -> bool:
 
     def pitch_holds(axis: int, span_bytes: int) -> bool:
         stride = int(arr.strides[axis])
-        return int(arr.shape[axis]) == 1 or (stride >= span_bytes and stride % itemsize == 0)
+        return int(arr.shape[axis]) == 1 or (
+            stride >= span_bytes and stride % itemsize == 0
+        )
 
     if arr.ndim == 4 or (arr.ndim == 3 and channel_axis == 0):
         pixel = itemsize * (int(arr.shape[3]) if arr.ndim == 4 else 1)
@@ -110,12 +112,19 @@ def bound_output(result: Array, out: np.ndarray) -> Optional[Tuple[Array, np.nda
     of 3 axes, and a 4-axis buffer must keep its axes in order.
     """
     flipped = tuple(
-        axis for axis in range(out.ndim) if out.strides[axis] < 0 and out.shape[axis] > 1
+        axis
+        for axis in range(out.ndim)
+        if out.strides[axis] < 0 and out.shape[axis] > 1
     )
     unflipped = out[
-        tuple(slice(None, None, -1) if axis in flipped else slice(None) for axis in range(out.ndim))
+        tuple(
+            slice(None, None, -1) if axis in flipped else slice(None)
+            for axis in range(out.ndim)
+        )
     ]
-    order = tuple(sorted(range(out.ndim), key=lambda axis: -abs(unflipped.strides[axis])))
+    order = tuple(
+        sorted(range(out.ndim), key=lambda axis: -abs(unflipped.strides[axis]))
+    )
     if out.ndim == 3 and order.index(result.meta.channel_axis) == 1:
         return None
     if out.ndim == 4 and order != (0, 1, 2, 3):
@@ -203,7 +212,9 @@ def _view_over_packed(arr: np.ndarray) -> Optional[Array]:
     # ``lowest`` reads the same samples with every stride non-negative, so its
     # data pointer is the lowest address ``arr`` reads.
     flipped = [int(stride) < 0 for stride in arr.strides]
-    lowest = arr[tuple(slice(None, None, -1) if flip else slice(None) for flip in flipped)]
+    lowest = arr[
+        tuple(slice(None, None, -1) if flip else slice(None) for flip in flipped)
+    ]
     owner_low, owner_high = byte_bounds(_base_chain(arr)[-1])
     extent = ((height - 1) * row_pitch + parent_width * pixel_size) * itemsize
     # ``first_channel`` is where ``arr``'s first channel sits in a parent
@@ -288,6 +299,7 @@ def _transposed_source(arr: np.ndarray) -> Optional[Array]:
         return None
 
     import muimage as mi
+
     return mi.orientation(inner, orientation=_TRANSPOSE_ORIENTATION[flipped])
 
 

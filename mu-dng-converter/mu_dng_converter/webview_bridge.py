@@ -13,7 +13,9 @@ from typing import Dict, Any, Optional
 def _get_config_dir() -> Path:
     """Get the application config directory (platform-specific)."""
     if platform.system() == "Darwin":
-        config_dir = Path.home() / "Library" / "Application Support" / "mu-dng-converter"
+        config_dir = (
+            Path.home() / "Library" / "Application Support" / "mu-dng-converter"
+        )
     elif platform.system() == "Windows":
         config_dir = Path.home() / "AppData" / "Local" / "mu-dng-converter"
     else:
@@ -29,7 +31,7 @@ def _get_folder_cache_path() -> Path:
 
 class WebViewBridge:
     """Bridge class to handle JavaScript-Python communication."""
-    
+
     def __init__(self):
         self.window = None
         self.cancel_flags = {}  # Cancel flags per tab
@@ -65,11 +67,11 @@ class WebViewBridge:
         if folder is not None and Path(folder).is_dir():
             self.folder_cache[key] = folder
             self._save_folder_cache()
-        
+
     def set_window(self, window):
         """Set the webview window instance."""
         self.window = window
-        
+
     def select_input(
         self,
         tab: str,
@@ -82,15 +84,19 @@ class WebViewBridge:
             directory = self._get_cached_folder(cache_key) or None
 
             if mode == "folder":
-                result = self.window.create_file_dialog(
-                    FileDialog.FOLDER,
-                    directory=directory,
-                ) if directory else self.window.create_file_dialog(FileDialog.FOLDER)
+                result = (
+                    self.window.create_file_dialog(
+                        FileDialog.FOLDER,
+                        directory=directory,
+                    )
+                    if directory
+                    else self.window.create_file_dialog(FileDialog.FOLDER)
+                )
             else:
                 if file_type == "fits":
-                    file_types = ('FITS files (*.fits;*.fit)', 'All files (*.*)')
+                    file_types = ("FITS files (*.fits;*.fit)", "All files (*.*)")
                 else:
-                    file_types = ('DNG files (*.dng)', 'All files (*.*)')
+                    file_types = ("DNG files (*.dng)", "All files (*.*)")
                 if directory:
                     result = self.window.create_file_dialog(
                         FileDialog.OPEN,
@@ -109,7 +115,9 @@ class WebViewBridge:
                 paths = result if isinstance(result, (list, tuple)) else [result]
                 # Cache the folder (first path's parent for files, or the folder itself)
                 if paths and paths[0]:
-                    folder = paths[0] if mode == "folder" else str(Path(paths[0]).parent)
+                    folder = (
+                        paths[0] if mode == "folder" else str(Path(paths[0]).parent)
+                    )
                     self._set_cached_folder(cache_key, folder)
                 if isinstance(result, (list, tuple)):
                     return "\n".join(str(p) for p in result if p)
@@ -117,6 +125,7 @@ class WebViewBridge:
             return ""
         except Exception as e:
             import traceback
+
             print(f"Error selecting input for {tab}: {e}")
             traceback.print_exc()
             return ""
@@ -167,10 +176,11 @@ class WebViewBridge:
             return ""
         except Exception as e:
             import traceback
+
             print(f"Error selecting output for {tab}: {e}")
             traceback.print_exc()
             return ""
-    
+
     def _js(self, fn: str, *args):
         """Call a global JS function with JSON-encoded arguments."""
         payload = ", ".join(json.dumps(a) for a in args)
@@ -178,24 +188,24 @@ class WebViewBridge:
 
     def validate_tag(self, name: str) -> Optional[str]:
         """Check whether a tag name exists in the TIFF tag registry.
-        
+
         Returns:
             The correct case-sensitive tag name if found (exact or case-insensitive),
             or None if not found.
         """
         try:
             from muraw.tiff_metadata import TIFF_TAG_TYPE_REGISTRY
-            
+
             # Exact match
             if name in TIFF_TAG_TYPE_REGISTRY:
                 return name
-            
+
             # Case-insensitive search
             name_lower = name.lower()
             for registry_name in TIFF_TAG_TYPE_REGISTRY:
                 if registry_name.lower() == name_lower:
                     return registry_name
-            
+
             return None
         except Exception as e:
             print(f"Error validating tag {name}: {e}")
@@ -228,6 +238,7 @@ class WebViewBridge:
             return "error"
         except Exception as e:
             import traceback
+
             log(f"ERROR: {e}\n{traceback.format_exc()}")
             return "error"
 
@@ -243,27 +254,30 @@ class WebViewBridge:
 
         if mode == "folder":
             folder = Path(inputs[0])
-            files = sorted(
-                p for p in folder.iterdir()
-                if p.suffix.lower() in suffixes
-            ) if folder.is_dir() else []
+            files = (
+                sorted(p for p in folder.iterdir() if p.suffix.lower() in suffixes)
+                if folder.is_dir()
+                else []
+            )
         else:
             files = sorted(Path(f) for f in inputs)
 
         if not files:
-            log(f"ERROR: No {'/'.join('*' + s for s in suffixes)} files found in {inputs[0]}")
+            log(
+                f"ERROR: No {'/'.join('*' + s for s in suffixes)} files found in {inputs[0]}"
+            )
             return None, None
         return files, output
 
     def _apply_overwrite_policy(self, files, existing, settings, log):
         """Check for existing files and apply overwrite action. Returns
         (files, response); a non-None response should be returned as-is.
-        
+
         Always prompts if files exist, regardless of previous overwriteAction.
         The action only applies if it was set during THIS run (from the modal).
         """
         action = settings.get("overwriteAction")
-        
+
         # If files exist and no action was provided THIS run, prompt
         if existing and not action:
             return files, {
@@ -271,14 +285,14 @@ class WebViewBridge:
                 "existing": len(existing),
                 "total": len(files),
             }
-        
+
         # If user chose 'skip' in the modal, filter out existing files
         if action == "skip" and existing:
             files = [f for f in files if f not in existing]
             if not files:
                 log("All files already exist — nothing to do.")
                 return files, "ok"
-        
+
         # If action is 'overwrite' or no files exist, proceed with all files
         return files, None
 
@@ -286,21 +300,24 @@ class WebViewBridge:
         def on_task_done(completed, total):
             if completed == 0 and total > 0:
                 # Show tiny progress (1%) to indicate work has started
-                progress_bar(1.)
+                progress_bar(1.0)
             else:
                 frac = completed / total if total > 0 else 0
                 progress_bar(round(frac * 100, 1))
             return self.cancel_flags.get(tab, False)
+
         return on_task_done
 
     def _parse_metadata_ops(self, metadata_ops, log):
         """Parse UI metadata ops into engine arguments (see common.parse_metadata_ops)."""
         from mu_dng_converter.common import parse_metadata_ops
+
         return parse_metadata_ops(metadata_ops, log)
 
     @staticmethod
     def _resolve_demosaic_algorithm(settings):
         from muraw.raw_render import DemosaicAlgorithm
+
         try:
             return DemosaicAlgorithm.lookup(settings.get("demosaicAlgo") or "BILINEAR")
         except Exception:
@@ -316,15 +333,18 @@ class WebViewBridge:
 
         output_dir = Path(output)
         existing = [f for f in dng_files if (output_dir / f.name).exists()]
-        dng_files, response = self._apply_overwrite_policy(dng_files, existing, settings, log)
+        dng_files, response = self._apply_overwrite_policy(
+            dng_files, existing, settings, log
+        )
         if response is not None:
             return response
-        
+
         # Clear overwrite action after it's been used
         settings.pop("overwriteAction", None)
 
-        strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = \
+        strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = (
             self._parse_metadata_ops(settings.get("metadataOps"), log)
+        )
 
         log(f"Input: {len(dng_files)} DNG files → {output}")
 
@@ -335,7 +355,9 @@ class WebViewBridge:
             output_folder=output,
             mode="transcode" if settings.get("transcode") else "copy",
             compression_name=settings.get("compression", "uncompressed"),
-            jxl_distance=float(jxl_distance_val) if jxl_distance_val not in (None, "") else None,
+            jxl_distance=float(jxl_distance_val)
+            if jxl_distance_val not in (None, "")
+            else None,
             jxl_effort=int(settings.get("jxlEffort") or 5),
             scale=max(0.125, min(1.0, float(settings.get("scale") or 1.0))),
             demosaic=bool(settings.get("demosaic")),
@@ -368,15 +390,18 @@ class WebViewBridge:
 
         output_dir = Path(output)
         existing = [f for f in fits_files if (output_dir / (f.stem + ".dng")).exists()]
-        fits_files, response = self._apply_overwrite_policy(fits_files, existing, settings, log)
+        fits_files, response = self._apply_overwrite_policy(
+            fits_files, existing, settings, log
+        )
         if response is not None:
             return response
-        
+
         # Clear overwrite action after it's been used
         settings.pop("overwriteAction", None)
 
-        strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = \
+        strip_tags_set, extra_tags_obj, time_offset_seconds, time_timezone = (
             self._parse_metadata_ops(settings.get("metadataOps"), log)
+        )
 
         transcode = bool(settings.get("transcode"))
         compression = (
@@ -402,7 +427,9 @@ class WebViewBridge:
             fits_files=fits_files,
             output_folder=output,
             compression_name=compression,
-            jxl_distance=float(jxl_distance_val) if transcode and jxl_distance_val not in (None, "") else None,
+            jxl_distance=float(jxl_distance_val)
+            if transcode and jxl_distance_val not in (None, "")
+            else None,
             jxl_effort=int(settings.get("jxlEffort") or 5) if transcode else None,
             demosaic=bool(settings.get("demosaic")),
             demosaic_algorithm=self._resolve_demosaic_algorithm(settings),
@@ -457,19 +484,20 @@ class WebViewBridge:
                     log(f"{output_mp4.name} already exists — skipping.")
                     return "ok"
                 # If action is 'overwrite', proceed
-            
+
             # Clear overwrite action after it's been used
             settings.pop("overwriteAction", None)
         else:
             output_dir = Path(output)
             existing = [
-                f for f in dng_files
-                if (output_dir / (f.stem + "." + mode)).exists()
+                f for f in dng_files if (output_dir / (f.stem + "." + mode)).exists()
             ]
-            dng_files, response = self._apply_overwrite_policy(dng_files, existing, settings, log)
+            dng_files, response = self._apply_overwrite_policy(
+                dng_files, existing, settings, log
+            )
             if response is not None:
                 return response
-            
+
             # Clear overwrite action after it's been used
             settings.pop("overwriteAction", None)
 
@@ -488,6 +516,7 @@ class WebViewBridge:
 
         if mode == "video":
             from muraw.cli import run_batch_to_video
+
             output_mp4 = Path(output)
             log(f"Input: {len(dng_files)} DNG files → {output_mp4.name}")
             w, h = (settings.get("resolution") or "1920x1080").lower().split("x")
@@ -508,6 +537,7 @@ class WebViewBridge:
             )
         else:
             from muraw.cli import run_batch_convert
+
             log(f"Input: {len(dng_files)} DNG files → .{mode}")
             result = run_batch_convert(
                 dng_files=dng_files,
@@ -528,12 +558,12 @@ class WebViewBridge:
             f"{result['elapsed']:.1f}s ({fps:.1f} files/s, {num_workers} workers)"
         )
         return "ok"
-    
+
     def get_settings(self, tab: str) -> Dict[str, Any]:
         """Get current settings for a tab."""
         # TODO: Implement settings retrieval from JavaScript
         return {}
-    
+
     def set_settings(self, tab: str, settings: Dict[str, Any]):
         """Set settings for a tab."""
         # TODO: Implement settings persistence to JavaScript
@@ -542,17 +572,20 @@ class WebViewBridge:
     def get_eula_text(self) -> str:
         """Return the EULA text for display in a JS modal."""
         from main import EULA_TEXT
+
         return EULA_TEXT
 
     def accept_eula(self):
         """Record EULA acceptance. The JS side closes the modal."""
         from main import _save_eula_accepted
+
         _save_eula_accepted()
 
     def decline_eula(self):
         """Decline EULA: quit the application cleanly."""
         if sys.platform == "darwin":
             from AppKit import NSApplication
+
             app = NSApplication.sharedApplication()
             app.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "terminate:", None, False
@@ -561,6 +594,7 @@ class WebViewBridge:
             self.window.destroy()
         else:
             import os
+
             os._exit(0)
 
 
@@ -571,7 +605,7 @@ bridge = WebViewBridge()
 def expose_to_window(window):
     """Expose bridge methods to the webview window."""
     bridge.set_window(window)
-    
+
     # Expose all bridge methods to JavaScript
     window.expose(bridge.select_input)
     window.expose(bridge.select_output)

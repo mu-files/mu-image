@@ -70,7 +70,9 @@ def test_pad_constant_values():
     out = Array(src).pad(1, mode="constant", constant_values=9).realize()
     expect = np.pad(src, 1, mode="constant", constant_values=9)
     np.testing.assert_array_equal(out, expect)
-    per_edge = Array(src).pad(1, mode="constant", constant_values=((9, 8), (7, 6))).realize()
+    per_edge = (
+        Array(src).pad(1, mode="constant", constant_values=((9, 8), (7, 6))).realize()
+    )
     expect_edge = np.pad(src, 1, mode="constant", constant_values=((9, 8), (7, 6)))
     np.testing.assert_array_equal(per_edge, expect_edge)
 

@@ -67,7 +67,9 @@ def test_a_four_image_mosaic_against_numpy_assignment():
         mi_time = _median_time(lambda: _muimage(base, sources))
         np_time = _median_time(lambda: _numpy(quarters, chw))
         layout = "CHW" if chw else "packed"
-        message = f"{layout}: muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
+        message = (
+            f"{layout}: muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
+        )
         print(message)
         # Measured: packed 1.06 times NumPy's time, CHW 0.74 times.
         assert mi_time < 2 * np_time, message

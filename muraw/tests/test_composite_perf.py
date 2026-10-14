@@ -54,7 +54,9 @@ def _rendered(lib, src):
     channel and broadcasts across the three.
     """
     rows, cols, _ = src.shape
-    _, y = lib.meshgrid(lib.arange(cols, dtype=np.float32), lib.arange(rows, dtype=np.float32))
+    _, y = lib.meshgrid(
+        lib.arange(cols, dtype=np.float32), lib.arange(rows, dtype=np.float32)
+    )
     shifted = src + y[..., None] * np.float32(1.5)
     return (shifted * shifted) @ _MATRIX
 

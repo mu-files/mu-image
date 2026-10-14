@@ -37,9 +37,7 @@ def test_catalog_engine_ops_io():
     assert "view" in get_default_engine().supported_ops
 
 
-def _engine_op(
-    name: str, in_channels: tuple, variable_input: bool = False
-) -> EngineOp:
+def _engine_op(name: str, in_channels: tuple, variable_input: bool = False) -> EngineOp:
     """An engine op that is not in the catalog, for building nodes only."""
     return EngineOp(
         meta=OpMeta(name=name),
@@ -231,11 +229,15 @@ def test_orientation_flips_match_the_orientation_op():
             ref = emit(mi.orientation, array, orientation=code)
             assert ref._node.op == "orientation"
             assert got.meta == ref.meta, f"{name} code {code}"
-            np.testing.assert_array_equal(got.realize(), ref.realize(), err_msg=f"{name} {code}")
+            np.testing.assert_array_equal(
+                got.realize(), ref.realize(), err_msg=f"{name} {code}"
+            )
             if name == "window on a larger canvas":
                 past = dict(left=-1, top=-1, width=8, height=7)
                 np.testing.assert_array_equal(
-                    got.view(**past).realize(), ref.view(**past).realize(), err_msg=f"{code}"
+                    got.view(**past).realize(),
+                    ref.view(**past).realize(),
+                    err_msg=f"{code}",
                 )
 
 
@@ -442,13 +444,17 @@ def test_cfa_demosaic_ea_then_crop_matches_slice():
     rng = np.random.default_rng(0)
     cfa = rng.random((17, 19), dtype=np.float32)
     full = mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB").realize()
-    fused = mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB").view(
-        left=3,
-        top=2,
-        width=11,
-        height=13,
-        reset_origin=True,
-    ).realize()
+    fused = (
+        mi.cfa_demosaic(Array(cfa), cfa_pattern="RGGB")
+        .view(
+            left=3,
+            top=2,
+            width=11,
+            height=13,
+            reset_origin=True,
+        )
+        .realize()
+    )
     # Fused EA vs a sliced full frame can differ by 1 ULP on some
     # platforms (reduction order).
     np.testing.assert_array_max_ulp(fused, full[2:15, 3:14], maxulp=1)
@@ -466,9 +472,7 @@ def test_cfa_demosaic_ea_fast_differs_from_ea():
     fast = mi.cfa_demosaic(
         Array(cfa), cfa_pattern="RGGB", algorithm="ea_fast"
     ).realize()
-    wrap = demosaic(
-        Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST
-    ).realize()
+    wrap = demosaic(Array(cfa), "RGGB", algorithm=DemosaicAlgorithm.EA_FAST).realize()
     np.testing.assert_allclose(fast[2, 2, 1], 0.2, atol=1e-6)
     np.testing.assert_allclose(ea[2, 2, 1], 0.5, atol=1e-6)
     np.testing.assert_array_equal(fast, wrap)
@@ -843,7 +847,7 @@ def test_compute_times_engine_ops():
     try:
         set_engine_timing(EngineTiming.OPS)
         with PerfTimer("root") as root:
-            out = (Array(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0)
+            out = Array(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)) - 1.0
             out = (out * 2.0).realize()
     finally:
         set_engine_timing(prev)
@@ -980,9 +984,7 @@ def test_demosaic_vng_rcd_opencv_matches_demosaic():
 
 
 def test_ingest_seals_view_and_base():
-    parent = np.array(
-        np.arange(16, dtype=np.float32).reshape(4, 4), copy=True
-    )
+    parent = np.array(np.arange(16, dtype=np.float32).reshape(4, 4), copy=True)
     view = parent[1:3, 1:3]
     t = Array(view)
     assert view.base is parent
@@ -1010,7 +1012,9 @@ def test_ingest_strided_view_seals_array_and_base():
         stepped[0, 0] = 99.0
     with pytest.raises(ValueError):
         parent[0, 0] = 99.0
-    np.testing.assert_array_equal(t.realize(), np.arange(16, dtype=np.float32).reshape(4, 4)[::2, ::2])
+    np.testing.assert_array_equal(
+        t.realize(), np.arange(16, dtype=np.float32).reshape(4, 4)[::2, ::2]
+    )
     assert sibling.flags.writeable
 
 
@@ -1228,7 +1232,9 @@ def test_transposed_view_ingested_without_copy(arr, chain):
 
 def test_transposed_ingest_matches_array_transpose():
     assert _op_chain(Array(_MONO_4X6.T)) == _op_chain(Array(_MONO_4X6).T)
-    np.testing.assert_array_equal(Array(_MONO_4X6.T).realize(), Array(_MONO_4X6).T.realize())
+    np.testing.assert_array_equal(
+        Array(_MONO_4X6.T).realize(), Array(_MONO_4X6).T.realize()
+    )
 
 
 @pytest.mark.parametrize(
@@ -1540,18 +1546,29 @@ def test_ingest_random_transposed_views_are_not_copied():
             assert np.shares_memory(_source_buffer(t), owner)
 
 
-def _padded_rgb888_frame(height: int, width: int, pitch: int) -> tuple[np.ndarray, np.ndarray]:
+def _padded_rgb888_frame(
+    height: int, width: int, pitch: int
+) -> tuple[np.ndarray, np.ndarray]:
     """A packed RGB888 frame whose rows are ``pitch`` bytes apart, like a camera
     buffer whose row alignment is not a multiple of 3. Returns the frame and
     the flat buffer it reads."""
     raw = (np.arange(height * pitch) % 251).astype(np.uint8)
-    frame = np.ndarray(shape=(height, width, 3), dtype=np.uint8, buffer=raw, strides=(pitch, 3, 1))
+    frame = np.ndarray(
+        shape=(height, width, 3), dtype=np.uint8, buffer=raw, strides=(pitch, 3, 1)
+    )
     return frame, raw
 
 
 @pytest.mark.parametrize(
     "key",
-    [np.s_[:], np.s_[1:3, 2:9], np.s_[:, ::2], np.s_[::-1], np.s_[..., ::-1], np.s_[..., 1]],
+    [
+        np.s_[:],
+        np.s_[1:3, 2:9],
+        np.s_[:, ::2],
+        np.s_[::-1],
+        np.s_[..., ::-1],
+        np.s_[..., 1],
+    ],
     ids=["whole", "crop", "column_step", "row_flip", "bgr", "one_channel"],
 )
 def test_padded_rgb888_frame_is_not_copied(key):
@@ -1584,7 +1601,9 @@ def test_transposed_padded_rgb888_frame_is_not_copied():
 def test_xrgb_frame_with_odd_pitch_reads_rgb_as_view():
     height, width, pitch = 4, 1000, 4010
     raw = (np.arange(height * pitch) % 251).astype(np.uint8)
-    frame = np.ndarray(shape=(height, width, 4), dtype=np.uint8, buffer=raw, strides=(pitch, 4, 1))
+    frame = np.ndarray(
+        shape=(height, width, 4), dtype=np.uint8, buffer=raw, strides=(pitch, 4, 1)
+    )
     rgb = frame[..., :3]
     t = Array(rgb)
     assert _op_chain(t) == ["view"]
@@ -1596,7 +1615,10 @@ def test_padded_uint16_rgb_is_bound_directly():
     height, width, pitch_elements = 3, 10, 31
     raw = np.arange(height * pitch_elements, dtype=np.uint16)
     frame = np.ndarray(
-        shape=(height, width, 3), dtype=np.uint16, buffer=raw, strides=(pitch_elements * 2, 6, 2)
+        shape=(height, width, 3),
+        dtype=np.uint16,
+        buffer=raw,
+        strides=(pitch_elements * 2, 6, 2),
     )
     t = Array(frame)
     assert t._node is None
@@ -1622,7 +1644,11 @@ def _random_layout(rng: np.random.Generator) -> np.ndarray:
             shape=(height, width, channels),
             dtype=dtype,
             buffer=samples,
-            strides=(pitch * samples.itemsize, channels * samples.itemsize, samples.itemsize),
+            strides=(
+                pitch * samples.itemsize,
+                channels * samples.itemsize,
+                samples.itemsize,
+            ),
         )
         return frame[key]
     image = samples[: height * width * channels]
@@ -1655,10 +1681,20 @@ def test_ingest_random_layouts_match_numpy():
         (">f8", r"float64 is not supported.*arr\.astype\(np\.float32\)"),
         (">u2", r"big-endian >u2 is not supported.*newbyteorder"),
         (">f4", r"big-endian >f4 is not supported.*newbyteorder"),
-        (np.int32, r"dtype int32 is not supported\. Supported dtypes: float32, float16, uint8, uint16"),
+        (
+            np.int32,
+            r"dtype int32 is not supported\. Supported dtypes: float32, float16, uint8, uint16",
+        ),
         (np.bool_, r"dtype bool is not supported\. Supported dtypes"),
     ],
-    ids=["float64", "float64_big_endian", "uint16_big_endian", "float32_big_endian", "int32", "bool"],
+    ids=[
+        "float64",
+        "float64_big_endian",
+        "uint16_big_endian",
+        "float32_big_endian",
+        "int32",
+        "bool",
+    ],
 )
 def test_unsupported_dtype_ingest_names_the_fix(dtype, message):
     with pytest.raises(ValueError, match=message):
@@ -1671,7 +1707,9 @@ def test_suggested_conversion_ingests():
         native = arr.astype(arr.dtype.newbyteorder("="))
         np.testing.assert_array_equal(Array(native).realize(), arr)
     arr = np.linspace(0.0, 1.0, 18).reshape(2, 3, 3)
-    np.testing.assert_array_equal(Array(arr.astype(np.float32)).realize(), arr.astype(np.float32))
+    np.testing.assert_array_equal(
+        Array(arr.astype(np.float32)).realize(), arr.astype(np.float32)
+    )
 
 
 def test_unsupported_dtype_argument_names_the_fix():

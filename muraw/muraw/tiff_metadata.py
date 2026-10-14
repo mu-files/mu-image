@@ -5,6 +5,7 @@
 
 This module provides classes for creating and parsing TIFF/DNG metadata tags.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,134 +26,152 @@ logger = logging.getLogger(__name__)
 # TIFF/DNG Metadata Enums
 # =============================================================================
 
+
 class SubFileType(IntEnum):
     """NewSubFileType values from DNG spec (TIFF tag 254)."""
+
     MAIN_IMAGE = 0
     PREVIEW_IMAGE = 1
     TRANSPARENCY_MASK = 4
     DEPTH_MAP = 8
     ALT_PREVIEW_IMAGE = 65537
-    
+
     @classmethod
     def lookup(cls, value: int) -> "SubFileType | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
+
         return enum_from_value(cls, value)
 
 
 class Illuminant(IntEnum):
     """Light source enum values from DNG SDK dng_tag_values.h (CalibrationIlluminant tags).
-    
+
     Maps EXIF LightSource values (CalibrationIlluminant1/2/3) to temperature in Kelvin.
     SDK ref: dng_camera_profile.cpp IlluminantToTemperature()
-    
+
     Usage:
         Illuminant.DAYLIGHT -> 1 (the enum value)
         Illuminant.DAYLIGHT.temperature -> 5500.0 (the temperature in Kelvin)
     """
+
     def __new__(cls, value, temperature=None):
         obj = int.__new__(cls, value)
         obj._value_ = value
         obj.temperature = temperature
         return obj
-    
-    UNKNOWN = (0, None)                           # lsUnknown - use default
-    DAYLIGHT = (1, 5500.0)                        # lsDaylight
-    FLUORESCENT = (2, 4150.0)                     # lsFluorescent (3800+4500)/2
-    TUNGSTEN = (3, 2850.0)                        # lsTungsten
-    FLASH = (4, 5500.0)                           # lsFlash
-    FINE_WEATHER = (9, 5500.0)                    # lsFineWeather
-    CLOUDY_WEATHER = (10, 6500.0)                 # lsCloudyWeather
-    SHADE = (11, 7500.0)                          # lsShade
-    DAYLIGHT_FLUORESCENT = (12, 6400.0)           # lsDaylightFluorescent (5700+7100)/2
-    DAY_WHITE_FLUORESCENT = (13, 5050.0)          # lsDayWhiteFluorescent (4600+5500)/2
-    COOL_WHITE_FLUORESCENT = (14, 4150.0)         # lsCoolWhiteFluorescent (3800+4500)/2
-    WHITE_FLUORESCENT = (15, 3525.0)              # lsWhiteFluorescent (3250+3800)/2
-    WARM_WHITE_FLUORESCENT = (16, 2925.0)         # lsWarmWhiteFluorescent (2600+3250)/2
-    STANDARD_LIGHT_A = (17, 2850.0)               # lsStandardLightA
-    STANDARD_LIGHT_B = (18, 5500.0)               # lsStandardLightB
-    STANDARD_LIGHT_C = (19, 6500.0)               # lsStandardLightC
-    D55 = (20, 5500.0)                            # lsD55
-    D65 = (21, 6500.0)                            # lsD65
-    D75 = (22, 7500.0)                            # lsD75
-    D50 = (23, 5000.0)                            # lsD50
-    ISO_STUDIO_TUNGSTEN = (24, 3200.0)            # lsISOStudioTungsten
-    OTHER = (255, None)                           # lsOther - requires IlluminantData
-    
+
+    UNKNOWN = (0, None)  # lsUnknown - use default
+    DAYLIGHT = (1, 5500.0)  # lsDaylight
+    FLUORESCENT = (2, 4150.0)  # lsFluorescent (3800+4500)/2
+    TUNGSTEN = (3, 2850.0)  # lsTungsten
+    FLASH = (4, 5500.0)  # lsFlash
+    FINE_WEATHER = (9, 5500.0)  # lsFineWeather
+    CLOUDY_WEATHER = (10, 6500.0)  # lsCloudyWeather
+    SHADE = (11, 7500.0)  # lsShade
+    DAYLIGHT_FLUORESCENT = (12, 6400.0)  # lsDaylightFluorescent (5700+7100)/2
+    DAY_WHITE_FLUORESCENT = (13, 5050.0)  # lsDayWhiteFluorescent (4600+5500)/2
+    COOL_WHITE_FLUORESCENT = (14, 4150.0)  # lsCoolWhiteFluorescent (3800+4500)/2
+    WHITE_FLUORESCENT = (15, 3525.0)  # lsWhiteFluorescent (3250+3800)/2
+    WARM_WHITE_FLUORESCENT = (16, 2925.0)  # lsWarmWhiteFluorescent (2600+3250)/2
+    STANDARD_LIGHT_A = (17, 2850.0)  # lsStandardLightA
+    STANDARD_LIGHT_B = (18, 5500.0)  # lsStandardLightB
+    STANDARD_LIGHT_C = (19, 6500.0)  # lsStandardLightC
+    D55 = (20, 5500.0)  # lsD55
+    D65 = (21, 6500.0)  # lsD65
+    D75 = (22, 7500.0)  # lsD75
+    D50 = (23, 5000.0)  # lsD50
+    ISO_STUDIO_TUNGSTEN = (24, 3200.0)  # lsISOStudioTungsten
+    OTHER = (255, None)  # lsOther - requires IlluminantData
+
     @classmethod
     def lookup(cls, value: int) -> "Illuminant | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
+
         return enum_from_value(cls, value)
 
 
 class Orientation(IntEnum):
     """TIFF/EXIF orientation values (TIFF tag 274).
-    
+
     Defines how the image should be rotated/flipped for proper display.
     Values 1-8 cover all combinations of rotation and mirroring.
     """
-    HORIZONTAL = 1          # Normal orientation (0°)
-    MIRROR_HORIZONTAL = 2   # Flipped horizontally
-    ROTATE_180 = 3          # Rotated 180°
-    MIRROR_VERTICAL = 4     # Flipped vertically
+
+    HORIZONTAL = 1  # Normal orientation (0°)
+    MIRROR_HORIZONTAL = 2  # Flipped horizontally
+    ROTATE_180 = 3  # Rotated 180°
+    MIRROR_VERTICAL = 4  # Flipped vertically
     MIRROR_HORIZONTAL_ROTATE_270_CW = 5  # Flipped horizontally then rotated 270° CW
-    ROTATE_90_CW = 6        # Rotated 90° clockwise
-    MIRROR_HORIZONTAL_ROTATE_90_CW = 7   # Flipped horizontally then rotated 90° CW
-    ROTATE_270_CW = 8       # Rotated 270° clockwise (90° CCW)
-    
+    ROTATE_90_CW = 6  # Rotated 90° clockwise
+    MIRROR_HORIZONTAL_ROTATE_90_CW = 7  # Flipped horizontally then rotated 90° CW
+    ROTATE_270_CW = 8  # Rotated 270° clockwise (90° CCW)
+
     @classmethod
     def lookup(cls, value: int) -> "Orientation | None":
         """Look up enum member by integer value."""
         from .common import enum_from_value
-        return enum_from_value(cls, value)
 
+        return enum_from_value(cls, value)
 
 
 # =============================================================================
 # TIFF Type System
 # =============================================================================
 
+
 class TiffType(int, Enum):
     """TIFF data type codes with metadata.
-    
+
     Provides readable type names with metadata access via properties.
-    
+
     Usage:
         TiffType.RATIONAL == 5  # True (int comparison)
         TiffType.RATIONAL.dtype_str  # '2I'
     """
-    
+
     def __new__(cls, code: int, dtype_str: str):
         obj = int.__new__(cls, code)
         obj._value_ = code
         obj.dtype_str = dtype_str
         return obj
-    
+
     # Type definitions with (code, dtype_str)
-    BYTE = (1, 'B')           # Unsigned 8-bit integer
-    ASCII = (2, 's')          # 8-bit byte containing 7-bit ASCII
-    SHORT = (3, 'H')          # Unsigned 16-bit integer
-    LONG = (4, 'I')           # Unsigned 32-bit integer
-    RATIONAL = (5, '2I')      # Two LONGs: numerator, denominator
-    SBYTE = (6, 'b')          # Signed 8-bit integer
-    UNDEFINED = (7, 'B')      # 8-bit byte (uninterpreted data)
-    SSHORT = (8, 'h')         # Signed 16-bit integer
-    SLONG = (9, 'i')          # Signed 32-bit integer
-    SRATIONAL = (10, '2i')    # Two SLONGs: numerator, denominator
-    FLOAT = (11, 'f')         # 32-bit IEEE floating point
-    DOUBLE = (12, 'd')        # 64-bit IEEE floating point
-    LONG8 = (16, 'Q')         # Unsigned 64-bit integer
-    SLONG8 = (17, 'q')        # Signed 64-bit integer
+    BYTE = (1, "B")  # Unsigned 8-bit integer
+    ASCII = (2, "s")  # 8-bit byte containing 7-bit ASCII
+    SHORT = (3, "H")  # Unsigned 16-bit integer
+    LONG = (4, "I")  # Unsigned 32-bit integer
+    RATIONAL = (5, "2I")  # Two LONGs: numerator, denominator
+    SBYTE = (6, "b")  # Signed 8-bit integer
+    UNDEFINED = (7, "B")  # 8-bit byte (uninterpreted data)
+    SSHORT = (8, "h")  # Signed 16-bit integer
+    SLONG = (9, "i")  # Signed 32-bit integer
+    SRATIONAL = (10, "2i")  # Two SLONGs: numerator, denominator
+    FLOAT = (11, "f")  # 32-bit IEEE floating point
+    DOUBLE = (12, "d")  # 64-bit IEEE floating point
+    LONG8 = (16, "Q")  # Unsigned 64-bit integer
+    SLONG8 = (17, "q")  # Signed 64-bit integer
+
 
 # Derived lookups for convenience
 TIFFTYPE_TO_DTYPE_STR = {t.value: t.dtype_str for t in TiffType}
 
 # Multi-type dtype lists for tags that accept multiple types
 # Use these constants in TagSpec definitions to ensure consistency
-TIFFTYPE_SHORT_OR_LONG = [TiffType.SHORT, TiffType.LONG]        # SHORT or LONG (prefer LONG for ints)
-TIFFTYPE_ASCII_OR_BYTE = [TiffType.ASCII, TiffType.BYTE]        # ASCII or BYTE (ASCII for str, BYTE for bytes/UTF-8)
-TIFFTYPE_INT_OR_RATIONAL = [TiffType.SHORT, TiffType.LONG, TiffType.RATIONAL]   # SHORT, LONG, or RATIONAL (RATIONAL for floats, LONG for ints)
+TIFFTYPE_SHORT_OR_LONG = [
+    TiffType.SHORT,
+    TiffType.LONG,
+]  # SHORT or LONG (prefer LONG for ints)
+TIFFTYPE_ASCII_OR_BYTE = [
+    TiffType.ASCII,
+    TiffType.BYTE,
+]  # ASCII or BYTE (ASCII for str, BYTE for bytes/UTF-8)
+TIFFTYPE_INT_OR_RATIONAL = [
+    TiffType.SHORT,
+    TiffType.LONG,
+    TiffType.RATIONAL,
+]  # SHORT, LONG, or RATIONAL (RATIONAL for floats, LONG for ints)
 
 # =============================================================================
 # CFA Pattern Constants
@@ -164,14 +183,16 @@ CFA_PATTERN_TO_CODES: dict[str, tuple[int, ...]] = {
     "GRBG": (1, 0, 2, 1),
     "GBRG": (1, 2, 0, 1),
 }
-CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {v: k for k, v in CFA_PATTERN_TO_CODES.items()}
+CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {
+    v: k for k, v in CFA_PATTERN_TO_CODES.items()
+}
 
 # =============================================================================
 # IFD Location Categories
 # =============================================================================
 # Specifies which IFD type a tag should appear in (per DNG specification):
 # - "any": Can appear in any IFD (default for basic TIFF structure tags)
-# - "ifd0": Standard TIFF/EXIF tags that go in IFD0 
+# - "ifd0": Standard TIFF/EXIF tags that go in IFD0
 # - "dng_ifd0": DNG-specific tags that must only be in IFD 0 (not in output)
 # - "exif": EXIF sub-IFD tags (camera settings, for metadata export)
 # - "dng_raw": Must be in IFD containing raw image data (CFA or LINEAR_RAW)
@@ -179,10 +200,11 @@ CFA_CODES_TO_PATTERN: dict[tuple[int, ...], str] = {v: k for k, v in CFA_PATTERN
 # - "dng_profile": Can be in IFD 0 or Camera Profile IFDs
 # - "dng_preview": Must be in Preview NewSubFileType
 
+
 @dataclass(slots=True)
 class TagSpec:
     """Specification for a TIFF/DNG tag.
-    
+
     Attributes:
         dtype: TIFF data type(s). Can be a single TiffType or list for type inference.
                When a list, int values use first matching int type, floats use first
@@ -194,21 +216,22 @@ class TagSpec:
         enum_class: Optional enum class for this tag's values (e.g., Orientation, Illuminant).
                    Used for display formatting and validation.
     """
+
     dtype: TiffType | list[TiffType]  # Single type or list for inference
     count: int | None = None
     shape: tuple[int, ...] | None = None
     dng_ifd: str = "any"
     enum_class: Type[Enum] | None = None
-    
+
     def get_dtype_for_value(self, value: Any) -> TiffType:
         """Select appropriate dtype based on value type.
-        
+
         For single-type specs, returns that type.
         For multi-type specs, selects based on value type using explicit case handling.
         """
         if isinstance(self.dtype, TiffType):
             return self.dtype
-        
+
         # Handle multi-type lists explicitly
         if self.dtype == TIFFTYPE_SHORT_OR_LONG:
             # SHORT or LONG: always use LONG for simplicity
@@ -219,8 +242,12 @@ class TagSpec:
         elif self.dtype == TIFFTYPE_INT_OR_RATIONAL:
             # SHORT, LONG, or RATIONAL: RATIONAL for float or pre-formatted rational tuples
             # Check for rational tuple (even-length flat tuple of ints: (num, denom) or (n1, d1, n2, d2, ...))
-            if (isinstance(value, tuple) and len(value) % 2 == 0 and len(value) >= 2 and
-                all(isinstance(x, (int, np.integer)) for x in value)):
+            if (
+                isinstance(value, tuple)
+                and len(value) % 2 == 0
+                and len(value) >= 2
+                and all(isinstance(x, (int, np.integer)) for x in value)
+            ):
                 return TiffType.RATIONAL
             # Check for float scalar
             if isinstance(value, (float, np.floating)):
@@ -229,20 +256,23 @@ class TagSpec:
             if isinstance(value, (list, tuple)) and len(value) > 0:
                 if isinstance(value[0], (float, np.floating)):
                     return TiffType.RATIONAL
-            if hasattr(value, 'dtype') and np.issubdtype(value.dtype, np.floating):
+            if hasattr(value, "dtype") and np.issubdtype(value.dtype, np.floating):
                 return TiffType.RATIONAL
             return TiffType.LONG
         else:
-            raise ValueError(f"Unknown multi-type dtype list: {self.dtype}. "
-                           f"Add explicit handling or use a defined constant.")
-    
+            raise ValueError(
+                f"Unknown multi-type dtype list: {self.dtype}. "
+                f"Add explicit handling or use a defined constant."
+            )
+
+
 def get_native_type(dtype: int | str | list[Any], count: int | None) -> type | None:
     """Determine the most appropriate Python type for a TIFF tag.
-    
+
     Args:
         dtype: TIFF dtype code (int, e.g., 1, 2, 5) or dtype string (e.g., 'H', 'I', '2I')
         count: Tag count, or None for variable length
-        
+
     Returns:
         Appropriate Python type:
         - str for string types
@@ -261,33 +291,33 @@ def get_native_type(dtype: int | str | list[Any], count: int | None) -> type | N
     else:
         dtype_str = dtype
     # String types -> str
-    if dtype_str == 's':
+    if dtype_str == "s":
         return str
-    
+
     # Multi-value tags (fixed count > 1) -> ndarray
     if count is not None and count > 1:
         return np.ndarray
-    
+
     # Variable-length numeric tags -> ndarray (safer default for processing)
-    if count is None and dtype_str not in ('s', 'B'):
+    if count is None and dtype_str not in ("s", "B"):
         return np.ndarray
-    
+
     # RATIONAL types with count=1 -> float
-    if dtype_str in ('2I', '2i') and count == 1:
+    if dtype_str in ("2I", "2i") and count == 1:
         return float
-    
+
     # Integer types with count=1 -> int
-    if dtype_str in ('B', 'b', 'H', 'h', 'I', 'i', 'Q', 'q') and count == 1:
+    if dtype_str in ("B", "b", "H", "h", "I", "i", "Q", "q") and count == 1:
         return int
-    
+
     # Float types with count=1 -> float
-    if dtype_str in ('f', 'd') and count == 1:
+    if dtype_str in ("f", "d") and count == 1:
         return float
-    
+
     # Byte arrays -> bytes
-    if dtype_str == 'B':
+    if dtype_str == "B":
         return bytes
-    
+
     return None
 
 
@@ -310,13 +340,19 @@ def get_native_type(dtype: int | str | list[Any], count: int | None) -> type | N
 
 TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "ProcessingSoftware": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 11 (0x000B)
-    "NewSubfileType": TagSpec(TiffType.LONG, 1, dng_ifd="any", enum_class=SubFileType),  # 254 (0x00FE)
+    "NewSubfileType": TagSpec(
+        TiffType.LONG, 1, dng_ifd="any", enum_class=SubFileType
+    ),  # 254 (0x00FE)
     "SubfileType": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 255 (0x00FF)
     "ImageWidth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 256 (0x0100)
     "ImageLength": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 257 (0x0101)
     "BitsPerSample": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 258 (0x0102)
-    "Compression": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=tifffile.COMPRESSION),  # 259 (0x0103)
-    "PhotometricInterpretation": TagSpec(TiffType.SHORT, 1, dng_ifd="any", enum_class=tifffile.PHOTOMETRIC),  # 262 (0x0106)
+    "Compression": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="any", enum_class=tifffile.COMPRESSION
+    ),  # 259 (0x0103)
+    "PhotometricInterpretation": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="any", enum_class=tifffile.PHOTOMETRIC
+    ),  # 262 (0x0106)
     "Thresholding": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 263 (0x0107)
     "CellWidth": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 264 (0x0108)
     "CellLength": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 265 (0x0109)
@@ -325,11 +361,17 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "ImageDescription": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 270 (0x010E)
     "Make": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 271 (0x010F)
     "Model": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 272 (0x0110)
-    "StripOffsets": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 273 (0x0111)
-    "Orientation": TagSpec(TiffType.SHORT, 1, dng_ifd="ifd0", enum_class=Orientation),  # 274 (0x0112)
+    "StripOffsets": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"
+    ),  # 273 (0x0111)
+    "Orientation": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="ifd0", enum_class=Orientation
+    ),  # 274 (0x0112)
     "SamplesPerPixel": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 277 (0x0115)
     "RowsPerStrip": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 278 (0x0116)
-    "StripByteCounts": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 279 (0x0117)
+    "StripByteCounts": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"
+    ),  # 279 (0x0117)
     "MinSampleValue": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 280 (0x0118)
     "MaxSampleValue": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 281 (0x0119)
     "XResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 282 (0x011A)
@@ -353,13 +395,17 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "HostComputer": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 316 (0x013C)
     "Predictor": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 317 (0x013D)
     "WhitePoint": TagSpec(TiffType.RATIONAL, 2, dng_ifd="any"),  # 318 (0x013E)
-    "PrimaryChromaticities": TagSpec(TiffType.RATIONAL, 6, dng_ifd="any"),  # 319 (0x013F)
+    "PrimaryChromaticities": TagSpec(
+        TiffType.RATIONAL, 6, dng_ifd="any"
+    ),  # 319 (0x013F)
     "ColorMap": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 320 (0x0140)
     "HalftoneHints": TagSpec(TiffType.SHORT, 2, dng_ifd="any"),  # 321 (0x0141)
     "TileWidth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 322 (0x0142)
     "TileLength": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 323 (0x0143)
     "TileOffsets": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 324 (0x0144)
-    "TileByteCounts": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"),  # 325 (0x0145)
+    "TileByteCounts": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="any"
+    ),  # 325 (0x0145)
     "SubIFDs": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 330 (0x014A)
     "InkSet": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 332 (0x014C)
     "InkNames": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 333 (0x014D)
@@ -381,9 +427,13 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "Decode": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 433 (0x01B1)
     "DefaultImageColor": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 434 (0x01B2)
     "JPEGInterchangeFormat": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 513 (0x0201)
-    "JPEGInterchangeFormatLength": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 514 (0x0202)
+    "JPEGInterchangeFormatLength": TagSpec(
+        TiffType.LONG, 1, dng_ifd="any"
+    ),  # 514 (0x0202)
     "JPEGRestartInterval": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 515 (0x0203)
-    "JPEGLosslessPredictors": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 517 (0x0205)
+    "JPEGLosslessPredictors": TagSpec(
+        TiffType.SHORT, None, dng_ifd="any"
+    ),  # 517 (0x0205)
     "JPEGPointTransforms": TagSpec(TiffType.SHORT, None, dng_ifd="any"),  # 518 (0x0206)
     "JPEGQTables": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 519 (0x0207)
     "JPEGDCTables": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 520 (0x0208)
@@ -394,22 +444,35 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "ReferenceBlackWhite": TagSpec(TiffType.RATIONAL, 6, dng_ifd="any"),  # 532 (0x0214)
     "StripRowCounts": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 559 (0x022F)
     "XMP": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 700 (0x02BC)
-    "ICCProfileDescriptor": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 770 (0x0302)
+    "ICCProfileDescriptor": TagSpec(
+        TiffType.ASCII, None, dng_ifd="any"
+    ),  # 770 (0x0302)
     "Rating": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 18246 (0x4746)
     "RatingPercent": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 18249 (0x4749)
     "PrintFlags": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 20485 (0x5005)
     "PrintFlagsVersion": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 20486 (0x5006)
     "PrintFlagsCrop": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 20487 (0x5007)
     "PrintFlagsBleedWidth": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 20488 (0x5008)
-    "PrintFlagsBleedWidthScale": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 20489 (0x5009)
-    "InteroperabilityIndex": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 20545 (0x5041)
-    "InteroperabilityVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="any"),  # 20546 (0x5042)
+    "PrintFlagsBleedWidthScale": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="any"
+    ),  # 20489 (0x5009)
+    "InteroperabilityIndex": TagSpec(
+        TiffType.ASCII, None, dng_ifd="any"
+    ),  # 20545 (0x5041)
+    "InteroperabilityVersion": TagSpec(
+        TiffType.BYTE, 4, dng_ifd="any"
+    ),  # 20546 (0x5042)
     "FrameDelay": TagSpec(TiffType.LONG, None, dng_ifd="any"),  # 20736 (0x5100)
     "LoopCount": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 20737 (0x5101)
-    "VignettingCorrParams": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 28722 (0x7032)
-    "ChromaticAberrationCorrParams": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 28725 (0x7035)
-    "DistortionCorrParams": TagSpec(TiffType.SRATIONAL, None, dng_ifd="any"),  # 28727 (0x7037)
-    
+    "VignettingCorrParams": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="any"
+    ),  # 28722 (0x7032)
+    "ChromaticAberrationCorrParams": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="any"
+    ),  # 28725 (0x7035)
+    "DistortionCorrParams": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="any"
+    ),  # 28727 (0x7037)
     # Private tags >= 32768
     "ImageID": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 32781 (0x800D)
     "Matteing": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 32995 (0x80E3)
@@ -417,7 +480,9 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "ImageDepth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 32997 (0x80E5)
     "TileDepth": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="any"),  # 32998 (0x80E6)
     "Model2": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 33405 (0x827D)
-    "CFARepeatPatternDim": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw:cfa"),  # 33421 (0x828D)
+    "CFARepeatPatternDim": TagSpec(
+        TiffType.SHORT, 2, dng_ifd="dng_raw:cfa"
+    ),  # 33421 (0x828D)
     "CFAPattern": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw:cfa"),  # 33422 (0x828E)
     "BatteryLevel": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33423 (0x828F)
     "Copyright": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 33432 (0x8298)
@@ -425,17 +490,29 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "FNumber": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 33437 (0x829D)
     "ModelPixelScaleTag": TagSpec(TiffType.DOUBLE, 3, dng_ifd="ifd0"),  # 33550 (0x830E)
     "IPTCNAA": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 33723 (0x83BB)
-    "ModelTiepointTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="ifd0"),  # 33922 (0x8482)
-    "ModelTransformationTag": TagSpec(TiffType.DOUBLE, 16, dng_ifd="ifd0"),  # 34264 (0x85D8)
+    "ModelTiepointTag": TagSpec(
+        TiffType.DOUBLE, None, dng_ifd="ifd0"
+    ),  # 33922 (0x8482)
+    "ModelTransformationTag": TagSpec(
+        TiffType.DOUBLE, 16, dng_ifd="ifd0"
+    ),  # 34264 (0x85D8)
     "WB_GRGBLevels": TagSpec(TiffType.RATIONAL, 4, dng_ifd="any"),  # 34306 (0x8602)
     "ImageResources": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 34377 (0x8649)
     "ExifTag": TagSpec(TiffType.LONG, 1, dng_ifd="ifd0"),  # 34665 (0x8769)
     "InterColorProfile": TagSpec(TiffType.BYTE, None, dng_ifd="any"),  # 34675 (0x8773)
-    "GeoKeyDirectoryTag": TagSpec(TiffType.SHORT, None, dng_ifd="ifd0"),  # 34735 (0x87AF)
-    "GeoDoubleParamsTag": TagSpec(TiffType.DOUBLE, None, dng_ifd="ifd0"),  # 34736 (0x87B0)
-    "GeoAsciiParamsTag": TagSpec(TiffType.ASCII, None, dng_ifd="ifd0"),  # 34737 (0x87B1)
+    "GeoKeyDirectoryTag": TagSpec(
+        TiffType.SHORT, None, dng_ifd="ifd0"
+    ),  # 34735 (0x87AF)
+    "GeoDoubleParamsTag": TagSpec(
+        TiffType.DOUBLE, None, dng_ifd="ifd0"
+    ),  # 34736 (0x87B0)
+    "GeoAsciiParamsTag": TagSpec(
+        TiffType.ASCII, None, dng_ifd="ifd0"
+    ),  # 34737 (0x87B1)
     "ExposureProgram": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34850 (0x8822)
-    "SpectralSensitivity": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 34852 (0x8824)
+    "SpectralSensitivity": TagSpec(
+        TiffType.ASCII, None, dng_ifd="exif"
+    ),  # 34852 (0x8824)
     "GPSTag": TagSpec(TiffType.LONG, 1, dng_ifd="ifd0"),  # 34853 (0x8825)
     "ISOSpeedRatings": TagSpec(TiffType.SHORT, None, dng_ifd="exif"),  # 34855 (0x8827)
     "OECF": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 34856 (0x8828)
@@ -443,8 +520,12 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "TimeZoneOffset": TagSpec(TiffType.SSHORT, None, dng_ifd="exif"),  # 34858 (0x882A)
     "SelfTimerMode": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34859 (0x882B)
     "SensitivityType": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 34864 (0x8830)
-    "StandardOutputSensitivity": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34865 (0x8831)
-    "RecommendedExposureIndex": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34866 (0x8832)
+    "StandardOutputSensitivity": TagSpec(
+        TiffType.LONG, 1, dng_ifd="exif"
+    ),  # 34865 (0x8831)
+    "RecommendedExposureIndex": TagSpec(
+        TiffType.LONG, 1, dng_ifd="exif"
+    ),  # 34866 (0x8832)
     "ISOSpeed": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34867 (0x8833)
     "ISOSpeedLatitudeyyy": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34868 (0x8834)
     "ISOSpeedLatitudezzz": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 34869 (0x8835)
@@ -452,14 +533,26 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "DateTimeOriginal": TagSpec(TiffType.ASCII, 20, dng_ifd="exif"),  # 36867 (0x9003)
     "DateTimeDigitized": TagSpec(TiffType.ASCII, 20, dng_ifd="exif"),  # 36868 (0x9004)
     "OffsetTime": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 36880 (0x9010)
-    "OffsetTimeOriginal": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 36881 (0x9011)
-    "OffsetTimeDigitized": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 36882 (0x9012)
-    "ComponentsConfiguration": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 37121 (0x9101)
-    "CompressedBitsPerPixel": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37122 (0x9102)
-    "ShutterSpeedValue": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37377 (0x9201)
+    "OffsetTimeOriginal": TagSpec(
+        TiffType.ASCII, None, dng_ifd="exif"
+    ),  # 36881 (0x9011)
+    "OffsetTimeDigitized": TagSpec(
+        TiffType.ASCII, None, dng_ifd="exif"
+    ),  # 36882 (0x9012)
+    "ComponentsConfiguration": TagSpec(
+        TiffType.BYTE, 4, dng_ifd="exif"
+    ),  # 37121 (0x9101)
+    "CompressedBitsPerPixel": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="exif"
+    ),  # 37122 (0x9102)
+    "ShutterSpeedValue": TagSpec(
+        TiffType.SRATIONAL, 1, dng_ifd="exif"
+    ),  # 37377 (0x9201)
     "ApertureValue": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37378 (0x9202)
     "BrightnessValue": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37379 (0x9203)
-    "ExposureBiasValue": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37380 (0x9204)
+    "ExposureBiasValue": TagSpec(
+        TiffType.SRATIONAL, 1, dng_ifd="exif"
+    ),  # 37380 (0x9204)
     "MaxApertureValue": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37381 (0x9205)
     "SubjectDistance": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37382 (0x9206)
     "MeteringMode": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37383 (0x9207)
@@ -467,13 +560,23 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "Flash": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37385 (0x9209)
     "FocalLength": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37386 (0x920A)
     "FlashEnergy": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37387 (0x920B)
-    "SpatialFrequencyResponse": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37388 (0x920C)
+    "SpatialFrequencyResponse": TagSpec(
+        TiffType.BYTE, None, dng_ifd="exif"
+    ),  # 37388 (0x920C)
     "Noise": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37389 (0x920D)
-    "FocalPlaneXResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37390 (0x920E)
-    "FocalPlaneYResolution": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37391 (0x920F)
-    "FocalPlaneResolutionUnit": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 37392 (0x9210)
+    "FocalPlaneXResolution": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="exif"
+    ),  # 37390 (0x920E)
+    "FocalPlaneYResolution": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="exif"
+    ),  # 37391 (0x920F)
+    "FocalPlaneResolutionUnit": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="exif"
+    ),  # 37392 (0x9210)
     "ImageNumber": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 37393 (0x9211)
-    "SecurityClassification": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37394 (0x9212)
+    "SecurityClassification": TagSpec(
+        TiffType.ASCII, None, dng_ifd="exif"
+    ),  # 37394 (0x9212)
     "ImageHistory": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37395 (0x9213)
     "SubjectLocation": TagSpec(TiffType.SHORT, 2, dng_ifd="exif"),  # 37396 (0x9214)
     "ExposureIndex": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37397 (0x9215)
@@ -482,127 +585,287 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "MakerNote": TagSpec(TiffType.UNDEFINED, None, dng_ifd="exif"),  # 37500 (0x927C)
     "UserComment": TagSpec(TiffType.UNDEFINED, None, dng_ifd="exif"),  # 37510 (0x9286)
     "SubsecTime": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37520 (0x9290)
-    "SubsecTimeOriginal": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37521 (0x9291)
-    "SubsecTimeDigitized": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 37522 (0x9292)
+    "SubsecTimeOriginal": TagSpec(
+        TiffType.ASCII, None, dng_ifd="exif"
+    ),  # 37521 (0x9291)
+    "SubsecTimeDigitized": TagSpec(
+        TiffType.ASCII, None, dng_ifd="exif"
+    ),  # 37522 (0x9292)
     "ImageSourceData": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 37724 (0x935C)
     "Temperature": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37888 (0x9400)
     "Humidity": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37889 (0x9401)
     "Pressure": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37890 (0x9402)
     "WaterDepth": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37891 (0x9403)
     "Acceleration": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 37892 (0x9404)
-    "CameraElevationAngle": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="exif"),  # 37893 (0x9405)
+    "CameraElevationAngle": TagSpec(
+        TiffType.SRATIONAL, 1, dng_ifd="exif"
+    ),  # 37893 (0x9405)
     "FlashpixVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 40960 (0xA000)
     "ColorSpace": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 40961 (0xA001)
-    "PixelXDimension": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 40962 (0xA002)
-    "PixelYDimension": TagSpec(TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"),  # 40963 (0xA003)
+    "PixelXDimension": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"
+    ),  # 40962 (0xA002)
+    "PixelYDimension": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, 1, dng_ifd="exif"
+    ),  # 40963 (0xA003)
     "RelatedSoundFile": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 40964 (0xA004)
     "InteroperabilityTag": TagSpec(TiffType.LONG, 1, dng_ifd="exif"),  # 40965 (0xA005)
     "TIFF-EPStandardID": TagSpec(TiffType.BYTE, 4, dng_ifd="exif"),  # 41494 (0xA216)
-    "FileSource": TagSpec(TiffType.UNDEFINED, None, dng_ifd="exif"),  # 41728 (0xA300) - UNDEFINED type
-    "SceneType": TagSpec(TiffType.UNDEFINED, None, dng_ifd="exif"),  # 41729 (0xA301) - UNDEFINED type
+    "FileSource": TagSpec(
+        TiffType.UNDEFINED, None, dng_ifd="exif"
+    ),  # 41728 (0xA300) - UNDEFINED type
+    "SceneType": TagSpec(
+        TiffType.UNDEFINED, None, dng_ifd="exif"
+    ),  # 41729 (0xA301) - UNDEFINED type
     "CustomRendered": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41985 (0xA401)
     "ExposureMode": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41986 (0xA402)
     "WhiteBalance": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41987 (0xA403)
     "DigitalZoomRatio": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 41988 (0xA404)
-    "FocalLengthIn35mmFilm": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41989 (0xA405)
+    "FocalLengthIn35mmFilm": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="exif"
+    ),  # 41989 (0xA405)
     "SceneCaptureType": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41990 (0xA406)
     "GainControl": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41991 (0xA407)
     "Contrast": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41992 (0xA408)
     "Saturation": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41993 (0xA409)
     "Sharpness": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41994 (0xA40A)
-    "DeviceSettingDescription": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 41995 (0xA40B)
-    "SubjectDistanceRange": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 41996 (0xA40C)
+    "DeviceSettingDescription": TagSpec(
+        TiffType.BYTE, None, dng_ifd="exif"
+    ),  # 41995 (0xA40B)
+    "SubjectDistanceRange": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="exif"
+    ),  # 41996 (0xA40C)
     "ImageUniqueID": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42016 (0xA420)
     "CameraOwnerName": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42032 (0xA430)
     "BodySerialNumber": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42033 (0xA431)
-    "LensSpecification": TagSpec(TiffType.RATIONAL, 4, dng_ifd="exif"),  # 42034 (0xA432)
+    "LensSpecification": TagSpec(
+        TiffType.RATIONAL, 4, dng_ifd="exif"
+    ),  # 42034 (0xA432)
     "LensMake": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42035 (0xA433)
     "LensModel": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42036 (0xA434)
     "LensSerialNumber": TagSpec(TiffType.ASCII, None, dng_ifd="exif"),  # 42037 (0xA435)
     "CompositeImage": TagSpec(TiffType.SHORT, 1, dng_ifd="exif"),  # 42080 (0xA460)
-    "SourceImageNumberCompositeImage": TagSpec(TiffType.SHORT, None, dng_ifd="exif"),  # 42081 (0xA461)
-    "SourceExposureTimesCompositeImage": TagSpec(TiffType.BYTE, None, dng_ifd="exif"),  # 42082 (0xA462)
+    "SourceImageNumberCompositeImage": TagSpec(
+        TiffType.SHORT, None, dng_ifd="exif"
+    ),  # 42081 (0xA461)
+    "SourceExposureTimesCompositeImage": TagSpec(
+        TiffType.BYTE, None, dng_ifd="exif"
+    ),  # 42082 (0xA462)
     "Gamma": TagSpec(TiffType.RATIONAL, 1, dng_ifd="exif"),  # 42240 (0xA500)
     "PixelFormat": TagSpec(TiffType.BYTE, 16, dng_ifd="any"),  # 48129 (0xBC01)
     "ImageType": TagSpec(TiffType.SHORT, 1, dng_ifd="any"),  # 48132 (0xBC04)
     "OriginalFileName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 50547 (0xC573)
     "DNGVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="dng_ifd0"),  # 50706 (0xC612)
-    "DNGBackwardVersion": TagSpec(TiffType.BYTE, 4, dng_ifd="dng_ifd0"),  # 50707 (0xC613)
-    "UniqueCameraModel": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 50708 (0xC614)
-    "LocalizedCameraModel": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50709 (0xC615)
-    "CFAPlaneColor": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw:cfa"),  # 50710 (0xC616)
+    "DNGBackwardVersion": TagSpec(
+        TiffType.BYTE, 4, dng_ifd="dng_ifd0"
+    ),  # 50707 (0xC613)
+    "UniqueCameraModel": TagSpec(
+        TiffType.ASCII, None, dng_ifd="dng_ifd0"
+    ),  # 50708 (0xC614)
+    "LocalizedCameraModel": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50709 (0xC615)
+    "CFAPlaneColor": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_raw:cfa"
+    ),  # 50710 (0xC616)
     "CFALayout": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw:cfa"),  # 50711 (0xC617)
-    "LinearizationTable": TagSpec(TiffType.SHORT, None, dng_ifd="dng_raw"),  # 50712 (0xC618)
-    "BlackLevelRepeatDim": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw"),  # 50713 (0xC619)
-    "BlackLevel": TagSpec(TIFFTYPE_INT_OR_RATIONAL, None, dng_ifd="dng_raw"),  # 50714 (0xC61A)
-    "BlackLevelDeltaH": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_raw"),  # 50715 (0xC61B)
-    "BlackLevelDeltaV": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_raw"),  # 50716 (0xC61C)
-    "WhiteLevel": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="dng_raw"),  # 50717 (0xC61D)
+    "LinearizationTable": TagSpec(
+        TiffType.SHORT, None, dng_ifd="dng_raw"
+    ),  # 50712 (0xC618)
+    "BlackLevelRepeatDim": TagSpec(
+        TiffType.SHORT, 2, dng_ifd="dng_raw"
+    ),  # 50713 (0xC619)
+    "BlackLevel": TagSpec(
+        TIFFTYPE_INT_OR_RATIONAL, None, dng_ifd="dng_raw"
+    ),  # 50714 (0xC61A)
+    "BlackLevelDeltaH": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_raw"
+    ),  # 50715 (0xC61B)
+    "BlackLevelDeltaV": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_raw"
+    ),  # 50716 (0xC61C)
+    "WhiteLevel": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="dng_raw"
+    ),  # 50717 (0xC61D)
     "DefaultScale": TagSpec(TiffType.RATIONAL, 2, dng_ifd="dng_raw"),  # 50718 (0xC61E)
-    "DefaultCropOrigin": TagSpec(TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="dng_raw"),  # 50719 (0xC61F)
-    "DefaultCropSize": TagSpec(TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="dng_raw"),  # 50720 (0xC620)
-    "ColorMatrix1": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50721 (0xC611) - 3x3 matrix
-    "ColorMatrix2": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50722 (0xC612) - 3x3 matrix
-    "CameraCalibration1": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 50723 (0xC613) - 3x3 matrix
-    "CameraCalibration2": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 50724 (0xC614) - 3x3 matrix
-    "ReductionMatrix1": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_profile"),  # 50725 (0xC625)
-    "ReductionMatrix2": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_profile"),  # 50726 (0xC626)
-    "AnalogBalance": TagSpec(TiffType.RATIONAL, None, dng_ifd="dng_ifd0"),  # 50727 (0xC627)
-    "AsShotNeutral": TagSpec(TiffType.RATIONAL, None, dng_ifd="dng_ifd0"),  # 50728 (0xC628)
-    "AsShotWhiteXY": TagSpec(TiffType.RATIONAL, 2, dng_ifd="dng_ifd0"),  # 50729 (0xC629)
-    "BaselineExposure": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="dng_ifd0"),  # 50730 (0xC62A)
-    "BaselineNoise": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50731 (0xC62B)
-    "BaselineSharpness": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50732 (0xC62C)
-    "BayerGreenSplit": TagSpec(TiffType.LONG, 1, dng_ifd="dng_raw:cfa"),  # 50733 (0xC62D)
-    "LinearResponseLimit": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50734 (0xC62E)
-    "CameraSerialNumber": TagSpec(TiffType.ASCII, None, dng_ifd="dng_ifd0"),  # 50735 (0xC62F)
+    "DefaultCropOrigin": TagSpec(
+        TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="dng_raw"
+    ),  # 50719 (0xC61F)
+    "DefaultCropSize": TagSpec(
+        TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="dng_raw"
+    ),  # 50720 (0xC620)
+    "ColorMatrix1": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"
+    ),  # 50721 (0xC611) - 3x3 matrix
+    "ColorMatrix2": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"
+    ),  # 50722 (0xC612) - 3x3 matrix
+    "CameraCalibration1": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"
+    ),  # 50723 (0xC613) - 3x3 matrix
+    "CameraCalibration2": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"
+    ),  # 50724 (0xC614) - 3x3 matrix
+    "ReductionMatrix1": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_profile"
+    ),  # 50725 (0xC625)
+    "ReductionMatrix2": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_profile"
+    ),  # 50726 (0xC626)
+    "AnalogBalance": TagSpec(
+        TiffType.RATIONAL, None, dng_ifd="dng_ifd0"
+    ),  # 50727 (0xC627)
+    "AsShotNeutral": TagSpec(
+        TiffType.RATIONAL, None, dng_ifd="dng_ifd0"
+    ),  # 50728 (0xC628)
+    "AsShotWhiteXY": TagSpec(
+        TiffType.RATIONAL, 2, dng_ifd="dng_ifd0"
+    ),  # 50729 (0xC629)
+    "BaselineExposure": TagSpec(
+        TiffType.SRATIONAL, 1, dng_ifd="dng_ifd0"
+    ),  # 50730 (0xC62A)
+    "BaselineNoise": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"
+    ),  # 50731 (0xC62B)
+    "BaselineSharpness": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"
+    ),  # 50732 (0xC62C)
+    "BayerGreenSplit": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_raw:cfa"
+    ),  # 50733 (0xC62D)
+    "LinearResponseLimit": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"
+    ),  # 50734 (0xC62E)
+    "CameraSerialNumber": TagSpec(
+        TiffType.ASCII, None, dng_ifd="dng_ifd0"
+    ),  # 50735 (0xC62F)
     "LensInfo": TagSpec(TiffType.RATIONAL, 4, dng_ifd="dng_ifd0"),  # 50736 (0xC630)
-    "ChromaBlurRadius": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50737 (0xC631)
-    "AntiAliasStrength": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50738 (0xC632)
+    "ChromaBlurRadius": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_raw"
+    ),  # 50737 (0xC631)
+    "AntiAliasStrength": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_raw"
+    ),  # 50738 (0xC632)
     "ShadowScale": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 50739 (0xC633)
-    "DNGPrivateData": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50740 (0xC634)
+    "DNGPrivateData": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50740 (0xC634)
     "MakerNoteSafety": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 50741 (0xC635)
     "RawImageSegmentation": TagSpec(TiffType.SHORT, 3, dng_ifd="any"),  # 50752 (0xC640)
-    "CalibrationIlluminant1": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant),  # 50778 (0xC65A)
-    "CalibrationIlluminant2": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant),  # 50779 (0xC65B)
-    "BestQualityScale": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50780 (0xC65C)
+    "CalibrationIlluminant1": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant
+    ),  # 50778 (0xC65A)
+    "CalibrationIlluminant2": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant
+    ),  # 50779 (0xC65B)
+    "BestQualityScale": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_raw"
+    ),  # 50780 (0xC65C)
     "RawDataUniqueID": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50781 (0xC65D)
-    "OriginalRawFileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50827 (0xC68B)
-    "OriginalRawFileData": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50828 (0xC68C)
-    "ActiveArea": TagSpec(TIFFTYPE_SHORT_OR_LONG, 4, dng_ifd="dng_raw"),  # 50829 (0xC68D)
-    "MaskedAreas": TagSpec(TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="dng_raw"),  # 50830 (0xC68E)
-    "AsShotICCProfile": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50831 (0xC68F)
-    "AsShotPreProfileMatrix": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_ifd0"),  # 50832 (0xC690)
-    "CurrentICCProfile": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 50833 (0xC691)
-    "CurrentPreProfileMatrix": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_ifd0"),  # 50834 (0xC692)
-    "ColorimetricReference": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 50879 (0xC6BF)
-    "CameraCalibrationSignature": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50931 (0xC6F3)
-    "ProfileCalibrationSignature": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50932 (0xC6F4)
-    "ExtraCameraProfiles": TagSpec(TiffType.LONG, None, dng_ifd="dng_ifd0"),  # 50933 (0xC6F5) - variable count (can have multiple profiles)
-    "AsShotProfileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"),  # 50934 (0xC6F6)
-    "NoiseReductionApplied": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_raw"),  # 50935 (0xC6F7)
-    "ProfileName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50936 (0xC6F8)
-    "ProfileHueSatMapDims": TagSpec(TiffType.LONG, None, dng_ifd="dng_profile"),  # 50937 (0xC6F9)
-    "ProfileHueSatMapData1": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50938 (0xC6FA)
-    "ProfileHueSatMapData2": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50939 (0xC6FB)
-    "ProfileToneCurve": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50940 (0xC6FC)
-    "ProfileEmbedPolicy": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 50941 (0xC6FD)
-    "ProfileCopyright": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 50942 (0xC6FE)
-    "ForwardMatrix1": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50964 (0xC714) - 3x3 matrix
-    "ForwardMatrix2": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 50965 (0xC715) - 3x3 matrix
-    "PreviewApplicationName": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50966 (0xC716)
-    "PreviewApplicationVersion": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50967 (0xC717)
-    "PreviewSettingsName": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50968 (0xC718)
-    "PreviewSettingsDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_preview"),  # 50969 (0xC719)
-    "PreviewColorSpace": TagSpec(TiffType.LONG, 1, dng_ifd="dng_preview"),  # 50970 (0xC71A)
-    "PreviewDateTime": TagSpec(TiffType.ASCII, None, dng_ifd="dng_preview"),  # 50971 (0xC71B)
+    "OriginalRawFileName": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50827 (0xC68B)
+    "OriginalRawFileData": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50828 (0xC68C)
+    "ActiveArea": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, 4, dng_ifd="dng_raw"
+    ),  # 50829 (0xC68D)
+    "MaskedAreas": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, None, dng_ifd="dng_raw"
+    ),  # 50830 (0xC68E)
+    "AsShotICCProfile": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50831 (0xC68F)
+    "AsShotPreProfileMatrix": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_ifd0"
+    ),  # 50832 (0xC690)
+    "CurrentICCProfile": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50833 (0xC691)
+    "CurrentPreProfileMatrix": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_ifd0"
+    ),  # 50834 (0xC692)
+    "ColorimetricReference": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_ifd0"
+    ),  # 50879 (0xC6BF)
+    "CameraCalibrationSignature": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50931 (0xC6F3)
+    "ProfileCalibrationSignature": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"
+    ),  # 50932 (0xC6F4)
+    "ExtraCameraProfiles": TagSpec(
+        TiffType.LONG, None, dng_ifd="dng_ifd0"
+    ),  # 50933 (0xC6F5) - variable count (can have multiple profiles)
+    "AsShotProfileName": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 50934 (0xC6F6)
+    "NoiseReductionApplied": TagSpec(
+        TiffType.RATIONAL, 1, dng_ifd="dng_raw"
+    ),  # 50935 (0xC6F7)
+    "ProfileName": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"
+    ),  # 50936 (0xC6F8)
+    "ProfileHueSatMapDims": TagSpec(
+        TiffType.LONG, None, dng_ifd="dng_profile"
+    ),  # 50937 (0xC6F9)
+    "ProfileHueSatMapData1": TagSpec(
+        TiffType.FLOAT, None, dng_ifd="dng_profile"
+    ),  # 50938 (0xC6FA)
+    "ProfileHueSatMapData2": TagSpec(
+        TiffType.FLOAT, None, dng_ifd="dng_profile"
+    ),  # 50939 (0xC6FB)
+    "ProfileToneCurve": TagSpec(
+        TiffType.FLOAT, None, dng_ifd="dng_profile"
+    ),  # 50940 (0xC6FC)
+    "ProfileEmbedPolicy": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_profile"
+    ),  # 50941 (0xC6FD)
+    "ProfileCopyright": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"
+    ),  # 50942 (0xC6FE)
+    "ForwardMatrix1": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"
+    ),  # 50964 (0xC714) - 3x3 matrix
+    "ForwardMatrix2": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"
+    ),  # 50965 (0xC715) - 3x3 matrix
+    "PreviewApplicationName": TagSpec(
+        TiffType.ASCII, None, dng_ifd="dng_preview"
+    ),  # 50966 (0xC716)
+    "PreviewApplicationVersion": TagSpec(
+        TiffType.ASCII, None, dng_ifd="dng_preview"
+    ),  # 50967 (0xC717)
+    "PreviewSettingsName": TagSpec(
+        TiffType.ASCII, None, dng_ifd="dng_preview"
+    ),  # 50968 (0xC718)
+    "PreviewSettingsDigest": TagSpec(
+        TiffType.BYTE, 16, dng_ifd="dng_preview"
+    ),  # 50969 (0xC719)
+    "PreviewColorSpace": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_preview"
+    ),  # 50970 (0xC71A)
+    "PreviewDateTime": TagSpec(
+        TiffType.ASCII, None, dng_ifd="dng_preview"
+    ),  # 50971 (0xC71B)
     "RawImageDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50972 (0xC71C)
-    "OriginalRawFileDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 50973 (0xC71D)
+    "OriginalRawFileDigest": TagSpec(
+        TiffType.BYTE, 16, dng_ifd="dng_ifd0"
+    ),  # 50973 (0xC71D)
     "SubTileBlockSize": TagSpec(TiffType.SHORT, 2, dng_ifd="dng_raw"),  # 50974 (0xC71E)
-    "RowInterleaveFactor": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw"),  # 50975 (0xC71F)
-    "ProfileLookTableDims": TagSpec(TiffType.LONG, None, dng_ifd="dng_profile"),  # 50981 (0xC725)
-    "ProfileLookTableData": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 50982 (0xC726)
-    "OpcodeList1": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw_cfa"),  # 51008 (0xC740)
+    "RowInterleaveFactor": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_raw"
+    ),  # 50975 (0xC71F)
+    "ProfileLookTableDims": TagSpec(
+        TiffType.LONG, None, dng_ifd="dng_profile"
+    ),  # 50981 (0xC725)
+    "ProfileLookTableData": TagSpec(
+        TiffType.FLOAT, None, dng_ifd="dng_profile"
+    ),  # 50982 (0xC726)
+    "OpcodeList1": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_raw_cfa"
+    ),  # 51008 (0xC740)
     "OpcodeList2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51009 (0xC741)
     "OpcodeList3": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51022 (0xC74E)
     # NoiseProfile: DNG spec says Raw IFD, but Adobe SDK writes to both main and raw IFDs
@@ -612,46 +875,102 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     "FrameRate": TagSpec(TiffType.RATIONAL, 1, dng_ifd="any"),  # 51044 (0xC764)
     "TStop": TagSpec(TiffType.RATIONAL, None, dng_ifd="any"),  # 51058 (0xC772)
     "ReelName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51081 (0xC789)
-    "OriginalDefaultFinalSize": TagSpec(TIFFTYPE_SHORT_OR_LONG, 2, dng_ifd="any"),  # 51089 (0xC791)
-    "OriginalBestQualitySize": TagSpec(TIFFTYPE_SHORT_OR_LONG, 2, dng_ifd="any"),  # 51090 (0xC792)
-    "OriginalDefaultCropSize": TagSpec(TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="any"),  # 51091 (0xC793)
+    "OriginalDefaultFinalSize": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, 2, dng_ifd="any"
+    ),  # 51089 (0xC791)
+    "OriginalBestQualitySize": TagSpec(
+        TIFFTYPE_SHORT_OR_LONG, 2, dng_ifd="any"
+    ),  # 51090 (0xC792)
+    "OriginalDefaultCropSize": TagSpec(
+        TIFFTYPE_INT_OR_RATIONAL, 2, dng_ifd="any"
+    ),  # 51091 (0xC793)
     "CameraLabel": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51105 (0xC7A1)
-    "ProfileHueSatMapEncoding": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 51107 (0xC7A3)
-    "ProfileLookTableEncoding": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 51108 (0xC7A4)
-    "BaselineExposureOffset": TagSpec(TiffType.SRATIONAL, 1, dng_ifd="dng_ifd0"),  # 51109 (0xC7A5)
-    "DefaultBlackRender": TagSpec(TiffType.LONG, 1, dng_ifd="dng_ifd0"),  # 51110 (0xC7A6)
-    "NewRawImageDigest": TagSpec(TiffType.BYTE, 16, dng_ifd="dng_ifd0"),  # 51111 (0xC7A7)
-    "RawToPreviewGain": TagSpec(TiffType.DOUBLE, 1, dng_ifd="dng_preview"),  # 51112 (0xC7A8)
+    "ProfileHueSatMapEncoding": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_profile"
+    ),  # 51107 (0xC7A3)
+    "ProfileLookTableEncoding": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_profile"
+    ),  # 51108 (0xC7A4)
+    "BaselineExposureOffset": TagSpec(
+        TiffType.SRATIONAL, 1, dng_ifd="dng_ifd0"
+    ),  # 51109 (0xC7A5)
+    "DefaultBlackRender": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_ifd0"
+    ),  # 51110 (0xC7A6)
+    "NewRawImageDigest": TagSpec(
+        TiffType.BYTE, 16, dng_ifd="dng_ifd0"
+    ),  # 51111 (0xC7A7)
+    "RawToPreviewGain": TagSpec(
+        TiffType.DOUBLE, 1, dng_ifd="dng_preview"
+    ),  # 51112 (0xC7A8)
     "CacheBlob": TagSpec(TiffType.BYTE, None, dng_ifd="dng_preview"),  # 51113 (0xC7A9)
     "CacheVersion": TagSpec(TiffType.LONG, 1, dng_ifd="dng_preview"),  # 51114 (0xC7AA)
-    "DefaultUserCrop": TagSpec(TiffType.RATIONAL, 4, dng_ifd="dng_raw"),  # 51125 (0xC7B5)
+    "DefaultUserCrop": TagSpec(
+        TiffType.RATIONAL, 4, dng_ifd="dng_raw"
+    ),  # 51125 (0xC7B5)
     "DepthFormat": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 51177 (0xC7E9)
     "DepthNear": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 51178 (0xC7EA)
     "DepthFar": TagSpec(TiffType.RATIONAL, 1, dng_ifd="dng_ifd0"),  # 51179 (0xC7EB)
     "DepthUnits": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 51180 (0xC7EC)
-    "DepthMeasureType": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_ifd0"),  # 51181 (0xC7ED)
+    "DepthMeasureType": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_ifd0"
+    ),  # 51181 (0xC7ED)
     "EnhanceParams": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51182 (0xC7EE)
-    "ProfileGainTableMap": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 52525 (0xCD2D)
+    "ProfileGainTableMap": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_raw"
+    ),  # 52525 (0xCD2D)
     "SemanticName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52526 (0xCD2E)
-    "SemanticInstanceID": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52528 (0xCD30)
-    "CalibrationIlluminant3": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant),  # 52529 (0xCD31)
-    "CameraCalibration3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"),  # 52530 (0xCD32) - 3x3 matrix
-    "ColorMatrix3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 52531 (0xCD33) - 3x3 matrix
-    "ForwardMatrix3": TagSpec(TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"),  # 52532 (0xCD34) - 3x3 matrix
-    "IlluminantData1": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52533 (0xCD35)
-    "IlluminantData2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52534 (0xCD36)
-    "IlluminantData3": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52535 (0xCD37)
+    "SemanticInstanceID": TagSpec(
+        TiffType.ASCII, None, dng_ifd="any"
+    ),  # 52528 (0xCD30)
+    "CalibrationIlluminant3": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_profile", enum_class=Illuminant
+    ),  # 52529 (0xCD31)
+    "CameraCalibration3": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_ifd0"
+    ),  # 52530 (0xCD32) - 3x3 matrix
+    "ColorMatrix3": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"
+    ),  # 52531 (0xCD33) - 3x3 matrix
+    "ForwardMatrix3": TagSpec(
+        TiffType.SRATIONAL, 9, (3, 3), dng_ifd="dng_profile"
+    ),  # 52532 (0xCD34) - 3x3 matrix
+    "IlluminantData1": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_profile"
+    ),  # 52533 (0xCD35)
+    "IlluminantData2": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_profile"
+    ),  # 52534 (0xCD36)
+    "IlluminantData3": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_profile"
+    ),  # 52535 (0xCD37)
     "MaskSubArea": TagSpec(TiffType.LONG, 4, dng_ifd="any"),  # 52536 (0xCD38)
-    "ProfileHueSatMapData3": TagSpec(TiffType.FLOAT, None, dng_ifd="dng_profile"),  # 52537 (0xCD39)
-    "ReductionMatrix3": TagSpec(TiffType.SRATIONAL, None, dng_ifd="dng_profile"),  # 52538 (0xCD3A)
+    "ProfileHueSatMapData3": TagSpec(
+        TiffType.FLOAT, None, dng_ifd="dng_profile"
+    ),  # 52537 (0xCD39)
+    "ReductionMatrix3": TagSpec(
+        TiffType.SRATIONAL, None, dng_ifd="dng_profile"
+    ),  # 52538 (0xCD3A)
     "RGBTables": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52543 (0xCD3F)
-    "ProfileGainTableMap2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52544 (0xCD40)
-    "ColumnInterleaveFactor": TagSpec(TiffType.SHORT, 1, dng_ifd="dng_raw"),  # 52547 (0xCD43)
-    "ImageSequenceInfo": TagSpec(TiffType.BYTE, None, dng_ifd="dng_ifd0"),  # 52548 (0xCD44)
-    "ProfileToneMethod": TagSpec(TiffType.LONG, 1, dng_ifd="dng_profile"),  # 52549 (0xCD45) (not in tifffile)
+    "ProfileGainTableMap2": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_profile"
+    ),  # 52544 (0xCD40)
+    "ColumnInterleaveFactor": TagSpec(
+        TiffType.SHORT, 1, dng_ifd="dng_raw"
+    ),  # 52547 (0xCD43)
+    "ImageSequenceInfo": TagSpec(
+        TiffType.BYTE, None, dng_ifd="dng_ifd0"
+    ),  # 52548 (0xCD44)
+    "ProfileToneMethod": TagSpec(
+        TiffType.LONG, 1, dng_ifd="dng_profile"
+    ),  # 52549 (0xCD45) (not in tifffile)
     "ImageStats": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 52550 (0xCD46)
-    "ProfileDynamicRange": TagSpec(TiffType.DOUBLE, 1, dng_ifd="dng_profile"),  # 52551 (0xCD47)
-    "ProfileGroupName": TagSpec(TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"),  # 52552 (0xCD48)
+    "ProfileDynamicRange": TagSpec(
+        TiffType.DOUBLE, 1, dng_ifd="dng_profile"
+    ),  # 52551 (0xCD47)
+    "ProfileGroupName": TagSpec(
+        TIFFTYPE_ASCII_OR_BYTE, None, dng_ifd="dng_profile"
+    ),  # 52552 (0xCD48)
     "JXLDistance": TagSpec(TiffType.FLOAT, 1, dng_ifd="any"),  # 52553 (0xCD49)
     "JXLEffort": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 52554 (0xCD4A)
     "JXLDecodeSpeed": TagSpec(TiffType.LONG, 1, dng_ifd="any"),  # 52555 (0xCD4B)
@@ -665,9 +984,10 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
 # Extends tifffile's TIFF.TAGS with DNG-specific tags not in tifffile.
 # Use LOCAL_TIFF_TAGS instead of TIFF.TAGS throughout the codebase.
 
+
 class LocalTiffTags:
     """Bidirectional TIFF tag lookup extending tifffile's registry."""
-    
+
     # Tags not in tifffile or that need code override
     # tifffile has duplicate names for TIFF-EP vs EXIF tags; we keep both with
     # the lower code as primary and the EXIF (41xxx) variant with "-Exif" suffix
@@ -706,48 +1026,49 @@ class LocalTiffTags:
         # DNG-specific not in tifffile
         52549: "ProfileToneMethod",
     }
-    
+
     def __init__(self):
         self._by_name: dict[str, int] = {}
         self._by_code: dict[int, str] = {}
-        
+
         # Add our extra/corrected tags first (these take precedence)
         for code, name in self._EXTRA_TAGS.items():
             self._by_name[name] = code
             self._by_code[code] = name
-        
+
         # Add from tifffile's registry, but don't overwrite our corrections
         for code, name in tifffile.TIFF.TAGS.items():
             if code not in self._by_code:
                 self._by_code[code] = name
             if name not in self._by_name:
                 self._by_name[name] = code
-    
+
     def __contains__(self, key) -> bool:
         if isinstance(key, str):
             return key in self._by_name
         return key in self._by_code
-    
+
     def __getitem__(self, key):
         if isinstance(key, str):
             return self._by_name[key]
         return self._by_code[key]
-    
+
     def get(self, key, default=None):
         try:
             return self[key]
         except KeyError:
             return default
 
+
 LOCAL_TIFF_TAGS = LocalTiffTags()
 
 
 def resolve_tag(tag: str | int) -> tuple[int | None, str | None, TagSpec | None]:
     """Resolve a tag name or code to (tag_id, tag_name, spec).
-    
+
     Args:
         tag: Either a numeric tag code (int) or tag name string
-        
+
     Returns:
         Tuple of (tag_id, tag_name, spec) where any may be None if not found.
         For unknown numeric tags, tag_name will be str(tag_id) as fallback.
@@ -761,7 +1082,7 @@ def resolve_tag(tag: str | int) -> tuple[int | None, str | None, TagSpec | None]
     else:
         tag_name = tag
         tag_id = LOCAL_TIFF_TAGS.get(tag_name)
-    
+
     spec = TIFF_TAG_TYPE_REGISTRY.get(tag_name) if tag_name else None
     return tag_id, tag_name, spec
 
@@ -770,22 +1091,22 @@ def _decode_tag_value(
     tag_name: str,
     tag_value: Any,
     tag_dtype: int,
-    spec: TagSpec | None = None, 
+    spec: TagSpec | None = None,
     return_type: type | None = None,
 ) -> Any:
     """Decode a raw TIFF value to a Python type (TIFF → Python).
-    
+
     Internal function - use get_tag() or convert_tag_value() instead.
-    
+
     Pure conversion function - takes raw value and dtype, returns converted value.
-    
+
     Args:
         tag_name: Tag name (e.g., 'CFAPattern', 'ColorMatrix1')
         tag_value: Raw value from tifffile (tuple for rationals, bytes, int, etc.)
         tag_dtype: TIFF dtype code (5=RATIONAL, 10=SRATIONAL, etc.)
         spec: Optional TagSpec for validation and reshaping (e.g., shape=(3,3) for matrices)
         return_type: Target type for conversion (float, np.ndarray, str, None=raw)
-    
+
     Returns:
         Converted value, or raw value if no conversion requested/possible.
     """
@@ -799,31 +1120,31 @@ def _decode_tag_value(
                 f"{name_str} has dtype {file_dtype_str} (code {tag_dtype}) "
                 f"but spec expects {expected_dtypes}"
             )
-    
+
     # If no return_type specified, return raw value
     if return_type is None:
         return tag_value
-    
+
     # Handle string conversion
     if return_type is str:
         if isinstance(tag_value, bytes):
-            return tag_value.decode('utf-8', errors='replace')
+            return tag_value.decode("utf-8", errors="replace")
         elif isinstance(tag_value, np.ndarray):
-            return tag_value.tobytes().decode('utf-8', errors='replace')
+            return tag_value.tobytes().decode("utf-8", errors="replace")
         return str(tag_value)
-    
+
     # Handle datetime conversion (EXIF datetime strings → datetime)
     if return_type is datetime:
         if isinstance(tag_value, bytes):
-            tag_value = tag_value.decode('utf-8', errors='replace')
+            tag_value = tag_value.decode("utf-8", errors="replace")
         dt_str = str(tag_value).strip()
         if not dt_str:
             return None
         # Parse common datetime formats
         formats = [
-            '%Y:%m:%d %H:%M:%S',      # EXIF standard
-            '%Y-%m-%d %H:%M:%S',      # ISO with space
-            '%Y-%m-%dT%H:%M:%S',      # ISO with T
+            "%Y:%m:%d %H:%M:%S",  # EXIF standard
+            "%Y-%m-%d %H:%M:%S",  # ISO with space
+            "%Y-%m-%dT%H:%M:%S",  # ISO with T
         ]
         for fmt in formats:
             try:
@@ -832,10 +1153,14 @@ def _decode_tag_value(
                 continue
         logger.warning(f"Unable to parse datetime string: {dt_str}")
         return None
-    
+
     # Handle float conversion (rationals → float)
     if return_type is float:
-        if tag_dtype in (5, 10) and isinstance(tag_value, tuple) and len(tag_value) >= 2:
+        if (
+            tag_dtype in (5, 10)
+            and isinstance(tag_value, tuple)
+            and len(tag_value) >= 2
+        ):
             # Single rational: num/denom
             if len(tag_value) == 2:
                 return tag_value[0] / tag_value[1] if tag_value[1] != 0 else 0.0
@@ -845,13 +1170,17 @@ def _decode_tag_value(
             return float(tag_value)
         except (TypeError, ValueError):
             return tag_value
-    
+
     # Handle np.ndarray conversion (matrices, arrays)
     if return_type is np.ndarray:
         # Convert RATIONAL/SRATIONAL to float array
-        if tag_dtype in (5, 10) and isinstance(tag_value, tuple) and len(tag_value) % 2 == 0:
+        if (
+            tag_dtype in (5, 10)
+            and isinstance(tag_value, tuple)
+            and len(tag_value) % 2 == 0
+        ):
             floats = [
-                tag_value[i] / tag_value[i+1] if tag_value[i+1] != 0 else 0.0
+                tag_value[i] / tag_value[i + 1] if tag_value[i + 1] != 0 else 0.0
                 for i in range(0, len(tag_value), 2)
             ]
             arr = np.array(floats)
@@ -868,12 +1197,13 @@ def _decode_tag_value(
         if spec is not None and spec.shape is not None:
             return arr.reshape(spec.shape)
         return arr
-    
+
     # Generic type conversion attempt
     try:
         return return_type(tag_value)
     except (TypeError, ValueError):
         return tag_value
+
 
 def convert_tag_value(
     tag_name: str,
@@ -884,13 +1214,13 @@ def convert_tag_value(
     return_type: type | None = None,
 ) -> Any:
     """Convert a tag value with special formatting and type conversion.
-    
+
     This is the high-level conversion function that:
     1. Checks for special formatting (XMP, DNGVersion, etc.)
     2. Determines effective return type (auto if None)
     3. Creates shape spec if registry spec matches count
     4. Calls decode_tag_value for standard conversion
-    
+
     Args:
         tag_name: Tag name (e.g., 'CFAPattern', 'ColorMatrix1')
         tag_value: Raw or normalized value
@@ -898,7 +1228,7 @@ def convert_tag_value(
         tag_count: Number of values in the tag
         registry_spec: Optional registry TagSpec for shape info
         return_type: Target type for conversion (float, np.ndarray, str, None=auto)
-    
+
     Returns:
         Converted value with special formatting applied if applicable.
     """
@@ -909,59 +1239,67 @@ def convert_tag_value(
         if xmp_string is None:
             xmp_string = ""
         return XmpMetadata(xmp_string)
-    
+
     # DNG Version tags: return 4-tuple (major, minor, patch, build)
-    if tag_name in ("DNGVersion", "DNGBackwardVersion") and (return_type is None or return_type is tuple):
+    if tag_name in ("DNGVersion", "DNGBackwardVersion") and (
+        return_type is None or return_type is tuple
+    ):
         version_bytes = _decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
         if version_bytes is None:
             return None
         # Pad to 4 bytes if needed (null bytes may be stripped)
-        padded = version_bytes + b'\x00' * (4 - len(version_bytes))
+        padded = version_bytes + b"\x00" * (4 - len(version_bytes))
         return (padded[0], padded[1], padded[2], padded[3])
-    
+
     # CFAPattern: return friendly pattern string (e.g., "RGGB")
     if tag_name == "CFAPattern" and (return_type is None or return_type is str):
         pattern_bytes = _decode_tag_value(tag_name, tag_value, tag_dtype, None, bytes)
         if pattern_bytes is None:
             return None
         return CFA_CODES_TO_PATTERN.get(tuple(pattern_bytes), str(pattern_bytes))
-    
+
     # PhotometricInterpretation: convert enum to readable name
-    if tag_name == "PhotometricInterpretation" and (return_type is None or return_type is str):
+    if tag_name == "PhotometricInterpretation" and (
+        return_type is None or return_type is str
+    ):
         photometric_names = {
             tifffile.PHOTOMETRIC.CFA: "CFA",
             tifffile.PHOTOMETRIC.LINEAR_RAW: "LINEAR_RAW",
         }
         return photometric_names.get(tag_value, str(tag_value))
-    
+
     # Validate count against registry spec
-    if registry_spec and registry_spec.count is not None and tag_count != registry_spec.count:
+    if (
+        registry_spec
+        and registry_spec.count is not None
+        and tag_count != registry_spec.count
+    ):
         name_str = f"Tag '{tag_name}'" if tag_name else "Tag"
         logger.warning(
             f"{name_str} has count {tag_count} but spec expects {registry_spec.count}"
         )
-    
+
     # Determine effective return type (auto-convert if None)
     effective_type = return_type or get_native_type(tag_dtype, tag_count)
-    
+
     # Use registry spec shape only if count matches tag
     shape_spec = None
     if registry_spec and registry_spec.shape and registry_spec.count == tag_count:
         shape_spec = TagSpec(
-            TIFFTYPE_TO_DTYPE_STR.get(tag_dtype, 'B'), tag_count, registry_spec.shape
+            TIFFTYPE_TO_DTYPE_STR.get(tag_dtype, "B"), tag_count, registry_spec.shape
         )
-    
+
     return _decode_tag_value(tag_name, tag_value, tag_dtype, shape_spec, effective_type)
 
 
 def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple[Any, int, Any]:
     """Encode a Python value to TIFF format based on tag spec (Python → TIFF).
-    
+
     Args:
         tag_name: Tag name (e.g., 'CFAPattern', 'ColorMatrix1')
         value: Python value (float, int, str, datetime, np.ndarray, bytes, etc.)
         spec: TagSpec defining the expected TIFF type (may support multiple types)
-        
+
     Returns:
         Tuple of (dtype, count, converted_value) ready for add_tag
     """
@@ -972,27 +1310,31 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple[Any, int
         else:
             logger.warning(f"Unknown CFAPattern '{value}', using default 'RGGB'")
             value = bytes(CFA_PATTERN_TO_CODES["RGGB"])
-    
+
     # UTF-8 string tags: tags with [ASCII, BYTE] dtype support UTF-8 encoding
     # Includes: LocalizedCameraModel, ProfileName, ProfileCopyright, etc.
-    if isinstance(value, str) and isinstance(spec.dtype, list) and TiffType.BYTE in spec.dtype:
+    if (
+        isinstance(value, str)
+        and isinstance(spec.dtype, list)
+        and TiffType.BYTE in spec.dtype
+    ):
         value = value.encode("utf-8") + b"\x00"
-    
+
     # Select appropriate dtype based on value type (handles multi-type TagSpecs)
     dtype = spec.get_dtype_for_value(value)
-    
+
     # === String handling (ASCII) ===
     if dtype == TiffType.ASCII:
-        if hasattr(value, 'strftime'):
+        if hasattr(value, "strftime"):
             # Convert datetime-like objects to TIFF format
             value = value.strftime("%Y:%m:%d %H:%M:%S")
         if isinstance(value, bytes):
-            value = value.decode('utf-8', errors='replace')
+            value = value.decode("utf-8", errors="replace")
         value = str(value)
-        if not value.endswith('\x00'):
-            value = value + '\x00'
+        if not value.endswith("\x00"):
+            value = value + "\x00"
         return (dtype, len(value), value)
-    
+
     # === Byte array handling (BYTE, UNDEFINED) ===
     if dtype in (TiffType.BYTE, TiffType.UNDEFINED):
         if isinstance(value, bytes):
@@ -1000,23 +1342,27 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple[Any, int
         if isinstance(value, (list, tuple)):
             value = bytes(value)
             return (dtype, len(value), value)
-        if hasattr(value, '__array__'):
+        if hasattr(value, "__array__"):
             arr = np.asarray(value)
             value = arr.tobytes()
             return (dtype, len(value), value)
         # Single byte
         return (dtype, 1, bytes([int(value)]))
-    
+
     # === Rational handling (RATIONAL, SRATIONAL) ===
     if dtype in (TiffType.RATIONAL, TiffType.SRATIONAL):
         max_denom = 10000
-        
+
         # Handle nested list format: [[n1,d1],[n2,d2],...] -> (n1,d1,n2,d2,...)
-        if (isinstance(value, list) and len(value) > 0 and 
-            isinstance(value[0], (list, tuple)) and len(value[0]) == 2):
+        if (
+            isinstance(value, list)
+            and len(value) > 0
+            and isinstance(value[0], (list, tuple))
+            and len(value[0]) == 2
+        ):
             flat = tuple(item for pair in value for item in pair)
             return (dtype, len(value), flat)
-        
+
         # Check if value is already in rational format by comparing with spec.count
         # For EXIF tags: spec.count=1 with 2-element tuple means pre-formatted (num, denom)
         # For arrays: spec.count=N with 2N-element tuple means N pre-formatted rationals
@@ -1025,94 +1371,120 @@ def encode_tag_value(tag_name: str, value: Any, spec: TagSpec) -> tuple[Any, int
             # If tuple length matches expected rational count, treat as pre-formatted
             if len(value) == expected_count * 2:
                 return (dtype, expected_count, value)
-        
+
         # Handle array-like objects (numpy, pandas, xarray, etc.)
-        if hasattr(value, '__array__'):
+        if hasattr(value, "__array__"):
             flat = np.asarray(value).flatten()
             rationals = []
             for v in flat:
                 frac = Fraction(float(v)).limit_denominator(max_denom)
                 rationals.extend([frac.numerator, frac.denominator])
             return (dtype, len(flat), tuple(rationals))
-        
+
         # Handle lists/tuples of floats - convert each to rational
-        if isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], (int, float)):
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) > 0
+            and isinstance(value[0], (int, float))
+        ):
             rationals = []
             for v in value:
                 frac = Fraction(float(v)).limit_denominator(max_denom)
                 rationals.extend([frac.numerator, frac.denominator])
             return (dtype, len(value), tuple(rationals))
-        
+
         # Handle single float/int
         if isinstance(value, (int, float)):
             frac = Fraction(float(value)).limit_denominator(max_denom)
             return (dtype, 1, (frac.numerator, frac.denominator))
-    
+
     # === Integer handling (SHORT, LONG, SSHORT, SLONG, LONG8, SLONG8) ===
-    if dtype in (TiffType.SHORT, TiffType.LONG, TiffType.SSHORT, TiffType.SLONG, TiffType.LONG8, TiffType.SLONG8):
-        if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
-            arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
+    if dtype in (
+        TiffType.SHORT,
+        TiffType.LONG,
+        TiffType.SSHORT,
+        TiffType.SLONG,
+        TiffType.LONG8,
+        TiffType.SLONG8,
+    ):
+        if isinstance(value, (list, tuple)) or hasattr(value, "__array__"):
+            arr = (
+                np.asarray(value).flatten().tolist()
+                if hasattr(value, "__array__")
+                else list(value)
+            )
             return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
         return (dtype, 1, int(value))
-    
+
     # === Float handling (FLOAT, DOUBLE) ===
     if dtype in (TiffType.FLOAT, TiffType.DOUBLE):
-        if isinstance(value, (list, tuple)) or hasattr(value, '__array__'):
-            arr = np.asarray(value).flatten().tolist() if hasattr(value, '__array__') else list(value)
+        if isinstance(value, (list, tuple)) or hasattr(value, "__array__"):
+            arr = (
+                np.asarray(value).flatten().tolist()
+                if hasattr(value, "__array__")
+                else list(value)
+            )
             return (dtype, len(arr), tuple(arr) if len(arr) > 1 else arr[0])
         return (dtype, 1, float(value))
-    
+
     # Fallback: return as-is with count from spec
     count = spec.count if spec.count is not None else 1
     return (dtype, count, value)
 
+
 def normalize_array_to_target_byteorder(value, target_byteorder: str) -> Any:
     """Normalize array byte order to target byte order.
-    
+
     For numpy arrays, source byte order is determined from the array's dtype.
-    
+
     Args:
         value: Array value (ndarray, scalar, string, etc.)
         target_byteorder: Target byte order ('>' big-endian, '<' little-endian, '=' system)
-        
+
     Returns:
         Value converted to target byte order
     """
     # Multi-byte typed arrays - always convert to explicit byte order
     if isinstance(value, np.ndarray):
-        
         # Resolve '=' to actual system byte order
-        if target_byteorder == '=':
+        if target_byteorder == "=":
             import sys
-            target_byteorder = '<' if sys.byteorder == 'little' else '>'
+
+            target_byteorder = "<" if sys.byteorder == "little" else ">"
 
         # WINDOWS-SPECIFIC FIX: On Windows, uint32 arrays have dtype.char='L' instead of 'I'
         # tifffile validates dtype.char and expects 'I' for TIFF LONG (uint32)
         import platform
-        if platform.system() == 'Windows' and value.dtype.kind == 'u' and value.dtype.itemsize == 4:
+
+        if (
+            platform.system() == "Windows"
+            and value.dtype.kind == "u"
+            and value.dtype.itemsize == 4
+        ):
             # Recreate uint32 array using struct format to get dtype.char='I'
             # This also sets the correct byte order, so we can return immediately
-            return value.astype(f'{target_byteorder}I')
-        
+            return value.astype(f"{target_byteorder}I")
+
         # Check if already in target byte order using dtype.str[0]
         # dtype.str[0] is more reliable than dtype.byteorder which can report '=' even after conversion
-        if value.dtype.str[0] not in ('|', target_byteorder):
+        if value.dtype.str[0] not in ("|", target_byteorder):
             # Convert to target byte order with explicit marker
             # This handles both actual byte swapping and normalizing '=' to explicit byte order
             base_dtype = value.dtype.str[1:]  # Remove byte order prefix
-            target_dtype = f'{target_byteorder}{base_dtype}'
+            target_dtype = f"{target_byteorder}{base_dtype}"
             return value.astype(target_dtype)
-        
+
         return value
-    
+
     return value
+
 
 def get_cfa_pattern_codes(pattern: str) -> tuple[int, int, int, int]:
     """Convert CFA pattern string to code tuple.
-    
+
     Args:
         pattern: CFA pattern string ('RGGB', 'BGGR', 'GRBG', 'GBRG')
-        
+
     Returns:
         Tuple of 4 codes (0=R, 1=G, 2=B), e.g., (0, 1, 1, 2) for RGGB.
         Returns (0, 1, 1, 2) as default if pattern not recognized.
@@ -1120,39 +1492,39 @@ def get_cfa_pattern_codes(pattern: str) -> tuple[int, int, int, int]:
     return CFA_PATTERN_TO_CODES.get(pattern, (0, 1, 1, 2))
 
 
-def filter_tags_by_ifd_category(tags: 'MetadataTags', include_categories: list[str]) -> 'MetadataTags':
+def filter_tags_by_ifd_category(
+    tags: "MetadataTags", include_categories: list[str]
+) -> "MetadataTags":
     """Filter tags to only those belonging to specified IFD categories.
-    
+
     Args:
         tags: Input tags to filter
         include_categories: List of IFD categories to keep (e.g., ["any", "dng_ifd0", "exif"])
-        
+
     Returns:
         New MetadataTags with only tags matching the specified categories
     """
     from . import tiff_metadata as tm
-    
+
     filtered = tm.MetadataTags()
-    
+
     for code, dtype, count, value, _ in tags:
         _, tag_name, spec = resolve_tag(int(code))
         if tag_name is None or spec is None:
             # Unknown tag - preserve it (user may have custom/proprietary tags)
             filtered.add_raw_tag(int(code), int(dtype), int(count), value)
             continue
-        
+
         # Check if tag's dng_ifd category is in the include list
         if spec.dng_ifd in include_categories:
             filtered.add_raw_tag(int(code), int(dtype), int(count), value)
-    
+
     return filtered
 
-def _get_time_impl(
-    tag_source: Any,
-    time_type: str = "original"
-) -> datetime | None:
+
+def _get_time_impl(tag_source: Any, time_type: str = "original") -> datetime | None:
     """Internal implementation for extracting datetime from EXIF time tags.
-    
+
     Args:
         tag_source: Any object with a get_tag(name, return_type) method
         time_type: Which set of tags to read:
@@ -1160,7 +1532,7 @@ def _get_time_impl(
             - "digitized": DateTimeDigitized, SubsecTimeDigitized, OffsetTimeDigitized
             - "modified": DateTime, SubsecTime, OffsetTime
             - "preview": PreviewDateTime (no subsec/offset tags)
-            
+
     Returns:
         datetime object with microseconds and timezone if available, or None if
         the datetime tag is not present or cannot be parsed.
@@ -1168,70 +1540,77 @@ def _get_time_impl(
     # Define tag name mapping (same as add_time_tags)
     tag_names = {
         "original": ("DateTimeOriginal", "SubsecTimeOriginal", "OffsetTimeOriginal"),
-        "digitized": ("DateTimeDigitized", "SubsecTimeDigitized", "OffsetTimeDigitized"),
+        "digitized": (
+            "DateTimeDigitized",
+            "SubsecTimeDigitized",
+            "OffsetTimeDigitized",
+        ),
         "modified": ("DateTime", "SubsecTime", "OffsetTime"),
         "preview": ("PreviewDateTime", None, None),
     }
-    
+
     if time_type not in tag_names:
-        raise ValueError(f"time_type must be one of {list(tag_names.keys())}, got '{time_type}'")
-    
+        raise ValueError(
+            f"time_type must be one of {list(tag_names.keys())}, got '{time_type}'"
+        )
+
     datetime_tag, subsec_tag, offset_tag = tag_names[time_type]
-    
+
     # Get the main datetime value (request datetime conversion)
     dt_obj = tag_source.get_tag(datetime_tag, datetime)
     if dt_obj is None:
         return None
-    
+
     # EXIF DateTime format has no subseconds, so add from SubsecTime* tag
     if subsec_tag:
         subsec_str = tag_source.get_tag(subsec_tag)  # Returns str (dtype "s")
         if subsec_str:
-            subsec_str = str(subsec_str).strip('\x00').strip()
+            subsec_str = str(subsec_str).strip("\x00").strip()
             if subsec_str:
                 try:
                     # SubsecTime is typically milliseconds (3 digits)
                     # Pad or truncate to 6 digits for microseconds
-                    subsec_str = subsec_str.ljust(6, '0')[:6]
+                    subsec_str = subsec_str.ljust(6, "0")[:6]
                     microseconds = int(subsec_str)
                     dt_obj = dt_obj.replace(microsecond=microseconds)
                 except (ValueError, AttributeError):
                     pass
-    
+
     # Get timezone offset if available
     if offset_tag:
         offset_str = tag_source.get_tag(offset_tag)  # Returns str (dtype "s")
         if offset_str:
-            offset_str = str(offset_str).strip('\x00').strip()
+            offset_str = str(offset_str).strip("\x00").strip()
             # Parse offset like "+08:00" or "-05:00"
             if len(offset_str) >= 5:
                 try:
-                    sign = 1 if offset_str[0] == '+' else -1
+                    sign = 1 if offset_str[0] == "+" else -1
                     hours = int(offset_str[1:3])
                     minutes = int(offset_str[4:6]) if len(offset_str) >= 6 else 0
                     total_seconds = sign * (hours * 3600 + minutes * 60)
-                    
+
                     from datetime import timezone, timedelta
+
                     tz = timezone(timedelta(seconds=total_seconds))
                     dt_obj = dt_obj.replace(tzinfo=tz)
                 except (ValueError, IndexError):
                     pass  # Keep naive datetime if offset parsing fails
-    
+
     return dt_obj
 
 
 def _convert_exif_dict_to_tags(tags: MetadataTags, exif_dict: dict[str, Any]) -> None:
     """Convert ExifTag dictionary to individual TIFF tags.
-    
+
     Since TiffWriter cannot write ExifIFD structures, this function converts
     EXIF tags from the dictionary format (as read by tifffile) to individual
     TIFF tags that can be written as regular tags.
-    
+
     Args:
         tags: MetadataTags instance to add converted tags to.
               Individual EXIF tags are added. Existing tags are not overwritten.
         exif_dict: ExifTag dictionary to convert.
-        
+
     Example:
         exif_dict = dng_file.get_tag('ExifTag')
         tags = MetadataTags()
@@ -1240,12 +1619,12 @@ def _convert_exif_dict_to_tags(tags: MetadataTags, exif_dict: dict[str, Any]) ->
     """
     if not exif_dict:
         return
-    
+
     for tag_name, value in exif_dict.items():
         # Skip ExifVersion - it's already converted to string by tifffile and not useful as TIFF tag
-        if tag_name == 'ExifVersion':
+        if tag_name == "ExifVersion":
             continue
-        
+
         # Check if tag has a type spec and is not already present
         if tag_name in TIFF_TAG_TYPE_REGISTRY and tag_name not in tags:
             try:
@@ -1254,42 +1633,42 @@ def _convert_exif_dict_to_tags(tags: MetadataTags, exif_dict: dict[str, Any]) ->
                 # Value format doesn't match tag spec
                 logger.debug(f"Skipping EXIF tag '{tag_name}': {e}")
 
+
 # helper class to convert create a list of tags for tifffile.TiffWriter
 class MetadataTags:
-    
     @dataclass(slots=True)
     class StoredTag:
         code: int
         dtype: int  # TIFF dtype code
         count: int
         value: Any
-    
+
     def __init__(self):
         self._tags: dict[int, MetadataTags.StoredTag] = {}
 
     def __iter__(self):
         """Iterate over tags, sorted by tag code.
-        
+
         Yields tuples in format expected by TiffWriter: (code, dtype, count, value, writeonce)
         """
         for code in sorted(self._tags.keys()):
             tag = self._tags[code]
             yield (tag.code, tag.dtype, tag.count, tag.value, False)
-    
+
     def __len__(self):
         """Return the number of tags."""
         return len(self._tags)
-    
+
     def __contains__(self, tag: int | str) -> bool:
         """Check if a tag exists by code (int) or name (str)."""
         tag_id, _, _ = resolve_tag(tag)
         if tag_id is None:
             return False
         return tag_id in self._tags
-    
+
     def __getitem__(self, tag: int | str) -> Any:
         """Get raw tag value using [] operator, like tifffile.tags.
-        
+
         Raises KeyError if not found.
         """
         result = self.get_raw_tag(tag)
@@ -1299,10 +1678,10 @@ class MetadataTags:
 
     def remove_tag(self, tag: int | str) -> bool:
         """Remove a tag by code (int) or name (str).
-        
+
         Args:
             tag: Tag code or name to remove
-            
+
         Returns:
             True if tag was removed, False if it didn't exist
         """
@@ -1322,10 +1701,10 @@ class MetadataTags:
 
     def add_tag(self, tag_name: str, value: Any) -> None:
         """Add a tag with automatic type conversion based on registry.
-        
-        The tag type and format are looked up in TIFF_TAG_TYPE_REGISTRY and 
+
+        The tag type and format are looked up in TIFF_TAG_TYPE_REGISTRY and
         the value is automatically converted to the appropriate TIFF format.
-        
+
         Args:
             tag_name: Name of the TIFF/DNG tag (e.g., 'ExposureTime', 'ColorMatrix1')
             value: Python value - will be auto-converted based on tag type:
@@ -1334,14 +1713,14 @@ class MetadataTags:
                    - str → null-terminated ASCII
                    - np.ndarray → flattened rational array for matrices
                    - bytes → raw byte array
-                   
+
         Special cases:
             - CFAPattern: accepts pattern key string ('RGGB', 'BGGR', 'GRBG', 'GBRG')
               which is auto-converted to the appropriate byte pattern
-        
+
         Raises:
             KeyError: If tag_name is not in TIFF_TAG_TYPE_REGISTRY
-            
+
         Example:
             tags.add_tag("ExposureTime", 0.01)  # Auto-converts to rational
             tags.add_tag("ColorMatrix1", np.eye(3))  # Auto-converts 3x3 to rationals
@@ -1351,24 +1730,22 @@ class MetadataTags:
         """
         tag_id, _, spec = resolve_tag(tag_name)
         if tag_id is None or spec is None:
-            raise KeyError(f"Tag '{tag_name}' not in TIFF_TAG_TYPE_REGISTRY. "
-                          f"Use add_raw_tag() for tags not in registry.")
-        
+            raise KeyError(
+                f"Tag '{tag_name}' not in TIFF_TAG_TYPE_REGISTRY. "
+                f"Use add_raw_tag() for tags not in registry."
+            )
+
         dtype, count, converted_value = encode_tag_value(tag_name, value, spec)
         self.add_raw_tag(tag_id, dtype, count, converted_value)
 
     def add_raw_tag(
-        self, 
-        name_or_code: str | int, 
-        dtype: TiffType | int, 
-        count: int, 
-        value: Any
+        self, name_or_code: str | int, dtype: TiffType | int, count: int, value: Any
     ) -> None:
         """Add a tag with explicit type specification.
-        
+
         Values are automatically normalized to system byte order for internal storage.
         For numpy arrays, source byte order is determined from the array's dtype.
-        
+
         Args:
             name_or_code: Tag name string or numeric code
             dtype: TIFF data type (TiffType enum or int code, e.g., TiffType.RATIONAL or 5)
@@ -1383,28 +1760,30 @@ class MetadataTags:
         tag_dtype = int(dtype)
 
         # Normalize value to system byte order for internal storage
-        normalized_value = normalize_array_to_target_byteorder(value, '=')
-        
+        normalized_value = normalize_array_to_target_byteorder(value, "=")
+
         # Strip null terminators from ASCII strings for cleaner internal representation
         # (encode_tag_value will add them back when writing to TIFF)
         if tag_dtype == TiffType.ASCII and isinstance(normalized_value, str):
-            normalized_value = normalized_value.rstrip('\x00')
+            normalized_value = normalized_value.rstrip("\x00")
 
-        self._tags[tag_code] = self.StoredTag(code=tag_code, dtype=tag_dtype, count=count, value=normalized_value)
+        self._tags[tag_code] = self.StoredTag(
+            code=tag_code, dtype=tag_dtype, count=count, value=normalized_value
+        )
 
     def add_time_tags(
         self,
         time_value: str | datetime | Any,
         time_type: str = "original",
-        timezone: str | None = None
+        timezone: str | None = None,
     ) -> None:
         """Add datetime, subsecond, and timezone offset tags.
-        
+
         Parses a datetime value and sets the appropriate EXIF time tags:
         - DateTime/DateTimeOriginal/DateTimeDigitized (format: YYYY:MM:DD HH:MM:SS)
         - SubsecTime/SubsecTimeOriginal/SubsecTimeDigitized (milliseconds)
         - OffsetTime/OffsetTimeOriginal/OffsetTimeDigitized (timezone offset)
-        
+
         Args:
             time_value: Datetime value - can be:
                 - datetime object (with or without microseconds)
@@ -1418,39 +1797,49 @@ class MetadataTags:
             timezone: Optional timezone string (e.g., "America/Los_Angeles", "UTC")
                      Used to set OffsetTime* tag. If time_value is timezone-aware,
                      that timezone is used instead.
-                     
+
         Example:
             tags.add_time_tags(datetime.now(), "original", "America/Los_Angeles")
             tags.add_time_tags("2024-03-06T15:30:00.123", "digitized")
         """
         # Define tag name mapping
         tag_names = {
-            "original": ("DateTimeOriginal", "SubsecTimeOriginal", "OffsetTimeOriginal"),
-            "digitized": ("DateTimeDigitized", "SubsecTimeDigitized", "OffsetTimeDigitized"),
+            "original": (
+                "DateTimeOriginal",
+                "SubsecTimeOriginal",
+                "OffsetTimeOriginal",
+            ),
+            "digitized": (
+                "DateTimeDigitized",
+                "SubsecTimeDigitized",
+                "OffsetTimeDigitized",
+            ),
             "modified": ("DateTime", "SubsecTime", "OffsetTime"),
             "preview": ("PreviewDateTime", None, None),
         }
-        
+
         if time_type not in tag_names:
-            raise ValueError(f"time_type must be one of {list(tag_names.keys())}, got '{time_type}'")
-        
+            raise ValueError(
+                f"time_type must be one of {list(tag_names.keys())}, got '{time_type}'"
+            )
+
         datetime_tag, subsec_tag, offset_tag = tag_names[time_type]
-        
+
         # Parse string to datetime if needed
         dt_obj = None
         subsec_str = None
-        
+
         if isinstance(time_value, str):
             # Try common datetime formats
             formats = [
-                '%Y:%m:%d %H:%M:%S.%f',  # EXIF with microseconds
-                '%Y:%m:%d %H:%M:%S',      # EXIF standard
-                '%Y-%m-%d %H:%M:%S.%f',   # ISO with space and microseconds
-                '%Y-%m-%d %H:%M:%S',      # ISO with space
-                '%Y-%m-%dT%H:%M:%S.%f',   # ISO with T and microseconds
-                '%Y-%m-%dT%H:%M:%S',      # ISO with T
-                '%Y-%m-%dT%H:%M:%S.%f%z', # ISO with timezone
-                '%Y-%m-%dT%H:%M:%S%z',    # ISO with timezone, no microseconds
+                "%Y:%m:%d %H:%M:%S.%f",  # EXIF with microseconds
+                "%Y:%m:%d %H:%M:%S",  # EXIF standard
+                "%Y-%m-%d %H:%M:%S.%f",  # ISO with space and microseconds
+                "%Y-%m-%d %H:%M:%S",  # ISO with space
+                "%Y-%m-%dT%H:%M:%S.%f",  # ISO with T and microseconds
+                "%Y-%m-%dT%H:%M:%S",  # ISO with T
+                "%Y-%m-%dT%H:%M:%S.%f%z",  # ISO with timezone
+                "%Y-%m-%dT%H:%M:%S%z",  # ISO with timezone, no microseconds
             ]
             for fmt in formats:
                 try:
@@ -1461,68 +1850,73 @@ class MetadataTags:
             else:
                 logger.warning(f"Unable to parse time string: {time_value}")
                 return
-        elif hasattr(time_value, 'strftime'):
+        elif hasattr(time_value, "strftime"):
             dt_obj = time_value
         else:
-            logger.warning(f"time_value must be string or datetime-like, got {type(time_value)}")
+            logger.warning(
+                f"time_value must be string or datetime-like, got {type(time_value)}"
+            )
             return
-        
+
         # Extract subseconds (milliseconds, 3 digits)
-        if hasattr(dt_obj, 'microsecond') and dt_obj.microsecond > 0:
+        if hasattr(dt_obj, "microsecond") and dt_obj.microsecond > 0:
             subsec_str = f"{dt_obj.microsecond // 1000:03d}"
-        
+
         # Format datetime string (EXIF format, exactly 19 chars + null = 20)
-        datetime_str = dt_obj.strftime('%Y:%m:%d %H:%M:%S')
+        datetime_str = dt_obj.strftime("%Y:%m:%d %H:%M:%S")
         self.add_tag(datetime_tag, datetime_str)
-        
+
         # Add subseconds if available and tag exists for this time_type
         if subsec_str and subsec_tag:
             self.add_tag(subsec_tag, subsec_str)
-        
+
         # Handle timezone offset
         if offset_tag:
             offset_str = None
-            
+
             # Check if dt_obj has timezone info
-            if hasattr(dt_obj, 'tzinfo') and dt_obj.tzinfo is not None:
+            if hasattr(dt_obj, "tzinfo") and dt_obj.tzinfo is not None:
                 try:
                     offset = dt_obj.utcoffset()
                     if offset is not None:
                         total_seconds = int(offset.total_seconds())
                         hours, remainder = divmod(abs(total_seconds), 3600)
                         minutes = remainder // 60
-                        sign = '+' if total_seconds >= 0 else '-'
+                        sign = "+" if total_seconds >= 0 else "-"
                         offset_str = f"{sign}{hours:02d}:{minutes:02d}"
                 except Exception:
                     pass
-            
+
             # Use provided timezone if no offset from dt_obj
             if offset_str is None and timezone:
                 try:
                     from zoneinfo import ZoneInfo
+
                     tz = ZoneInfo(timezone)
                     # Get offset for the given datetime
-                    if hasattr(dt_obj, 'replace'):
+                    if hasattr(dt_obj, "replace"):
                         aware_dt = dt_obj.replace(tzinfo=tz)
                         offset = aware_dt.utcoffset()
                         if offset is not None:
                             total_seconds = int(offset.total_seconds())
                             hours, remainder = divmod(abs(total_seconds), 3600)
                             minutes = remainder // 60
-                            sign = '+' if total_seconds >= 0 else '-'
+                            sign = "+" if total_seconds >= 0 else "-"
                             offset_str = f"{sign}{hours:02d}:{minutes:02d}"
                 except Exception as e:
-                    logger.warning(f"Invalid timezone '{timezone}' ({type(e).__name__}): {e}")
-            
+                    logger.warning(
+                        f"Invalid timezone '{timezone}' ({type(e).__name__}): {e}"
+                    )
+
             if offset_str:
                 self.add_tag(offset_tag, offset_str)
 
-    def add_xmp(self, xmp: 'XmpMetadata') -> None:
+    def add_xmp(self, xmp: "XmpMetadata") -> None:
         """Add XMP metadata to the DNG file.
-        
+
         Args:
             xmp: XmpMetadata instance to serialize and write to XMP tag.
-        
+
         Example:
            from .xmp import XmpMetadata
             xmp = XmpMetadata.from_attributes({
@@ -1539,31 +1933,31 @@ class MetadataTags:
 
     def extend(self, other: MetadataTags | None) -> None:
         """Add all tags from another MetadataTags instance.
-        
+
         Args:
             other: MetadataTags instance to add tags from
-            
+
         Raises:
             TypeError: If other is not a MetadataTags instance
         """
         if other is None:
             return
         if not isinstance(other, MetadataTags):
-            raise TypeError(f"Expected MetadataTags instance, got {type(other).__name__}")
+            raise TypeError(
+                f"Expected MetadataTags instance, got {type(other).__name__}"
+            )
         # Dict update - other's tags override existing
         for _, tag in other._tags.items():
             self.add_raw_tag(tag.code, tag.dtype, tag.count, tag.value)
 
     def __or__(self, other: MetadataTags | None) -> Self:
-        """Combine two MetadataTags instances using the | operator.
-        """
+        """Combine two MetadataTags instances using the | operator."""
         result = self.copy()
         result.extend(other)
         return result
 
     def __ior__(self, other: MetadataTags | None) -> Self:
-        """In-place union using the |= operator.
-        """
+        """In-place union using the |= operator."""
         self.extend(other)
         return self
 
@@ -1576,85 +1970,81 @@ class MetadataTags:
         self, tag: str | int
     ) -> tuple[int, str | None, TagSpec | None, Any] | None:
         """Internal helper to resolve tag and get stored tag object.
-        
+
         Args:
             tag: Either a numeric tag code (int) or tag name string
-        
+
         Returns:
             Tuple of (tag_id, tag_name, registry_spec, stored_tag) or None if not found.
         """
         tag_id, tag_name, spec = resolve_tag(tag)
-        
+
         if tag_id is None:
             logger.warning(f"Tag '{tag}' not found in LOCAL_TIFF_TAGS.")
             return None
-        
+
         if tag_id not in self._tags:
             return None
-        
+
         return (tag_id, tag_name, spec, self._tags[tag_id])
 
-    def get_tag(
-        self, 
-        tag: str | int, 
-        return_type: type | None = None
-    ) -> Any | None:
+    def get_tag(self, tag: str | int, return_type: type | None = None) -> Any | None:
         """Get a tag value with type conversion.
-        
+
         Args:
             tag: Either a numeric tag code (int) or tag name string
             return_type: Controls type conversion:
                 - None (default): auto-convert to native type from TagSpec
                 - specific type (str, float, list, etc.): convert to that type
-        
+
         Returns:
             Tag value (converted based on return_type), or None if not found.
-            
+
         See also:
             get_raw_tag: Returns raw tag value without any conversion.
         """
         tag_info = self._get_tag_info(tag)
         if tag_info is None:
             return None
-        
+
         _, tag_name, spec, t = tag_info
         return convert_tag_value(tag_name, t.value, t.dtype, t.count, spec, return_type)
 
     def get_raw_tag(self, tag: str | int) -> Any | None:
         """Get raw tag value without any type conversion.
-        
+
         Args:
             tag: Either a numeric tag code (int) or tag name string
-        
+
         Returns:
             Raw tag value as stored, or None if not found.
-            
+
         See also:
             get_tag: Returns tag value with automatic or specified type conversion.
         """
         tag_info = self._get_tag_info(tag)
         if tag_info is None:
             return None
-        
+
         return tag_info[3].value
-    
+
     def get_time_from_tags(self, time_type: str = "original") -> datetime | None:
         """Extract datetime from EXIF time tags with subseconds and timezone.
-        
+
         This is the inverse of add_time_tags(). Reads the datetime, subsecond,
         and timezone offset tags and combines them into a single datetime object.
-        
+
         Args:
             time_type: Which set of tags to read:
                 - "original" (default): DateTimeOriginal, SubsecTimeOriginal, OffsetTimeOriginal
                 - "digitized": DateTimeDigitized, SubsecTimeDigitized, OffsetTimeDigitized
                 - "modified": DateTime, SubsecTime, OffsetTime
                 - "preview": PreviewDateTime (no subsec/offset tags)
-                
+
         Returns:
             datetime object with microseconds and timezone if available, or None if
             the datetime tag is not present or cannot be parsed.
-            
+
         Example:
             capture_time = tags.get_time("original")
             if capture_time:
@@ -1665,23 +2055,23 @@ class MetadataTags:
 
 class XmpMetadata:
     """Encapsulates XMP metadata parsing and querying for DNG files.
-    
+
     Read-only by convention: use factory methods to create new instances.
     """
-    
+
     def __init__(self, xmp_string: str = ""):
         """Initialize XmpMetadata from an XMP string.
-        
+
         Args:
             xmp_string: Raw XMP metadata string from DNG file (default: empty)
         """
         self._xmp_string = xmp_string
         self._attributes = self._parse(xmp_string)
-    
+
     @classmethod
     def from_attributes(cls, attributes: dict[str, Any]) -> Self:
         """Create XmpMetadata from a dict of fully-qualified XMP attributes.
-        
+
         Args:
             attributes: Dict mapping XMP property names to values.
                        Keys should be fully qualified (e.g., 'crs:Temperature', 'dc:subject').
@@ -1689,21 +2079,21 @@ class XmpMetadata:
                        - str for scalar properties
                        - list[str] for rdf:Bag properties (e.g., dc:subject)
                        - list[tuple[float, float]] for tone curves
-        
+
         Returns:
             New XmpMetadata instance
         """
         instance = cls.__new__(cls)
         instance._attributes = dict(attributes)
         return instance
-    
-    def merged(self, other: 'XmpMetadata' | dict[str, Any]) -> Self:
+
+    def merged(self, other: "XmpMetadata" | dict[str, Any]) -> Self:
         """Create a new XmpMetadata with attributes from this instance and other.
-        
+
         Args:
             other: XmpMetadata instance or dict of attributes to merge.
                   Attributes in 'other' override attributes in 'self'.
-        
+
         Returns:
             New XmpMetadata instance with merged attributes
         """
@@ -1713,10 +2103,10 @@ class XmpMetadata:
         else:
             merged_attrs.update(other)
         return type(self).from_attributes(merged_attrs)
-    
+
     def _parse(self, xmp_data: str) -> Dict[str, Any]:
         """Parse all XMP attributes and sequences from the XMP metadata into a dictionary.
-        
+
         Returns:
             Dictionary mapping attribute names to values.
 
@@ -1730,6 +2120,7 @@ class XmpMetadata:
             return {}
 
         import re
+
         DET = defusedxml_proxy.ElementTree
 
         attributes: dict[str, Any] = {}
@@ -1798,7 +2189,7 @@ class XmpMetadata:
         if rdf_root is None:
             logger.debug("No rdf:RDF element found in XMP")
             return {}
-        
+
         descriptions = rdf_root.findall(f"./{{{rdf_uri}}}Description")
         for desc in descriptions:
             for attr_qname, attr_value in desc.attrib.items():
@@ -1823,7 +2214,9 @@ class XmpMetadata:
                     continue
 
                 li_elems = container.findall(f"{{{rdf_uri}}}li")
-                li_values = [li.text.strip() for li in li_elems if li.text and li.text.strip()]
+                li_values = [
+                    li.text.strip() for li in li_elems if li.text and li.text.strip()
+                ]
                 if not li_values:
                     continue
 
@@ -1834,56 +2227,63 @@ class XmpMetadata:
 
         logger.debug(f"Parsed {len(attributes)} XMP attributes")
         return attributes
-    
-    def xpath_query(self, element_name: str, namespace_uri: str) -> dict[str, str] | None:
+
+    def xpath_query(
+        self, element_name: str, namespace_uri: str
+    ) -> dict[str, str] | None:
         """Query XMP for elements by namespace URI and local name.
-        
+
         Searches the entire XMP tree for elements matching the given namespace and name,
         and returns the first match's attributes as a dict.
-        
+
         Args:
             element_name: Local element name (e.g., 'PerspectiveModel')
             namespace_uri: Full namespace URI (e.g., 'http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/')
-        
+
         Returns:
             Dict of attribute name -> value for the first matching element, or None if not found.
             Attribute names are returned with their namespace prefix (e.g., 'stCamera:Version').
-        
+
         Example:
             pm = xmp.xpath_query('PerspectiveModel', 'http://ns.adobe.com/camera-raw-embedded-lens-profile/1.0/')
             if pm:
                 k1 = pm.get('stCamera:RadialDistortParam1')
         """
-        result = self.xpath_query_with_parent(element_name, namespace_uri, include_parent=False)
+        result = self.xpath_query_with_parent(
+            element_name, namespace_uri, include_parent=False
+        )
         return result[0] if result else None
-    
-    def xpath_query_with_parent(self, element_name: str, namespace_uri: str, include_parent: bool = True) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+
+    def xpath_query_with_parent(
+        self, element_name: str, namespace_uri: str, include_parent: bool = True
+    ) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
         """Query XMP for elements and optionally include direct parent element attributes.
-        
+
         General-purpose method that finds an element and optionally returns its parent's attributes.
         Uses ElementTree's parent map to find the immediate parent element.
-        
+
         Args:
             element_name: Local element name (e.g., 'PerspectiveModel')
             namespace_uri: Full namespace URI
             include_parent: If True, includes parent element's attributes in result
-        
+
         Returns:
             Tuple of (element_dict, parent_dict) or None if not found.
             parent_dict will be None if include_parent is False or parent has no attributes.
-        
+
         Example:
             elem, parent = xmp.xpath_query_with_parent('PerspectiveModel', 'http://...', include_parent=True)
             if parent:
                 focal_length = parent.get('stCamera:FocalLength')
         """
-        if not hasattr(self, '_xmp_string') or not self._xmp_string:
+        if not hasattr(self, "_xmp_string") or not self._xmp_string:
             return None
-        
+
         try:
             import re
+
             DET = defusedxml_proxy.ElementTree
-            
+
             # Parse XMP
             xmp_text = self._xmp_string
             if isinstance(xmp_text, bytes):
@@ -1891,7 +2291,7 @@ class XmpMetadata:
             xmp_text = xmp_text.lstrip("\ufeff")
             xmp_text = re.sub(r"<\?xpacket[^>]*\?>", "", xmp_text)
             root = DET.fromstring(xmp_text)
-            
+
             # Build namespace prefix map
             uri_to_prefix = {
                 "http://ns.adobe.com/camera-raw-settings/1.0/": "crs",
@@ -1902,14 +2302,14 @@ class XmpMetadata:
                 "http://ns.adobe.com/tiff/1.0/": "tiff",
                 "http://ns.adobe.com/xap/1.0/": "xmp",
             }
-            
+
             def extract_attributes(elem):
                 """Extract attributes from an element with namespace prefixes."""
                 result = {}
                 for attr_qname, attr_value in elem.attrib.items():
                     if attr_qname.startswith("{http://www.w3.org/2000/xmlns/}"):
                         continue
-                    
+
                     # Convert qualified name to prefixed name
                     if attr_qname[0] == "{":
                         try:
@@ -1920,67 +2320,71 @@ class XmpMetadata:
                             attr_name = attr_qname
                     else:
                         attr_name = attr_qname
-                    
+
                     result[attr_name] = str(attr_value)
                 return result
-            
+
             # Find all matching elements
             search_path = f".//{{{namespace_uri}}}{element_name}"
             elements = root.findall(search_path)
             if not elements:
                 return None
-            
+
             # Use first match
             elem = elements[0]
-            
+
             # If element has no direct attributes, check for child rdf:Description
             if len(elem.attrib) == 0:
                 rdf_uri = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
                 desc_children = elem.findall(f"{{{rdf_uri}}}Description")
                 if desc_children:
                     elem = desc_children[0]
-            
+
             # Extract element attributes
             elem_attrs = extract_attributes(elem)
-            
+
             # Extract parent attributes if requested
             parent_attrs = None
             if include_parent:
                 # Build parent map to find parent element
                 parent_map = {c: p for p in root.iter() for c in p}
-                parent_elem = parent_map.get(elements[0])  # Get parent of original found element
-                
+                parent_elem = parent_map.get(
+                    elements[0]
+                )  # Get parent of original found element
+
                 if parent_elem is not None and len(parent_elem.attrib) > 0:
                     parent_attrs = extract_attributes(parent_elem)
-            
+
             return (elem_attrs, parent_attrs) if elem_attrs or parent_attrs else None
-            
+
         except Exception as e:
             logger.debug(f"XPath query failed for {element_name}: {e}")
             return None
-    
-    def get_root_prop(self, prop: str, return_type: Type[Any] | None = None) -> Any | None:
+
+    def get_root_prop(
+        self, prop: str, return_type: Type[Any] | None = None
+    ) -> Any | None:
         """Get a root-level XMP property value with optional type conversion.
-        
+
         Only works with properties at the root Description level. For deeply nested
         properties (e.g., crlcp:PerspectiveModel), use xpath_query() instead.
-        
+
         Args:
             prop: Property name. If no namespace prefix, 'crs:' is automatically prepended.
                  Examples: 'Temperature' -> 'crs:Temperature', 'tiff:Orientation' -> 'tiff:Orientation'
             return_type: Optional type to convert the value to (e.g., float, int)
-        
+
         Returns:
             The property value, optionally converted to return_type. None if not found.
         """
         # Auto-prepend 'crs:' if no namespace specified
-        if ':' not in prop:
-            prop = f'crs:{prop}'
-        
+        if ":" not in prop:
+            prop = f"crs:{prop}"
+
         value = self._attributes.get(prop)
         if value is None:
             return None
-        
+
         if return_type is None:
             return value
 
@@ -1988,69 +2392,76 @@ class XmpMetadata:
             if isinstance(value, list):
                 return value
             return [value]
-        
+
         # Try to convert using the type's constructor
         try:
             return return_type(value)
         except (ValueError, TypeError) as e:
-            logger.warning(f"Could not convert XMP property '{prop}' value '{value}' to type {return_type} ({type(e).__name__}): {e}")
+            logger.warning(
+                f"Could not convert XMP property '{prop}' value '{value}' to type {return_type} ({type(e).__name__}): {e}"
+            )
             return None
-    
-    def get_formatted_string(self, strip_whitespace: bool = True, filter_blank_lines: bool = True) -> str | None:
+
+    def get_formatted_string(
+        self, strip_whitespace: bool = True, filter_blank_lines: bool = True
+    ) -> str | None:
         """Get the raw XMP string with optional formatting.
-        
+
         Args:
             strip_whitespace: If True, strip trailing whitespace from each line
             filter_blank_lines: If True, remove blank lines (except xpacket lines)
-        
+
         Returns:
             Formatted XMP string, or None if no XMP data available
         """
-        if not hasattr(self, '_xmp_string') or not self._xmp_string:
+        if not hasattr(self, "_xmp_string") or not self._xmp_string:
             return None
-        
+
         xmp_str = self._xmp_string
         if isinstance(xmp_str, bytes):
-            xmp_str = xmp_str.decode('utf-8', errors='replace')
-        
+            xmp_str = xmp_str.decode("utf-8", errors="replace")
+
         if not strip_whitespace and not filter_blank_lines:
             return xmp_str
-        
+
         lines = xmp_str.splitlines()
-        
+
         if strip_whitespace:
             lines = [line.rstrip() for line in lines]
-        
+
         if filter_blank_lines:
-            lines = [line for line in lines if line.strip() or line.startswith('<?xpacket')]
-        
-        return '\n'.join(lines)
+            lines = [
+                line for line in lines if line.strip() or line.startswith("<?xpacket")
+            ]
+
+        return "\n".join(lines)
 
 
 # =============================================================================
 # XMP Codec Functions
 # =============================================================================
 
+
 def xmp_packet_to_metadata(packet: bytes | str) -> XmpMetadata:
     """Parse an XMP packet (bytes or string) into XmpMetadata.
-    
+
     Args:
         packet: Raw XMP packet from TIFF XMP tag (bytes or string)
-    
+
     Returns:
         XmpMetadata instance
     """
     if isinstance(packet, bytes):
-        packet = packet.decode('utf-8', errors='replace')
+        packet = packet.decode("utf-8", errors="replace")
     return XmpMetadata(packet)
 
 
 def xmp_metadata_to_packet(xmp: XmpMetadata) -> bytes:
     """Serialize XmpMetadata to an XMP packet (bytes).
-    
+
     Args:
         xmp: XmpMetadata instance to serialize
-    
+
     Returns:
         XMP packet as UTF-8 encoded bytes
     """
@@ -2061,85 +2472,96 @@ def xmp_metadata_to_packet(xmp: XmpMetadata) -> bytes:
         '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
         '    <rdf:Description rdf:about=""',
     ]
-    
+
     # Known namespace registry
     _KNOWN_NAMESPACES = {
-        'crs': 'http://ns.adobe.com/camera-raw-settings/1.0/',
-        'dc': 'http://purl.org/dc/elements/1.1/',
-        'tiff': 'http://ns.adobe.com/tiff/1.0/',
-        'xmp': 'http://ns.adobe.com/xap/1.0/',
-        'avm': 'http://www.communicatingastronomy.org/avm/1.0/',
-        'photoshop': 'http://ns.adobe.com/photoshop/1.0/',
-        'xmpRights': 'http://ns.adobe.com/xap/1.0/rights/',
-        'Iptc4xmpCore': 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/',
+        "crs": "http://ns.adobe.com/camera-raw-settings/1.0/",
+        "dc": "http://purl.org/dc/elements/1.1/",
+        "tiff": "http://ns.adobe.com/tiff/1.0/",
+        "xmp": "http://ns.adobe.com/xap/1.0/",
+        "avm": "http://www.communicatingastronomy.org/avm/1.0/",
+        "photoshop": "http://ns.adobe.com/photoshop/1.0/",
+        "xmpRights": "http://ns.adobe.com/xap/1.0/rights/",
+        "Iptc4xmpCore": "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/",
     }
-    
+
     # Auto-detect namespaces from attribute key prefixes
     used_prefixes = set()
     for key in xmp._attributes:
-        if ':' in key:
-            prefix = key.split(':')[0]
+        if ":" in key:
+            prefix = key.split(":")[0]
             used_prefixes.add(prefix)
-    
+
     for prefix in sorted(used_prefixes):
         if prefix in _KNOWN_NAMESPACES:
             xmp_lines.append(f'        xmlns:{prefix}="{_KNOWN_NAMESPACES[prefix]}"')
-    
+
     # Separate scalar attributes from structured (Bag/Seq)
     scalar_attrs = {}
     structured_props = {}
-    
+
     for key, value in xmp._attributes.items():
         if isinstance(value, list):
             structured_props[key] = value
         else:
             scalar_attrs[key] = value
-    
+
     # Add scalar attributes to Description element
     if scalar_attrs:
         for key, value in scalar_attrs.items():
             # Escape XML special characters
-            escaped_value = str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+            escaped_value = (
+                str(value)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
             xmp_lines.append(f'        {key}="{escaped_value}"')
-    
-    xmp_lines.append('    >')
-    
+
+    xmp_lines.append("    >")
+
     # Add structured properties (Bag/Seq)
     for key, value in structured_props.items():
         if not value:
             continue
-        
+
         # Determine if this is a Seq or Bag
         # ToneCurve properties use Seq, AVM Spatial/FL properties use Seq,
         # dc:subject uses Bag
-        is_seq = ('ToneCurve' in key or 'avm:' in key
-                  or isinstance(value[0], tuple))
-        container_type = 'Seq' if is_seq else 'Bag'
-        
-        xmp_lines.append(f'      <{key}>')
-        xmp_lines.append(f'        <rdf:{container_type}>')
-        
+        is_seq = "ToneCurve" in key or "avm:" in key or isinstance(value[0], tuple)
+        container_type = "Seq" if is_seq else "Bag"
+
+        xmp_lines.append(f"      <{key}>")
+        xmp_lines.append(f"        <rdf:{container_type}>")
+
         for item in value:
             if isinstance(item, tuple) and len(item) == 2:
                 # Tone curve point: convert normalized 0-1 floats back to 0-255 integers
                 x_int = int(round(item[0] * 255.0))
                 y_int = int(round(item[1] * 255.0))
-                xmp_lines.append(f'          <rdf:li>{x_int}, {y_int}</rdf:li>')
+                xmp_lines.append(f"          <rdf:li>{x_int}, {y_int}</rdf:li>")
             else:
                 # String item
-                escaped_item = str(item).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                xmp_lines.append(f'          <rdf:li>{escaped_item}</rdf:li>')
-        
-        xmp_lines.append(f'        </rdf:{container_type}>')
-        xmp_lines.append(f'      </{key}>')
-    
-    xmp_lines.extend([
-        '    </rdf:Description>',
-        '  </rdf:RDF>',
-        '</x:xmpmeta>',
-        '<?xpacket end="w"?>',
-    ])
-    
-    xmp_string = '\n'.join(xmp_lines)
-    return xmp_string.encode('utf-8')
+                escaped_item = (
+                    str(item)
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                xmp_lines.append(f"          <rdf:li>{escaped_item}</rdf:li>")
 
+        xmp_lines.append(f"        </rdf:{container_type}>")
+        xmp_lines.append(f"      </{key}>")
+
+    xmp_lines.extend(
+        [
+            "    </rdf:Description>",
+            "  </rdf:RDF>",
+            "</x:xmpmeta>",
+            '<?xpacket end="w"?>',
+        ]
+    )
+
+    xmp_string = "\n".join(xmp_lines)
+    return xmp_string.encode("utf-8")

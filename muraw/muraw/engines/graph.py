@@ -13,7 +13,17 @@ import operator
 from dataclasses import dataclass, field
 from enum import IntEnum
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 import numpy as np
 
@@ -159,7 +169,9 @@ class EngineOp:
                 return _orientation_flip(self, x, attrs)
         return emit(self, x, *more, **attrs)
 
-    def infer_out_meta(self, x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayMeta:
+    def infer_out_meta(
+        self, x: Array, attrs: Dict[str, Any], *more: Array
+    ) -> ArrayMeta:
         """``more`` are the inputs after ``x``. Only a geometry policy of an
         op with more than one input is passed them."""
         if self._infer_meta is not None:
@@ -276,7 +288,9 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
             f"view: invalid box top={top} left={left} width={width} height={height}"
         )
     if row_step == 0 or col_step == 0:
-        raise ValueError(f"view: step must be non-zero, got row={row_step} col={col_step}")
+        raise ValueError(
+            f"view: step must be non-zero, got row={row_step} col={col_step}"
+        )
     cx, cy, cw, ch = x.meta.canvas
     base_row, base_col = x.meta.origin
     box_left, box_width = _sample_box(left, width, col_step)
@@ -307,7 +321,13 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
             canvas = (origin_col, origin_row, width, height)
         elif reflected:
             canvas = _reflected_canvas(
-                (cx, cy, cw, ch), first_col, first_row, col_step, row_step, origin_col, origin_row
+                (cx, cy, cw, ch),
+                first_col,
+                first_row,
+                col_step,
+                row_step,
+                origin_col,
+                origin_row,
             )
         else:
             canvas = (cx + origin_col - first_col, cy + origin_row - first_row, cw, ch)
@@ -355,7 +375,16 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     channel_after = int(attrs.get("channel_after", 0))
     frame_before = int(attrs.get("frame_before", 0))
     frame_after = int(attrs.get("frame_after", 0))
-    sides = [top, bottom, left, right, channel_before, channel_after, frame_before, frame_after]
+    sides = [
+        top,
+        bottom,
+        left,
+        right,
+        channel_before,
+        channel_after,
+        frame_before,
+        frame_after,
+    ]
     if min(sides) < 0:
         raise ValueError(
             "pad: top/bottom/left/right/channel_before/channel_after/frame_before/"
@@ -364,7 +393,11 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     if (frame_before or frame_after) and x.meta.ndim != 4:
         raise ValueError(f"pad: a frame pad needs a 4-axis stack, got shape {x.shape}")
     mode = attrs.get("mode", "constant")
-    if (channel_before or channel_after) and mode != "constant" and x.meta.channel_axis != 0:
+    if (
+        (channel_before or channel_after)
+        and mode != "constant"
+        and x.meta.channel_axis != 0
+    ):
         raise ValueError(
             f"pad: a channel pad requires mode 'constant' unless the channels are "
             f"on axis 0, got {mode!r}"

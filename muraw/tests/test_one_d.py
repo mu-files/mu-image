@@ -49,11 +49,11 @@ def test_lut_keeps_1d():
     assert out.realize().shape == (8,)
 
 
-@pytest.mark.parametrize(
-    "shape", [(5,), 5], ids=["tuple", "int"]
-)
+@pytest.mark.parametrize("shape", [(5,), 5], ids=["tuple", "int"])
 def test_constructors_accept_1d(shape):
-    np.testing.assert_array_equal(mi.zeros(shape).realize(), np.zeros(shape, np.float32))
+    np.testing.assert_array_equal(
+        mi.zeros(shape).realize(), np.zeros(shape, np.float32)
+    )
     np.testing.assert_array_equal(mi.ones(shape).realize(), np.ones(shape, np.float32))
     np.testing.assert_array_equal(
         mi.full(shape, 3, dtype="uint8").realize(), np.full(shape, 3, np.uint8)
@@ -79,7 +79,17 @@ def test_like_constructors_accept_1d():
         np.s_[None, :, None],
         np.s_[None],
     ],
-    ids=["slice", "reverse", "step", "ellipsis", "row", "column", "row_slice", "row_newaxis", "none"],
+    ids=[
+        "slice",
+        "reverse",
+        "step",
+        "ellipsis",
+        "row",
+        "column",
+        "row_slice",
+        "row_newaxis",
+        "none",
+    ],
 )
 def test_indexing_matches_numpy(key):
     out = Array(V)[key]
@@ -141,7 +151,10 @@ def test_tile_three_reps_makes_channels():
 
 
 @pytest.mark.parametrize(
-    "name", sorted(name for name, engine_op in OPS_BY_NAME.items() if engine_op.meta.requires_2d)
+    "name",
+    sorted(
+        name for name, engine_op in OPS_BY_NAME.items() if engine_op.meta.requires_2d
+    ),
 )
 def test_requires_2d_catalog_ops_raise(name):
     with pytest.raises(ValueError, match="requires a 2D input"):

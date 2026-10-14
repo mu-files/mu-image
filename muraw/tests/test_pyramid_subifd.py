@@ -25,9 +25,17 @@ DNGFILES_DIR = Path(__file__).parent / "dngfiles"
 # Ignored warnings are for known issues that should be suppressed
 # strip_tags are tags to remove from source (e.g., invalid digest)
 TEST_FILES = {
-    "asi676mc_1.dng": (True, ["makernote has unexpected type", "too little padding"], None),
+    "asi676mc_1.dng": (
+        True,
+        ["makernote has unexpected type", "too little padding"],
+        None,
+    ),
     "canon_eos_r5_mark_ii_linearraw_jxl_lossy_6ifds.dng": (False, [], None),
-    "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng": (True, ["columninterleavefactor tag not allowed"], {"NewRawImageDigest"}),
+    "sony_ilce-7c_cfa_jxl_lossy_4ifds.dng": (
+        True,
+        ["columninterleavefactor tag not allowed"],
+        {"NewRawImageDigest"},
+    ),
 }
 
 
@@ -55,13 +63,24 @@ def _build_pyramid_rgb_u16(rgb_u16: np.ndarray) -> list[np.ndarray]:
     return levels
 
 
-def _run_dng_validate_no_warnings(dng_path: Path, output_base: Path, ignored_warnings: list[str] | None = None, timeout: int = 120) -> None:
+def _run_dng_validate_no_warnings(
+    dng_path: Path,
+    output_base: Path,
+    ignored_warnings: list[str] | None = None,
+    timeout: int = 120,
+) -> None:
     """Run both validators on the DNG file and fail if any warnings are found."""
     if not DNG_VALIDATE_PATH.exists():
         pytest.skip("dng_validate not available")
-    
+
     # Use the shared run_dng_validate which runs both validators
-    result = run_dng_validate(dng_path, output_base, timeout=timeout, ignored_warnings=ignored_warnings, validate=True)
+    result = run_dng_validate(
+        dng_path,
+        output_base,
+        timeout=timeout,
+        ignored_warnings=ignored_warnings,
+        validate=True,
+    )
     if result is None:
         pytest.fail(f"Validation failed on {dng_path.name}")
 
@@ -97,7 +116,9 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
         camera_rgb = dng.get_camera_raw(demosaic_algorithm=DemosaicAlgorithm.EA)
         assert camera_rgb is not None
 
-        camera_rgb_u16 = np.clip((camera_rgb.realize() * 65535.0).round(), 0.0, 65535.0).astype(np.uint16)
+        camera_rgb_u16 = np.clip(
+            (camera_rgb.realize() * 65535.0).round(), 0.0, 65535.0
+        ).astype(np.uint16)
         pyramid_levels = _build_pyramid_rgb_u16(camera_rgb_u16)
         if not pyramid_levels:
             pytest.skip("Image too small for pyramid")
@@ -111,7 +132,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
             copy_page_tags=True,
             strip_tags=strip_tags,
         )
-        
+
         # SubIFDs: pyramid levels as preview images
         subifds = [
             IfdDataSpec(
@@ -121,7 +142,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
             )
             for level in pyramid_levels
         ]
-        
+
         # Add preview if requested
         if preview is not None:
             preview_spec = IfdDataSpec(
@@ -140,7 +161,7 @@ def test_write_subifd_pyramid_roundtrip(filename: str, output_dir: Path):
     with DngFile(out_path) as out_dng:
         out_pages = out_dng.get_flattened_pages()
         linear_pages = [p for p in out_pages if p.is_linear_raw]
-        
+
         # For CFA files: main page is CFA, linear_pages contains only pyramid levels
         # For linearraw files: main page is linear_raw, so linear_pages[0] is the main page
         # and pyramid levels start at index 1
@@ -191,7 +212,8 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         crop_top = (cfa_u16_full.shape[0] - crop_h) // 2
         crop_left = (cfa_u16_full.shape[1] - crop_w) // 2
         cfa_u16_crop = cfa_u16_full[
-            crop_top : crop_top + crop_h, crop_left : crop_left + crop_w].copy()
+            crop_top : crop_top + crop_h, crop_left : crop_left + crop_w
+        ].copy()
 
         aa_top, aa_left = 16, 38
         aa_bottom, aa_right = aa_top + 768, aa_left + 1024
@@ -203,7 +225,8 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
         from muraw import raw_render
 
         rgb_u16_active = raw_render.demosaic(
-            Array(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.EA).realize()
+            Array(cfa_u16_active), cfa_pattern, algorithm=DemosaicAlgorithm.EA
+        ).realize()
         assert rgb_u16_active.dtype == np.uint16
         pyramid_levels = _build_pyramid_rgb_u16(rgb_u16_active)
         if not pyramid_levels:
@@ -229,7 +252,7 @@ def test_write_subifd_pyramid_roundtrip_cropped_activearea_asi(output_dir: Path)
             cfa_pattern=cfa_pattern,
             extratags=ifd0_tags,
         )
-        
+
         # SubIFDs: pyramid levels as preview images
         subifds = [
             IfdDataSpec(

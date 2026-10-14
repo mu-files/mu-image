@@ -56,7 +56,9 @@ def _check(got: mi.Array, want: np.ndarray, divide: bool = False) -> None:
 @pytest.mark.parametrize("second_dtype", _DTYPES)
 @pytest.mark.parametrize("first_dtype", _DTYPES)
 @pytest.mark.parametrize("name", list(_OPS))
-def test_each_operator_matches_numpy_for_every_dtype_pair(name, first_dtype, second_dtype):
+def test_each_operator_matches_numpy_for_every_dtype_pair(
+    name, first_dtype, second_dtype
+):
     first = _source(first_dtype, (4, 9, 3), 1)
     second = _source(second_dtype, (4, 9, 3), 2)
     fn = _OPS[name]
@@ -82,8 +84,12 @@ def test_broadcast_shapes_match_numpy(name, first_shape, second_shape):
     fn = _OPS[name]
     first = _source("float32", first_shape, 3)
     second = _source("float32", second_shape, 4)
-    _check(fn(mi.Array(first), mi.Array(second)), fn(first, second), divide=name == "div")
-    _check(fn(mi.Array(second), mi.Array(first)), fn(second, first), divide=name == "div")
+    _check(
+        fn(mi.Array(first), mi.Array(second)), fn(first, second), divide=name == "div"
+    )
+    _check(
+        fn(mi.Array(second), mi.Array(first)), fn(second, first), divide=name == "div"
+    )
 
 
 @pytest.mark.parametrize("name", list(_OPS))

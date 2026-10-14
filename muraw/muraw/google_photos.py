@@ -15,6 +15,7 @@ try:
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
+
     _IMPORT_ERROR = None
 except ImportError:
     # Set to None - will be checked in __init__
@@ -38,9 +39,7 @@ SCOPES = [
 
 # Default paths for credentials and tokens
 DEFAULT_TOKEN_PATH = Path.home() / ".muraw" / "google-photos-token.json"
-DEFAULT_CREDENTIALS_PATH = (
-    Path.home() / ".muraw" / "google-photos-credentials.json"
-)
+DEFAULT_CREDENTIALS_PATH = Path.home() / ".muraw" / "google-photos-credentials.json"
 
 
 def _require_google_deps():
@@ -68,12 +67,12 @@ class GooglePhotosClient:
         Args:
             token_path: Path to stored OAuth2 token (refresh token)
             credentials_path: Path to OAuth2 client credentials from Google Cloud Console
-        
+
         Raises:
             ImportError: If Google Photos dependencies are not installed
         """
         _require_google_deps()
-        
+
         self.token_path = token_path or DEFAULT_TOKEN_PATH
         self.credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
         self.creds = None
@@ -152,7 +151,7 @@ class GooglePhotosClient:
             headers = {"Authorization": f"Bearer {self.creds.token}"}
             response = requests_.get(url, headers=headers, params=params)
             response.raise_for_status()
-            
+
             results = response.json()
             albums.extend(results.get("albums", []))
             page_token = results.get("nextPageToken")
@@ -189,12 +188,12 @@ class GooglePhotosClient:
         url = "https://photoslibrary.googleapis.com/v1/albums"
         headers = {
             "Authorization": f"Bearer {self.creds.token}",
-            "Content-type": "application/json"
+            "Content-type": "application/json",
         }
         request_body = {"album": {"title": album_title}}
         response = requests_.post(url, headers=headers, json=request_body)
         response.raise_for_status()
-        
+
         result = response.json()
         album_id = result["id"]
         logger.info(f"Created album with ID: {album_id}")
@@ -281,15 +280,17 @@ class GooglePhotosClient:
         create_url = "https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate"
         create_headers = {
             "Authorization": f"Bearer {self.creds.token}",
-            "Content-type": "application/json"
+            "Content-type": "application/json",
         }
-        create_response_obj = requests_.post(create_url, headers=create_headers, json=create_body)
-        
+        create_response_obj = requests_.post(
+            create_url, headers=create_headers, json=create_body
+        )
+
         if create_response_obj.status_code != 200:
             logger.error(f"Upload failed with status {create_response_obj.status_code}")
             logger.error(f"Response: {create_response_obj.text}")
             create_response_obj.raise_for_status()
-            
+
         create_response = create_response_obj.json()
 
         # Check for errors

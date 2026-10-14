@@ -124,5 +124,7 @@ def test_downward_row_repeat_runs_no_tile_kernel():
         "tile (engine, not run)"
     ]
     assert down_timer.children[0].children[0].get_elapsed_ms() == 0.0
-    assert [child.name for child in across_timer.children[0].children] == ["tile (engine)"]
+    assert [child.name for child in across_timer.children[0].children] == [
+        "tile (engine)"
+    ]
     assert across_timer.children[0].children[0].get_elapsed_ms() > 0.0

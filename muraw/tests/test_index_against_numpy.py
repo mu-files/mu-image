@@ -81,9 +81,7 @@ def _key(rng, shape):
     if ndim >= 2 and rng.random() < 0.2:
         count = int(rng.integers(2, ndim + 1))
         first = int(rng.integers(0, ndim - count + 1))
-        lists = [
-            np.asarray(_index_list(rng, shape[first + k])) for k in range(count)
-        ]
+        lists = [np.asarray(_index_list(rng, shape[first + k])) for k in range(count)]
         items[first : first + count] = np.ix_(*lists)
     if rng.random() < 0.3:
         items = items[: int(rng.integers(0, ndim + 1))]
@@ -113,7 +111,9 @@ def test_index_matches_numpy_or_raises_not_implemented(layout):
             except type(numpy_error):
                 continue
             except Exception as error:
-                mismatches.append(f"{key!r}: NumPy raises {numpy_error!r}, mi {error!r}")
+                mismatches.append(
+                    f"{key!r}: NumPy raises {numpy_error!r}, mi {error!r}"
+                )
                 continue
             mismatches.append(f"{key!r}: NumPy raises {numpy_error!r}, mi does not")
             continue
@@ -121,11 +121,19 @@ def test_index_matches_numpy_or_raises_not_implemented(layout):
             got = np.asarray(_index(mi, source, key))
         except NotImplementedError as error:
             if expect.size == 0 and expect.ndim <= 4:
-                mismatches.append(f"{key!r}: NumPy gives empty {expect.shape}, mi {error!r}")
+                mismatches.append(
+                    f"{key!r}: NumPy gives empty {expect.shape}, mi {error!r}"
+                )
             continue
         except Exception as error:
-            mismatches.append(f"{key!r}: NumPy gives shape {expect.shape}, mi raises {error!r}")
+            mismatches.append(
+                f"{key!r}: NumPy gives shape {expect.shape}, mi raises {error!r}"
+            )
             continue
         if got.shape != expect.shape or not np.array_equal(got, expect):
-            mismatches.append(f"{key!r}: NumPy gives shape {expect.shape}, mi {got.shape}")
-    assert not mismatches, f"{len(mismatches)} keys differ:\n" + "\n".join(mismatches[:40])
+            mismatches.append(
+                f"{key!r}: NumPy gives shape {expect.shape}, mi {got.shape}"
+            )
+    assert not mismatches, f"{len(mismatches)} keys differ:\n" + "\n".join(
+        mismatches[:40]
+    )

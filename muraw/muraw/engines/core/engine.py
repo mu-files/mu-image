@@ -87,9 +87,7 @@ class CoreEngine:
             }
         )
         if unknown:
-            raise ValueError(
-                f"CoreEngine does not support op(s): {unknown}"
-            )
+            raise ValueError(f"CoreEngine does not support op(s): {unknown}")
 
         produced = {id(t) for t in nodes}
         input_arrays: List["Array"] = []
@@ -172,12 +170,9 @@ class CoreEngine:
         }
         # OPS detail attaches under the open graph_compute step (stack top).
         record_ops = (
-            get_engine_timing() >= EngineTiming.OPS
-            and PerfTimer.current() is not None
+            get_engine_timing() >= EngineTiming.OPS and PerfTimer.current() is not None
         )
-        timings = _engine_load.execute_graph(
-            graph, in_binds, out, record_ops
-        )
+        timings = _engine_load.execute_graph(graph, in_binds, out, record_ops)
         if record_ops and timings:
             timer = PerfTimer.current()
             assert timer is not None

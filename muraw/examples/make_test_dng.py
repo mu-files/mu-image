@@ -9,7 +9,7 @@ within a target size by iteratively scaling down the image resolution.
 
 The script:
 - Copies a DNG file with optional scaling and JXL compression
-- If source is already small enough, copies without JXL 
+- If source is already small enough, copies without JXL
 - Otherwise, iteratively scales down by powers of 2 until output fits target size
 - Always demosaics to LINEAR_RAW for consistency
 - Sets UniqueCameraModel to "muraw: test"
@@ -30,33 +30,33 @@ from muraw.raw_render import DemosaicAlgorithm
 
 def calculate_preview_scale(image_shape, target_dim=1024):
     """Calculate best PreviewScale to get closest to target dimension.
-    
+
     Args:
         image_shape: (height, width) or (height, width, channels)
         target_dim: Target preview dimension (default: 1024)
-    
+
     Returns:
         PreviewScale enum value
     """
     import math
     from muraw import dngio
-    
+
     h, w = image_shape[:2]
     max_dim = max(h, w)
-    
+
     # Find pyramid level where max_dim / (2^level) is closest to target_dim
     best_level = 0
     best_diff = abs(max_dim - target_dim)
-    
+
     for level in range(1, 4):  # Check levels 1, 2, 3
         scaled_dim = max_dim >> level  # Equivalent to max_dim // (2^level)
         diff = abs(scaled_dim - target_dim)
         if diff < best_diff:
             best_diff = diff
             best_level = level
-    
+
     scale_level = best_level
-    
+
     return dngio.PreviewScale(scale_level)
 
 
@@ -72,7 +72,7 @@ def make_test_dng(
     preserve_unique_camera_model: bool = False,
 ) -> tuple[int, float, bool]:
     """Create a test DNG file that fits within target size.
-    
+
     Args:
         input_file: Source DNG file path
         output_file: Destination DNG file path
@@ -83,37 +83,39 @@ def make_test_dng(
         jxl_effort: JXL compression effort (1-9)
         dry_run: If True, process to memory only, don't write output
         preserve_unique_camera_model: If True, preserve original UniqueCameraModel instead of replacing with "muraw: test"
-        
+
     Returns:
         Tuple of (final_size_bytes, scale_used, used_jxl)
-        
+
     Raises:
         ValueError: If parameters are invalid
         RuntimeError: If processing fails
     """
     from muraw import dngio
     from muraw.tiff_metadata import MetadataTags
-    
+
     if not input_file.exists():
         raise ValueError(f"Input file does not exist: {input_file}")
-    
+
     if min_scale > 1.0:
         raise ValueError(f"min_scale must be <= 1.0, got {min_scale}")
-    
+
     # Verify min_scale is a power of 2
     scale_check = min_scale
     while scale_check < 1.0:
         scale_check *= 2.0
     if abs(scale_check - 1.0) > 1e-6:
-        raise ValueError(f"min_scale must be a power of 2 (e.g., 1.0, 0.5, 0.25), got {min_scale}")
-    
+        raise ValueError(
+            f"min_scale must be a power of 2 (e.g., 1.0, 0.5, 0.25), got {min_scale}"
+        )
+
     source_size = input_file.stat().st_size
-    
+
     # Create metadata override
     extratags = MetadataTags()
     if not preserve_unique_camera_model:
         extratags.add_tag("UniqueCameraModel", "muraw: test")
-    
+
     # If source is already small enough - still need to copy to inject
     # new metadata and generate preview
     if source_size <= target_size:
@@ -122,12 +124,12 @@ def make_test_dng(
             main_page = dng.get_main_page()
             if main_page is None:
                 raise RuntimeError(f"No main page found in {input_file}")
-            
+
             preview_params = None
             if generate_preview:
                 scale = calculate_preview_scale(main_page.shape)
                 preview_params = dngio.PreviewParams(scale=scale)
-            
+
             dngio.write_dng_from_page(
                 destination_file=output_file,
                 page=main_page,
@@ -135,37 +137,37 @@ def make_test_dng(
                 ifd0_extratags=extratags,
             )
         return source_size, 1.0, False
-    
+
     # Source is too large - use JXL compression with iterative
     # power-of-2 scaling. Load source DNG once
     dng = dngio.DngFile(input_file)
     main_page = dng.get_main_page()
     if main_page is None:
         raise RuntimeError(f"No main page found in {input_file}")
-    
+
     from tifffile import COMPRESSION
-    
+
     # Create page spec with JXL compression
     jxl_encoding = dngio.PageEncoding(
         compression=COMPRESSION.JPEGXL,
-        compression_args={'distance': jxl_distance, 'effort': jxl_effort}
+        compression_args={"distance": jxl_distance, "effort": jxl_effort},
     )
     page_spec = dngio.IfdPageSpec(
         page=main_page,
         transcode_encoding=jxl_encoding,
         extratags=extratags,
     )
-    
+
     preview_params = None
     if generate_preview:
         scale = calculate_preview_scale(main_page.shape)
         preview_params = dngio.PreviewParams(scale=scale)
-    
+
     scale = 1.0
-    
+
     while scale >= min_scale:
         stream = io.BytesIO()
-        
+
         dngio.write_dng_from_page(
             destination_file=stream,
             page=page_spec,
@@ -174,23 +176,23 @@ def make_test_dng(
             demosaic_algorithm=DemosaicAlgorithm.BILINEAR,
             preview=preview_params,
         )
-        
+
         size = stream.tell()
-        
+
         if size <= target_size:
             if not dry_run:
                 with open(output_file, "wb") as f:
                     f.write(stream.getvalue())
             return size, scale, True
-        
+
         # Scale down by power of 2
         scale *= 0.5
-    
+
     # Reached min_scale, write final result even if over target
     if not dry_run:
         with open(output_file, "wb") as f:
             f.write(stream.getvalue())
-    
+
     return size, scale * 2.0, True  # Return the scale we actually used
 
 
@@ -211,53 +213,53 @@ Examples:
   
   # Dry run to see what would happen
   %(prog)s input.dng output.dng --target-size 1048576 --dry-run
-        """
+        """,
     )
-    
+
     parser.add_argument("input_file", type=Path, help="Source DNG file")
     parser.add_argument("output_file", type=Path, help="Destination DNG file")
     parser.add_argument(
         "--target-size",
         type=int,
         default=1048576,
-        help="Target size in bytes (default: 1048576 = 1MB)"
+        help="Target size in bytes (default: 1048576 = 1MB)",
     )
     parser.add_argument(
         "--min-scale",
         type=float,
         default=0.25,
-        help="Minimum allowed scale factor, must be power of 2 (default: 0.25)"
+        help="Minimum allowed scale factor, must be power of 2 (default: 0.25)",
     )
     parser.add_argument(
         "--generate-preview",
         action="store_true",
-        help="Generate preview/thumbnail in output DNG"
+        help="Generate preview/thumbnail in output DNG",
     )
     parser.add_argument(
         "--jxl-distance",
         type=float,
         default=0.5,
-        help="JXL compression distance, 0=lossless (default: 0.5)"
+        help="JXL compression distance, 0=lossless (default: 0.5)",
     )
     parser.add_argument(
         "--jxl-effort",
         type=int,
         default=8,
-        help="JXL compression effort, 1-9 (default: 8)"
+        help="JXL compression effort, 1-9 (default: 8)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Process to memory only, don't write output file"
+        help="Process to memory only, don't write output file",
     )
     parser.add_argument(
         "--preserve-unique-camera-model",
         action="store_true",
-        help="Preserve original UniqueCameraModel instead of replacing with 'muraw: test'"
+        help="Preserve original UniqueCameraModel instead of replacing with 'muraw: test'",
     )
-    
+
     args = parser.parse_args()
-    
+
     try:
         final_size, scale, used_jxl = make_test_dng(
             input_file=args.input_file,
@@ -270,13 +272,13 @@ Examples:
             dry_run=args.dry_run,
             preserve_unique_camera_model=args.preserve_unique_camera_model,
         )
-        
+
         size_mb = final_size / (1024 * 1024)
         target_mb = args.target_size / (1024 * 1024)
         compression = "JXL" if used_jxl else "uncompressed"
-        
+
         mode = "[DRY RUN] " if args.dry_run else ""
-        
+
         if scale < 1.0:
             print(f"{mode}Created: {args.output_file.name}")
             print(f"  Size: {size_mb:.2f}MB (target: {target_mb:.2f}MB)")
@@ -286,12 +288,14 @@ Examples:
             print(f"{mode}Created: {args.output_file.name}")
             print(f"  Size: {size_mb:.2f}MB (target: {target_mb:.2f}MB)")
             print(f"  Compression: {compression}")
-        
+
         if final_size > args.target_size:
-            print(f"  Warning: Output exceeds target (min_scale={args.min_scale} reached)")
-        
+            print(
+                f"  Warning: Output exceeds target (min_scale={args.min_scale} reached)"
+            )
+
         return 0
-        
+
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

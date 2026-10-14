@@ -25,7 +25,9 @@ def _is_android() -> bool:
     if sys.platform == "android" or hasattr(sys, "getandroidapilevel"):
         return True
     # Termux reports Linux. The Android dynamic linker is on the device.
-    return os.path.exists("/system/bin/linker64") or os.path.exists("/system/bin/linker")
+    return os.path.exists("/system/bin/linker64") or os.path.exists(
+        "/system/bin/linker"
+    )
 
 
 def _host_tagged_name() -> str:

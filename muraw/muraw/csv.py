@@ -45,7 +45,7 @@ class CsvWriter:
     def _format_value(self, value: Any) -> Any:
         """Formats a simple value for CSV writing, converting None to an empty string."""
         if value is None:
-            return ''
+            return ""
         if isinstance(value, (str, int, float, bool, datetime, timedelta)):
             return value
         raise TypeError(
@@ -57,7 +57,9 @@ class CsvWriter:
         for key, value in header_data:
             if isinstance(value, dict):
                 # Handle dictionary values
-                formatted_items = [f"{k}: {self._format_value(v)}" for k, v in value.items()]
+                formatted_items = [
+                    f"{k}: {self._format_value(v)}" for k, v in value.items()
+                ]
                 self.writer.writerow([key] + formatted_items)
 
             elif isinstance(value, list):
@@ -73,12 +75,16 @@ class CsvWriter:
 
                 # Write the first item on the same line as the key
                 first_item = value[0]
-                first_row = [key] + [f"{k}: {self._format_value(v)}" for k, v in first_item.items()]
+                first_row = [key] + [
+                    f"{k}: {self._format_value(v)}" for k, v in first_item.items()
+                ]
                 self.writer.writerow(first_row)
 
                 # Write subsequent items on new lines, indented
                 for item_dict in value[1:]:
-                    row = [""] + [f"{k}: {self._format_value(v)}" for k, v in item_dict.items()]
+                    row = [""] + [
+                        f"{k}: {self._format_value(v)}" for k, v in item_dict.items()
+                    ]
                     self.writer.writerow(row)
             else:
                 # Handle simple values (str, int, float, bool, datetime, timedelta)
@@ -108,7 +114,9 @@ class CsvWriter:
 
         extra = set(row_dict.keys()) - set(self.column_titles)
         if extra:
-            raise ValueError(f"Row data contains extra keys not in column titles: {extra}")
+            raise ValueError(
+                f"Row data contains extra keys not in column titles: {extra}"
+            )
 
         # Create the row in the correct order, substituting "" for missing keys
         # and formatting values.
@@ -137,6 +145,7 @@ class CsvWriter:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
 
 class CsvOrderedWriter(CsvWriter):
     """
@@ -268,18 +277,23 @@ class CsvReader:
             if key and key.lower() not in schema_map:
                 data_column_headers = row
                 # The rest of the file is data. We create our own dicts.
-                self._rows = [dict(zip(data_column_headers, data_row)) for data_row in line_reader]
+                self._rows = [
+                    dict(zip(data_column_headers, data_row)) for data_row in line_reader
+                ]
                 break  # Stop parsing for metadata.
 
             # --- Standard Header Parsing Logic ---
             # Strip empty cells (trailing commas from Excel create empty strings)
             values = [v.strip() for v in row[1:] if v.strip()]
+
             def parse_as_dict(items):
                 d = {}
                 for item in items:
-                    if ':' not in item:
-                        raise ValueError(f"Invalid dictionary item format for key '{key}': '{item}'. Expected 'key: value'.")
-                    k, v = item.split(':', 1)
+                    if ":" not in item:
+                        raise ValueError(
+                            f"Invalid dictionary item format for key '{key}': '{item}'. Expected 'key: value'."
+                        )
+                    k, v = item.split(":", 1)
                     d[k.strip()] = v.strip()
                 return d
 
@@ -292,7 +306,9 @@ class CsvReader:
                     raw_header[last_key] = parse_as_dict(values)
                 else:
                     if len(values) > 1:
-                        raise ValueError(f"Header key '{key}' expects a single value but got {len(values)}.")
+                        raise ValueError(
+                            f"Header key '{key}' expects a single value but got {len(values)}."
+                        )
                     raw_header[last_key] = values[0].strip() if values else ""
             elif not key and last_key:
                 current_value = raw_header.get(last_key)
@@ -316,7 +332,9 @@ class CsvReader:
         for dt in self.data_types:
             self.fields_to_load.update({f.name for f in fields(dt)})
 
-    def _cast_and_validate(self, raw_dict: dict[str, Any], schema: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+    def _cast_and_validate(
+        self, raw_dict: dict[str, Any], schema: list[tuple[str, Any]]
+    ) -> list[tuple[str, Any]]:
         """Recursively validates and casts a dictionary to conform to an ordered schema, returning a list of tuples."""
         typed_list = []
         for key, requested_type in schema:
@@ -324,7 +342,7 @@ class CsvReader:
                 raise KeyError(f"Required header key '{key}' not found in CSV header.")
 
             raw_value = raw_dict[key.lower()]
-            
+
             try:
                 if isinstance(requested_type, tuple):
                     expected_container_type, sub_schema = requested_type
@@ -333,20 +351,31 @@ class CsvReader:
                             if isinstance(raw_value, dict):
                                 raw_value = [raw_value]
                             else:
-                                raise TypeError(f"Expected a list for key '{key}', but got {type(raw_value)}.")
-                        typed_value = [self._cast_and_validate_dict(item, sub_schema) for item in raw_value]
+                                raise TypeError(
+                                    f"Expected a list for key '{key}', but got {type(raw_value)}."
+                                )
+                        typed_value = [
+                            self._cast_and_validate_dict(item, sub_schema)
+                            for item in raw_value
+                        ]
                         typed_list.append((key, typed_value))
 
                     elif expected_container_type == dict:
                         if not isinstance(raw_value, dict):
-                            raise TypeError(f"Expected a dict for '{key}', but got {type(raw_value)}.")
-                        typed_value = self._cast_and_validate_dict(raw_value, sub_schema)
+                            raise TypeError(
+                                f"Expected a dict for '{key}', but got {type(raw_value)}."
+                            )
+                        typed_value = self._cast_and_validate_dict(
+                            raw_value, sub_schema
+                        )
                         typed_list.append((key, typed_value))
                 else:  # Simple types
                     if not isinstance(raw_value, str):
-                        raise TypeError(f"Expected a string for simple type conversion for key '{key}', but got {type(raw_value)}.")
+                        raise TypeError(
+                            f"Expected a string for simple type conversion for key '{key}', but got {type(raw_value)}."
+                        )
                     # Treat an empty string value in the header as None.
-                    if raw_value == '':
+                    if raw_value == "":
                         typed_value = None
                     else:
                         typed_value = requested_type(raw_value)
@@ -356,13 +385,17 @@ class CsvReader:
                 raise type(e)(f"Error processing key '{key}': {e}") from e
         return typed_list
 
-    def _cast_and_validate_dict(self, raw_dict: dict[str, Any], schema: list[tuple[str, Any]]) -> dict[str, Any]:
+    def _cast_and_validate_dict(
+        self, raw_dict: dict[str, Any], schema: list[tuple[str, Any]]
+    ) -> dict[str, Any]:
         """Helper to cast a simple dictionary against an ordered list-of-tuples schema."""
         typed_dict = {}
         for key, requested_type in schema:
             if key.lower() not in raw_dict:
-                raise KeyError(f"Required header key '{key}' not found in nested dictionary.")
-            
+                raise KeyError(
+                    f"Required header key '{key}' not found in nested dictionary."
+                )
+
             raw_value = raw_dict[key.lower()]
             try:
                 typed_dict[key] = requested_type(raw_value)
@@ -417,31 +450,36 @@ class CsvReader:
                             inner_type = get_args(field_type)[0]
                             typed_params[field_name] = inner_type(value_str)
                 except (ValueError, TypeError):
-                    logger.warning(f"Could not parse value '{value_str}' for field '{field_name}' as {field_type}. Setting to None.")
+                    logger.warning(
+                        f"Could not parse value '{value_str}' for field '{field_name}' as {field_type}. Setting to None."
+                    )
                     typed_params[field_name] = None
 
             # Only create an instance if at least one of its fields has a non-None value.
-            if typed_params and any(value is not None for value in typed_params.values()):
+            if typed_params and any(
+                value is not None for value in typed_params.values()
+            ):
                 processed_objects.append(data_type(**typed_params))
 
         return processed_objects
 
     def __iter__(self):
         if self._file is None or self._reader is None:
-            raise RuntimeError("I/O operation on a closed file. The CsvReader may have been closed or not opened correctly.")
+            raise RuntimeError(
+                "I/O operation on a closed file. The CsvReader may have been closed or not opened correctly."
+            )
 
         # The file pointer was reset in the init, so we can iterate from the beginning.
         for row_dict in self._reader:
             processed_objects = self._process_row(row_dict)
-            
+
             # Skip empty rows (e.g., rows with only commas) silently
             if not processed_objects:
                 continue
-                
+
             if self._single_type_requested:
                 # If a single type was requested, return the first object.
                 yield processed_objects[0]
             else:
                 # Otherwise, return the full list of objects.
                 yield processed_objects
-

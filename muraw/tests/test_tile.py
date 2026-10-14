@@ -75,7 +75,9 @@ def test_tile_two_byte_dtypes(dtype):
 @pytest.mark.parametrize("reps", [[2, 1], np.array([2, 3]), (np.int64(3),)])
 def test_tile_reps_sequences(reps):
     src = np.arange(6, dtype=np.float32).reshape(2, 3)
-    np.testing.assert_array_equal(mi.tile(Array(src), reps).realize(), np.tile(src, reps))
+    np.testing.assert_array_equal(
+        mi.tile(Array(src), reps).realize(), np.tile(src, reps)
+    )
 
 
 def test_tile_accepts_ndarray():

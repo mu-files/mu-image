@@ -19,26 +19,25 @@ logger = logging.getLogger(__name__)
 
 def safe_echo(message, **kwargs):
     """Wrapper around click.echo that handles Windows console encoding issues.
-    
+
     On Windows, sanitizes text to avoid UnicodeEncodeError with cp1252 encoding.
     On Unix systems (Mac/Linux/Raspberry Pi), passes text through unchanged.
-    
+
     Args:
         message: Text to print
         **kwargs: Additional arguments to pass to click.echo (err, nl, color, etc.)
     """
-    if platform.system() == 'Windows' and isinstance(message, str):
+    if platform.system() == "Windows" and isinstance(message, str):
         # Remove BOM and other problematic Unicode characters
-        sanitized = message.replace('\ufeff', '').replace('\u200b', '')
+        sanitized = message.replace("\ufeff", "").replace("\u200b", "")
         # Try to encode to cp1252, fall back to ASCII if needed
         try:
-            sanitized.encode('cp1252')
+            sanitized.encode("cp1252")
         except UnicodeEncodeError:
-            sanitized = sanitized.encode('ascii', errors='replace').decode('ascii')
+            sanitized = sanitized.encode("ascii", errors="replace").decode("ascii")
         click.echo(sanitized, **kwargs)
     else:
         click.echo(message, **kwargs)
-
 
 
 @click.group()
@@ -71,16 +70,21 @@ def cli(verbose, timing):
 @cli.command(name="convert-image")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
-@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
+@click.option(
+    "--bit-depth",
+    type=click.Choice(["8", "16"]),
+    default="8",
+    help="Output bit depth (8 or 16)",
+)
 def convert_image(input_file, output_file, bit_depth):
     """Convert image file to another format."""
     import numpy as np
     from .imgio import convert_imgformat
-    
+
     success = convert_imgformat(
         file=input_file,
         output=output_file,
-        output_dtype=np.uint16 if bit_depth == "16" else np.uint8
+        output_dtype=np.uint16 if bit_depth == "16" else np.uint8,
     )
 
     sys.exit(0 if success else 1)
@@ -88,7 +92,7 @@ def convert_image(input_file, output_file, bit_depth):
 
 def _format_bytes(size):
     """Format bytes to human-readable size."""
-    for unit in ['B', 'KB', 'MB', 'GB']:
+    for unit in ["B", "KB", "MB", "GB"]:
         if size < 1024.0:
             return f"{size:.1f} {unit}"
         size /= 1024.0
@@ -97,19 +101,19 @@ def _format_bytes(size):
 
 def _parse_ifd_spec(ifd_spec):
     """Parse IFD specification string to flattened page index.
-    
+
     Args:
         ifd_spec: String like 'ifd0', 'subifd0', 'subifd1', etc., or None for main page
-        
+
     Returns:
         Tuple of (ifd_index, ifd_name) where ifd_index is the flattened page index,
         or (None, "main raw page") if ifd_spec is None
-        
+
     Raises:
         click.ClickException: If IFD specification is invalid
     """
     import re
-    
+
     if ifd_spec is None:
         return None, "main raw page"
     elif ifd_spec == "ifd0":
@@ -125,22 +129,22 @@ def _parse_ifd_spec(ifd_spec):
 
 def _get_page_from_ifd_spec(dng_file, ifd_spec):
     """Get page from DNG file based on IFD specification.
-    
+
     Args:
         dng_file: DngFile instance
         ifd_spec: String like 'ifd0', 'subifd0', 'subifd1', etc., or None for main page
-        
+
     Returns:
         Tuple of (page, index, name) where:
             - page: Page object
             - index: Flattened page index (or None for main page)
             - name: IFD name string (e.g., "ifd0", "subifd0", "main raw page")
-        
+
     Raises:
         click.ClickException: If IFD specification is invalid or page not found
     """
     ifd_index, ifd_name = _parse_ifd_spec(ifd_spec)
-    
+
     if ifd_index is None:
         # Default: get main raw page
         page = dng_file.get_main_page()
@@ -154,19 +158,29 @@ def _get_page_from_ifd_spec(dng_file, ifd_spec):
                 f"IFD index {ifd_index} out of range. File has {len(pages)} IFD(s)."
             )
         page = pages[ifd_index]
-    
+
     return page, ifd_index, ifd_name
+
 
 @cli.group(name="dng")
 def dng():
     """DNG file operations."""
     pass
 
+
 @dng.command(name="metadata")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option("--ifd", type=int, help="Show specific IFD (0=IFD0, 1+=SubIFDs)")
-@click.option("--tag", multiple=True, help="Show only tag(s) matching regex pattern(s) (case-insensitive)")
-@click.option("--exclude-tag", multiple=True, help="Exclude tag(s) matching regex pattern(s) (case-insensitive)")
+@click.option(
+    "--tag",
+    multiple=True,
+    help="Show only tag(s) matching regex pattern(s) (case-insensitive)",
+)
+@click.option(
+    "--exclude-tag",
+    multiple=True,
+    help="Exclude tag(s) matching regex pattern(s) (case-insensitive)",
+)
 @click.option("--summary", is_flag=True, help="Show only IFD summary and exit")
 def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     """Display DNG file metadata."""
@@ -176,18 +190,18 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
     from .dngio import DngFile
     from .tiff_metadata import LOCAL_TIFF_TAGS, TIFF_TAG_TYPE_REGISTRY, SubFileType
     from .common import enum_display_name
-    
+
     try:
         f = DngFile(input_file)
         pages = f.get_flattened_pages()
     except Exception as e:
         click.echo(f"Error opening DNG file: {e}", err=True)
         sys.exit(1)
-    
+
     if not pages:
         click.echo("No IFDs found in file", err=True)
         sys.exit(1)
-    
+
     # Compile regex patterns for tag filtering (inclusion)
     tag_patterns = []
     if tag:
@@ -195,9 +209,11 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             try:
                 tag_patterns.append(re.compile(pattern, re.IGNORECASE))
             except re.error as e:
-                click.echo(f"Error: Invalid --tag regex pattern '{pattern}': {e}", err=True)
+                click.echo(
+                    f"Error: Invalid --tag regex pattern '{pattern}': {e}", err=True
+                )
                 sys.exit(1)
-    
+
     # Compile regex patterns for tag exclusion
     exclude_patterns = []
     if exclude_tag:
@@ -205,76 +221,97 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             try:
                 exclude_patterns.append(re.compile(pattern, re.IGNORECASE))
             except re.error as e:
-                click.echo(f"Error: Invalid --exclude-tag regex pattern '{pattern}': {e}", err=True)
+                click.echo(
+                    f"Error: Invalid --exclude-tag regex pattern '{pattern}': {e}",
+                    err=True,
+                )
                 sys.exit(1)
-    
+
     # Show summary of available IFDs
-    byteorder_name = "little-endian" if f.byteorder == '<' else "big-endian"
+    byteorder_name = "little-endian" if f.byteorder == "<" else "big-endian"
     click.echo(f"File contains {len(pages)} IFD(s) ({byteorder_name}):")
     for i, p in enumerate(pages):
-        ifd_type = "IFD0" if i == 0 else f"SubIFD[{i-1}]"
+        ifd_type = "IFD0" if i == 0 else f"SubIFD[{i - 1}]"
         photometric = p.photometric_name or "Unknown"
         width = p.imagewidth or "?"
         length = p.imagelength or "?"
-        
+
         # Get rendered size and format dimensions
         rendered_size = p.get_rendered_size()
         if rendered_size != (width, length) and width != "?" and length != "?":
             size_str = f"{rendered_size[0]}x{rendered_size[1]} (from {width}x{length})"
         else:
             size_str = f"{width}x{length}"
-        
+
         # Get bit depth
-        bits_per_sample = p.bitspersample if hasattr(p, 'bitspersample') else 16
+        bits_per_sample = p.bitspersample if hasattr(p, "bitspersample") else 16
         photometric_with_bits = f"{photometric}{bits_per_sample}"
-        
+
         # Calculate compressed size
-        compressed_size = sum(p.databytecounts) if hasattr(p, 'databytecounts') else 0
-        
+        compressed_size = sum(p.databytecounts) if hasattr(p, "databytecounts") else 0
+
         # Calculate uncompressed size (in bits to handle bit-packed data correctly)
         if width != "?" and length != "?":
-            samples_per_pixel = p.samplesperpixel if hasattr(p, 'samplesperpixel') else 1
-            uncompressed_size_bits = width * length * samples_per_pixel * bits_per_sample
+            samples_per_pixel = (
+                p.samplesperpixel if hasattr(p, "samplesperpixel") else 1
+            )
+            uncompressed_size_bits = (
+                width * length * samples_per_pixel * bits_per_sample
+            )
             compressed_size_bits = compressed_size * 8
-            compression_ratio = compressed_size_bits / uncompressed_size_bits if uncompressed_size_bits > 0 else 0
+            compression_ratio = (
+                compressed_size_bits / uncompressed_size_bits
+                if uncompressed_size_bits > 0
+                else 0
+            )
         else:
             compression_ratio = 0
-        
+
         # Get compression type name
-        if hasattr(p, 'compression') and p.compression != COMPRESSION.NONE:
-            compression_name = enum_display_name(COMPRESSION, p.compression, " compression")
+        if hasattr(p, "compression") and p.compression != COMPRESSION.NONE:
+            compression_name = enum_display_name(
+                COMPRESSION, p.compression, " compression"
+            )
         else:
             compression_name = "uncompressed"
-        
+
         # Get tiled/strip layout info
         if p.is_tiled:
             layout_info = f", tiled {p.tilewidth}x{p.tilelength}"
         else:
-            layout_info = f", stripped (rows/strip={p.rowsperstrip})" if p.rowsperstrip < p.imagelength else ""
-        
+            layout_info = (
+                f", stripped (rows/strip={p.rowsperstrip})"
+                if p.rowsperstrip < p.imagelength
+                else ""
+            )
+
         # Add NewSubfileType info if present
         subfile_info = ""
         if (subfile_type := p.get_tag("NewSubfileType")) is not None:
             subfile_info = f" ({enum_display_name(SubFileType, subfile_type)})"
-        
+
         summary_indent = "" if i == 0 else "  "  # Extra indent for SubIFDs
         file_size_str = _format_bytes(compressed_size)
-        click.echo(f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {size_str}, {file_size_str} ({compression_ratio:.2f}x {compression_name}{layout_info})")
-    
+        click.echo(
+            f"{i}:{summary_indent} {ifd_type}{subfile_info} - {photometric_with_bits}, {size_str}, {file_size_str} ({compression_ratio:.2f}x {compression_name}{layout_info})"
+        )
+
     # Show total file size
     total_size = os.path.getsize(input_file)
     click.echo(f"Total file size: {_format_bytes(total_size)}")
-    
+
     # If --summary flag is set, exit early
     if summary:
         sys.exit(0)
-    
+
     click.echo()
-    
+
     # Determine which IFDs to show
     if ifd is not None:
         if ifd < 0 or ifd >= len(pages):
-            click.echo(f"Error: IFD {ifd} not found (file has {len(pages)} IFDs)", err=True)
+            click.echo(
+                f"Error: IFD {ifd} not found (file has {len(pages)} IFDs)", err=True
+            )
             sys.exit(1)
         pages_to_show = [pages[ifd]]
         ifd_indices = [ifd]
@@ -282,18 +319,18 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
         # Default: show all IFDs
         pages_to_show = pages
         ifd_indices = list(range(len(pages)))
-    
+
     # Track XMP content for duplicate detection
     xmp_tracker = {}
-    
+
     # Track validation issues
     validation_issues = []
-    
+
     # Display metadata for each IFD
     for idx, (page, ifd_num) in enumerate(zip(pages_to_show, ifd_indices)):
         if idx > 0:
             click.echo()  # Blank line between IFDs
-        
+
         # Use TIFF terminology for header
         if ifd_num == 0:
             ifd_label = "IFD0"
@@ -304,18 +341,28 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             ifd_label = f"SubIFD {ifd_num - 1}"
             indent = "  "  # Indent SubIFD tags
             header_indent = "  "  # Indent SubIFD header
-            actual_ifd_type = ("dng_raw:cfa" if page.photometric == PHOTOMETRIC.CFA 
-                              else "dng_raw" if page.photometric == PHOTOMETRIC.LINEAR_RAW else "other")
+            actual_ifd_type = (
+                "dng_raw:cfa"
+                if page.photometric == PHOTOMETRIC.CFA
+                else "dng_raw"
+                if page.photometric == PHOTOMETRIC.LINEAR_RAW
+                else "other"
+            )
         click.echo(f"{header_indent}=== {ifd_label} (--ifd {ifd_num}) ===")
-        
+
         # Get NewSubfileType once for reuse in validation and display
         newsubfiletype = page.get_tag("NewSubfileType") or 0
-        
+
         # Check if IFD0 contains main raw image (for validation)
-        ifd0_is_main_raw = (ifd_num == 0 and 
-                           newsubfiletype == SubFileType.MAIN_IMAGE and 
-                           (page.photometric == PHOTOMETRIC.CFA or page.photometric == PHOTOMETRIC.LINEAR_RAW))
-        
+        ifd0_is_main_raw = (
+            ifd_num == 0
+            and newsubfiletype == SubFileType.MAIN_IMAGE
+            and (
+                page.photometric == PHOTOMETRIC.CFA
+                or page.photometric == PHOTOMETRIC.LINEAR_RAW
+            )
+        )
+
         # Iterate through actual file tags (tifffile API)
         for tag_code, tag in page.tags.items():
             dtype = tag.dtype
@@ -324,18 +371,18 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
             tag_name = LOCAL_TIFF_TAGS.get(tag_code)
             if tag_name is None:
                 tag_name = f"Tag{tag_code}"
-            
+
             # Filter if requested (regex matching, case-insensitive)
             # First apply inclusion filter (--tag)
             if tag_patterns:
                 if not any(pattern.search(tag_name) for pattern in tag_patterns):
                     continue
-            
+
             # Then apply exclusion filter (--exclude-tag)
             if exclude_patterns:
                 if any(pattern.search(tag_name) for pattern in exclude_patterns):
                     continue
-            
+
             # Validate DNG IFD for known tags
             issue_number = None
             if tag_name in TIFF_TAG_TYPE_REGISTRY:
@@ -349,31 +396,42 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                     # When IFD0 is main raw, also normalize dng_raw -> dng_ifd0
                     elif ifd0_is_main_raw and expected_dng_ifd == "dng_raw":
                         expected_dng_ifd = "dng_ifd0"
-                    
+
                     # Check if tag is in wrong IFD
                     if actual_ifd_type == expected_dng_ifd:
                         pass  # Valid
-                    elif expected_dng_ifd == "dng_raw" and actual_ifd_type == "dng_raw:cfa":
+                    elif (
+                        expected_dng_ifd == "dng_raw"
+                        and actual_ifd_type == "dng_raw:cfa"
+                    ):
                         pass  # Allow 'dng_raw' tags in 'dng_raw:cfa' IFDs (CFA is a type of raw)
-                    elif expected_dng_ifd == "dng_raw:cfa" and page.photometric == PHOTOMETRIC.CFA:
+                    elif (
+                        expected_dng_ifd == "dng_raw:cfa"
+                        and page.photometric == PHOTOMETRIC.CFA
+                    ):
                         pass  # Allow 'dng_raw:cfa' tags in any CFA IFD (including IFD0 if it's main CFA)
-                    elif expected_dng_ifd == "dng_preview" and newsubfiletype in (SubFileType.PREVIEW_IMAGE, SubFileType.ALT_PREVIEW_IMAGE):
+                    elif expected_dng_ifd == "dng_preview" and newsubfiletype in (
+                        SubFileType.PREVIEW_IMAGE,
+                        SubFileType.ALT_PREVIEW_IMAGE,
+                    ):
                         pass  # Preview tags are valid in preview IFDs
                     else:
                         # Tag is in wrong IFD
                         issue_number = len(validation_issues) + 1
-                        validation_issues.append((
-                            issue_number,
-                            tag_name,
-                            actual_ifd_type,
-                            tag_spec.dng_ifd  # Store original spec for display
-                        ))
-            
+                        validation_issues.append(
+                            (
+                                issue_number,
+                                tag_name,
+                                actual_ifd_type,
+                                tag_spec.dng_ifd,  # Store original spec for display
+                            )
+                        )
+
             # Get value from page for proper formatting, fallback to raw tag value
             value = page.get_tag(tag_code)
             if value is None:
                 value = tag.value
-            
+
             # Convert enum values to display names if applicable
             tag_spec = TIFF_TAG_TYPE_REGISTRY.get(tag_name)
             if tag_spec and tag_spec.enum_class and value is not None:
@@ -382,22 +440,45 @@ def dng_metadata(input_file, ifd, tag, exclude_tag, summary):
                     value = page.photometric_name
                 else:
                     value = enum_display_name(tag_spec.enum_class, value)
-            
+
             # Display the tag with appropriate indentation
-            _display_tag(tag_name, value, indent, tag_code, dtype, count, xmp_tracker, ifd_num, issue_number)
-    
+            _display_tag(
+                tag_name,
+                value,
+                indent,
+                tag_code,
+                dtype,
+                count,
+                xmp_tracker,
+                ifd_num,
+                issue_number,
+            )
+
     # Display validation issues summary if any were found
     if validation_issues:
         click.echo()
         click.echo("=== DNG Validation Issues ===")
         for issue_num, tag_name, actual_type, expected_spec in validation_issues:
-            click.echo(f"*-{issue_num}: {tag_name} found in {actual_type} IFD, should be in {expected_spec} IFD")
-    
+            click.echo(
+                f"*-{issue_num}: {tag_name} found in {actual_type} IFD, should be in {expected_spec} IFD"
+            )
+
     sys.exit(0)
 
-def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=None, xmp_tracker=None, ifd_num=None, issue_number=None):
+
+def _display_tag(
+    tag_name,
+    value,
+    indent="",
+    tag_code=None,
+    dtype=None,
+    count=None,
+    xmp_tracker=None,
+    ifd_num=None,
+    issue_number=None,
+):
     """Format and display a single tag value.
-    
+
     Args:
         tag_name: Name of the tag
         value: Already-converted value from page.get_tag()
@@ -411,11 +492,11 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     """
     import numpy as np
     from .tiff_metadata import XmpMetadata, TiffType
-    
+
     def echo(text):
         """Helper to echo with indentation."""
         safe_echo(f"{indent}{text}")
-    
+
     # For unknown tags, show tag code and type info
     is_unknown = tag_name.startswith("Tag") and tag_code is not None
     if is_unknown and dtype is not None:
@@ -424,20 +505,20 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             tiff_type = TiffType(dtype)
             dtype_name = f"{tiff_type.name}({dtype})"
         except ValueError:
-            dtype_name = f'Type{dtype}'
+            dtype_name = f"Type{dtype}"
         tag_display = f"{tag_name} ({tag_code}, {dtype_name})"
     else:
         tag_display = tag_name
-    
+
     # Prepend issue marker if this tag has a validation issue
     if issue_number is not None:
         tag_display = f"[*-{issue_number}] {tag_display}"
-    
+
     # Handle None first
     if value is None:
         echo(f"{tag_display}: None")
         return
-    
+
     # Special handling for EXIF/GPS dictionaries - enumerate fields
     if tag_name in ("ExifTag", "GPSTag") and isinstance(value, dict):
         echo(f"{tag_display}: {len(value)} fields")
@@ -448,19 +529,24 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         return
 
     # Special formatting for DNG version tags (4-tuple from get_tag)
-    if tag_name in ("DNGVersion", "DNGBackwardVersion") and isinstance(value, tuple) and len(value) == 4:
+    if (
+        tag_name in ("DNGVersion", "DNGBackwardVersion")
+        and isinstance(value, tuple)
+        and len(value) == 4
+    ):
         version_str = f"{value[0]}.{value[1]}.{value[2]}.{value[3]}"
         echo(f"{tag_display}: {version_str}")
         return
-    
+
     # Special handling for OpcodeList tags - show opcode names
-    if tag_name in ('OpcodeList1', 'OpcodeList2', 'OpcodeList3'):
+    if tag_name in ("OpcodeList1", "OpcodeList2", "OpcodeList3"):
         from . import raw_render
+
         summary = raw_render.get_opcode_summary(bytes(value), detailed=True)
         num_bytes = len(bytes(value))
-        
+
         # Display multi-line summary
-        lines = summary.split('\n')
+        lines = summary.split("\n")
         echo(f"{tag_display}: {lines[0]} ({num_bytes} bytes)")
         for line in lines[1:]:
             echo(f"  {line}")
@@ -469,8 +555,10 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     # Special handling for XMP - show raw XML with duplicate detection
     if isinstance(value, XmpMetadata):
         # Get the formatted XMP string for comparison and display
-        xmp_str = value.get_formatted_string(strip_whitespace=True, filter_blank_lines=True)
-        
+        xmp_str = value.get_formatted_string(
+            strip_whitespace=True, filter_blank_lines=True
+        )
+
         # Check for duplicates
         if xmp_tracker is not None and xmp_str and xmp_str in xmp_tracker:
             # Duplicate found - show reference to first occurrence
@@ -478,12 +566,12 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             first_ifd_label = "IFD0" if first_ifd == 0 else f"SubIFD {first_ifd - 1}"
             echo(f"{tag_display}: duplicate of {first_ifd_label}")
             return
-        
+
         # First occurrence - track it
         if xmp_str:
             if xmp_tracker is not None:
                 xmp_tracker[xmp_str] = ifd_num
-        
+
             # Display the full XMP
             echo(f"{tag_display}:")
             for line in xmp_str.splitlines():
@@ -495,7 +583,9 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
 
     # Strings
     if isinstance(value, str):
-        display_str = f"{value[:200]}... ({len(value)} chars)" if len(value) > 200 else value
+        display_str = (
+            f"{value[:200]}... ({len(value)} chars)" if len(value) > 200 else value
+        )
         echo(f"{tag_display}: {display_str}")
         return
 
@@ -503,20 +593,24 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
     byte_value = None
     if isinstance(value, bytes):
         byte_value = value
-    elif isinstance(value, np.ndarray) and value.ndim == 0 and value.dtype.kind in ('S', 'V'):
+    elif (
+        isinstance(value, np.ndarray)
+        and value.ndim == 0
+        and value.dtype.kind in ("S", "V")
+    ):
         byte_value = value.item()
-    
+
     if byte_value is not None and isinstance(byte_value, bytes):
         if len(byte_value) > 100:
             echo(f"{tag_display}: Binary data, {len(byte_value)} bytes")
         else:
             echo(f"{tag_display}: {byte_value}")
         return
-    
+
     # Convert to numpy array for easier handling
     if not isinstance(value, np.ndarray):
         value = np.atleast_1d(value)
-    
+
     # Simple scalars
     if value.size == 1:
         scalar = value.item()
@@ -524,7 +618,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             scalar = round(scalar, 4)
         echo(f"{tag_display}: {scalar}")
         return
-    
+
     # 2D arrays (matrices) - display in matrix format
     if value.ndim == 2:
         echo(f"{tag_display}:")
@@ -534,7 +628,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         if value.shape[0] > 3:
             echo(f"  ... ({value.shape[0]} rows total)")
         return
-    
+
     # Helper to format values with appropriate precision
     def format_value(v):
         """Format a value with appropriate precision."""
@@ -542,7 +636,7 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
         if isinstance(val, float):
             return round(val, 4)
         return val
-    
+
     # 1D arrays
     if value.ndim == 1:
         # Small arrays (≤9 elements): show full array
@@ -550,34 +644,45 @@ def _display_tag(tag_name, value, indent="", tag_code=None, dtype=None, count=No
             clean_list = [format_value(v) for v in value.flat]
             echo(f"{tag_display}: {clean_list}")
             return
-        
+
         # Larger 1D arrays: show first 9 with truncation
         clean_list = [format_value(v) for v in value.flat[:9]]
         # Format as list with ... inside brackets
         list_str = str(clean_list)[:-1]  # Remove closing bracket
         echo(f"{tag_display}: {list_str}, ... ({value.size} elements)]")
         return
-    
+
     # Very large arrays: show type, element count, and byte size
     dtype_name = value.dtype.name
     num_elements = value.size
     num_bytes = value.nbytes
-    echo(f"{tag_display}: {dtype_name} array, {num_elements} elements, {num_bytes} bytes")
+    echo(
+        f"{tag_display}: {dtype_name} array, {num_elements} elements, {num_bytes} bytes"
+    )
+
 
 @dng.command(name="raw-stage")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
 @click.argument("stage", type=click.Choice(["raw", "camera-rgb"]))
-@click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
-@click.option("--demosaic", type=str, help="Demosaic CFA data using specified algorithm (EA, EA_FAST, OPENCV_EA, VNG, RCD, BILINEAR)")
+@click.option(
+    "--ifd",
+    type=str,
+    help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page",
+)
+@click.option(
+    "--demosaic",
+    type=str,
+    help="Demosaic CFA data using specified algorithm (EA, EA_FAST, OPENCV_EA, VNG, RCD, BILINEAR)",
+)
 def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     """Extract raw image data at a specific pipeline stage.
-    
+
     \b
     Stages:
       raw                   - Raw sensor data (decoded, no processing)
       camera-rgb            - Linearized + demosaiced camera RGB
-    
+
     \b
     Examples:
       muraw dng raw-stage input.dng output.tif raw
@@ -587,10 +692,10 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
     import numpy as np
     from .dngio import DngFile
     from . import raw_render
-    
+
     # Parse IFD specification before opening file
     ifd_index, ifd_name = _parse_ifd_spec(ifd)
-    
+
     try:
         # Open DNG file and select page
         with DngFile(input_file) as dng:
@@ -604,16 +709,22 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 # Get specific IFD by index
                 pages = dng.get_flattened_pages()
                 if ifd_index >= len(pages):
-                    click.echo(f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).", err=True)
+                    click.echo(
+                        f"Error: IFD index {ifd_index} out of range. File has {len(pages)} IFD(s).",
+                        err=True,
+                    )
                     sys.exit(1)
-                
+
                 page = pages[ifd_index]
-            
+
             # Validate page is raw
             if not (page.is_cfa or page.is_linear_raw):
-                click.echo(f"Error: Selected IFD is not a raw page ({page.photometric_name})", err=True)
+                click.echo(
+                    f"Error: Selected IFD is not a raw page ({page.photometric_name})",
+                    err=True,
+                )
                 sys.exit(1)
-            
+
             # Extract data based on stage
             t = None
 
@@ -639,7 +750,10 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                         t = raw_render.demosaic(t, cfa_pattern, algorithm=algorithm)
                 else:
                     if demosaic is not None:
-                        click.echo("Warning: --demosaic ignored for LINEAR_RAW page (already RGB)", err=True)
+                        click.echo(
+                            "Warning: --demosaic ignored for LINEAR_RAW page (already RGB)",
+                            err=True,
+                        )
                     t = page.get_linear_raw()
 
             if t is None:
@@ -660,11 +774,14 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
                 h, w = data_uint16.shape
                 dims_str = f"{w}x{h}"
 
-            click.echo(f"Extracted {stage} stage from {ifd_name} ({page.photometric_name}): {dims_str} -> {output_file}")
-    
+            click.echo(
+                f"Extracted {stage} stage from {ifd_name} ({page.photometric_name}): {dims_str} -> {output_file}"
+            )
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -672,16 +789,18 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
 @dng.command(name="copy")
 @click.argument("input_dng", type=click.Path(exists=True))
 @click.argument("output_dng", type=click.Path())
-@click.option("--ifd", type=str, help="IFD to copy (ifd0, subifd0, subifd1, etc.). Default: main raw page")
+@click.option(
+    "--ifd",
+    type=str,
+    help="IFD to copy (ifd0, subifd0, subifd1, etc.). Default: main raw page",
+)
 @click.option(
     "--scale",
     type=float,
     default=1.0,
     help="Scale factor for image (default: 1.0). If != 1.0, forces conversion to LINEAR_RAW",
 )
-@click.option(
-    "--demosaic", is_flag=True, help="Convert CFA to LINEAR_RAW (demosaic)"
-)
+@click.option("--demosaic", is_flag=True, help="Convert CFA to LINEAR_RAW (demosaic)")
 @click.option(
     "--demosaic-algorithm",
     type=str,
@@ -691,8 +810,8 @@ def dng_raw_stage(input_file, output_file, stage, ifd, demosaic):
 @click.option("--preview", is_flag=True, help="Generate preview/thumbnail")
 @click.option(
     "--preview-reduce",
-    type=click.Choice(['1', '2', '4', '8']),
-    default='4',
+    type=click.Choice(["1", "2", "4", "8"]),
+    default="4",
     help="Preview reduction factor: 1=full, 2=1/2, 4=1/4, 8=1/8 (default: 4)",
 )
 @click.option(
@@ -752,108 +871,113 @@ def dng_copy(
     no_tiles,
 ):
     """Create a new DNG file with optional transformations.
-    
+
     Apply scale, demosaic (CFA to LINEAR_RAW), strip tags, and/or generate preview.
     """
     from . import dngio
     from .tiff_metadata import MetadataTags
     import muraw
     from .common import PerfTimer
+
     timer = PerfTimer("dng_copy", start_time=muraw._app_start_time)
-    
+
     # Map algorithm string to enum
     demosaic_algorithm_enum = DemosaicAlgorithm.lookup(demosaic_algorithm)
-    
+
     # Parse --strip-tag options, supporting comma-separated lists
     strip_tags_set = None
     if strip_tag:
         strip_tags_set = set()
         for tag_spec in strip_tag:
             # Split by comma and strip whitespace from each tag name
-            for tag_name in tag_spec.split(','):
+            for tag_name in tag_spec.split(","):
                 tag_name = tag_name.strip()
                 if tag_name:  # Skip empty strings
                     strip_tags_set.add(tag_name)
-    
+
     # Parse --tag NAME=VALUE options into MetadataTags
     extra_tags = None
     if tag:
         extra_tags = MetadataTags()
         for tag_spec in tag:
             if "=" not in tag_spec:
-                click.echo(f"Error: Invalid tag format '{tag_spec}'. Use NAME=VALUE", err=True)
+                click.echo(
+                    f"Error: Invalid tag format '{tag_spec}'. Use NAME=VALUE", err=True
+                )
                 sys.exit(1)
             name, value = tag_spec.split("=", 1)
             extra_tags.add_tag(name.strip(), value.strip())
-    
+
     try:
         # Build compression args and determine compression type
         COMPRESSION = tifffile.COMPRESSION
         compression = None
         compression_args = None
-        
+
         if jxl_distance is not None or jxl_effort is not None:
             compression = COMPRESSION.JPEGXL_DNG
             compression_args = {}
             if jxl_distance is not None:
-                compression_args['distance'] = jxl_distance
+                compression_args["distance"] = jxl_distance
             if jxl_effort is not None:
-                compression_args['effort'] = jxl_effort
-        
+                compression_args["effort"] = jxl_effort
+
         # Parse tile size
         tile_size_tuple = None
         if not no_tiles:
             try:
-                width, height = tile_size.lower().split('x')
+                width, height = tile_size.lower().split("x")
                 tile_size_tuple = (int(height), int(width))  # (height, width) for numpy
             except (ValueError, AttributeError):
-                raise click.BadParameter(f"Invalid tile size format: {tile_size}. Expected WIDTHxHEIGHT (e.g., 256x256)")
-        
+                raise click.BadParameter(
+                    f"Invalid tile size format: {tile_size}. Expected WIDTHxHEIGHT (e.g., 256x256)"
+                )
+
         # Open source DNG and get page based on IFD spec
         with dngio.DngFile(input_dng) as dng_file:
             page, _, _ = _get_page_from_ifd_spec(dng_file, ifd)
-            
+
             # Determine page_operation based on explicit compression request
             if compression is not None:
                 # TRANSCODE mode - decompress and recompress with specified compression
                 transcode_encoding = dngio.PageEncoding(
                     compression=compression,
                     compression_args=compression_args,
-                    tile_size=tile_size_tuple
+                    tile_size=tile_size_tuple,
                 )
             else:
                 # COPY mode - preserve source compression (even when demosaicing/scaling)
                 transcode_encoding = None
-            
+
             # Create IfdPageSpec
             page_spec = dngio.IfdPageSpec(
                 page=page,
                 transcode_encoding=transcode_encoding,
                 strip_tags=strip_tags_set,
             )
-            
+
             # Write using write_dng_from_page
             preview_params = None
             if preview:
                 # Map CLI reduction factors (1,2,4,8) to pyramid levels (0,1,2,3)
-                reduction_to_level = {'1': 0, '2': 1, '4': 2, '8': 3}
+                reduction_to_level = {"1": 0, "2": 1, "4": 2, "8": 3}
                 preview_params = dngio.PreviewParams(
                     scale=dngio.PreviewScale(reduction_to_level[preview_reduce]),
                     compression=COMPRESSION.JPEG,
-                    compression_args={'level': 90}
+                    compression_args={"level": 90},
                 )
-            
+
             pyramid_params = None
             if pyramid_levels > 0:
                 pyramid_params = dngio.PyramidParams(
                     levels=pyramid_levels,
                     encoding=dngio.PageEncoding(
                         compression=COMPRESSION.JPEGXL_DNG,
-                        compression_args={'distance': 1.0},
-                        tile_size=tile_size_tuple
-                    )
+                        compression_args={"distance": 1.0},
+                        tile_size=tile_size_tuple,
+                    ),
                 )
-            
+
             dngio.write_dng_from_page(
                 destination_file=output_dng,
                 page=page_spec,
@@ -877,14 +1001,27 @@ def dng_copy(
 @dng.command(name="convert")
 @click.argument("input_file", type=click.Path(exists=True))
 @click.argument("output_file", type=click.Path())
-@click.option("--ifd", type=str, help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page")
+@click.option(
+    "--ifd",
+    type=str,
+    help="IFD to extract (ifd0, subifd0, subifd1, etc.). Default: main raw page",
+)
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
 @click.option("--exposure", type=float, help="Exposure adjustment in stops")
 @click.option("--orientation", type=int, help="Image orientation")
-@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="8", help="Output bit depth (8 or 16)")
+@click.option(
+    "--bit-depth",
+    type=click.Choice(["8", "16"]),
+    default="8",
+    help="Output bit depth (8 or 16)",
+)
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
-@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
+@click.option(
+    "--use-coreimage",
+    is_flag=True,
+    help="Use Core Image pipeline on macOS if available",
+)
 @click.option(
     "--demosaic-algorithm",
     type=str,
@@ -910,21 +1047,21 @@ def dng_convert(
     from .dngio import DngFile
     from .tiff_metadata import Orientation
     from .imgio import convert_dng
-    
+
     # Map bit depth to numpy dtype
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
-    
+
     # Map CLI parameter names to XMP-style rendering_params names
     params = {}
     if temperature is not None:
-        params['Temperature'] = temperature
+        params["Temperature"] = temperature
     if tint is not None:
-        params['Tint'] = tint
+        params["Tint"] = tint
     if exposure is not None:
-        params['Exposure2012'] = exposure
+        params["Exposure2012"] = exposure
     if orientation is not None:
-        params['orientation'] = orientation
-    
+        params["orientation"] = orientation
+
     timing = click.get_current_context().find_root().params.get("timing", "off")
     # Always time convert for the success line; --timing only controls the report detail.
     render_timer = PerfTimer("render_raw")
@@ -937,16 +1074,20 @@ def dng_convert(
                 ifd_name = "main raw page"
             else:
                 file_arg, _, ifd_name = _get_page_from_ifd_spec(dng, ifd)
-            
+
             # Handle preview pages differently from raw pages
             if ifd is not None and not (file_arg.is_cfa or file_arg.is_linear_raw):
                 # Validate parameters before rendering
                 if params:
-                    click.echo("Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages", err=True)
+                    click.echo(
+                        "Error: Rendering parameters (--temperature, --tint, --exposure, --orientation) not allowed for preview pages",
+                        err=True,
+                    )
                     sys.exit(1)
-                
+
                 # Preview page: decode directly to RGB
                 from .imgio import write_image
+
                 rgb = file_arg.decode_to_rgb(output_dtype=output_dtype)
                 if rgb is None:
                     click.echo(f"Error: Failed to decode preview page", err=True)
@@ -971,11 +1112,11 @@ def dng_convert(
                     rendering_params=params,
                     use_coreimage_if_available=use_coreimage,
                 )
-                
+
                 if not success:
                     click.echo(f"Error: Failed to convert {input_file}", err=True)
                     sys.exit(1)
-            
+
             # Shared output message
             # Get photometric from page (file_arg is either DngPage or DngFile)
             if isinstance(file_arg, DngFile):
@@ -992,7 +1133,7 @@ def dng_convert(
             )
             if timing != "off":
                 click.echo(render_timer.get_report(), err=True)
-            
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -1003,52 +1144,55 @@ def dng_convert(
 
 def _load_dng_settings(settings_file: Path) -> tuple[list[Path], list[dict[str, Any]]]:
     """Load DNG rendering settings from CSV file.
-    
+
     Returns:
         Tuple of (file_list, settings_list) where:
         - file_list: List of absolute paths to DNG files from CSV
         - settings_list: List of rendering_params dicts, one per file in same order
-    
+
     If filename in CSV is relative, it's resolved relative to the CSV file's directory.
     Only includes non-None values in the rendering params.
     """
     from dataclasses import dataclass
     from .csv import CsvReader
-    
+
     @dataclass
     class DngRenderSettings:
         """Per-file DNG rendering settings loaded from CSV."""
+
         filename: str
         Temperature: float | None = None
         Tint: float | None = None
         Exposure2012: float | None = None
         orientation: int | None = None
-    
+
     file_list = []
     settings_list = []
     csv_dir = settings_file.parent
-    
-    with CsvReader(settings_file, header_schema=[], data_type=DngRenderSettings) as reader:        
-        for settings in reader:  
+
+    with CsvReader(
+        settings_file, header_schema=[], data_type=DngRenderSettings
+    ) as reader:
+        for settings in reader:
             # Resolve file path: if absolute use as-is, else relative to CSV dir
             file_path = Path(settings.filename)
             if not file_path.is_absolute():
                 file_path = csv_dir / file_path
             file_list.append(file_path)
-            
+
             # Build rendering params dict with only non-None values
             rendering_params = {}
             if settings.Temperature is not None:
-                rendering_params['Temperature'] = settings.Temperature
+                rendering_params["Temperature"] = settings.Temperature
             if settings.Tint is not None:
-                rendering_params['Tint'] = settings.Tint
+                rendering_params["Tint"] = settings.Tint
             if settings.Exposure2012 is not None:
-                rendering_params['Exposure2012'] = settings.Exposure2012
+                rendering_params["Exposure2012"] = settings.Exposure2012
             if settings.orientation is not None:
-                rendering_params['orientation'] = settings.orientation
-            
+                rendering_params["orientation"] = settings.orientation
+
             settings_list.append(rendering_params)
-    
+
     return file_list, settings_list
 
 
@@ -1091,7 +1235,7 @@ def run_batch_copy_dng(
         do_fast_load: If True, embed 1 pyramid level for fast load.
         strip_tags: Set of tag name strings to strip, or None.
         extra_tags: MetadataTags object with tags to add/override, or None.
-        time_offset_seconds: Signed seconds to add to all date tags (DateTimeOriginal, 
+        time_offset_seconds: Signed seconds to add to all date tags (DateTimeOriginal,
             DateTimeDigitized, DateTime). 0 = no change.
         time_timezone: Timezone offset string (e.g., "+02:00") to set in all offset tags
             (OffsetTimeOriginal, OffsetTimeDigitized, OffsetTime), or None.
@@ -1104,7 +1248,16 @@ def run_batch_copy_dng(
     import io
     import time
     from datetime import timedelta
-    from .dngio import DngFile, IfdPageSpec, PageEncoding, PreviewParams, PreviewScale, PyramidParams, write_dng_from_page, write_dng
+    from .dngio import (
+        DngFile,
+        IfdPageSpec,
+        PageEncoding,
+        PreviewParams,
+        PreviewScale,
+        PyramidParams,
+        write_dng_from_page,
+        write_dng,
+    )
     from .imgio import ImageSequencePipeline
     from .tiff_metadata import MetadataTags, SubFileType
 
@@ -1143,7 +1296,11 @@ def run_batch_copy_dng(
             ),
         )
 
-    demosaic_algo = demosaic_algorithm if demosaic_algorithm is not None else DemosaicAlgorithm.BILINEAR
+    demosaic_algo = (
+        demosaic_algorithm
+        if demosaic_algorithm is not None
+        else DemosaicAlgorithm.BILINEAR
+    )
 
     def dng_consumer(task):
         index, file_path, blob = task
@@ -1165,40 +1322,52 @@ def run_batch_copy_dng(
             all_pages = dng_file.get_flattened_pages()
             input_preview_page = None
             input_pyramid_pages = []
-            
+
             # Check IFD0 for rendered preview (non-raw photometric)
             if all_pages and not (all_pages[0].is_cfa or all_pages[0].is_linear_raw):
                 input_preview_page = all_pages[0]
-            
+
             # Scan all pages for pyramid levels (NewSubfileType!=0, not IFD0, not main)
             for i, p in enumerate(all_pages):
                 if i > 0 and not p.is_main_image:  # SubIFDs with NewSubfileType != 0
                     input_pyramid_pages.append(p)
-            
+
             input_has_preview = input_preview_page is not None
             input_has_pyramid = len(input_pyramid_pages) > 0
-            
+
             # Determine if we should use input's preview/pyramid or regenerate
-            needs_transform = (scale != 1.0 or demosaic)
+            needs_transform = scale != 1.0 or demosaic
             use_input_preview = do_preview and input_has_preview and not needs_transform
-            use_input_pyramid = do_fast_load and input_has_pyramid and not needs_transform
-            
+            use_input_pyramid = (
+                do_fast_load and input_has_pyramid and not needs_transform
+            )
+
             # Check for structure mismatch
             structure_mismatch = False
-            if do_preview and not do_fast_load and input_has_pyramid and not input_has_preview:
+            if (
+                do_preview
+                and not do_fast_load
+                and input_has_pyramid
+                and not input_has_preview
+            ):
                 structure_mismatch = True
-            elif do_fast_load and not do_preview and input_has_preview and not input_has_pyramid:
+            elif (
+                do_fast_load
+                and not do_preview
+                and input_has_preview
+                and not input_has_pyramid
+            ):
                 structure_mismatch = True
-            
+
             if structure_mismatch:
                 use_input_preview = False
                 use_input_pyramid = False
-            
+
             # Emit warnings when regenerating despite input having pages
             # Only warn if user requested preview/pyramid but we're regenerating instead of copying
             regen_preview = do_preview and input_has_preview and not use_input_preview
             regen_pyramid = do_fast_load and input_has_pyramid and not use_input_pyramid
-            
+
             if regen_preview or regen_pyramid:
                 # Build list of what's being regenerated
                 items = []
@@ -1207,7 +1376,7 @@ def run_batch_copy_dng(
                 if regen_pyramid:
                     items.append("pyramid")
                 items_str = " and ".join(items)
-                
+
                 # Determine reason
                 if needs_transform:
                     reason = "scale/demosaic"
@@ -1215,9 +1384,11 @@ def run_batch_copy_dng(
                     reason = "structure mismatch"
                 else:
                     reason = "unknown"
-                
-                logger.warning(f"Frame {index}: Input has {items_str} but regenerating due to {reason}")
-            
+
+                logger.warning(
+                    f"Frame {index}: Input has {items_str} but regenerating due to {reason}"
+                )
+
             # Build per-file extra_tags
             file_extra_tags = MetadataTags()
             if extra_tags is not None:
@@ -1226,8 +1397,9 @@ def run_batch_copy_dng(
             # Apply time offset to all date tags
             if time_offset_seconds != 0.0:
                 from .tiff_metadata import _convert_exif_dict_to_tags
+
                 time_tags = MetadataTags()
-                _convert_exif_dict_to_tags(time_tags, dng_file.get_tag('ExifTag'))
+                _convert_exif_dict_to_tags(time_tags, dng_file.get_tag("ExifTag"))
                 for time_type in ("original", "digitized", "modified"):
                     try:
                         dt = time_tags.get_time_from_tags(time_type=time_type)
@@ -1235,9 +1407,13 @@ def run_batch_copy_dng(
                             dt = dng_file.get_time_from_tags(time_type=time_type)
                         if dt is not None:
                             dt_adjusted = dt + timedelta(seconds=time_offset_seconds)
-                            file_extra_tags.add_time_tags(dt_adjusted, time_type=time_type)
+                            file_extra_tags.add_time_tags(
+                                dt_adjusted, time_type=time_type
+                            )
                     except Exception as e:
-                        logger.warning(f"Frame {index}: Could not adjust {time_type} time for {Path(file_path).name}: {e}")
+                        logger.warning(
+                            f"Frame {index}: Could not adjust {time_type} time for {Path(file_path).name}: {e}"
+                        )
 
             # Apply timezone offset
             if time_timezone:
@@ -1246,11 +1422,13 @@ def run_batch_copy_dng(
                 file_extra_tags.add_tag("OffsetTime", time_timezone)
 
             out_buf = io.BytesIO()
-            
+
             # COPY PATH: Use existing preview/pyramid from input
             if use_input_preview or use_input_pyramid:
-                logger.info(f"Frame {index}: Copying existing preview={use_input_preview} pyramid={use_input_pyramid}")
-                
+                logger.info(
+                    f"Frame {index}: Copying existing preview={use_input_preview} pyramid={use_input_pyramid}"
+                )
+
                 # Build specs
                 main_spec = IfdPageSpec(
                     page=page,
@@ -1260,7 +1438,7 @@ def run_batch_copy_dng(
                 )
 
                 subifd_specs = []
-                
+
                 if use_input_preview:
                     # Preview goes to IFD0
                     ifd0_spec = IfdPageSpec(
@@ -1275,8 +1453,9 @@ def run_batch_copy_dng(
                 else:
                     # Main image goes to IFD0, add extratags
                     from dataclasses import replace
+
                     ifd0_spec = replace(main_spec, extratags=file_extra_tags)
-                
+
                 if use_input_pyramid:
                     # Copy all pyramid levels
                     for pyramid_page in input_pyramid_pages:
@@ -1287,7 +1466,7 @@ def run_batch_copy_dng(
                             strip_tags=None,
                         )
                         subifd_specs.append(pyramid_spec)
-                
+
                 # Write using low-level write_dng
                 write_dng(
                     destination_file=out_buf,
@@ -1295,7 +1474,7 @@ def run_batch_copy_dng(
                     subifds=subifd_specs if subifd_specs else None,
                     num_compression_workers=1,
                 )
-            
+
             # REGENERATE PATH: Use write_dng_from_page
             else:
                 page_spec = IfdPageSpec(
@@ -1303,7 +1482,7 @@ def run_batch_copy_dng(
                     transcode_encoding=transcode_encoding,
                     strip_tags=strip_tags,
                 )
-                
+
                 # Build preview params per-file
                 preview_params = None
                 if do_preview:
@@ -1321,7 +1500,7 @@ def run_batch_copy_dng(
                         compression=COMPRESSION.JPEG,
                         compression_args={"level": 90},
                     )
-                
+
                 write_dng_from_page(
                     destination_file=out_buf,
                     page=page_spec,
@@ -1333,7 +1512,7 @@ def run_batch_copy_dng(
                     ifd0_extratags=file_extra_tags,
                     ifd0_strip_tags=strip_tags,
                 )
-            
+
             return (index, file_path, out_buf.getvalue())
         except Exception as e:
             msg = f"ERROR: {Path(file_path).name} ({type(e).__name__}): {e}"
@@ -1381,10 +1560,10 @@ def run_batch_convert(
     log_callback=None,
 ):
     """Batch convert DNG files to TIFF/JXL/JPG images.
-    
+
     Reusable function called by both CLI and GUI. Uses ImageSequencePipeline
     for multi-threaded processing.
-    
+
     Args:
         dng_files: List of Path objects pointing to DNG files.
         output_folder: Path to output directory.
@@ -1399,10 +1578,10 @@ def run_batch_convert(
             length as dng_files; merged with rendering_params per file.
         on_task_done: Optional callback(completed, total) -> bool. Called
             after each file is processed. Return True to cancel.
-    
+
     Returns:
         dict with keys: "completed", "total", "elapsed", "queue_stats".
-    
+
     Raises:
         Exception: Propagated from pipeline on fatal errors.
     """
@@ -1411,24 +1590,24 @@ def run_batch_convert(
     import numpy as np
     from .dngio import decode_dng, DngFile
     from .imgio import ImageSequencePipeline, write_image
-    
+
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     output_dtype = np.uint16 if bit_depth == "16" else np.uint8
     base_params = rendering_params or {}
-    
+
     # Custom DNG consumer - decodes DNG and encodes to output format
     def dng_consumer(task):
         index, file_path, blob = task
         try:
             dng_file = DngFile(io.BytesIO(blob))
-            
+
             # Build rendering params: per-file settings merged with base
             params = base_params.copy()
             if settings_list:
                 params.update(settings_list[index])
-            
+
             img, metadata = decode_dng(
                 file=dng_file,
                 output_dtype=output_dtype,
@@ -1439,7 +1618,7 @@ def run_batch_convert(
                 strict=False,
                 scale=scale,
             )
-            
+
             if img is None:
                 msg = f"ERROR: Failed to decode {Path(file_path).name}"
                 if log_callback:
@@ -1447,9 +1626,14 @@ def run_batch_convert(
                 else:
                     logger.warning(f"Frame {index}: {msg}")
                 return (index, file_path, None)
-            
+
             output_stream = io.BytesIO()
-            write_image(img, output_stream, output_format_stream=output_format, metadata=metadata)
+            write_image(
+                img,
+                output_stream,
+                output_format_stream=output_format,
+                metadata=metadata,
+            )
             return (index, file_path, output_stream.getvalue())
         except Exception as e:
             msg = f"ERROR: {Path(file_path).name} ({type(e).__name__}): {e}"
@@ -1458,7 +1642,7 @@ def run_batch_convert(
             else:
                 logger.error(f"Frame {index}: {msg}")
             return (index, file_path, None)
-    
+
     pipeline = ImageSequencePipeline(
         source_files=dng_files,
         output_folder=output_path,
@@ -1469,11 +1653,11 @@ def run_batch_convert(
         task_name="DNG Batch Convert",
         on_task_done=on_task_done,
     )
-    
+
     start_time = time.perf_counter()
     pipeline.run()
     elapsed = time.perf_counter() - start_time
-    
+
     return {
         "completed": pipeline._completed,
         "total": len(dng_files),
@@ -1485,45 +1669,78 @@ def run_batch_convert(
 @dng.command(name="batch-convert")
 @click.argument("input", type=click.Path(exists=True))
 @click.argument("output_folder", type=click.Path())
-@click.option("--format", "output_format", type=click.Choice(["tif", "jxl", "jpg"]), default="tif", help="Output format")
-@click.option("--bit-depth", type=click.Choice(["8", "16"]), default="16", help="Output bit depth (8 or 16)")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["tif", "jxl", "jpg"]),
+    default="tif",
+    help="Output format",
+)
+@click.option(
+    "--bit-depth",
+    type=click.Choice(["8", "16"]),
+    default="16",
+    help="Output bit depth (8 or 16)",
+)
 @click.option("--temperature", type=float, help="White balance temperature")
 @click.option("--tint", type=float, help="White balance tint")
 @click.option("--exposure", type=float, help="Exposure adjustment in stops")
 @click.option("--orientation", type=int, help="Image orientation")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
-@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
-@click.option("--scale", type=float, default=1.0, help="Resolution scale factor (e.g., 0.5 for half size)")
-@click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
+@click.option(
+    "--use-coreimage",
+    is_flag=True,
+    help="Use Core Image pipeline on macOS if available",
+)
+@click.option(
+    "--scale",
+    type=float,
+    default=1.0,
+    help="Resolution scale factor (e.g., 0.5 for half size)",
+)
+@click.option(
+    "--num-workers", type=int, default=4, help="Number of parallel processing threads"
+)
 def batch_convert_dngs(
-    input, output_folder, output_format, bit_depth, temperature, tint, 
-    exposure, orientation, no_xmp, use_coreimage, scale, num_workers
+    input,
+    output_folder,
+    output_format,
+    bit_depth,
+    temperature,
+    tint,
+    exposure,
+    orientation,
+    no_xmp,
+    use_coreimage,
+    scale,
+    num_workers,
 ):
     """Convert DNG files to TIFF/JXL/JPG images.
-    
+
     INPUT can be either:
     - A folder containing DNG files (will scan for *.dng)
     - A CSV file with per-file settings (filename,Temperature,Tint,Exposure2012,orientation)
     """
     import setproctitle
+
     setproctitle.setproctitle("muraw: batch-convert")
-    
+
     # Build base rendering_params dict from CLI options
     rendering_params = {}
     if temperature is not None:
-        rendering_params['Temperature'] = temperature
+        rendering_params["Temperature"] = temperature
     if tint is not None:
-        rendering_params['Tint'] = tint
+        rendering_params["Tint"] = tint
     if exposure is not None:
-        rendering_params['Exposure2012'] = exposure
+        rendering_params["Exposure2012"] = exposure
     if orientation is not None:
-        rendering_params['Orientation'] = orientation
-    
+        rendering_params["Orientation"] = orientation
+
     # Determine file list and settings based on input type
     input_path = Path(input)
     settings_list = []
-    
-    if input_path.is_file() and input_path.suffix.lower() == '.csv':
+
+    if input_path.is_file() and input_path.suffix.lower() == ".csv":
         dng_files, settings_list = _load_dng_settings(input_path)
         click.echo(f"Loaded {len(dng_files)} files from {input}")
     elif input_path.is_dir():
@@ -1535,13 +1752,13 @@ def batch_convert_dngs(
     else:
         click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
-    
+
     click.echo(f"Converting {len(dng_files)} DNGs to {output_format.upper()}...")
-    
+
     def cli_progress(completed, total):
         safe_echo(f"  {completed}/{total} files processed", nl=True)
         return False
-    
+
     try:
         result = run_batch_convert(
             dng_files=dng_files,
@@ -1556,18 +1773,26 @@ def batch_convert_dngs(
             settings_list=settings_list or None,
             on_task_done=cli_progress,
         )
-        
-        click.echo(f"Successfully converted {result['completed']} files to {output_folder}")
-        click.echo(f"Processed {result['total']} files in {result['elapsed']:.2f}s ({result['total']/result['elapsed']:.2f} files/s)")
-        
+
+        click.echo(
+            f"Successfully converted {result['completed']} files to {output_folder}"
+        )
+        click.echo(
+            f"Processed {result['total']} files in {result['elapsed']:.2f}s ({result['total'] / result['elapsed']:.2f} files/s)"
+        )
+
         stats = result["queue_stats"]
         if "task_queue" in stats:
             q = stats["task_queue"]
-            click.echo(f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
+            click.echo(
+                f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s"
+            )
         if "writer_queue" in stats:
             q = stats["writer_queue"]
-            click.echo(f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
-        
+            click.echo(
+                f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s"
+            )
+
     except Exception as e:
         logger.exception("Failed to convert DNGs")
         sys.exit(1)
@@ -1591,10 +1816,10 @@ def run_batch_to_video(
     log_callback=None,
 ):
     """Batch convert DNG files to MP4 video.
-    
+
     Reusable function called by both CLI and GUI. Uses VideoEncodePipeline
     for multi-threaded processing.
-    
+
     Args:
         dng_files: List of Path objects pointing to DNG files.
         output_mp4: Path to output MP4 file.
@@ -1611,10 +1836,10 @@ def run_batch_to_video(
         settings_list: Optional per-file rendering params (from CSV).
         on_task_done: Optional callback(completed, total) -> bool. Called
             after each frame is processed. Return True to cancel.
-    
+
     Returns:
         dict with keys: "completed", "total", "elapsed", "queue_stats".
-    
+
     Raises:
         ImportError: If av (PyAV) package is not installed.
         Exception: Propagated from pipeline on fatal errors.
@@ -1624,35 +1849,35 @@ def run_batch_to_video(
     import numpy as np
     from .dngio import decode_dng, DngFile
     from .videoio import VideoEncodePipeline
-    
+
     base_params = rendering_params or {}
     resolution_tuple = resolution
-    
+
     config = {
         "codec": codec,
         "crf": crf,
         "bit_depth": int(bit_depth),
         "frame_rate": frame_rate,
     }
-    
+
     output_dtype = np.uint16 if int(bit_depth) == 10 else np.uint8
-    
+
     # Custom DNG consumer - decodes DNG blob and prepares video frame
     def dng_consumer(task):
         index, file_path, blob = task
         try:
             dng_file = DngFile(io.BytesIO(blob))
-            
+
             # Build rendering params: per-file settings merged with base
             params = base_params.copy()
             if settings_list:
                 params.update(settings_list[index])
-            
+
             # Calculate scale before decoding for efficiency
             render_width, render_height = dng_file.get_rendered_size(
                 rendering_params=params
             )
-            
+
             target_width, target_height = resolution_tuple
             scale_w = target_width / render_width
             scale_h = target_height / render_height
@@ -1668,7 +1893,7 @@ def run_batch_to_video(
                 strict=False,
                 scale=scale,
             )
-            
+
             if img is None:
                 msg = f"ERROR: Failed to decode {Path(file_path).name}"
                 if log_callback:
@@ -1678,28 +1903,34 @@ def run_batch_to_video(
                 return (index, None)
 
             img = img.realize()
-            
+
             # Convert grayscale to RGB for video encoding
             if len(img.shape) == 2:
                 img = np.stack([img, img, img], axis=2)
-            
+
             # Apply letterboxing
             current_height, current_width = img.shape[:2]
-            
-            canvas = np.zeros((target_height, target_width, img.shape[2]), dtype=img.dtype)
-            
+
+            canvas = np.zeros(
+                (target_height, target_width, img.shape[2]), dtype=img.dtype
+            )
+
             y_offset = (target_height - current_height) // 2
             x_offset = (target_width - current_width) // 2
-            canvas[y_offset:y_offset+current_height, x_offset:x_offset+current_width] = img
+            canvas[
+                y_offset : y_offset + current_height,
+                x_offset : x_offset + current_width,
+            ] = img
             img = canvas
-            
+
             if overlay_txt:
                 from .videoio import add_text_overlay
+
                 filename = Path(file_path).name
                 img = add_text_overlay(img, filename, position="bottom-left")
-            
+
             return (index, img)
-            
+
         except Exception as e:
             msg = f"ERROR: {Path(file_path).name} ({type(e).__name__}): {e}"
             if log_callback:
@@ -1707,7 +1938,7 @@ def run_batch_to_video(
             else:
                 logger.error(f"Frame {index}: {msg}")
             return (index, None)
-    
+
     pipeline = VideoEncodePipeline(
         source_files=dng_files,
         output_path=output_mp4,
@@ -1717,11 +1948,11 @@ def run_batch_to_video(
         num_workers=num_workers,
         on_task_done=on_task_done,
     )
-    
+
     start_time = time.perf_counter()
     pipeline.run()
     elapsed = time.perf_counter() - start_time
-    
+
     return {
         "completed": pipeline._completed,
         "total": len(dng_files),
@@ -1738,53 +1969,96 @@ def run_batch_to_video(
 @click.option("--exposure", type=float, help="Exposure adjustment in stops")
 @click.option("--orientation", type=int, help="Image orientation")
 @click.option("--no-xmp", is_flag=True, help="Don't use XMP metadata")
-@click.option("--use-coreimage", is_flag=True, help="Use Core Image pipeline on macOS if available")
-@click.option("--resolution", type=str, default="1920x1080", help="Output video resolution (e.g., '1920x1080')")
+@click.option(
+    "--use-coreimage",
+    is_flag=True,
+    help="Use Core Image pipeline on macOS if available",
+)
+@click.option(
+    "--resolution",
+    type=str,
+    default="1920x1080",
+    help="Output video resolution (e.g., '1920x1080')",
+)
 @click.option("--codec", type=str, default="h264", help="Video codec (h264, hevc, vp9)")
-@click.option("--crf", type=int, default=20, help="Constant Rate Factor for quality (lower=better)")
-@click.option("--bit-depth", type=click.Choice(["8", "10"]), default="8", help="Video bit depth (8 or 10)")
-@click.option("--frame-rate", type=float, default=30, help="Output frame rate in fps (supports fractional rates, e.g., 0.5 for 1 frame every 2 seconds)")
-@click.option("--num-workers", type=int, default=4, help="Number of parallel processing threads")
+@click.option(
+    "--crf",
+    type=int,
+    default=20,
+    help="Constant Rate Factor for quality (lower=better)",
+)
+@click.option(
+    "--bit-depth",
+    type=click.Choice(["8", "10"]),
+    default="8",
+    help="Video bit depth (8 or 10)",
+)
+@click.option(
+    "--frame-rate",
+    type=float,
+    default=30,
+    help="Output frame rate in fps (supports fractional rates, e.g., 0.5 for 1 frame every 2 seconds)",
+)
+@click.option(
+    "--num-workers", type=int, default=4, help="Number of parallel processing threads"
+)
 @click.option("--overlay-txt", is_flag=True, help="Add filename overlay to each frame")
 def convert_dngs_to_video(
-    input, output_mp4, temperature, tint, exposure, orientation, 
-    no_xmp, use_coreimage, resolution, codec, crf, bit_depth, frame_rate, num_workers, overlay_txt
+    input,
+    output_mp4,
+    temperature,
+    tint,
+    exposure,
+    orientation,
+    no_xmp,
+    use_coreimage,
+    resolution,
+    codec,
+    crf,
+    bit_depth,
+    frame_rate,
+    num_workers,
+    overlay_txt,
 ):
     """Convert DNG files to MP4 video.
-    
+
     INPUT can be either:
     - A folder containing DNG files (will scan for *.dng)
     - A CSV file with per-file settings (filename,Temperature,Tint,Exposure2012,orientation)
     """
     import setproctitle
+
     setproctitle.setproctitle(f"muraw: encoding {Path(output_mp4).name}")
-    
+
     # Parse resolution
     resolution_tuple = None
     if resolution:
         try:
-            width, height = resolution.split('x')
+            width, height = resolution.split("x")
             resolution_tuple = (int(width), int(height))
         except ValueError:
-            click.echo(f"Error: Invalid resolution format '{resolution}'. Use format like '1920x1080'", err=True)
+            click.echo(
+                f"Error: Invalid resolution format '{resolution}'. Use format like '1920x1080'",
+                err=True,
+            )
             sys.exit(1)
-    
+
     # Build base rendering_params dict from CLI options
     rendering_params = {}
     if temperature is not None:
-        rendering_params['Temperature'] = temperature
+        rendering_params["Temperature"] = temperature
     if tint is not None:
-        rendering_params['Tint'] = tint
+        rendering_params["Tint"] = tint
     if exposure is not None:
-        rendering_params['Exposure2012'] = exposure
+        rendering_params["Exposure2012"] = exposure
     if orientation is not None:
-        rendering_params['orientation'] = orientation
-    
+        rendering_params["orientation"] = orientation
+
     # Determine file list and settings based on input type
     input_path = Path(input)
     settings_list = []
-    
-    if input_path.is_file() and input_path.suffix.lower() == '.csv':
+
+    if input_path.is_file() and input_path.suffix.lower() == ".csv":
         dng_files, settings_list = _load_dng_settings(input_path)
         click.echo(f"Loaded {len(dng_files)} files from {input}")
     elif input_path.is_dir():
@@ -1796,13 +2070,13 @@ def convert_dngs_to_video(
     else:
         click.echo(f"Error: INPUT must be either a folder or a CSV file", err=True)
         sys.exit(1)
-    
+
     click.echo(f"Encoding {len(dng_files)} DNGs to {output_mp4}...")
-    
+
     def cli_progress(completed, total):
         safe_echo(f"  {completed}/{total} frames encoded", nl=True)
         return False
-    
+
     try:
         result = run_batch_to_video(
             dng_files=dng_files,
@@ -1820,18 +2094,24 @@ def convert_dngs_to_video(
             settings_list=settings_list or None,
             on_task_done=cli_progress,
         )
-        
+
         click.echo(f"Successfully created video: {output_mp4}")
-        click.echo(f"Encoded {result['total']} frames in {result['elapsed']:.2f}s ({result['total']/result['elapsed']:.2f} fps)")
-        
+        click.echo(
+            f"Encoded {result['total']} frames in {result['elapsed']:.2f}s ({result['total'] / result['elapsed']:.2f} fps)"
+        )
+
         stats = result["queue_stats"]
         if "task_queue" in stats:
             q = stats["task_queue"]
-            click.echo(f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
+            click.echo(
+                f"  Queue stats - Task queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s"
+            )
         if "writer_queue" in stats:
             q = stats["writer_queue"]
-            click.echo(f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s")
-        
+            click.echo(
+                f"  Queue stats - Writer queue: avg_depth={q['avg_depth']:.1f}, empty_time={q['empty_time']:.1f}s"
+            )
+
     except ImportError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -1844,7 +2124,7 @@ def convert_dngs_to_video(
 @cli.group(name="google-photos")
 def google_photos():
     """Google Photos integration commands.
-    
+
     Requires: pip install muraw[all]
     """
     # Check will happen when GooglePhotosClient is instantiated
@@ -1871,18 +2151,18 @@ def auth(credentials, token_path, force):
     """
     try:
         from .google_photos import GooglePhotosClient
-        
+
         creds_path = Path(credentials) if credentials else None
         token_path = Path(token_path) if token_path else None
 
-        client = GooglePhotosClient(
-            credentials_path=creds_path, token_path=token_path
-        )
+        client = GooglePhotosClient(credentials_path=creds_path, token_path=token_path)
 
         if client.authenticate(force_reauth=force):
             click.echo(f"✓ Successfully authenticated")
             click.echo(f"✓ Token saved to: {client.token_path}")
-            click.echo("\nYou can now use 'muraw google-photos upload' for automated uploads")
+            click.echo(
+                "\nYou can now use 'muraw google-photos upload' for automated uploads"
+            )
             sys.exit(0)
         else:
             click.echo("✗ Authentication failed", err=True)
@@ -1904,7 +2184,7 @@ def upload(image_path, album, token_path):
     """Upload an image to Google Photos."""
     try:
         from .google_photos import GooglePhotosClient
-        
+
         image_path = Path(image_path)
         token_path = Path(token_path) if token_path else None
 
@@ -1942,7 +2222,7 @@ def list_albums(token_path):
     """List all albums in Google Photos."""
     try:
         from .google_photos import GooglePhotosClient
-        
+
         token_path = Path(token_path) if token_path else None
 
         client = GooglePhotosClient(token_path=token_path)

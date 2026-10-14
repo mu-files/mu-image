@@ -2,6 +2,7 @@
 # Copyright (c) 2026 mu-files
 
 """Common utilities for muraw."""
+
 from __future__ import annotations
 
 import logging
@@ -23,21 +24,21 @@ _EnumT = TypeVar("_EnumT", bound=Enum)
 def enum_display_name(enum_class: type[Enum], value: int, suffix: str = "") -> str:
     """
     Get display name for an enum value.
-    
+
     Converts enum member name to display format (e.g., MAIN_IMAGE -> MainImage).
     Returns formatted value string if enum member not found.
-    
+
     Args:
         enum_class: The enum class to look up
         value: The numeric value to find
         suffix: Optional suffix to append (e.g., " compression")
-        
+
     Returns:
         Display name string (e.g., "MainImage") or "Type{value}" if not found
     """
     try:
         member = enum_class(value)
-        display = ''.join(word.capitalize() for word in member.name.split('_'))
+        display = "".join(word.capitalize() for word in member.name.split("_"))
         return f"{display}{suffix}" if suffix else display
     except ValueError:
         return f"Type{value}{suffix}" if suffix else f"Type{value}"
@@ -46,11 +47,11 @@ def enum_display_name(enum_class: type[Enum], value: int, suffix: str = "") -> s
 def enum_from_value(enum_class: type[_EnumT], value: int) -> _EnumT | None:
     """
     Get enum member from numeric value.
-    
+
     Args:
         enum_class: The enum class to look up
         value: The numeric value to find
-        
+
     Returns:
         Enum member or None if not found
     """
@@ -63,17 +64,17 @@ def enum_from_value(enum_class: type[_EnumT], value: int) -> _EnumT | None:
 def enum_from_string(enum_class: type[_EnumT], value: str) -> _EnumT:
     """
     Get enum member from string value.
-    
+
     For string enums (inheriting from str and Enum), this looks up the member
     by its string value. Raises KeyError if not found.
-    
+
     Args:
         enum_class: The enum class to look up
         value: The string value to find
-        
+
     Returns:
         Enum member
-        
+
     Raises:
         KeyError: If value not found in enum
     """
@@ -86,7 +87,7 @@ def enum_from_string(enum_class: type[_EnumT], value: str) -> _EnumT:
 def setup_logging(verbosity: int = 0) -> None:
     """
     Set up logging configuration based on verbosity level.
-    
+
     Args:
         verbosity: Verbosity level (0=ERROR, 1=WARNING, 2=INFO, 3+=DEBUG)
     """
@@ -98,16 +99,16 @@ def setup_logging(verbosity: int = 0) -> None:
         level = logging.INFO
     else:
         level = logging.DEBUG
-    
+
     # Configure logging
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        stream=sys.stderr
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stderr,
     )
-    
+
     # Set specific logger levels
-    logger = logging.getLogger('muraw')
+    logger = logging.getLogger("muraw")
     logger.setLevel(level)
 
 
@@ -327,9 +328,7 @@ class PerfTimer:
         for name, duration_s in step_list:
             duration_s = max(0.0, float(duration_s))
             end = cursor + duration_s
-            children.append(
-                self.add_completed_step(name, duration_s, end_time=end)
-            )
+            children.append(self.add_completed_step(name, duration_s, end_time=end))
             cursor = end
         return children
 
@@ -432,7 +431,9 @@ class PerfTimer:
             if node.depth == root_depth + 1 and prev_end_time is not None:
                 gap_ms = (node.start_time - prev_end_time) * 1000
                 if gap_ms > 4.0:
-                    gap_pct = (gap_ms / wall_clock_time * 100) if wall_clock_time > 0 else 0
+                    gap_pct = (
+                        (gap_ms / wall_clock_time * 100) if wall_clock_time > 0 else 0
+                    )
                     lines.append(
                         f"{child_indent + 'unallocated':<{name_width}}  "
                         f"{gap_ms:>9.1f}ms  {gap_pct:>5.1f}%"
@@ -459,11 +460,17 @@ class PerfTimer:
         prev_end = add_step_rows(report_root, None)
 
         # Final gap after last step (up to when the root was closed, or now if still running)
-        root_end = report_root.end_time if report_root.end_time is not None else time.perf_counter()
+        root_end = (
+            report_root.end_time
+            if report_root.end_time is not None
+            else time.perf_counter()
+        )
         if prev_end is not None:
             final_gap_ms = (root_end - prev_end) * 1000
             if final_gap_ms > 4.0:
-                gap_pct = (final_gap_ms / wall_clock_time * 100) if wall_clock_time > 0 else 0
+                gap_pct = (
+                    (final_gap_ms / wall_clock_time * 100) if wall_clock_time > 0 else 0
+                )
                 lines.append(
                     f"{child_indent + 'unallocated':<{name_width}}  "
                     f"{final_gap_ms:>9.1f}ms  {gap_pct:>5.1f}%"

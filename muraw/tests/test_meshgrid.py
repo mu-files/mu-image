@@ -44,7 +44,9 @@ def test_meshgrid_matches_numpy(kind, indexing, sparse):
     else:
         x, y = _graph_vectors(kind)
         got = mi.meshgrid(x, y, sparse=sparse, indexing=indexing)
-        expect = np.meshgrid(np.asarray(x), np.asarray(y), sparse=sparse, indexing=indexing)
+        expect = np.meshgrid(
+            np.asarray(x), np.asarray(y), sparse=sparse, indexing=indexing
+        )
     assert isinstance(got, tuple) and len(got) == 2
     for grid, want in zip(got, expect):
         assert isinstance(grid, mi.Array)
