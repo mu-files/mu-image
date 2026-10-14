@@ -1,8 +1,12 @@
-"""Time a packed image with a solid rectangle written over its middle.
+"""Time composite against other ways to compute the same image.
 
-NumPy computes the whole image and then assigns the rectangle. muimage
-writes it with ``composite``, so the work under it is not run. The
-rectangle grows from a few pixels to just inside the frame.
+A packed image with a solid rectangle written over its middle: NumPy
+computes the whole image and then assigns the rectangle. muimage writes
+it with ``composite``, so the work under it is not run. The rectangle
+grows from a few pixels to just inside the frame.
+
+An image turned 180 degrees by placing it with reversed row and column
+lists, against the same turn by ``orientation``.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import pytest
 
 import muimage as mi
 
@@ -128,3 +133,45 @@ def test_a_larger_occluder_skips_more_work_than_numpy():
                     f"{message}; covered {fraction:.2f} of the image, "
                     f"ceiling {ceiling:.2f}"
                 )
+
+
+# Composite's time for a 180 degree turn divided by orientation's. Measured
+# ratios were about 2.1 packed and 2.6 channels-first; before composite
+# read its column runs from prepare they were about 5 and 11.
+_TURN_RATIO_CEILING = 4.0
+
+
+@pytest.mark.parametrize("channel_axis", [-1, 0], ids=["packed", "channels_first"])
+def test_a_reversed_composite_stays_near_orientation(channel_axis):
+    """A 768x1024 float32 image turned 180 degrees two ways: placed on a
+    base with reversed row and column lists, and by ``orientation`` 3.
+    Both match NumPy's flip. Composite takes at most
+    ``_TURN_RATIO_CEILING`` times orientation's time, a ratio that does
+    not depend on how fast the machine is."""
+    rows, cols = 768, 1024
+    shape = (3, rows, cols) if channel_axis == 0 else (rows, cols, 3)
+    spatial_axes = (1, 2) if channel_axis == 0 else (0, 1)
+    src = np.random.default_rng(5).random(shape, dtype=np.float32)
+    image = mi.Array(src, channel_axis=channel_axis)
+    base = mi.Array(np.zeros_like(src), channel_axis=channel_axis)
+    row_list = list(range(rows - 1, -1, -1))
+    col_list = list(range(cols - 1, -1, -1))
+
+    def composite():
+        return base.composite(((row_list, col_list), image)).realize()
+
+    def orientation():
+        return mi.orientation(image, orientation=3).realize()
+
+    expected = np.flip(src, axis=spatial_axes)
+    np.testing.assert_array_equal(composite(), expected)
+    np.testing.assert_array_equal(orientation(), expected)
+    composite_time = _median_time(composite, repeats=21)
+    orientation_time = _median_time(orientation, repeats=21)
+    ratio = composite_time / orientation_time
+    message = (
+        f"composite {composite_time * 1e3:.2f} ms, orientation "
+        f"{orientation_time * 1e3:.2f} ms, ratio {ratio:.2f}"
+    )
+    print(message)
+    assert ratio <= _TURN_RATIO_CEILING, message
