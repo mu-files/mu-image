@@ -59,10 +59,10 @@ def test_view_pad_orientation_any_channels(channels, monkeypatch):
     np.testing.assert_array_equal(padded, expect_pad)
 
     oriented, orient_graph = _realize_graph(
-        monkeypatch, mi.orientation(t, orientation=3)
+        monkeypatch, mi.orientation(t, orientation=6)
     )
     _assert_graph_channels(orient_graph, channels, "orientation")
-    np.testing.assert_array_equal(oriented, np.ascontiguousarray(src[::-1, ::-1]))
+    np.testing.assert_array_equal(oriented, np.ascontiguousarray(np.rot90(src, -1)))
 
 
 def _assert_gather_channels(graph: dict, src_channels: int, dest_channels: int) -> None:

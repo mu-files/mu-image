@@ -137,7 +137,7 @@ def test_orientation_emit_meta_swaps_hw():
     same = mi.orientation(base, orientation=3)
     assert same.meta.height == 4 and same.meta.width == 6
     assert same.meta.origin == (0, 0)
-    assert same._node is not None and same._node.op == "orientation"
+    assert same._node is not None and same._node.op == _orientation_op(3)
 
     rot = mi.orientation(base, orientation=6)
     assert rot.meta.height == 6 and rot.meta.width == 4
@@ -145,6 +145,12 @@ def test_orientation_emit_meta_swaps_hw():
 
     with pytest.raises(ValueError, match="invalid TIFF code"):
         mi.orientation(base, orientation=0)
+
+
+def _orientation_op(code: int) -> str:
+    """The op ``mi.orientation`` emits for TIFF ``code``: a view for the
+    codes that keep each row a row, the orientation op for the rest."""
+    return "view" if code in (2, 3, 4) else "orientation"
 
 
 def _tiff_orientation_numpy(arr: np.ndarray, code: int) -> np.ndarray:
@@ -195,12 +201,42 @@ def test_engine_orientation_executes_all_tiff_codes(monkeypatch):
                 assert calls == []
                 np.testing.assert_array_equal(t.realize(), src)
                 continue
-            assert t._node is not None and t._node.op == "orientation"
+            assert t._node is not None and t._node.op == _orientation_op(code)
             out = t.realize()
             assert len(calls) == 1
-            assert [n["op"] for n in calls[0]["nodes"]] == ["orientation"]
+            assert [n["op"] for n in calls[0]["nodes"]] == [_orientation_op(code)]
             expect = np.ascontiguousarray(_tiff_orientation_numpy(src, code))
             np.testing.assert_array_equal(out, expect)
+
+
+def test_orientation_flips_match_the_orientation_op():
+    """Codes 2–4 are a view, with the meta, pixels and canvas of the
+    orientation op: a view past the edge of the result reads the same
+    parent pixels."""
+    from muraw.engines.graph import emit
+
+    samples = np.arange(9 * 10 * 3, dtype=np.float32).reshape(9, 10, 3)
+    windowed = Array(samples).view(left=2, top=1, width=6, height=5)
+    cases = {
+        "packed": Array(samples),
+        "mono": Array(samples[..., 0].copy()),
+        "chw": Array(samples.transpose(2, 0, 1).copy(), channel_axis=0),
+        "cropped": Array(samples)[1:4, 2:7],
+        "1d": Array(samples[0, :, 0].copy()),
+        "window on a larger canvas": windowed,
+    }
+    for name, array in cases.items():
+        for code in (2, 3, 4):
+            got = mi.orientation(array, orientation=code)
+            ref = emit(mi.orientation, array, orientation=code)
+            assert ref._node.op == "orientation"
+            assert got.meta == ref.meta, f"{name} code {code}"
+            np.testing.assert_array_equal(got.realize(), ref.realize(), err_msg=f"{name} {code}")
+            if name == "window on a larger canvas":
+                past = dict(left=-1, top=-1, width=8, height=7)
+                np.testing.assert_array_equal(
+                    got.view(**past).realize(), ref.view(**past).realize(), err_msg=f"{code}"
+                )
 
 
 # TIFF 1–8 inverses: 6↔8, the rest are involutions.
@@ -241,9 +277,9 @@ def test_engine_orientation_span_sandwich(monkeypatch):
             if code == 1
             else [
                 "sub_scalar",
-                "orientation",
+                _orientation_op(code),
                 "mul_scalar",
-                "orientation",
+                _orientation_op(inv),
             ]
         )
         assert [n["op"] for n in calls[0]["nodes"]] == want_ops, f"code {code}"

@@ -150,9 +150,13 @@ class EngineOp:
     _infer_meta: Optional[GraphOutMetaFn] = None
 
     def __call__(self, x: Array, /, *more: Array, **attrs: Any) -> Array:
-        # TIFF orientation 1 is identity; skip the node.
-        if self.meta.name == "orientation" and int(attrs.get("orientation", 0)) == 1:
-            return x
+        if self.meta.name == "orientation":
+            code = int(attrs.get("orientation", 0))
+            # TIFF orientation 1 is identity; skip the node.
+            if code == 1:
+                return x
+            if code in (2, 3, 4) and not more:
+                return _orientation_flip(self, x, attrs)
         return emit(self, x, *more, **attrs)
 
     def infer_out_meta(self, x: Array, attrs: Dict[str, Any], *more: Array) -> ArrayMeta:
@@ -463,6 +467,30 @@ _ORIENTATION = {
     7: (True, True, True),
     8: (True, True, False),
 }
+
+
+def _orientation_flip(op: "EngineOp", x: Array, attrs: Dict[str, Any]) -> Array:
+    """TIFF orientation 2, 3 or 4 of ``x``, as a view with negative steps.
+
+    These codes keep each row a row, so a view runs them as a span op;
+    ``orientation`` is a tile op for the sake of codes 5–8, and is about
+    three times slower on the same flip. The view moves the origin to its
+    first sample, so the result is given the meta ``orientation`` gives,
+    which keeps the input's origin. The canvas relative to the origin is the
+    same in both.
+    """
+    from ..array import Array as ArrayType, _with_meta, flip
+
+    x = ArrayType(x)
+    _, flip_cols, flip_rows = _ORIENTATION[int(attrs["orientation"])]
+    if x.meta.is_1d:
+        axes: Tuple[int, ...] = (0,) if flip_cols else ()
+    else:
+        rows_axis, cols_axis = x.meta.spatial_axes
+        axes = ((rows_axis,) if flip_rows else ()) + ((cols_axis,) if flip_cols else ())
+    if not axes:
+        return x
+    return _with_meta(flip(x, axes), op.infer_out_meta(x, attrs))
 
 
 def _orient_rect(

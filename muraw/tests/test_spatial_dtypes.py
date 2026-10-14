@@ -52,10 +52,10 @@ def test_pad_all_dtypes(dtype, monkeypatch):
 def test_orientation_all_dtypes(dtype, monkeypatch):
     src = _src(dtype)
     got, ops = _realize_ops(
-        monkeypatch, mi.orientation(Array(src), orientation=3)
+        monkeypatch, mi.orientation(Array(src), orientation=6)
     )
     assert ops == ["orientation"]
-    np.testing.assert_array_equal(got, np.ascontiguousarray(src[::-1, ::-1]))
+    np.testing.assert_array_equal(got, np.ascontiguousarray(np.rot90(src, -1)))
 
 
 @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES, ids=lambda dt: dt.name)
