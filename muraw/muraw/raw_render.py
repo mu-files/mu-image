@@ -2649,6 +2649,47 @@ def parse_gain_map(data: bytes) -> dict[str, Any]:
     }
 
 
+def _merge_map_polynomial_opcodes(
+    opcodes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join each run of MapPolynomial opcodes on adjacent planes into one.
+
+    Files commonly hold one MapPolynomial per color plane with the same area,
+    pitch, and degree. The joined opcode covers all their planes and holds one
+    coefficient set per plane, so it runs as one ``mi.map_polynomial`` node.
+    """
+
+    def joins(prev: dict[str, Any], opcode: dict[str, Any]) -> bool:
+        return (
+            prev.get("type") == "MapPolynomial"
+            and opcode.get("type") == "MapPolynomial"
+            and prev["area"] == opcode["area"]
+            and prev["row_pitch"] == opcode["row_pitch"]
+            and prev["col_pitch"] == opcode["col_pitch"]
+            and prev["degree"] == opcode["degree"]
+            and opcode["plane"] == prev["plane"] + prev["planes"]
+        )
+
+    def per_plane(opcode: dict[str, Any]) -> np.ndarray:
+        coefficients = np.asarray(opcode["coefficients"]).reshape(-1)
+        if coefficients.size == opcode["degree"] + 1:
+            return np.tile(coefficients, opcode["planes"])
+        return coefficients
+
+    merged: list[dict[str, Any]] = []
+    for opcode in opcodes:
+        if merged and joins(merged[-1], opcode):
+            prev = merged[-1]
+            merged[-1] = {
+                **prev,
+                "planes": prev["planes"] + opcode["planes"],
+                "coefficients": np.concatenate([per_plane(prev), per_plane(opcode)]),
+            }
+        else:
+            merged.append(opcode)
+    return merged
+
+
 def apply_opcodes(
     data: Array,
     opcodes: list[dict[str, Any]],
@@ -2679,6 +2720,8 @@ def apply_opcodes(
     if x.meta.dtype != "float32":
         x = x.convert_type("float32")
     num_channels = x.meta.channels
+    if num_channels > 1:
+        opcodes = _merge_map_polynomial_opcodes(opcodes)
 
     for opcode in opcodes:
         opcode_type = opcode.get("type")

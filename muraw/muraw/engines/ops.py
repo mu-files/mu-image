@@ -1430,6 +1430,12 @@ map_polynomial = EngineOp(
     "count": 1,
     "key": "degree",
     "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
   }
 ]""")
     ),

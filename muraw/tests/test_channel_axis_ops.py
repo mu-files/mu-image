@@ -136,7 +136,7 @@ def test_chw_broadcast_matches_numpy():
     np.testing.assert_array_equal(Array(repeated, channel_axis=0).realize(), repeated)
 
 
-@pytest.mark.parametrize("name", ["fix_vignette", "warp_rectilinear", "map_polynomial"])
+@pytest.mark.parametrize("name", ["fix_vignette", "warp_rectilinear"])
 def test_legacy_full_frame_ops_rejected_on_chw_and_run_after_moveaxis(name):
     chw = _chw(40, 48)
 
@@ -148,28 +148,14 @@ def test_legacy_full_frame_ops_rejected_on_chw_and_run_after_moveaxis(name):
                 center_x=0.5,
                 center_y=0.5,
             )
-        if name == "warp_rectilinear":
-            return mi.warp_rectilinear(
-                x,
-                radial_params=np.array([1.0, 0.0, 0.0, 0.0]),
-                num_planes=1,
-                num_coeffs=4,
-                center_x=0.5,
-                center_y=0.5,
-                use_bicubic=False,
-            )
-        return mi.map_polynomial(
+        return mi.warp_rectilinear(
             x,
-            top=0,
-            left=0,
-            bottom=40,
-            right=48,
-            start_plane=0,
-            num_planes=3,
-            row_pitch=1,
-            col_pitch=1,
-            coefficients=np.array([0.0, 1.0], np.float32),
-            degree=1,
+            radial_params=np.array([1.0, 0.0, 0.0, 0.0]),
+            num_planes=1,
+            num_coeffs=4,
+            center_x=0.5,
+            center_y=0.5,
+            use_bicubic=False,
         )
 
     x = Array(chw, channel_axis=0)

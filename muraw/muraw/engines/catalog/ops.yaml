@@ -1026,6 +1026,13 @@ ops:
         type: i32
         count: 1
 
+  # DNG MapPolynomial: samples in the area (top, left, bottom, right; 0 and
+  # 0 mean the whole axis), at row_pitch and col_pitch from its top-left
+  # corner, on planes start_plane .. start_plane + num_planes - 1, become
+  # c0 + c1 x + ... + c_degree x^degree clamped to [-1, 1]. coefficients
+  # holds degree + 1 values for every plane, or num_planes * (degree + 1),
+  # one set per plane. A plane is a channel, or a frame of a (C, H, W)
+  # array. engine_opts {"core": {"neon": false}} forces the scalar loops.
   - name: map_polynomial
     needs_frame_index: true
     requires_2d: true
@@ -1064,6 +1071,10 @@ ops:
       - key: degree
         type: i32
         count: 1
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
 
   - name: cfa_fix_bad_pixels_constant
     is_cfa: true
