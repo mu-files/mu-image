@@ -865,10 +865,14 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
         TiffType.FLOAT, None, dng_ifd="dng_profile"
     ),  # 50982 (0xC726)
     "OpcodeList1": TagSpec(
-        TiffType.BYTE, None, dng_ifd="dng_raw_cfa"
+        TiffType.UNDEFINED, None, dng_ifd="dng_raw:cfa"
     ),  # 51008 (0xC740)
-    "OpcodeList2": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51009 (0xC741)
-    "OpcodeList3": TagSpec(TiffType.BYTE, None, dng_ifd="dng_raw"),  # 51022 (0xC74E)
+    "OpcodeList2": TagSpec(
+        TiffType.UNDEFINED, None, dng_ifd="dng_raw"
+    ),  # 51009 (0xC741)
+    "OpcodeList3": TagSpec(
+        TiffType.UNDEFINED, None, dng_ifd="dng_raw"
+    ),  # 51022 (0xC74E)
     # NoiseProfile: DNG spec says Raw IFD, but Adobe SDK writes to both main and raw IFDs
     # for legacy compatibility (dng_image_writer.cpp:8544). SDK reads from both locations.
     "NoiseProfile": TagSpec(TiffType.DOUBLE, None, dng_ifd="any"),  # 51041 (0xC761)

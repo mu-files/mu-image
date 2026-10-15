@@ -1,0 +1,255 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 mu-files
+
+"""Small DNGs written at test time, with the opcode under test, and the
+three renderers that read them: Adobe's ``dng_validate``, Apple's Core
+Image, and mu-image.
+
+``dng_validate`` is compared at the stage right after the opcode list
+(``-2`` for OpcodeList1 and OpcodeList2, ``-3`` for OpcodeList3), so
+color processing and demosaic do not hide the opcode. Core Image renders
+only a final image, so its check is whether the change the opcode makes
+to that render follows the change it makes to mu-image's render.
+
+``ReferenceTable`` collects what each test measured and writes it as a
+markdown table of where each renderer differs from the DNG spec.
+"""
+
+import platform
+import struct
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import tifffile
+from conftest import DNG_VALIDATE_PATH
+
+from muraw import raw_render
+from muraw.dngio import DngFile, IfdDataSpec, write_dng_from_array
+from muraw.tiff_metadata import MetadataTags
+
+try:
+    from muraw._dngio_coreimage import core_image_available, render_dng_coreimage
+except ImportError:
+    core_image_available = False
+
+OPCODE_MAP_POLYNOMIAL = 8
+# Opcodes carry the oldest DNG version that reads them; MapPolynomial
+# arrived in DNG 1.3.
+DNG_VERSION_1_3 = 0x01030000
+
+
+def area_spec(area, plane, planes, row_pitch, col_pitch):
+    """The 32-byte ``dng_area_spec``. ``area`` is (top, left, bottom,
+    right). dng_validate 1.7.1 rejects an area of all zeros, which the
+    spec reads as the whole image, so cases pass the image bounds."""
+    top, left, bottom, right = area
+    return struct.pack(
+        ">iiiiIIII", top, left, bottom, right, plane, planes, row_pitch, col_pitch
+    )
+
+
+def opcode(opcode_id, body, min_version=DNG_VERSION_1_3, flags=0):
+    """One opcode of an opcode list: id, version, flags, size, body."""
+    return struct.pack(">IIII", opcode_id, min_version, flags, len(body)) + body
+
+
+def map_polynomial(coefficients, area, plane=0, planes=1, row_pitch=1, col_pitch=1):
+    """A MapPolynomial opcode with ``coefficients`` c0 .. c_degree."""
+    degree = len(coefficients) - 1
+    body = area_spec(area, plane, planes, row_pitch, col_pitch)
+    body += struct.pack(f">I{degree + 1}d", degree, *coefficients)
+    return opcode(OPCODE_MAP_POLYNOMIAL, body)
+
+
+def opcode_list(*opcodes):
+    """The OpcodeList1/2/3 tag value: a count, then each opcode."""
+    return struct.pack(">I", len(opcodes)) + b"".join(opcodes)
+
+
+def rgb_ramp(height, width):
+    """Linear RGB in [0.05, 0.95]: a ramp across, a ramp down, and a
+    diagonal texture with a period of 17 pixels."""
+    rows, cols = np.mgrid[0:height, 0:width]
+    channels = [
+        cols / (width - 1),
+        rows / (height - 1),
+        ((rows + cols) % 17) / 16,
+    ]
+    return np.stack([0.05 + 0.9 * channel for channel in channels], axis=-1)
+
+
+def stored_samples(unit, dtype):
+    """``unit`` samples in [0, 1] as the DNG stores them in ``dtype``."""
+    if dtype == "uint16":
+        return np.round(unit * 65535).astype(np.uint16)
+    return unit.astype(dtype)
+
+
+def rggb(rgb):
+    """The RGGB mosaic of an (H, W, 3) array."""
+    cfa = np.empty(rgb.shape[:2], rgb.dtype)
+    cfa[0::2, 0::2] = rgb[0::2, 0::2, 0]
+    cfa[0::2, 1::2] = rgb[0::2, 1::2, 1]
+    cfa[1::2, 0::2] = rgb[1::2, 0::2, 1]
+    cfa[1::2, 1::2] = rgb[1::2, 1::2, 2]
+    return cfa
+
+
+def write_synthetic_dng(path, data, photometric, opcode_lists=None):
+    """Write ``data`` as a one-IFD DNG with an identity tone curve, an RGGB
+    pattern for a CFA, and ``opcode_lists`` ({"OpcodeList2": bytes, …})."""
+    tags = MetadataTags()
+    tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
+    tags.add_tag("UniqueCameraModel", "Synthetic Test Camera")
+    for name, value in (opcode_lists or {}).items():
+        tags.add_tag(name, value)
+    write_dng_from_array(
+        destination_file=path,
+        data_spec=IfdDataSpec(
+            data=data, photometric=photometric, cfa_pattern="RGGB", extratags=tags
+        ),
+    )
+    return path
+
+
+class RendererError(RuntimeError):
+    """A renderer could not read a file."""
+
+
+def sdk_available():
+    return DNG_VALIDATE_PATH.exists()
+
+
+def _run_sdk(args):
+    result = subprocess.run(
+        [str(DNG_VALIDATE_PATH), *map(str, args)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    errors = [
+        line.strip().strip("*").strip()
+        for line in (result.stdout + result.stderr).splitlines()
+        if line.strip().startswith("*** Error")
+    ]
+    if result.returncode != 0 or errors:
+        raise RendererError(errors[0] if errors else f"exit code {result.returncode}")
+
+
+def _unit(samples):
+    """Samples as float64 in [0, 1]; a uint16 dump holds 16-bit codes."""
+    samples = np.asarray(samples)
+    if samples.dtype == np.uint16:
+        return samples.astype(np.float64) / 65535
+    return samples.astype(np.float64)
+
+
+def sdk_stage(path, stage):
+    """``dng_validate``'s stage ``stage`` image of ``path``, in [0, 1].
+    It writes an integer CFA's stage 2 in 16 bits even with ``-32``."""
+    base = path.with_suffix(f".sdk_stage{stage}")
+    _run_sdk(["-32", f"-{stage}", base, path])
+    return np.squeeze(_unit(tifffile.imread(f"{base}.tif")))
+
+
+def sdk_render(path):
+    base = path.with_suffix(".sdk_render")
+    _run_sdk(["-16", "-tif", base, path])
+    return _unit(tifffile.imread(f"{base}.tif"))
+
+
+def mu_stage(path, stage):
+    """mu-image's image of ``path`` at the same stage as ``sdk_stage``."""
+    with DngFile(path) as dng:
+        page = dng.get_main_page()
+        if stage == 3:
+            return np.squeeze(_unit(page.get_camera_raw().realize()))
+        if page.is_cfa:
+            data, _ = page.get_cfa()
+        else:
+            data = page.get_linear_raw()
+        stage2 = raw_render._linearize(page, data, page.photometric_name)
+        return np.squeeze(_unit(stage2.realize()))
+
+
+def mu_render(path):
+    with DngFile(path) as dng:
+        return _unit(dng.render_raw(output_dtype=np.uint16).realize())
+
+
+def coreimage_render(path):
+    """Core Image's render of ``path``, in [0, 1]. Core Image returns no
+    image, or an empty one, for some files; that raises ``RendererError``."""
+    try:
+        rgb, _ = render_dng_coreimage(
+            str(path), output_dtype=np.float32, use_system_camera_profiles=False
+        )
+    except RuntimeError as error:
+        raise RendererError("Core Image returned no image") from error
+    if rgb.size == 0:
+        raise RendererError("Core Image returned an empty image")
+    return rgb.astype(np.float64)
+
+
+def sdk_version():
+    result = subprocess.run([str(DNG_VALIDATE_PATH)], capture_output=True, text=True)
+    for line in (result.stdout + result.stderr).splitlines():
+        if "version" in line:
+            return line.strip()
+    return "dng_validate"
+
+
+@dataclass
+class ReferenceTable:
+    """What each renderer did on each case, written as markdown.
+
+    A table has sections; each section has columns and rows keyed by the
+    case name. A cell may carry a note, written once under the table and
+    referenced by number from every cell that uses it."""
+
+    title: str
+    intro: str
+    sections: dict[str, list[str]]
+    rows: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+    def record(self, section, case, column, text, note=None):
+        if note is not None:
+            if note not in self.notes:
+                self.notes.append(note)
+            text = f"{text} [{self.notes.index(note) + 1}]"
+        self.rows.setdefault(section, {}).setdefault(case, {})[column] = text
+
+    def is_complete(self, expected_cases):
+        """True when every case in ``expected_cases`` ({section: [case]})
+        has a cell in every column of its section."""
+        for section, cases in expected_cases.items():
+            for case in cases:
+                cells = self.rows.get(section, {}).get(case, {})
+                if any(column not in cells for column in self.sections[section]):
+                    return False
+        return True
+
+    def markdown(self):
+        lines = [f"# {self.title}", "", self.intro, ""]
+        lines.append(
+            f"Measured with {sdk_version()} and Core Image on macOS "
+            f"{platform.mac_ver()[0]}."
+        )
+        for section, columns in self.sections.items():
+            lines += ["", f"## {section}", ""]
+            lines.append("| Case | " + " | ".join(columns) + " |")
+            lines.append("|---" * (len(columns) + 1) + "|")
+            for case, cells in self.rows.get(section, {}).items():
+                values = [cells.get(column, "not run") for column in columns]
+                lines.append(f"| {case} | " + " | ".join(values) + " |")
+        if self.notes:
+            lines += ["", "## Notes", ""]
+            lines += [f"{i}. {note}" for i, note in enumerate(self.notes, start=1)]
+        return "\n".join(lines) + "\n"
+
+    def write(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.markdown())
