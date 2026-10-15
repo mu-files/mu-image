@@ -1032,7 +1032,10 @@ ops:
   # c0 + c1 x + ... + c_degree x^degree clamped to [-1, 1]. coefficients
   # holds degree + 1 values for every plane, or num_planes * (degree + 1),
   # one set per plane. A plane is a channel, or a frame of a (C, H, W)
-  # array. engine_opts {"core": {"neon": false}} forces the scalar loops.
+  # array. float16 is mapped in float16; uint16 and float32 in float32.
+  # engine_opts {"core": {"neon": false}} forces the scalar loops, and
+  # {"core": {"force_float16": true}} maps uint16 and float32 in float16
+  # too.
   - name: map_polynomial
     needs_frame_index: true
     requires_2d: true
