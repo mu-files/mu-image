@@ -136,18 +136,10 @@ def test_chw_broadcast_matches_numpy():
     np.testing.assert_array_equal(Array(repeated, channel_axis=0).realize(), repeated)
 
 
-@pytest.mark.parametrize("name", ["fix_vignette", "warp_rectilinear"])
-def test_legacy_full_frame_ops_rejected_on_chw_and_run_after_moveaxis(name):
+def test_legacy_full_frame_op_rejected_on_chw_and_runs_after_moveaxis():
     chw = _chw(40, 48)
 
     def run(x: Array) -> Array:
-        if name == "fix_vignette":
-            return mi.fix_vignette(
-                x,
-                params=np.array([0.1, 0.0, 0.0, 0.0, 0.0]),
-                center_x=0.5,
-                center_y=0.5,
-            )
         return mi.warp_rectilinear(
             x,
             radial_params=np.array([1.0, 0.0, 0.0, 0.0]),
@@ -162,6 +154,20 @@ def test_legacy_full_frame_ops_rejected_on_chw_and_run_after_moveaxis(name):
     with pytest.raises(RuntimeError, match="GRAPH_INVALID"):
         run(x).realize()
     assert run(mi.moveaxis(x, 0, -1)).realize().shape == (40, 48, 3)
+
+
+def test_chw_fix_vignette_matches_channels_last():
+    chw = _chw(40, 48)
+
+    def run(x: Array) -> Array:
+        return mi.fix_vignette(
+            x, params=np.array([0.4, -0.2, 0.1]), center_x=0.3, center_y=0.6
+        )
+
+    got = run(Array(chw, channel_axis=0)).realize()
+    channels_last = run(Array(np.moveaxis(chw, 0, -1))).realize()
+    np.testing.assert_array_equal(got, np.moveaxis(channels_last, -1, 0))
+    assert not np.array_equal(got, chw)
 
 
 def test_chw_crop_then_moveaxis_then_rgb_op_matches_numpy():

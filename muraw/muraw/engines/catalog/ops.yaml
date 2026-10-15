@@ -851,6 +851,11 @@ ops:
         type: f32
         count: 1
 
+  # DNG FixVignetteRadial: every sample is multiplied by
+  # 1 + k0 r^2 + k1 r^4 + ... and clamped to [0, 1], with params holding
+  # k0, k1, ... (at most five are used). r is the distance from the optical
+  # center (center_x times the width, center_y times the height) divided by
+  # the distance from the center to the farthest corner.
   - name: fix_vignette
     requires_2d: true
     inputs:
