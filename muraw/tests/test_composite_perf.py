@@ -92,10 +92,11 @@ def _median_time(run, repeats=5):
 # were about 0.87 at half the image, 0.72 at 90 percent, and 0.59 when
 # the rectangle covered almost all of it. Each ceiling is looser than
 # the ratio it guards. At half the image the ratio varies from about
-# 0.87 to 1.12 between runs, so its ceiling is loosest.
+# 0.87 to 1.12 between runs. At 90 percent, GitHub macOS and Windows
+# ran 1.04 and 1.25, so that ceiling matches the half-image one.
 _TIME_FRACTION_CEILINGS = (
     (0.50, 1.25),
-    (0.85, 0.85),
+    (0.85, 1.30),
     (0.98, 0.75),
 )
 
