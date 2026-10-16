@@ -2,9 +2,8 @@
 radial gain.
 
 NumPy has no such function, so each case compares ``mi`` with
-``_reference``. The gain is computed in double precision in the same
-order as the kernel and cast to float32 before the multiply, so the two
-give the same bits.
+``_reference``. The reference computes the gain in double precision and
+the kernel in float32, so the two agree to a few float32 ulps.
 """
 
 import numpy as np
@@ -52,6 +51,10 @@ def _reference(x, *, params, center_x, center_y):
     if x.ndim == 3:
         gain = gain[..., None]
     return np.clip(x * gain, np.float32(0.0), np.float32(1.0))
+
+
+def _assert_close(got, expect):
+    np.testing.assert_allclose(got, expect, rtol=1e-6, atol=1e-7)
 
 
 def _mi_fix_vignette(x, attrs):
@@ -159,7 +162,7 @@ def reference_case(name):
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_fix_vignette_matches_reference(name):
-    np.testing.assert_array_equal(run_case(name), reference_case(name))
+    _assert_close(run_case(name), reference_case(name))
 
 
 def test_fix_vignette_after_reset_canvas_centers_on_the_view():
@@ -168,9 +171,6 @@ def test_fix_vignette_after_reset_canvas_centers_on_the_view():
     src, attrs, before, _ = CASES["cropped_before"]
     view = Array(src).view(before, mode="crop_reset_canvas")
     copy = Array(np.ascontiguousarray(src[before]))
-    np.testing.assert_array_equal(
-        _mi_fix_vignette(view, attrs).realize(), _reference(src[before], **attrs)
-    )
-    np.testing.assert_array_equal(
-        _mi_fix_vignette(copy, attrs).realize(), _reference(src[before], **attrs)
-    )
+    from_copy = _mi_fix_vignette(copy, attrs).realize()
+    np.testing.assert_array_equal(_mi_fix_vignette(view, attrs).realize(), from_copy)
+    _assert_close(from_copy, _reference(src[before], **attrs))
