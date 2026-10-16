@@ -1107,6 +1107,12 @@ fix_vignette = EngineOp(
   },
   {
     "count": 1,
+    "key": "map_spacing",
+    "optional": true,
+    "type": "i32"
+  },
+  {
+    "count": 1,
     "key": "engine_opts",
     "optional": true,
     "type": "string"

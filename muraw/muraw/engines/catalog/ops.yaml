@@ -877,6 +877,13 @@ ops:
       - key: center_y
         type: f64
         count: 1
+      # The gain is computed at every map_spacing-th column and row of the
+      # canvas and interpolated in between; a power of 2, 8 when not set.
+      # 1 computes it at every pixel.
+      - key: map_spacing
+        type: i32
+        count: 1
+        optional: true
       - key: engine_opts
         type: string
         count: 1

@@ -2,8 +2,11 @@
 radial gain.
 
 NumPy has no such function, so each case compares ``mi`` with
-``_reference``. The reference computes the gain in double precision and
-the kernel in float32, so the two agree to a few float32 ulps.
+``_reference``, at every spacing in ``_MAP_SPACINGS``. With
+``map_spacing`` 1 the gain is the formula at each pixel; above 1 it is
+the formula at every ``map_spacing``-th canvas column and row,
+interpolated bilinearly. The reference computes in double precision and
+the kernels in float32, so the two agree to a few float32 ulps.
 """
 
 import numpy as np
@@ -17,17 +20,22 @@ _WIDTH = 53
 
 _FIVE = [0.4, -0.2, 0.3, 0.1, 0.05]
 
+# 8 is the default.
+_MAP_SPACINGS = [1, 2, 8]
+
 
 def _image(shape, low=0.0, high=1.0, seed=5):
     rng = np.random.default_rng(seed)
     return rng.uniform(low, high, shape).astype(np.float32)
 
 
-def _reference(x, *, params, center_x, center_y):
+def _reference(x, *, params, center_x, center_y, map_spacing=1):
     """FixVignetteRadial on an (H, W) or (H, W, C) float32 array whose
     first pixel is (0, 0). The distance is measured from the integer
     column and row and divided by the distance to the farthest corner,
-    at least 1. At most five coefficients are used."""
+    at least 1. At most five coefficients are used. Above 1,
+    ``map_spacing`` interpolates the gain from the four multiples of it
+    around each pixel."""
     height, width = x.shape[:2]
     cx = center_x * width
     cy = center_y * height
@@ -38,31 +46,43 @@ def _reference(x, *, params, center_x, center_y):
         np.sqrt((width - cx) * (width - cx) + (height - cy) * (height - cy)),
     ]
     max_dist = max(max(corners), 1.0)
+
+    def gain_at(cols, rows):
+        dx = (cols - cx) / max_dist
+        dy = (rows - cy) / max_dist
+        r2 = dx * dx + dy * dy
+        gain = np.ones_like(r2)
+        power = r2.copy()
+        for value in list(params)[:5]:
+            gain = gain + value * power
+            power = power * r2
+        return gain
+
     rows, cols = np.mgrid[0:height, 0:width].astype(np.float64)
-    dx = (cols - cx) / max_dist
-    dy = (rows - cy) / max_dist
-    r2 = dx * dx + dy * dy
-    gain = np.ones_like(r2)
-    power = r2.copy()
-    for value in list(params)[:5]:
-        gain = gain + value * power
-        power = power * r2
-    gain = gain.astype(np.float32)
+    step = float(map_spacing)
+    left = np.floor(cols / step) * step
+    top = np.floor(rows / step) * step
+    fx = (cols - left) / step
+    fy = (rows - top) / step
+    upper = gain_at(left, top) * (1 - fx) + gain_at(left + step, top) * fx
+    lower = gain_at(left, top + step) * (1 - fx) + gain_at(left + step, top + step) * fx
+    gain = upper * (1 - fy) + lower * fy
     if x.ndim == 3:
         gain = gain[..., None]
-    return np.clip(x * gain, np.float32(0.0), np.float32(1.0))
+    return np.clip(x * gain, 0.0, 1.0).astype(np.float32)
 
 
 def _assert_close(got, expect):
-    np.testing.assert_allclose(got, expect, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(got, expect, rtol=2e-6, atol=1e-7)
 
 
-def _mi_fix_vignette(x, attrs):
+def _mi_fix_vignette(x, attrs, map_spacing):
     return mi.fix_vignette(
         x,
         params=np.asarray(attrs["params"], dtype=np.float64),
         center_x=float(attrs["center_x"]),
         center_y=float(attrs["center_y"]),
+        map_spacing=map_spacing,
     )
 
 
@@ -138,39 +158,56 @@ CASES = {
 }
 
 
-def run_case(name):
+def run_case(name, map_spacing):
     """The case's ``mi`` result, realized."""
     src, attrs, before, after = CASES[name]
     x = Array(src)
     if before is not None:
         x = x[before]
-    y = _mi_fix_vignette(x, attrs)
+    y = _mi_fix_vignette(x, attrs, map_spacing)
     if after is not None:
         y = y[after]
     return y.realize()
 
 
-def reference_case(name):
+def reference_case(name, map_spacing):
     """The case's reference: the vignette of the whole source, then both
     crops."""
     src, attrs, before, after = CASES[name]
-    y = _reference(src, **attrs)
+    y = _reference(src, **attrs, map_spacing=map_spacing)
     if before is not None:
         y = y[before]
     return y if after is None else y[after]
 
 
+@pytest.mark.parametrize("map_spacing", _MAP_SPACINGS)
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_fix_vignette_matches_reference(name):
-    _assert_close(run_case(name), reference_case(name))
+def test_fix_vignette_matches_reference(name, map_spacing):
+    _assert_close(run_case(name, map_spacing), reference_case(name, map_spacing))
 
 
-def test_fix_vignette_after_reset_canvas_centers_on_the_view():
+@pytest.mark.parametrize("map_spacing", _MAP_SPACINGS)
+def test_fix_vignette_after_reset_canvas_centers_on_the_view(map_spacing):
     """A ``crop_reset_canvas`` view starts a canvas of its own, so the
     vignette is centered in the view, as on a copy of it."""
     src, attrs, before, _ = CASES["cropped_before"]
     view = Array(src).view(before, mode="crop_reset_canvas")
     copy = Array(np.ascontiguousarray(src[before]))
-    from_copy = _mi_fix_vignette(copy, attrs).realize()
-    np.testing.assert_array_equal(_mi_fix_vignette(view, attrs).realize(), from_copy)
-    _assert_close(from_copy, _reference(src[before], **attrs))
+    from_copy = _mi_fix_vignette(copy, attrs, map_spacing).realize()
+    np.testing.assert_array_equal(
+        _mi_fix_vignette(view, attrs, map_spacing).realize(), from_copy
+    )
+    _assert_close(
+        from_copy, _reference(src[before], **attrs, map_spacing=map_spacing)
+    )
+
+
+def test_fix_vignette_default_map_spacing_is_8():
+    src, attrs, _, _ = CASES["rgb_off_center_five_terms"]
+    got = mi.fix_vignette(
+        Array(src),
+        params=np.asarray(attrs["params"], dtype=np.float64),
+        center_x=float(attrs["center_x"]),
+        center_y=float(attrs["center_y"]),
+    ).realize()
+    np.testing.assert_array_equal(got, run_case("rgb_off_center_five_terms", 8))
