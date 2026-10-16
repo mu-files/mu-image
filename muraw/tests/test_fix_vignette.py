@@ -202,6 +202,71 @@ def test_fix_vignette_after_reset_canvas_centers_on_the_view(map_spacing):
     )
 
 
+_SIXTEEN_BIT_CASES = [
+    "rgb_off_center_five_terms",
+    "rgb_values_outside_unit_range",
+    "mono_2d",
+    "two_channels",
+    "four_channels",
+    "large",
+    "cropped_before_and_after",
+]
+
+
+def _as_dtype(x, dtype):
+    """``x`` as ``dtype``: a uint16 code is the value times 65535, rounded,
+    and a value outside [0, 1] saturates."""
+    if dtype == np.uint16:
+        return np.round(np.clip(x, 0.0, 1.0) * 65535).astype(np.uint16)
+    return x.astype(dtype)
+
+
+def _as_unit(x):
+    """The values of ``x`` in double: a uint16 code over 65535."""
+    if x.dtype == np.uint16:
+        return x.astype(np.float64) / 65535
+    return x.astype(np.float64)
+
+
+@pytest.mark.parametrize("dtype", [np.uint16, np.float16])
+@pytest.mark.parametrize("map_spacing", _MAP_SPACINGS)
+@pytest.mark.parametrize("name", _SIXTEEN_BIT_CASES)
+def test_fix_vignette_on_16_bit_samples_matches_reference(name, map_spacing, dtype):
+    """A uint16 or float16 source keeps its dtype. The gain is float32 and
+    each sample is multiplied by it at its dtype. A uint16 code is
+    multiplied by a fixed-point gain with at least 14 fraction bits for
+    these gains, so a result is within one code of the reference plus half
+    a fixed-point step times the code. A float16 result is within about two
+    float16 roundings (one of the gain, one of the product)."""
+    src, attrs, before, after = CASES[name]
+    source = _as_dtype(src, dtype)
+    x = Array(source)
+    if before is not None:
+        x = x[before]
+    y = _mi_fix_vignette(x, attrs, map_spacing)
+    if after is not None:
+        y = y[after]
+    got = y.realize()
+    assert got.dtype == dtype
+
+    expect = _reference(_as_unit(source), **attrs, map_spacing=map_spacing)
+    if before is not None:
+        expect = expect[before]
+    if after is not None:
+        expect = expect[after]
+    if dtype == np.uint16:
+        np.testing.assert_allclose(
+            got.astype(np.float64),
+            expect * 65535.0,
+            rtol=0,
+            atol=1.0 + 65535 * 2.0**-15,
+        )
+    else:
+        np.testing.assert_allclose(
+            got.astype(np.float32), expect, rtol=2.0**-10, atol=2.0**-24
+        )
+
+
 def test_fix_vignette_default_map_spacing_is_8():
     src, attrs, _, _ = CASES["rgb_off_center_five_terms"]
     got = mi.fix_vignette(
