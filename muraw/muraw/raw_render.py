@@ -3810,7 +3810,7 @@ def apply_post_rendering_operations(
             top=top,
             width=right - left,
             height=bottom - top,
-            oob_valid=False,
+            mode="crop_oob_valid",
         )
 
     return rgb_output
@@ -3982,15 +3982,15 @@ def _linearize(
     active_area = tags.get_tag("ActiveArea")
     if active_area is not None:
         aa_top, aa_left, aa_bottom, aa_right = active_area
-        # Pixels outside the ActiveArea are garbage: halo requests past the
-        # box must be padded rather than read from the parent buffer.
+        # The ActiveArea is the image from here on: its corner is (0, 0),
+        # ops that read pixel positions measure them in it, and pixels
+        # outside it are garbage, so halo requests past it are padded.
         x = x.view(
             left=int(aa_left),
             top=int(aa_top),
             width=int(aa_right) - int(aa_left),
             height=int(aa_bottom) - int(aa_top),
-            reset_origin=True,
-            oob_valid=False,
+            mode="crop_reset_canvas",
         )
 
     # Fast path: trivial normalization (black=0, white=default, no
@@ -4152,8 +4152,7 @@ def _render_to_camera_space(
             top=crop_top,
             width=crop_width,
             height=crop_height,
-            reset_origin=True,
-            oob_valid=True,
+            mode="crop_oob_valid",
         )
 
     return rgb_camera

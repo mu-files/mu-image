@@ -468,7 +468,6 @@ def test_demosaic_then_crop_matches_post_process_slice(algorithm, cx, cy):
             top=cy,
             width=cw,
             height=ch,
-            reset_origin=True,
         )
         .realize()
     )

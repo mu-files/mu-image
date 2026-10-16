@@ -273,10 +273,14 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     default to 1. A step of -1 keeps the parent canvas, reflected so dest
     +1 follows that step. A step whose absolute value is greater than 1
     puts the result on its own canvas at origin ``(0, 0)``.
-    Default: ``origin' = origin + (top, left)``, the first sample.
-    ``reset_origin`` sets ``(0, 0)``. ``oob_valid`` does not change origin:
-    false puts canvas on the view rect; true keeps the parent canvas (or
-    remaps it into dest space when origin was reset).
+    ``mode`` ``crop_oob_valid`` (the default) and ``crop_oob_invalid``
+    give ``origin' = origin + (top, left)``, the first sample, and the
+    parent's canvas. The result's ``oob_valid`` is the parent's for
+    ``crop_oob_valid``, so a view of a NumPy slice never reads past the
+    slice, and false for ``crop_oob_invalid``. ``crop_reset_canvas`` sets
+    origin ``(0, 0)`` and starts a new canvas on the view rect, with
+    nothing past it to read. The box must sit inside the parent's
+    ``readable`` rect.
     """
     left, top = int(attrs["left"]), int(attrs["top"])
     width, height = int(attrs["width"]), int(attrs["height"])
@@ -290,46 +294,46 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         raise ValueError(
             f"view: step must be non-zero, got row={row_step} col={col_step}"
         )
-    cx, cy, cw, ch = x.meta.canvas
+    rx, ry, rw, rh = x.meta.readable
     base_row, base_col = x.meta.origin
     box_left, box_width = _sample_box(left, width, col_step)
     box_top, box_height = _sample_box(top, height, row_step)
     shared_left = box_left + base_col
     shared_top = box_top + base_row
     if (
-        shared_left < cx
-        or shared_top < cy
-        or shared_left + box_width > cx + cw
-        or shared_top + box_height > cy + ch
+        shared_left < rx
+        or shared_top < ry
+        or shared_left + box_width > rx + rw
+        or shared_top + box_height > ry + rh
     ):
         raise ValueError(
             f"view: box top={top} left={left} width={width} height={height} "
             f"row_step={row_step} col_step={col_step} "
-            f"is outside canvas {(cx, cy, cw, ch)}"
+            f"is outside the readable rect {(rx, ry, rw, rh)}"
         )
     decimated = abs(row_step) > 1 or abs(col_step) > 1
     reflected = row_step != 1 or col_step != 1
     first_row, first_col = base_row + top, base_col + left
-    if decimated:
+    mode = attrs.get("mode", "crop_oob_valid")
+    if decimated or mode == "crop_reset_canvas":
         origin = (0, 0)
         canvas = (0, 0, width, height)
+        oob_valid = True
     else:
-        origin = (0, 0) if attrs.get("reset_origin") else (first_row, first_col)
-        origin_row, origin_col = origin
-        if not attrs.get("oob_valid", True):
-            canvas = (origin_col, origin_row, width, height)
-        elif reflected:
+        oob_valid = mode == "crop_oob_valid" and x.meta.oob_valid
+        origin = (first_row, first_col)
+        if reflected:
             canvas = _reflected_canvas(
-                (cx, cy, cw, ch),
+                x.meta.canvas,
                 first_col,
                 first_row,
                 col_step,
                 row_step,
-                origin_col,
-                origin_row,
+                first_col,
+                first_row,
             )
         else:
-            canvas = (cx + origin_col - first_col, cy + origin_row - first_row, cw, ch)
+            canvas = x.meta.canvas
     channels = x.meta.channels
     if "src_channels" in attrs:
         src_channels = attrs["src_channels"]
@@ -355,6 +359,7 @@ def _out_meta_view(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         frames=frames,
         origin=origin,
         canvas=canvas,
+        oob_valid=oob_valid,
     )
 
 
@@ -362,9 +367,8 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``pad``: grow H/W, and channels or frames when those
     attrs are set.
 
-    Dest ``(left, top)`` is src ``(0, 0)``. Origin shifts by
-    ``-(top, left)``. Canvas is the new array at that origin, same as a
-    crop's view rect and canvas both sitting on the window.
+    Dest ``(left, top)`` is src ``(0, 0)``. The result is an image of its
+    own: origin ``(0, 0)`` and a canvas that is the padded array.
     """
     top = int(attrs["top"])
     bottom = int(attrs["bottom"])
@@ -403,9 +407,6 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         )
     dest_h = x.meta.height + top + bottom
     dest_w = x.meta.width + left + right
-    base_row, base_col = x.meta.origin
-    origin = (base_row - top, base_col - left)
-    origin_row, origin_col = origin
     if channel_before or channel_after:
         ndim = max(3, x.meta.ndim)
     elif x.meta.is_1d and (top or bottom):
@@ -418,8 +419,9 @@ def _out_meta_pad(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
         channels=x.meta.channels + channel_before + channel_after,
         frames=x.meta.frames + frame_before + frame_after,
         ndim=ndim,
-        origin=origin,
-        canvas=(origin_col, origin_row, dest_w, dest_h),
+        origin=(0, 0),
+        canvas=(0, 0, dest_w, dest_h),
+        oob_valid=True,
     )
 
 

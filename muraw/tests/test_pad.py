@@ -8,12 +8,12 @@ import pytest
 from muraw.array import Array
 
 
-def test_pad_emit_meta_grows_canvas_at_origin():
+def test_pad_emit_meta_starts_its_own_canvas():
     src = Array(np.zeros((4, 6), dtype=np.float32), origin=(2, 3))
     t = src.pad(1)
     assert t.meta.height == 6 and t.meta.width == 8
-    assert t.meta.origin == (1, 2)
-    assert t.meta.canvas == (2, 1, 8, 6)
+    assert t.meta.origin == (0, 0)
+    assert t.meta.canvas == (0, 0, 8, 6)
     assert t._node is not None and t._node.op == "pad"
 
 
@@ -114,8 +114,8 @@ def test_pad_channel_emit_meta():
     assert t.meta.height == 5 and t.meta.width == 8
     assert t.meta.channels == 4
     assert t.meta.shape == (5, 8, 4)
-    assert t.meta.origin == (1, 3)
-    assert t.meta.canvas == (3, 1, 8, 5)
+    assert t.meta.origin == (0, 0)
+    assert t.meta.canvas == (0, 0, 8, 5)
     assert t.meta.channel_axis
 
 
@@ -152,6 +152,17 @@ def test_pad_channel_width_rejected_on_mono():
 def test_pad_then_interior_view():
     src = np.arange(12, dtype=np.float32).reshape(3, 4)
     t = Array(src, origin=(5, 7)).pad(((1, 1), (2, 2)))
-    interior = t.view(left=2, top=1, width=4, height=3, oob_valid=False)
-    assert interior.meta.origin == (5, 7)
+    interior = t.view(left=2, top=1, width=4, height=3, mode="crop_oob_invalid")
+    assert interior.meta.origin == (1, 2)
     np.testing.assert_array_equal(interior.realize(), src)
+
+
+def test_pad_starts_a_canvas_of_its_own():
+    """A pad is a new image: origin (0, 0), and the padded array is its
+    canvas, whatever the input's origin and canvas."""
+    src = np.zeros((40, 60), dtype=np.float32)
+    sliced = Array(src, origin=(5, 7))[3:10, 4:20]
+    padded = sliced.pad(((1, 2), (3, 4)))
+    assert padded.meta.origin == (0, 0)
+    assert padded.meta.canvas == (0, 0, 23, 10)
+    assert padded.meta.oob_valid

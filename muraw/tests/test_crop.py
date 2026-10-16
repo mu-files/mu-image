@@ -36,10 +36,10 @@ def test_two_windows_first_view_maps_canvas():
 
 
 def test_two_crops_first_hard_crop_rejects_second():
-    """A crop resets canvas. A second crop past it fails."""
+    """A crop bounds what a read may reach. A second crop past it fails."""
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
     t = Array(src).crop(left=1, top=1, width=3, height=3)
-    with pytest.raises(ValueError, match="outside canvas"):
+    with pytest.raises(ValueError, match="outside the readable rect"):
         t.crop(left=-1, top=-1, width=5, height=5)
 
 
@@ -102,7 +102,7 @@ def test_crop_rotate_crop_rejects_second():
         height=side,
     )
     t = mi.orientation(t, orientation=Orientation.ROTATE_90_CW)
-    with pytest.raises(ValueError, match="outside canvas"):
+    with pytest.raises(ValueError, match="outside the readable rect"):
         t.crop(left=-6, top=0, width=2 * w, height=side)
 
 
@@ -118,22 +118,25 @@ def test_slice_form_matches_rect_pixels():
     assert via_s.meta.canvas == rect.meta.canvas
 
 
-def test_crop_slice_resets_canvas_view_keeps_it():
+def test_crop_slice_bounds_reads_view_does_not():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
     t = Array(src)
     viewed = t.view(np.s_[2:4, 1:4])
     cropped = t.crop(np.s_[2:4, 1:4])
     np.testing.assert_array_equal(viewed.realize(), cropped.realize())
-    assert viewed.meta.canvas == (0, 0, 7, 5)
-    assert cropped.meta.canvas == (1, 2, 3, 2)
+    assert viewed.meta.canvas == cropped.meta.canvas == (0, 0, 7, 5)
+    assert viewed.meta.readable == (0, 0, 7, 5)
+    assert cropped.meta.readable == (1, 2, 3, 2)
 
 
 def test_getitem_is_hard_crop():
     src = np.arange(5 * 7, dtype=np.float32).reshape(5, 7) + 1.0
     t = Array(src)[2:4, 1:4]
     np.testing.assert_array_equal(t.realize(), src[2:4, 1:4])
-    assert t.meta.canvas == (1, 2, 3, 2)
-    with pytest.raises(ValueError, match="outside canvas"):
+    assert t.meta.canvas == (0, 0, 7, 5)
+    assert not t.meta.oob_valid
+    assert t.meta.readable == (1, 2, 3, 2)
+    with pytest.raises(ValueError, match="outside the readable rect"):
         t.crop(left=-1, top=-1, width=5, height=4)
 
 
@@ -353,8 +356,9 @@ def test_ellipsis_fills_remaining_axes():
     )
 
 
-def test_reverse_crop_resets_canvas_view_keeps_it():
-    """A reversed crop sits on its box. A reversed view keeps the parent canvas."""
+def test_reverse_crop_bounds_reads_view_does_not():
+    """A reversed crop reads only its box. A reversed view may read the
+    parent canvas."""
     src = _mono()
     t = Array(src)
     key = np.s_[4:1:-1, 1:4]
@@ -364,9 +368,10 @@ def test_reverse_crop_resets_canvas_view_keeps_it():
     assert viewed._node is not None and viewed._node.op == "view"
     np.testing.assert_array_equal(viewed.realize(), want)
     np.testing.assert_array_equal(cropped.realize(), want)
-    # First sample is source (row 4, col 1). The crop canvas sits on that box.
-    assert cropped.meta.canvas == (1, 4, 3, 3)
-    with pytest.raises(ValueError, match="outside canvas"):
+    # First sample is source (row 4, col 1). The crop's readable rect sits
+    # on that box.
+    assert cropped.meta.readable == (1, 4, 3, 3)
+    with pytest.raises(ValueError, match="outside the readable rect"):
         cropped.crop(left=-1, top=0, width=5, height=3)
     extra = viewed.crop(left=-1, top=0, width=5, height=3)
     np.testing.assert_array_equal(extra.realize(), src[4:1:-1, 0:5])
@@ -379,3 +384,73 @@ def test_view_flip_reaches_back_with_negative_top():
     flipped = windowed.view(np.s_[::-1, :])
     extra = flipped.view(left=0, top=-1, width=4, height=4)
     np.testing.assert_array_equal(extra.realize(), src[4:0:-1, 1:5])
+
+
+@pytest.mark.parametrize(
+    "mode, origin, canvas, readable",
+    [
+        ("crop_oob_valid", (3, 5), (0, 0, 60, 40), (0, 0, 60, 40)),
+        ("crop_oob_invalid", (3, 5), (0, 0, 60, 40), (5, 3, 55, 37)),
+        ("crop_reset_canvas", (0, 0), (0, 0, 55, 37), (0, 0, 55, 37)),
+    ],
+)
+def test_view_mode_sets_canvas_and_readable_rect(mode, origin, canvas, readable):
+    """Only ``crop_reset_canvas`` starts a new canvas; the other two
+    differ in what a read may reach."""
+    x = Array(np.zeros((40, 60, 3), np.float32))
+    got = x.view(np.s_[3:, 5:], mode=mode).meta
+    assert (got.origin, got.canvas, got.readable) == (origin, canvas, readable)
+
+
+def test_soft_view_of_a_reset_canvas_reaches_its_canvas():
+    """A ``crop_reset_canvas`` view has nothing past it, so a later
+    ``crop_oob_valid`` view may read up to its edge and no further."""
+    src = _mono()
+    image = Array(src).view(np.s_[1:5, 1:6], mode="crop_reset_canvas")
+    inner = image.view(np.s_[1:3, 1:4])
+    assert inner.meta.oob_valid
+    outer = inner.view(left=-1, top=-1, width=5, height=4)
+    np.testing.assert_array_equal(outer.realize(), src[1:5, 1:6])
+    with pytest.raises(ValueError, match="outside the readable rect"):
+        inner.view(left=-2, top=-1, width=5, height=4)
+
+
+def test_view_rejects_an_unknown_mode():
+    with pytest.raises(ValueError):
+        Array(_mono()).view(np.s_[1:3, 1:3], mode="reset")
+
+
+def test_view_of_a_slice_reads_only_the_slice():
+    """A view of a NumPy slice may not reach past the slice, even with
+    ``crop_oob_valid``, and keeps the slice's canvas."""
+    x = Array(np.zeros((40, 60), np.float32))[3:, 5:]
+    viewed = x.view(np.s_[2:10, 4:20], mode="crop_oob_valid")
+    assert not viewed.meta.oob_valid
+    assert viewed.meta.canvas == (0, 0, 60, 40)
+    with pytest.raises(ValueError, match="outside the readable rect"):
+        x.view(left=-1, top=0, width=4, height=4)
+
+
+def test_realized_slice_is_its_own_canvas():
+    x = Array(np.zeros((40, 60), np.float32))[3:, 5:]
+    again = Array(x.realize())
+    assert again.meta.canvas == (0, 0, 55, 37)
+    assert again.meta.oob_valid
+
+
+def _demosaiced(x):
+    return mi.cfa_demosaic(x, cfa_pattern="RGGB").realize()
+
+
+def test_demosaic_of_a_slice_pads_at_the_slice_edge():
+    """A slice keeps its parent's canvas but reads only itself, so its
+    demosaic equals the demosaic of a copy of it. A view that may read
+    past its edges takes the parent's pixels there instead."""
+    src = np.random.default_rng(1).random((40, 60), dtype=np.float32)
+    key = np.s_[4:30, 6:50]
+    x = Array(src)
+    copy = _demosaiced(Array(np.ascontiguousarray(src[key])))
+    np.testing.assert_array_equal(_demosaiced(x[key]), copy)
+    np.testing.assert_array_equal(
+        _demosaiced(x.view(key, mode="crop_oob_valid")), _demosaiced(x)[key]
+    )

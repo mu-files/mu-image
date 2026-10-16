@@ -314,15 +314,14 @@ view = EngineOp(
   },
   {
     "count": 1,
-    "key": "reset_origin",
+    "key": "mode",
     "optional": true,
-    "type": "bool"
-  },
-  {
-    "count": 1,
-    "key": "oob_valid",
-    "optional": true,
-    "type": "bool"
+    "type": "string",
+    "values": [
+      "crop_oob_valid",
+      "crop_oob_invalid",
+      "crop_reset_canvas"
+    ]
   },
   {
     "count": 0,

@@ -103,7 +103,7 @@ def test_array_origin_kwarg():
 
 
 def test_view_emit_meta_updates_origin_and_size():
-    """Default view accumulates origin; reset_origin re-zeros world."""
+    """Default view accumulates origin; crop_reset_canvas re-zeros it."""
     base = Array(np.arange(5 * 7, dtype=np.float32).reshape(5, 7))
     cat = base.view(left=1, top=2, width=3, height=2)
     assert cat.meta.height == 2 and cat.meta.width == 3
@@ -114,14 +114,16 @@ def test_view_emit_meta_updates_origin_and_size():
     cat2 = cat.view(left=1, top=0, width=2, height=1)
     assert cat2.meta.origin == (2, 2)
 
-    reset = base.view(left=1, top=2, width=3, height=2, reset_origin=True)
+    reset = base.view(left=1, top=2, width=3, height=2, mode="crop_reset_canvas")
     assert reset.meta.origin == (0, 0)
 
-    # The parent canvas moves by the first sample in the shared system,
-    # which includes the parent's own origin.
+    # crop_reset_canvas starts a new canvas on the view, also when the
+    # parent has an origin of its own.
     shifted = Array(np.zeros((10, 10), dtype=np.float32), origin=(4, 5))
-    reset_shifted = shifted.view(left=2, top=3, width=4, height=4, reset_origin=True)
-    assert reset_shifted.meta.canvas == (-2, -3, 10, 10)
+    reset_shifted = shifted.view(
+        left=2, top=3, width=4, height=4, mode="crop_reset_canvas"
+    )
+    assert reset_shifted.meta.canvas == (0, 0, 4, 4)
 
     out = cat.realize()
     assert out.shape == (2, 3)
@@ -293,13 +295,13 @@ def test_crop_emit_rejects_window_outside_canvas():
     t = x.view(left=1, top=1, width=2, height=2)
     assert t._node is not None and t._node.op == "view"
     assert t.meta.height == 2 and t.meta.width == 2
-    with pytest.raises(ValueError, match="outside canvas"):
+    with pytest.raises(ValueError, match="outside the readable rect"):
         x.view(left=1, top=1, width=4, height=2)
-    with pytest.raises(ValueError, match="outside canvas"):
+    with pytest.raises(ValueError, match="outside the readable rect"):
         x.view(left=-2, top=-1, width=3, height=3)
-    with pytest.raises(ValueError, match="outside canvas"):
+    with pytest.raises(ValueError, match="outside the readable rect"):
         x.crop(left=4, top=0, width=2, height=2)
-    with pytest.raises(ValueError, match="outside canvas"):
+    with pytest.raises(ValueError, match="outside the readable rect"):
         x.crop(left=0, top=-3, width=2, height=3)
 
 
@@ -450,7 +452,6 @@ def test_cfa_demosaic_ea_then_crop_matches_slice():
             top=2,
             width=11,
             height=13,
-            reset_origin=True,
         )
         .realize()
     )

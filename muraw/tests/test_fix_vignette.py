@@ -68,7 +68,8 @@ def _attrs(params=_FIVE, center_x=0.3, center_y=0.6):
 
 
 # Each case: source array, attrs, a crop of the source before the op, and a
-# crop of the result after it.
+# crop of the result after it. A crop keeps the source's canvas, so the
+# center and the farthest corner stay the source's either way.
 CASES = {
     "rgb_off_center_five_terms": (_image((_HEIGHT, _WIDTH, 3)), _attrs(), None, None),
     "rgb_centered_one_term": (
@@ -147,12 +148,29 @@ def run_case(name):
 
 
 def reference_case(name):
+    """The case's reference: the vignette of the whole source, then both
+    crops."""
     src, attrs, before, after = CASES[name]
-    x = src if before is None else np.ascontiguousarray(src[before])
-    y = _reference(x, **attrs)
+    y = _reference(src, **attrs)
+    if before is not None:
+        y = y[before]
     return y if after is None else y[after]
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_fix_vignette_matches_reference(name):
     np.testing.assert_array_equal(run_case(name), reference_case(name))
+
+
+def test_fix_vignette_after_reset_canvas_centers_on_the_view():
+    """A ``crop_reset_canvas`` view starts a canvas of its own, so the
+    vignette is centered in the view, as on a copy of it."""
+    src, attrs, before, _ = CASES["cropped_before"]
+    view = Array(src).view(before, mode="crop_reset_canvas")
+    copy = Array(np.ascontiguousarray(src[before]))
+    np.testing.assert_array_equal(
+        _mi_fix_vignette(view, attrs).realize(), _reference(src[before], **attrs)
+    )
+    np.testing.assert_array_equal(
+        _mi_fix_vignette(copy, attrs).realize(), _reference(src[before], **attrs)
+    )

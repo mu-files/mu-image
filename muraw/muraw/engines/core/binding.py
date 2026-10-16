@@ -259,7 +259,7 @@ def _view_over_packed(arr: np.ndarray) -> Optional[Array]:
             key = (rows, cols)
         else:
             key = (rows, cols, src_channels)
-    return Array(parent).view(key, oob_valid=False, reset_origin=True)
+    return Array(parent).view(key, mode="crop_reset_canvas")
 
 
 # Orientation code that transposes a source whose (rows, columns) were

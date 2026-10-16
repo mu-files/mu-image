@@ -98,9 +98,12 @@ class ArrayMeta:
     shape: Tuple[int, ...]
     # Buffer top-left in the shared canvas coordinate system, as (row, col).
     origin: Tuple[int, int] = (0, 0)
-    # Rect in that same system: (x0, y0, width, height). A later view or
-    # crop uses it. When this array is the whole canvas, (x0, y0) is
-    # (origin col, origin row).
+    # Rect in that same system: (x0, y0, width, height). The image this
+    # array was cut from: ops that read pixel positions, such as a
+    # vignette's optical center, measure them in it. A view keeps its
+    # parent's canvas; a view with ``mode="crop_reset_canvas"`` starts a
+    # new one at its own rect, at origin (0, 0). When this array is the
+    # whole canvas, (x0, y0) is (origin col, origin row).
     canvas: Tuple[int, int, int, int] = (0, 0, 0, 0)
     # The axis of a 3- or 4-axis shape that holds the channels: 2 for
     # ``(H, W, C)``, 1 for ``(H, C, W)``, 0 for ``(C, H, W)``, and 3 for
@@ -110,6 +113,12 @@ class ArrayMeta:
     # negative axis counts from the end. A shape with fewer axes has no
     # channel axis, so ``channel_axis`` is ``None``.
     channel_axis: Optional[int] = None
+    # Whether a read past this array's rows and columns, such as the halo
+    # of a demosaic, may take the canvas's pixels there. When false, it is
+    # padded at this array's edge, as for an array of its own. A NumPy
+    # slice is false; a ``view`` with the default ``mode="crop_oob_valid"``
+    # keeps its parent's value. An array that is its whole canvas is true.
+    oob_valid: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dtype", supported_dtype(self.dtype))
@@ -183,6 +192,16 @@ class ArrayMeta:
     @property
     def ndim(self) -> int:
         return len(self.shape)
+
+    @property
+    def readable(self) -> Tuple[int, int, int, int]:
+        """The rect a read of this array may reach, as ``canvas`` is
+        given: the canvas when ``oob_valid`` is true, and this array's own
+        rows and columns when it is false."""
+        if self.oob_valid:
+            return self.canvas
+        origin_row, origin_col = self.origin
+        return (origin_col, origin_row, self.width, self.height)
 
     @property
     def buffer_shape(self) -> Tuple[int, ...]:
@@ -986,7 +1005,7 @@ def flip(m: ArrayLike, axis: Any = None) -> "Array":
         slice(None, None, -1) if position in flipped else slice(None)
         for position in range(ndim)
     )
-    return m.view(key, oob_valid=True)
+    return m.view(key, mode="crop_oob_valid")
 
 
 def fliplr(m: ArrayLike) -> "Array":
@@ -1480,10 +1499,10 @@ def reshaped_meta(
     """The meta of an array of ``old`` reshaped to ``shape`` with
     ``channel_axis`` (as in ``ArrayMeta``: ``None`` on 3 axes means 2).
 
-    The sample count must not change. The origin stays. The canvas stays
-    when the rows and the columns do (``(H, W)`` to ``(H, W, 1)``);
-    otherwise the old canvas means nothing on the new shape, and the canvas
-    is the new array at the old origin.
+    The sample count must not change. The origin stays. The canvas and
+    ``oob_valid`` stay when the rows and the columns do (``(H, W)`` to
+    ``(H, W, 1)``); otherwise the old canvas means nothing on the new
+    shape, and the canvas is the new array at the old origin.
     """
     new = _meta_from_shape(shape, old.dtype, channel_axis)
     if int(np.prod(old.shape)) != int(np.prod(new.shape)):
@@ -1491,10 +1510,9 @@ def reshaped_meta(
             f"cannot reshape {old.shape} to {new.shape}: the sample count differs"
         )
     row, col = old.origin
-    canvas = old.canvas
     if spatial_reading(new)[1][:2] != spatial_reading(old)[1][:2]:
-        canvas = (col, row, new.width, new.height)
-    return new.copy(origin=old.origin, canvas=canvas)
+        return new.copy(origin=old.origin, canvas=(col, row, new.width, new.height))
+    return new.copy(origin=old.origin, canvas=old.canvas, oob_valid=old.oob_valid)
 
 
 def _reshape_layout(
@@ -2380,12 +2398,21 @@ class Array:
         top: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        oob_valid: bool = True,
-        reset_origin: bool = False,
+        mode: str = "crop_oob_valid",
     ) -> "Array":
         """Window into this array.
 
-        ``oob_valid`` true keeps the parent canvas in this coordinate system.
+        ``mode`` sets the result's canvas and how far a read past its
+        edge may reach:
+
+        - ``"crop_oob_valid"``: the canvas stays this array's, and a read
+          past the window, such as a demosaic's halo, takes the pixels
+          there, as far as this array may read.
+        - ``"crop_oob_invalid"``: the canvas stays this array's, and a read
+          past the window is padded at its edge, as for a NumPy slice.
+        - ``"crop_reset_canvas"``: the window is the canvas, at origin
+          ``(0, 0)``: an image of its own.
+
         A ``None`` in ``region`` adds an axis of length 1, as in NumPy.
         """
         if region is None:
@@ -2394,17 +2421,13 @@ class Array:
                     "a 1D array is viewed with a slice, not left, top, width, height"
                 )
             window = _window_from_rect(left, top, width, height)
-            return self._view_window(
-                window, oob_valid=oob_valid, reset_origin=reset_origin
-            )
+            return self._view_window(window, mode=mode)
         if any(v is not None for v in (left, top, width, height)):
             raise TypeError("cannot mix a slice region with left, top, width, height")
         if self._meta.size == 0:
             return self._empty_view(region)
         try:
-            return self._view_region(
-                region, oob_valid=oob_valid, reset_origin=reset_origin
-            )
+            return self._view_region(region, mode=mode)
         except _EmptySelection:
             return self._empty_view(region)
         except NotImplementedError:
@@ -2437,9 +2460,7 @@ class Array:
             )
         return _empty_with_shape(self, shape)
 
-    def _view_region(
-        self, region: Any, *, oob_valid: bool, reset_origin: bool
-    ) -> "Array":
+    def _view_region(self, region: Any, *, mode: str) -> "Array":
         """``view`` of an index key ``region``, when no axis is empty."""
         axes, new_axes = _expand_index_key(region, self._meta)
         source, axes, squeezed = _take_spatial_indices(self, axes)
@@ -2447,9 +2468,7 @@ class Array:
         if meta.is_1d:
             row = _reshape_layout(source, (1, meta.width))
             window = _window_from_slices(row._meta, slice(None), axes[0])
-            viewed = row._view_window(
-                window, oob_valid=oob_valid, reset_origin=reset_origin
-            )
+            viewed = row._view_window(window, mode=mode)
             shape = [viewed.meta.width]
         else:
             if meta.channel_axis is None:
@@ -2463,9 +2482,7 @@ class Array:
                     axes[meta.channel_axis],
                     axes[0] if meta.ndim == 4 else None,
                 )
-            viewed = source._view_window(
-                window, oob_valid=oob_valid, reset_origin=reset_origin
-            )
+            viewed = source._view_window(window, mode=mode)
             shape = list(viewed.shape)
         # The viewed array has every axis of the key that an int does not
         # drop, and each squeezed row or column as length 1.
@@ -2484,13 +2501,11 @@ class Array:
             shape.insert(position, 1)
         return _reshape_layout(viewed, tuple(shape))
 
-    def _view_window(
-        self, window: _Window, *, oob_valid: bool, reset_origin: bool
-    ) -> "Array":
+    def _view_window(self, window: _Window, *, mode: str) -> "Array":
         """The ``view`` op for ``window``, or this array when it is all of it."""
         import muimage as mi
 
-        if window.is_full(self._meta):
+        if window.is_full(self._meta) and mode != "crop_reset_canvas":
             return _without_dropped_axes(self, window)
 
         attrs: dict[str, Any] = {
@@ -2498,8 +2513,7 @@ class Array:
             "top": window.top,
             "width": window.width,
             "height": window.height,
-            "oob_valid": oob_valid,
-            "reset_origin": reset_origin,
+            "mode": mode,
         }
         if window.src_channels is not None:
             attrs["src_channels"] = window.src_channels
@@ -2520,17 +2534,15 @@ class Array:
         top: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        reset_origin: bool = False,
     ) -> "Array":
-        """Hard window: same as ``view(..., oob_valid=False)``."""
+        """Hard window: same as ``view(..., mode="crop_oob_invalid")``."""
         return self.view(
             region,
             left=left,
             top=top,
             width=width,
             height=height,
-            oob_valid=False,
-            reset_origin=reset_origin,
+            mode="crop_oob_invalid",
         )
 
     def pad(

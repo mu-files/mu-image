@@ -63,6 +63,10 @@ enums:
   ramp_along:
     - columns
     - rows
+  view_mode:
+    - crop_oob_valid
+    - crop_oob_invalid
+    - crop_reset_canvas
   demosaic_algorithm:
     - bilinear
     - ea
@@ -307,16 +311,15 @@ ops:
       - key: height
         type: i32
         count: 1
-      - key: reset_origin
-        type: bool
+      # crop_oob_valid (the default) keeps the input's canvas, and dest may
+      # sit past the view window. crop_oob_invalid keeps the input's canvas
+      # and clips dest to the view window. crop_reset_canvas makes the view
+      # window the canvas, at origin (0, 0), and clips dest to it.
+      - key: mode
+        type: string
         count: 1
         optional: true
-      # False (ActiveArea): dest is clipped to the view window. True: dest
-      # may sit past the view window.
-      - key: oob_valid
-        type: bool
-        count: 1
-        optional: true
+        enum: view_mode
       # Dest channel i reads src_channels[i]. Omit for identity 0..C-1.
       - key: src_channels
         type: i32_array
@@ -854,8 +857,10 @@ ops:
   # DNG FixVignetteRadial: every sample is multiplied by
   # 1 + k0 r^2 + k1 r^4 + ... and clamped to [0, 1], with params holding
   # k0, k1, ... (at most five are used). r is the distance from the optical
-  # center (center_x times the width, center_y times the height) divided by
-  # the distance from the center to the farthest corner.
+  # center divided by the distance from the center to the farthest corner
+  # of the input's canvas. center_x and center_y are fractions of the
+  # canvas's width and height from its top-left corner, so on a crop they
+  # still place the center in the image the crop was cut from.
   - name: fix_vignette
     requires_2d: true
     inputs:

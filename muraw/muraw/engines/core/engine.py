@@ -146,6 +146,7 @@ class CoreEngine:
                 "canvas_y0": int(m.canvas[1]),
                 "canvas_width": int(m.canvas[2]),
                 "canvas_height": int(m.canvas[3]),
+                "oob_valid": bool(m.oob_valid),
             }
             array_descs.append(desc)
 
