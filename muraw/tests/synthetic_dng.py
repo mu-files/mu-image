@@ -34,9 +34,10 @@ try:
 except ImportError:
     core_image_available = False
 
+OPCODE_FIX_VIGNETTE_RADIAL = 3
 OPCODE_MAP_POLYNOMIAL = 8
-# Opcodes carry the oldest DNG version that reads them; MapPolynomial
-# arrived in DNG 1.3.
+# Opcodes carry the oldest DNG version that reads them; FixVignetteRadial
+# and MapPolynomial arrived in DNG 1.3.
 DNG_VERSION_1_3 = 0x01030000
 
 
@@ -61,6 +62,15 @@ def map_polynomial(coefficients, area, plane=0, planes=1, row_pitch=1, col_pitch
     body = area_spec(area, plane, planes, row_pitch, col_pitch)
     body += struct.pack(f">I{degree + 1}d", degree, *coefficients)
     return opcode(OPCODE_MAP_POLYNOMIAL, body)
+
+
+def fix_vignette_radial(params, center_x, center_y):
+    """A FixVignetteRadial opcode: the five gain coefficients k0 .. k4
+    (``params`` padded with zeros) and the optical center as a fraction of
+    the image's width and height."""
+    padded = [*params, *[0.0] * (5 - len(params))]
+    body = struct.pack(">7d", *padded, center_x, center_y)
+    return opcode(OPCODE_FIX_VIGNETTE_RADIAL, body)
 
 
 def opcode_list(*opcodes):

@@ -25,6 +25,7 @@ from synthetic_dng import (
     RendererError,
     core_image_available,
     coreimage_render,
+    fix_vignette_radial,
     map_polynomial,
     mu_render,
     mu_stage,
@@ -36,6 +37,7 @@ from synthetic_dng import (
     stored_samples,
     write_synthetic_dng,
 )
+from test_fix_vignette import _reference as _fix_vignette_reference
 from test_map_polynomial import _COEFFICIENTS, _PER_PLANE_SETS, _reference
 from tifffile import COMPRESSION
 
@@ -63,6 +65,18 @@ COREIMAGE_NO_MAP_POLYNOMIAL = (
     "Core Image does not apply MapPolynomial, in any opcode list. Its render "
     "is the same with and without the opcode."
 )
+COREIMAGE_FIX_VIGNETTE = (
+    "Core Image applies FixVignetteRadial, but the change it makes to its "
+    "render does not follow the change to mu-image's (correlation 0.46 to "
+    "0.71). Its render also brightens by about 2% near the optical center, "
+    "where the opcode's gain is 1, so it changes more than the opcode asks; "
+    "what else it does is not known."
+)
+
+# What dng_validate's stage image may differ from the spec by: 32-bit
+# samples, and an integer CFA's stage 2, which it writes in 16-bit codes.
+SDK_FLOAT_TOLERANCE = 4e-6
+SDK_UINT16_TOLERANCE = 1 / 65535
 
 
 @dataclass(frozen=True)
@@ -73,6 +87,10 @@ class MapPolynomial:
     planes: int = 3
     row_pitch: int = 1
     col_pitch: int = 1
+
+    section = "MapPolynomial"
+    coreimage_issue = COREIMAGE_NO_MAP_POLYNOMIAL
+    sdk_gain_tolerance = 0.0
 
     def encode(self):
         return map_polynomial(
@@ -100,6 +118,46 @@ class MapPolynomial:
             degree=len(self.coefficients) - 1,
         )
 
+    def mu_reference(self, x):
+        """What mu-image computes by design: the spec."""
+        return self.reference(x)
+
+
+# mi.fix_vignette's default map_spacing, which raw_render uses.
+MU_VIGNETTE_MAP_SPACING = 8
+
+
+@dataclass(frozen=True)
+class FixVignetteRadial:
+    params: tuple
+    center_x: float
+    center_y: float
+
+    section = "FixVignetteRadial"
+    coreimage_issue = COREIMAGE_FIX_VIGNETTE
+    # dng_validate looks the gain up in a table of 65537 uint16 entries
+    # with at most 15 fraction bits, indexed by r^2 in 16.16 fixed point
+    # (`dng_opcode_FixVignetteRadial::Prepare`, `RefVignetteMask16`). The
+    # largest difference measured from the spec, 4.1e-5, times 1.1.
+    sdk_gain_tolerance = 4.5e-5
+
+    def encode(self):
+        return fix_vignette_radial(self.params, self.center_x, self.center_y)
+
+    def reference(self, x, map_spacing=1):
+        return _fix_vignette_reference(
+            x,
+            params=list(self.params),
+            center_x=self.center_x,
+            center_y=self.center_y,
+            map_spacing=map_spacing,
+        )
+
+    def mu_reference(self, x):
+        """What mu-image computes by design: the gain interpolated from a
+        map at every ``MU_VIGNETTE_MAP_SPACING``-th column and row."""
+        return self.reference(x, map_spacing=MU_VIGNETTE_MAP_SPACING)
+
 
 @dataclass(frozen=True)
 class Case:
@@ -109,14 +167,19 @@ class Case:
     opcode_list: str
     opcodes: tuple
     sdk_issue: str | None = None
+    shape: tuple = (HEIGHT, WIDTH)
 
     @property
     def stage(self):
         return STAGE[self.opcode_list]
 
+    @property
+    def section(self):
+        return self.opcodes[0].section
+
     def stored(self, dtype=None):
         """The samples the DNG stores, in the case's dtype or ``dtype``."""
-        unit = rgb_ramp(HEIGHT, WIDTH)
+        unit = rgb_ramp(*self.shape)
         if self.photometric == "CFA":
             unit = rggb(unit)
         return stored_samples(unit, dtype or self.dtype)
@@ -133,12 +196,13 @@ class Case:
             return (stored / np.float32(65535)).astype(np.float32)
         return stored.astype(np.float32)
 
-    def reference(self):
-        """The stage image the DNG spec gives. OpcodeList1 output on 16-bit
-        data is stored back as 16-bit codes before linearization."""
+    def reference(self, mu=False):
+        """The stage image the DNG spec gives, or with ``mu`` the one
+        mu-image computes by design. OpcodeList1 output on 16-bit data is
+        stored back as 16-bit codes before linearization."""
         x = self.unit_input()
         for op in self.opcodes:
-            x = op.reference(x)
+            x = op.mu_reference(x) if mu else op.reference(x)
         if self.opcode_list == "OpcodeList1" and self.dtype == "uint16":
             x = np.clip(np.round(x * 65535), 0, 65535) / 65535
         return x.astype(np.float64)
@@ -218,6 +282,59 @@ CASES = [
     ),
 ]
 
+# The vignette cases are 512 x 512: at mu-image's map spacing of 8 the map
+# differs from the per-pixel gain by about 3e-4 there, against 1e-3 at
+# 256 x 256, so the table's per-pixel column stays readable.
+VIGNETTE_SHAPE = (512, 512)
+_OFF_CENTER = FixVignetteRadial((0.4, -0.2, 0.3, 0.1, 0.05), 0.3, 0.6)
+# Gains up to 3.6 at the farthest corner, so the [0, 1] clamp acts.
+_CLAMPED = FixVignetteRadial((1.5, 0.8, 0.0, 0.0, 0.3), 0.3, 0.6)
+# Unlike DSC_1437's coefficients: a darkening second term.
+_CFA_VIGNETTE = FixVignetteRadial((0.6, -0.3, 0.2), 0.45, 0.4)
+
+CASES += [
+    Case(
+        "off-center, five terms",
+        "LINEAR_RAW",
+        "float32",
+        "OpcodeList3",
+        (_OFF_CENTER,),
+        shape=VIGNETTE_SHAPE,
+    ),
+    Case(
+        "gains large enough to clamp",
+        "LINEAR_RAW",
+        "float32",
+        "OpcodeList3",
+        (_CLAMPED,),
+        shape=VIGNETTE_SHAPE,
+    ),
+    Case(
+        "off-center, five terms",
+        "LINEAR_RAW",
+        "uint16",
+        "OpcodeList2",
+        (_OFF_CENTER,),
+        shape=VIGNETTE_SHAPE,
+    ),
+    Case(
+        "three terms",
+        "CFA",
+        "uint16",
+        "OpcodeList2",
+        (_CFA_VIGNETTE,),
+        shape=VIGNETTE_SHAPE,
+    ),
+    Case(
+        "three terms",
+        "CFA",
+        "uint16",
+        "OpcodeList1",
+        (_CFA_VIGNETTE,),
+        shape=VIGNETTE_SHAPE,
+    ),
+]
+
 
 def _label(case):
     return f"{case.photometric} {case.dtype} {case.opcode_list}: {case.name}"
@@ -231,11 +348,10 @@ def _sdk_param(case):
 
 
 def _coreimage_param(case):
-    mark = pytest.mark.xfail(strict=True, reason=COREIMAGE_NO_MAP_POLYNOMIAL)
+    mark = pytest.mark.xfail(strict=True, reason=case.opcodes[0].coreimage_issue)
     return pytest.param(case, id=_label(case), marks=[mark])
 
 
-SECTION_OPS = "MapPolynomial"
 SECTION_FILES = "Reading synthetic DNGs"
 COLUMN_MU = "mu-image"
 COLUMN_SDK = "dng_validate"
@@ -295,7 +411,10 @@ TABLE = ReferenceTable(
         "whether the opcode changes that render the way it changes mu-image's."
     ),
     sections={
-        SECTION_OPS: [COLUMN_MU, COLUMN_SDK, COLUMN_CI],
+        **{
+            section: [COLUMN_MU, COLUMN_SDK, COLUMN_CI]
+            for section in dict.fromkeys(case.section for case in CASES)
+        },
         SECTION_FILES: ["Result"],
     },
 )
@@ -305,11 +424,12 @@ TABLE = ReferenceTable(
 def reference_table():
     yield TABLE
     TABLE.write(TEST_OUTPUTS_DIR / "test_dng_opcodes_synthetic" / DOC_PATH.name)
-    expected = {
-        SECTION_OPS: [_label(case) for case in CASES],
-        SECTION_FILES: [f"Core Image: {case.name}" for case in FILE_CASES]
-        + [EMPTY_AREA_CASE],
-    }
+    expected = {section: [] for section in TABLE.sections}
+    for case in CASES:
+        expected[case.section].append(_label(case))
+    expected[SECTION_FILES] = [f"Core Image: {case.name}" for case in FILE_CASES] + [
+        EMPTY_AREA_CASE
+    ]
     if TABLE.is_complete(expected):
         TABLE.write(DOC_PATH)
 
@@ -325,23 +445,31 @@ def _max_diff(got, want):
 
 def _sdk_tolerance(case):
     """dng_validate writes an integer CFA's stage 2 in 16-bit codes."""
-    return 1 / 65535 if case.dtype == "uint16" else 4e-6
+    sample = SDK_UINT16_TOLERANCE if case.dtype == "uint16" else SDK_FLOAT_TOLERANCE
+    return sample + sum(op.sdk_gain_tolerance for op in case.opcodes)
 
 
 @pytest.mark.parametrize("case", [pytest.param(c, id=_label(c)) for c in CASES])
 def test_mu_image_matches_the_spec(case, out_dir):
-    reference = case.reference()
+    """mu-image matches the spec as it computes it by design; for
+    FixVignetteRadial that is the gain interpolated from its map, and the
+    table also records the difference from the per-pixel gain."""
+    reference = case.reference(mu=True)
     assert _max_diff(reference, case.unit_input()) > 1e-3, "the case changes nothing"
     path = case.write(out_dir / "case.dng")
-    measured = _max_diff(mu_stage(path, case.stage), reference)
+    got = mu_stage(path, case.stage)
+    measured = _max_diff(got, reference)
     tolerance = 4e-6 + (1 / 65535 if case.opcode_list == "OpcodeList1" else 0)
     matches = measured <= tolerance
-    TABLE.record(
-        SECTION_OPS,
-        _label(case),
-        COLUMN_MU,
-        f"matches (max {measured:.1e})" if matches else f"differs: max {measured:.3g}",
+    text = (
+        f"matches (max {measured:.1e})" if matches else f"differs: max {measured:.3g}"
     )
+    if matches and isinstance(case.opcodes[0], FixVignetteRadial):
+        text = (
+            f"matches its spacing-{MU_VIGNETTE_MAP_SPACING} map (max {measured:.1e}); "
+            f"per-pixel spec max {_max_diff(got, case.reference()):.1e}"
+        )
+    TABLE.record(case.section, _label(case), COLUMN_MU, text)
     assert matches, f"mu-image differs from the spec by {measured}"
 
 
@@ -352,7 +480,7 @@ def test_dng_validate_matches_the_spec(case, out_dir):
     measured = _max_diff(sdk_stage(path, case.stage), case.reference())
     matches = measured <= _sdk_tolerance(case)
     TABLE.record(
-        SECTION_OPS,
+        case.section,
         _label(case),
         COLUMN_SDK,
         f"matches (max {measured:.1e})" if matches else f"differs: max {measured:.3g}",
@@ -386,11 +514,11 @@ def test_coreimage_applies_the_opcode(case, out_dir):
             else f"applies it differently (correlation {correlation:.2f})"
         )
     TABLE.record(
-        SECTION_OPS,
+        case.section,
         _label(case),
         COLUMN_CI,
         text,
-        note=None if applies else COREIMAGE_NO_MAP_POLYNOMIAL,
+        note=None if applies else case.opcodes[0].coreimage_issue,
     )
     assert applies, f"Core Image {text}"
 
@@ -456,6 +584,14 @@ def test_map_polynomial_encoder_round_trips():
     assert (parsed["plane"], parsed["planes"]) == (1, 2)
     assert (parsed["row_pitch"], parsed["col_pitch"]) == (2, 3)
     np.testing.assert_array_equal(parsed["coefficients"], [0.1, 0.9, -0.2])
+
+
+def test_fix_vignette_radial_encoder_round_trips():
+    op = FixVignetteRadial((0.6, -0.3, 0.2), 0.45, 0.4)
+    (parsed,) = parse_opcode_list(opcode_list(op.encode()))
+    assert parsed["type"] == "FixVignetteRadial"
+    np.testing.assert_array_equal(parsed["coefficients"], [0.6, -0.3, 0.2, 0.0, 0.0])
+    assert (parsed["center_x"], parsed["center_y"]) == (0.45, 0.4)
 
 
 def _opcode_list_tags(path):

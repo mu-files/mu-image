@@ -31,9 +31,11 @@ def _image(shape, low=0.0, high=1.0, seed=5):
 
 def _reference(x, *, params, center_x, center_y, map_spacing=1):
     """FixVignetteRadial on an (H, W) or (H, W, C) float32 array whose
-    first pixel is (0, 0). The distance is measured from the integer
-    column and row and divided by the distance to the farthest corner,
-    at least 1. At most five coefficients are used. Above 1,
+    first pixel is (0, 0). The distance is measured from the pixel's
+    center, half a pixel right of and below its column and row, as the DNG
+    SDK measures it, and divided by the distance from the optical center
+    to the farthest corner, at least 1. At most five coefficients are
+    used. Above 1,
     ``map_spacing`` interpolates the gain from the four multiples of it
     around each pixel."""
     height, width = x.shape[:2]
@@ -48,8 +50,8 @@ def _reference(x, *, params, center_x, center_y, map_spacing=1):
     max_dist = max(max(corners), 1.0)
 
     def gain_at(cols, rows):
-        dx = (cols - cx) / max_dist
-        dy = (rows - cy) / max_dist
+        dx = (cols + 0.5 - cx) / max_dist
+        dy = (rows + 0.5 - cy) / max_dist
         r2 = dx * dx + dy * dy
         gain = np.ones_like(r2)
         power = r2.copy()

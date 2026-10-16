@@ -857,8 +857,9 @@ ops:
   # DNG FixVignetteRadial: every sample is multiplied by
   # 1 + k0 r^2 + k1 r^4 + ... and clamped to [0, 1], with params holding
   # k0, k1, ... (at most five are used). r is the distance from the optical
-  # center divided by the distance from the center to the farthest corner
-  # of the input's canvas. center_x and center_y are fractions of the
+  # center to the pixel's center, as the DNG SDK measures it, divided by
+  # the distance from the optical center to the farthest corner of the
+  # input's canvas. center_x and center_y are fractions of the
   # canvas's width and height from its top-left corner, so on a crop they
   # still place the center in the image the crop was cut from.
   - name: fix_vignette
