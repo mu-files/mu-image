@@ -199,9 +199,7 @@ def test_fix_vignette_after_reset_canvas_centers_on_the_view(map_spacing):
     np.testing.assert_array_equal(
         _mi_fix_vignette(view, attrs, map_spacing).realize(), from_copy
     )
-    _assert_close(
-        from_copy, _reference(src[before], **attrs, map_spacing=map_spacing)
-    )
+    _assert_close(from_copy, _reference(src[before], **attrs, map_spacing=map_spacing))
 
 
 _SIXTEEN_BIT_CASES = [
