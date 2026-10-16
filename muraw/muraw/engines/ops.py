@@ -1104,6 +1104,12 @@ fix_vignette = EngineOp(
     "count": 1,
     "key": "center_y",
     "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
   }
 ]""")
     ),

@@ -877,6 +877,10 @@ ops:
       - key: center_y
         type: f64
         count: 1
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
 
   - name: warp_rectilinear
     needs_frame_index: true
