@@ -940,8 +940,10 @@ ops:
   # col_pitch from its top-left corner, on planes start_plane ..
   # start_plane + num_planes - 1 (every plane when not set) change; the
   # rest are copied. clamp is none, max_one (at most 1, as DNG GainMap
-  # clamps) or zero_one. engine_opts {"core": {"neon": false}} forces the
-  # scalar loop.
+  # clamps) or zero_one. x is uint16, float16 or float32, and the result
+  # has its dtype: a uint16 code is multiplied by the gain, rounded, and
+  # saturated at 65535 whatever clamp is; float16 is multiplied in
+  # float16. engine_opts {"core": {"neon": false}} forces the scalar loop.
   - name: apply_gain_map
     needs_frame_index: true
     requires_2d: true
