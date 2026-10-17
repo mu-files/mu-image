@@ -374,8 +374,6 @@ The following DNG features are not yet implemented:
 - **SemanticMasks**: DNG v1.6+ depth maps and segmentation masks
 - **HDR/Overrange**: ProfileDynamicRange and extended dynamic range support
 
-See [docs/dng_render_pipeline.md](docs/dng_render_pipeline.md) for detailed implementation status of each pipeline stage.
-
 ### Performance Notes
 
 **Demosaicing Algorithms**: muraw includes several demosaicing algorithms with different quality/speed tradeoffs:
@@ -393,18 +391,6 @@ The RCD (Ratio Corrected Demosaicing) algorithm is disabled by default because i
 By enabling RCD, you accept the GPL v3 license terms for that component. The RCD source is based on [Luis Sanz Rodríguez's implementation](https://github.com/LuisSR/RCD-Demosaicing).
 
 **Core Image Rendering**: On macOS, Core Image provides native DNG rendering. Use `--use-coreimage` flag in CLI or `use_coreimage_if_available=True` in API.
-
-## Technical Documentation
-
-For detailed technical documentation on the DNG rendering pipeline, including tag reference, pipeline stages, and implementation status, see:
-
-**[docs/dng_render_pipeline.md](docs/dng_render_pipeline.md)**
-
-This document provides:
-- Complete pipeline flowchart from raw sensor data to display RGB
-- Tag reference organized by pipeline stage
-- Implementation status for each stage
-- Detailed explanations of color matrix calculations, tone curves, and opcode processing
 
 ## License
 

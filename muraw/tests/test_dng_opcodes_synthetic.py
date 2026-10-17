@@ -7,10 +7,12 @@ Core Image, each against a NumPy port of the DNG spec.
 mu-image must match the spec. A known difference in dng_validate or Core
 Image is a strict xfail that records the measured value. Every case
 writes what it measured into a table of where the renderers differ from
-the spec. The table goes to ``tests/test_outputs/`` on every run, and to
-``docs/reference_renderer_differences.md`` when a run measured every
-case, so a partial run or a machine without the reference renderers
-leaves the document as it is.
+the spec. The table goes to ``tests/test_outputs/`` on every run. When a
+run measured every case, it also goes to
+``reference_renderer_differences.md`` in the private mu-image-engine
+checkout next to this repo, under ``docs/staged/``, where the docs wait
+until they are published. A partial run, a machine without the reference
+renderers, or a machine without that folder leaves the document as it is.
 """
 
 from dataclasses import dataclass
@@ -52,7 +54,8 @@ from muraw.raw_render import parse_opcode_list
 # Core Image returns an empty image below 256 x 256 pixels.
 HEIGHT = WIDTH = 256
 FULL = (0, 0, HEIGHT, WIDTH)
-DOC_PATH = Path(__file__).parent.parent / "docs" / "reference_renderer_differences.md"
+STAGED_DOCS = Path(__file__).parents[3] / "mu-image-engine" / "docs" / "staged"
+DOC_PATH = STAGED_DOCS / "reference_renderer_differences.md"
 
 # What each list's stage holds: OpcodeList1 runs on the stored samples,
 # OpcodeList2 on the linearized ones, OpcodeList3 after demosaic.
@@ -810,7 +813,7 @@ def reference_table():
     expected[SECTION_FILES] = [f"Core Image: {case.name}" for case in FILE_CASES] + [
         EMPTY_AREA_CASE
     ]
-    if TABLE.is_complete(expected):
+    if TABLE.is_complete(expected) and STAGED_DOCS.is_dir():
         TABLE.write(DOC_PATH)
 
 
