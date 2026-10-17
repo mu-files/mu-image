@@ -300,9 +300,12 @@ def run_case(name):
 
 
 def reference_case(name):
+    """The case's reference. The area is on the canvas, so a crop before the
+    op gives the crop of the op on the whole source."""
     src, attrs, before, after = CASES[name]
-    x = src if before is None else np.ascontiguousarray(src[before])
-    y = _reference(x, **attrs)
+    y = _reference(src, **attrs)
+    if before is not None:
+        y = y[before]
     return y if after is None else y[after]
 
 
