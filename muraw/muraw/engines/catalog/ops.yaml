@@ -71,6 +71,10 @@ enums:
     - bilinear
     - ea
     - ea_fast
+  gain_clamp:
+    - none
+    - max_one
+    - zero_one
 
 ops:
   # Arithmetic with a constant: x + value, x - value, x * value, x / value.
@@ -921,132 +925,91 @@ ops:
         type: bool
         count: 1
 
-  - name: rgb_apply_gain_map
-    is_rgb: true
+  # DNG GainMap: samples of x times a low-resolution gain map, input 1,
+  # interpolated bilinearly to each pixel. The map is float32,
+  # (points_v, points_h) or (points_v, points_h, map_planes); plane p, a
+  # channel or the frame of a (C, H, W) array, reads map plane
+  # min(p, map_planes - 1). Every position is on x's canvas, so on a crop
+  # the op gives the crop of the op on the image the crop was cut from.
+  # Map sample (0, 0) is at canvas column map_x0 and row map_y0, and its
+  # neighbors map_spacing_x and map_spacing_y pixels on; a DNG origin,
+  # measured from pixel centers, is origin_h * canvas_width - 0.5. Past the
+  # map's first or last column or row a pixel takes that column's or row's
+  # gain. Only samples in the area (top, left, bottom, right on the
+  # canvas; an empty area, or none, is the whole canvas), at row_pitch and
+  # col_pitch from its top-left corner, on planes start_plane ..
+  # start_plane + num_planes - 1 (every plane when not set) change; the
+  # rest are copied. clamp is none, max_one (at most 1, as DNG GainMap
+  # clamps) or zero_one. engine_opts {"core": {"neon": false}} forces the
+  # scalar loop.
+  - name: apply_gain_map
+    needs_frame_index: true
+    requires_2d: true
     inputs:
-      - channels: 3
+      - channels: any
+      - channels: any
     outputs:
-      - channels: 3
-        dtype: float32
+      - channels: same
     attrs:
-      - key: gain_values
-        type: f32_array
-        count: 0
-      - key: points_v
-        type: i32
+      - key: map_x0
+        type: f64
         count: 1
-      - key: points_h
-        type: i32
+      - key: map_y0
+        type: f64
         count: 1
-      - key: map_planes
-        type: i32
+      - key: map_spacing_x
+        type: f64
+        count: 1
+      - key: map_spacing_y
+        type: f64
         count: 1
       - key: top
         type: i32
         count: 1
+        optional: true
       - key: left
         type: i32
         count: 1
+        optional: true
       - key: bottom
         type: i32
         count: 1
+        optional: true
       - key: right
         type: i32
         count: 1
+        optional: true
       - key: start_plane
         type: i32
         count: 1
+        optional: true
       - key: num_planes
         type: i32
         count: 1
+        optional: true
       - key: row_pitch
         type: i32
         count: 1
+        optional: true
       - key: col_pitch
         type: i32
         count: 1
-      - key: spacing_v
+        optional: true
+      - key: clamp
+        type: string
+        count: 1
+        optional: true
+        enum: gain_clamp
+      # At least the largest gain the map holds; a uint16 input then
+      # multiplies by a fixed-point gain instead of in float32.
+      - key: max_gain
         type: f64
         count: 1
-      - key: spacing_h
-        type: f64
+        optional: true
+      - key: engine_opts
+        type: string
         count: 1
-      - key: origin_v
-        type: f64
-        count: 1
-      - key: origin_h
-        type: f64
-        count: 1
-
-  - name: cfa_apply_gain_map
-    is_cfa: true
-    requires_2d: true
-    inputs:
-      - channels: 1
-    outputs:
-      - channels: 1
-        dtype: float32
-    attrs:
-      - key: gain_values
-        type: f32_array
-        count: 0
-      - key: points_v
-        type: i32
-        count: 1
-      - key: points_h
-        type: i32
-        count: 1
-      - key: map_planes
-        type: i32
-        count: 1
-      - key: top
-        type: i32
-        count: 1
-      - key: left
-        type: i32
-        count: 1
-      - key: bottom
-        type: i32
-        count: 1
-      - key: right
-        type: i32
-        count: 1
-      - key: row_pitch
-        type: i32
-        count: 1
-      - key: col_pitch
-        type: i32
-        count: 1
-      - key: spacing_v
-        type: f64
-        count: 1
-      - key: spacing_h
-        type: f64
-        count: 1
-      - key: origin_v
-        type: f64
-        count: 1
-      - key: origin_h
-        type: f64
-        count: 1
-
-  - name: apply_flat_gain_map
-    requires_2d: true
-    inputs:
-      - channels: 1
-    outputs:
-      - channels: 1
-        dtype: float32
-    attrs:
-      - key: gain_map
-        type: f32_array
-        count: 0
-      - key: gain_h
-        type: i32
-        count: 1
-      - key: gain_w
-        type: i32
-        count: 1
+        optional: true
 
   # DNG MapPolynomial: samples in the area (top, left, bottom, right; 0 and
   # 0 mean the whole axis), at row_pitch and col_pitch from its top-left

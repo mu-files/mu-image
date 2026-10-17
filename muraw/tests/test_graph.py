@@ -1160,13 +1160,11 @@ def test_strided_numpy_crop_ported_and_image_op():
     got = (Array(crop) - 1.0).realize()
     np.testing.assert_array_equal(got, crop - 1.0)
 
-    identity = mi.apply_flat_gain_map(
-        Array(crop),
-        gain_map=[1.0, 1.0, 1.0, 1.0],
-        gain_h=2,
-        gain_w=2,
+    codes = parent.astype(np.uint16)[1:3, 1:3]
+    identity = mi.cfa_fix_bad_pixels_constant(
+        Array(codes), constant=1000, bayer_phase=0
     ).realize()
-    np.testing.assert_array_equal(identity, crop)
+    np.testing.assert_array_equal(identity, codes)
 
 
 def _op_chain(t: Array) -> list[str]:

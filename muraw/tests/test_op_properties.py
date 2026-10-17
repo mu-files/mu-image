@@ -59,7 +59,7 @@ def test_gen_ops_accepts_consistent_properties():
         ("rgb_normalize_raw", True, False, True),
         ("rgb_transform", False, False, True),
         ("warp_rectilinear", True, False, False),
-        ("apply_flat_gain_map", True, False, False),
+        ("apply_gain_map", True, False, False),
         ("lut", False, False, False),
     ],
 )

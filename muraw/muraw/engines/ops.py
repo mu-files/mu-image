@@ -1172,211 +1172,105 @@ warp_rectilinear = EngineOp(
     _infer_meta=None,
 )
 
-rgb_apply_gain_map = EngineOp(
-    meta=OpMeta(
-        name="rgb_apply_gain_map", requires_2d=False, is_cfa=False, is_rgb=True
-    ),
-    _out_dtype=graph._out_dtype_const("float32"),
-    _out_channels=graph._out_channels_const(3),
-    _in_channels=(3,),
-    _n_inputs=1,
+apply_gain_map = EngineOp(
+    meta=OpMeta(name="apply_gain_map", requires_2d=True, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
     _variable_input=False,
     _attr_specs=tuple(
         json.loads(r"""[
   {
-    "count": 0,
-    "key": "gain_values",
-    "type": "f32_array"
+    "count": 1,
+    "key": "map_x0",
+    "type": "f64"
   },
   {
     "count": 1,
-    "key": "points_v",
-    "type": "i32"
+    "key": "map_y0",
+    "type": "f64"
   },
   {
     "count": 1,
-    "key": "points_h",
-    "type": "i32"
+    "key": "map_spacing_x",
+    "type": "f64"
   },
   {
     "count": 1,
-    "key": "map_planes",
-    "type": "i32"
+    "key": "map_spacing_y",
+    "type": "f64"
   },
   {
     "count": 1,
     "key": "top",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "left",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "bottom",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "right",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "start_plane",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "num_planes",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "row_pitch",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
     "key": "col_pitch",
+    "optional": true,
     "type": "i32"
   },
   {
     "count": 1,
-    "key": "spacing_v",
+    "key": "clamp",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "none",
+      "max_one",
+      "zero_one"
+    ]
+  },
+  {
+    "count": 1,
+    "key": "max_gain",
+    "optional": true,
     "type": "f64"
   },
   {
     "count": 1,
-    "key": "spacing_h",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "origin_v",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "origin_h",
-    "type": "f64"
-  }
-]""")
-    ),
-    _infer_meta=None,
-)
-
-cfa_apply_gain_map = EngineOp(
-    meta=OpMeta(name="cfa_apply_gain_map", requires_2d=True, is_cfa=True, is_rgb=False),
-    _out_dtype=graph._out_dtype_const("float32"),
-    _out_channels=graph._out_channels_const(1),
-    _in_channels=(1,),
-    _n_inputs=1,
-    _variable_input=False,
-    _attr_specs=tuple(
-        json.loads(r"""[
-  {
-    "count": 0,
-    "key": "gain_values",
-    "type": "f32_array"
-  },
-  {
-    "count": 1,
-    "key": "points_v",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "points_h",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "map_planes",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "top",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "left",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "bottom",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "right",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "row_pitch",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "col_pitch",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "spacing_v",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "spacing_h",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "origin_v",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "origin_h",
-    "type": "f64"
-  }
-]""")
-    ),
-    _infer_meta=None,
-)
-
-apply_flat_gain_map = EngineOp(
-    meta=OpMeta(
-        name="apply_flat_gain_map", requires_2d=True, is_cfa=False, is_rgb=False
-    ),
-    _out_dtype=graph._out_dtype_const("float32"),
-    _out_channels=graph._out_channels_const(1),
-    _in_channels=(1,),
-    _n_inputs=1,
-    _variable_input=False,
-    _attr_specs=tuple(
-        json.loads(r"""[
-  {
-    "count": 0,
-    "key": "gain_map",
-    "type": "f32_array"
-  },
-  {
-    "count": 1,
-    "key": "gain_h",
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "gain_w",
-    "type": "i32"
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
   }
 ]""")
     ),
@@ -1514,9 +1408,7 @@ OPS_BY_NAME = {
     "rgb_apply_profile_gain_table_map": rgb_apply_profile_gain_table_map,
     "fix_vignette": fix_vignette,
     "warp_rectilinear": warp_rectilinear,
-    "rgb_apply_gain_map": rgb_apply_gain_map,
-    "cfa_apply_gain_map": cfa_apply_gain_map,
-    "apply_flat_gain_map": apply_flat_gain_map,
+    "apply_gain_map": apply_gain_map,
     "map_polynomial": map_polynomial,
     "cfa_fix_bad_pixels_constant": cfa_fix_bad_pixels_constant,
 }
@@ -1525,9 +1417,8 @@ __all__ = [
     "OPS_BY_NAME",
     "add",
     "add_scalar",
-    "apply_flat_gain_map",
+    "apply_gain_map",
     "cast_dtype",
-    "cfa_apply_gain_map",
     "cfa_demosaic",
     "cfa_fix_bad_pixels_constant",
     "cfa_normalize_raw",
@@ -1547,7 +1438,6 @@ __all__ = [
     "pad",
     "ramp",
     "reshape",
-    "rgb_apply_gain_map",
     "rgb_apply_hue_sat_map",
     "rgb_apply_hue_sat_val_map",
     "rgb_apply_profile_gain_table_map",

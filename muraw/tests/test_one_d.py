@@ -157,8 +157,10 @@ def test_tile_three_reps_makes_channels():
     ),
 )
 def test_requires_2d_catalog_ops_raise(name):
+    engine_op = OPS_BY_NAME[name]
+    inputs = [Array(V)] * max(engine_op._n_inputs, 1)
     with pytest.raises(ValueError, match="requires a 2D input"):
-        OPS_BY_NAME[name](Array(V))
+        engine_op(*inputs)
 
 
 def test_demosaic_vng_rcd_opencv_rejects_1d():

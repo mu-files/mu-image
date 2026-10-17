@@ -2690,6 +2690,37 @@ def _merge_map_polynomial_opcodes(
     return merged
 
 
+def _apply_gain_map_opcode(x: Array, opcode: dict[str, Any]) -> Array:
+    """A parsed GainMap opcode as one ``mi.apply_gain_map`` node.
+
+    DNG places map sample ``(i, j)`` at ``origin + spacing * index`` in
+    fractions of the image, measured from pixel centers; in canvas pixels
+    that is ``origin_h * width - 0.5`` and ``spacing_h * width``.
+
+    SDK ref: dng_gain_map.cpp dng_opcode_GainMap::ProcessArea
+    """
+    _, _, canvas_width, canvas_height = x.meta.canvas
+    area = opcode["area"]
+    gains = mi.Array(np.asarray(opcode["gain_values"], dtype=np.float32))
+    return mi.apply_gain_map(
+        x,
+        gains,
+        map_x0=float(opcode["origin_h"]) * canvas_width - 0.5,
+        map_y0=float(opcode["origin_v"]) * canvas_height - 0.5,
+        map_spacing_x=float(opcode["spacing_h"]) * canvas_width,
+        map_spacing_y=float(opcode["spacing_v"]) * canvas_height,
+        top=int(area["top"]),
+        left=int(area["left"]),
+        bottom=int(area["bottom"]),
+        right=int(area["right"]),
+        start_plane=int(opcode["plane"]),
+        num_planes=int(opcode["planes"]),
+        row_pitch=int(opcode["row_pitch"]),
+        col_pitch=int(opcode["col_pitch"]),
+        clamp="max_one",
+    )
+
+
 def apply_opcodes(
     data: Array,
     opcodes: list[dict[str, Any]],
@@ -2813,26 +2844,7 @@ def apply_opcodes(
                 f"gain_range=[{opcode['gain_values'].min():.4f}, "
                 f"{opcode['gain_values'].max():.4f}]"
             )
-            gv = np.asarray(opcode["gain_values"], dtype=np.float32)
-            x = mi.rgb_apply_gain_map(
-                x,
-                gain_values=gv.reshape(-1),
-                points_v=int(gv.shape[0]),
-                points_h=int(gv.shape[1]),
-                map_planes=int(gv.shape[2]),
-                top=int(area["top"]),
-                left=int(area["left"]),
-                bottom=int(area["bottom"]),
-                right=int(area["right"]),
-                start_plane=int(opcode["plane"]),
-                num_planes=int(opcode["planes"]),
-                row_pitch=int(opcode["row_pitch"]),
-                col_pitch=int(opcode["col_pitch"]),
-                spacing_v=float(opcode["spacing_v"]),
-                spacing_h=float(opcode["spacing_h"]),
-                origin_v=float(opcode["origin_v"]),
-                origin_h=float(opcode["origin_h"]),
-            )
+            x = _apply_gain_map_opcode(x, opcode)
 
         else:
             name = enum_display_name(DngOpcode, opcode["id"])
@@ -2920,24 +2932,7 @@ def apply_opcodes_cfa(
                 f"gain_range=[{opcode['gain_values'].min():.4f}, "
                 f"{opcode['gain_values'].max():.4f}]"
             )
-            gv = np.asarray(opcode["gain_values"], dtype=np.float32)
-            x = mi.cfa_apply_gain_map(
-                x,
-                gain_values=gv.reshape(-1),
-                points_v=int(gv.shape[0]),
-                points_h=int(gv.shape[1]),
-                map_planes=int(gv.shape[2]),
-                top=int(area["top"]),
-                left=int(area["left"]),
-                bottom=int(area["bottom"]),
-                right=int(area["right"]),
-                row_pitch=int(opcode["row_pitch"]),
-                col_pitch=int(opcode["col_pitch"]),
-                spacing_v=float(opcode["spacing_v"]),
-                spacing_h=float(opcode["spacing_h"]),
-                origin_v=float(opcode["origin_v"]),
-                origin_h=float(opcode["origin_h"]),
-            )
+            x = _apply_gain_map_opcode(x, opcode)
 
         elif opcode_type == "MapPolynomial":
             x = x.convert_type("float32")
