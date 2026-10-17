@@ -84,6 +84,15 @@ def test_integer_division_gives_float32(dtype):
     _check(got, np.float32(3) / src.astype(np.float32), max_ulp=2)
 
 
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+@pytest.mark.parametrize("const", [3, 0.75])
+def test_integer_division_reads_the_integers_and_writes_float32(dtype, const):
+    got = mi.Array(_source(dtype)) / const
+    assert got._node.op == "div_scalar"
+    assert got.dtype == np.float32
+    assert got._node.inputs[0].dtype == np.dtype(dtype)
+
+
 def test_uint8_results_saturate_at_both_ends():
     src = np.array([[10, 200]], dtype=np.uint8)
     _check(mi.Array(src) - 5, np.array([[5, 195]], dtype=np.uint8))

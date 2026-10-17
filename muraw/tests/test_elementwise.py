@@ -184,3 +184,13 @@ def test_divide_function():
     second = _source("uint8", (3, 4), 13)
     got = mi.divide(mi.Array(first), mi.Array(second))
     _check(got, first.astype(np.float32) / second.astype(np.float32), divide=True)
+
+
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+def test_integer_division_reads_the_integers_and_writes_float32(dtype):
+    first = mi.Array(_source(dtype, (3, 4), 14))
+    second = mi.Array(_source(dtype, (3, 4), 15))
+    got = first / second
+    assert got._node.op == "divide"
+    assert got.dtype == np.float32
+    assert [inp.dtype for inp in got._node.inputs] == [np.dtype(dtype)] * 2

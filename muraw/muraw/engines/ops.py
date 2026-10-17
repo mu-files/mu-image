@@ -90,7 +90,7 @@ mul_scalar = EngineOp(
 
 div_scalar = EngineOp(
     meta=OpMeta(name="div_scalar", requires_2d=False, is_cfa=False, is_rgb=False),
-    _out_dtype=graph._out_dtype_same,
+    _out_dtype=graph._out_dtype_float_of_input,
     _out_channels=graph._out_channels_same,
     _in_channels=(None,),
     _n_inputs=1,
@@ -154,7 +154,7 @@ multiply = EngineOp(
 
 divide = EngineOp(
     meta=OpMeta(name="divide", requires_2d=False, is_cfa=False, is_rgb=False),
-    _out_dtype=graph._out_dtype_same,
+    _out_dtype=graph._out_dtype_float_of_input,
     _out_channels=graph._out_channels_same,
     _in_channels=(None, None),
     _n_inputs=2,

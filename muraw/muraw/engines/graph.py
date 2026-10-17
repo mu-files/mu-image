@@ -155,7 +155,8 @@ class EngineOp:
     # True when the last input entry may appear one or more times on a node.
     _variable_input: bool
     _attr_specs: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)
-    # When set (e.g. geometry: view), replaces dtype/channels/H×W/origin composition.
+    # When set (e.g. geometry: view), replaces channels/H×W/origin composition.
+    # The output dtype is still ``_out_dtype``.
     _infer_meta: Optional[GraphOutMetaFn] = None
 
     def __call__(self, x: Array, /, *more: Array, **attrs: Any) -> Array:
@@ -174,7 +175,9 @@ class EngineOp:
         """``more`` are the inputs after ``x``. Only a geometry policy of an
         op with more than one input is passed them."""
         if self._infer_meta is not None:
-            return self._infer_meta(x, attrs, *more)
+            meta = self._infer_meta(x, attrs, *more)
+            dtype = self._out_dtype(x, attrs)
+            return meta if meta.dtype == dtype else meta.copy(dtype=dtype)
         return x.meta.with_size(
             channels=self._out_channels(x, attrs),
             dtype=self._out_dtype(x, attrs),
@@ -186,6 +189,14 @@ class EngineOp:
 
 def _out_dtype_same(x: Array, attrs: Dict[str, Any]) -> np.dtype:
     return x.meta.dtype
+
+
+def _out_dtype_float_of_input(x: Array, attrs: Dict[str, Any]) -> np.dtype:
+    """``x``'s dtype when it is a float, and float32 when it is an integer,
+    as NumPy's true division writes a float."""
+    if x.meta.dtype.kind == "f":
+        return x.meta.dtype
+    return np.dtype(np.float32)
 
 
 def _out_dtype_const(dtype: DTypeLike) -> OutMetaFn:

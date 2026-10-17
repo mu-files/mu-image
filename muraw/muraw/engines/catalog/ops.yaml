@@ -14,7 +14,10 @@
 #     - inputs: int or any
 #     - outputs: int, same (same = copy input 0), or from_attr (the
 #       value of the i32 attr <key>)
-#   dtype matches input 0 unless outputs.dtype is set.
+#   dtype matches input 0 unless outputs.dtype is set, also with a
+#     geometry: a dtype name, {from_attr: <key>}, or float_of_input (input
+#     0's dtype when it is a float, and float32 when it is an integer, as
+#     NumPy's true division writes a float).
 #   height/width/origin match input 0 unless outputs.geometry is set.
 #   geometry: <policy> — named emit-meta policy (not attr inspection).
 #     Codegen wires geometry: foo → graph._out_meta_foo (implement the fn in graph.py).
@@ -81,8 +84,9 @@ ops:
   # value holds one number for every sample, or one per channel. With
   # per_frame: true it holds one number per frame instead, used for every
   # channel of that frame. Integer results are rounded to the nearest
-  # integer and saturate to the dtype's range. reverse: true computes
-  # value - x and value / x.
+  # integer and saturate to the dtype's range, except that div_scalar
+  # writes float32 for an integer input. reverse: true computes value - x
+  # and value / x.
   - name: add_scalar
     needs_frame_index: true
     inputs:
@@ -138,6 +142,7 @@ ops:
       - channels: any
     outputs:
       - channels: same
+        dtype: float_of_input
     attrs:
       - key: value
         type: f32_array
@@ -155,8 +160,8 @@ ops:
   # a / b. The inputs broadcast as in NumPy: each input's frames, rows,
   # columns, and channels match the output's, or are 1 and are read at
   # index 0 for every output index. Integer results are rounded to the
-  # nearest integer and saturate to the dtype's range. divide has float
-  # paths only.
+  # nearest integer and saturate to the dtype's range. divide writes
+  # float32 for integer inputs.
   - name: add
     needs_frame_index: true
     inputs:
@@ -194,6 +199,7 @@ ops:
       - channels: any
     outputs:
       - channels: same
+        dtype: float_of_input
         geometry: broadcast
     attrs: []
 

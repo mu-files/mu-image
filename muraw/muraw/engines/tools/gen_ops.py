@@ -155,6 +155,8 @@ def _out_dtype_expr(out_spec: dict[str, Any]) -> str:
     dtype_spec = out_spec.get("dtype", "same")
     if dtype_spec is None or dtype_spec == "same":
         return "graph._out_dtype_same"
+    if dtype_spec == "float_of_input":
+        return "graph._out_dtype_float_of_input"
     if isinstance(dtype_spec, dict):
         attr_key = dtype_spec.get("from_attr")
         if not attr_key:

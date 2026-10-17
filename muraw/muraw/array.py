@@ -522,8 +522,6 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
             "is not supported yet; give both arrays the same channel_axis"
         )
     dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
-    if name == "divide" and _is_integer(dtype):
-        dtype = np.dtype(np.float32)
     return op(name, first.astype(dtype), second.astype(dtype))
 
 
@@ -2326,8 +2324,9 @@ class Array:
         not one value or one per channel. ``reverse`` puts ``other`` first.
 
         A constant keeps an integer array's dtype when its values are
-        integers. A float constant, and ``/``, make an integer array
-        float32. Integer results saturate instead of wrapping.
+        integers. A float constant makes an integer array float32. ``/``
+        reads an integer array as it is and writes float32. Integer results
+        saturate instead of wrapping.
         """
         from .engines.graph import op
 
@@ -2339,7 +2338,7 @@ class Array:
                     f"got {other!r}"
                 )
             dtype = self.dtype
-            if _is_integer(dtype) and (const.dtype.kind == "f" or name == "div_scalar"):
+            if _is_integer(dtype) and const.dtype.kind == "f":
                 dtype = np.dtype(np.float32)
             scalar = _scalar_values(self._meta, const)
             if scalar is not None:
@@ -2349,7 +2348,8 @@ class Array:
                     attrs["per_frame"] = True
                 if reverse:
                     attrs["reverse"] = True
-                return op(name, self.astype(dtype), **attrs)
+                source = self if name == "div_scalar" else self.astype(dtype)
+                return op(name, source, **attrs)
             channel_axis = (
                 self.meta.channel_axis if const.ndim == self.meta.ndim else None
             )
