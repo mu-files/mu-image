@@ -132,6 +132,18 @@ def sdk_available():
     return DNG_VALIDATE_PATH.exists()
 
 
+def sdk_version():
+    """The dng_validate version string. Does not run the tool when it is
+    not installed, so a CI machine can write a partial table."""
+    if not sdk_available():
+        return "dng_validate (not available)"
+    result = subprocess.run([str(DNG_VALIDATE_PATH)], capture_output=True, text=True)
+    for line in (result.stdout + result.stderr).splitlines():
+        if "version" in line:
+            return line.strip()
+    return "dng_validate"
+
+
 def _run_sdk(args):
     result = subprocess.run(
         [str(DNG_VALIDATE_PATH), *map(str, args)],
@@ -201,14 +213,6 @@ def coreimage_render(path):
     if rgb.size == 0:
         raise RendererError("Core Image returned an empty image")
     return rgb.astype(np.float64)
-
-
-def sdk_version():
-    result = subprocess.run([str(DNG_VALIDATE_PATH)], capture_output=True, text=True)
-    for line in (result.stdout + result.stderr).splitlines():
-        if "version" in line:
-            return line.strip()
-    return "dng_validate"
 
 
 @dataclass
