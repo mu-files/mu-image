@@ -36,8 +36,9 @@ except ImportError:
 
 OPCODE_FIX_VIGNETTE_RADIAL = 3
 OPCODE_MAP_POLYNOMIAL = 8
-# Opcodes carry the oldest DNG version that reads them; FixVignetteRadial
-# and MapPolynomial arrived in DNG 1.3.
+OPCODE_GAIN_MAP = 9
+# Opcodes carry the oldest DNG version that reads them; FixVignetteRadial,
+# MapPolynomial and GainMap arrived in DNG 1.3.
 DNG_VERSION_1_3 = 0x01030000
 
 
@@ -71,6 +72,28 @@ def fix_vignette_radial(params, center_x, center_y):
     padded = [*params, *[0.0] * (5 - len(params))]
     body = struct.pack(">7d", *padded, center_x, center_y)
     return opcode(OPCODE_FIX_VIGNETTE_RADIAL, body)
+
+
+def gain_map(
+    gains,
+    area,
+    origin,
+    spacing,
+    plane=0,
+    planes=1,
+    row_pitch=1,
+    col_pitch=1,
+):
+    """A GainMap opcode. ``gains`` is (points_v, points_h, map_planes);
+    ``origin`` and ``spacing`` are (vertical, horizontal) fractions of the
+    image."""
+    points_v, points_h, map_planes = gains.shape
+    body = area_spec(area, plane, planes, row_pitch, col_pitch)
+    body += struct.pack(">II", points_v, points_h)
+    body += struct.pack(">dddd", spacing[0], spacing[1], origin[0], origin[1])
+    body += struct.pack(">I", map_planes)
+    body += struct.pack(f">{gains.size}f", *np.asarray(gains, np.float32).ravel())
+    return opcode(OPCODE_GAIN_MAP, body)
 
 
 def opcode_list(*opcodes):
@@ -107,12 +130,15 @@ def rggb(rgb):
     return cfa
 
 
-def write_synthetic_dng(path, data, photometric, opcode_lists=None):
+def write_synthetic_dng(path, data, photometric, opcode_lists=None, black_level=0):
     """Write ``data`` as a one-IFD DNG with an identity tone curve, an RGGB
-    pattern for a CFA, and ``opcode_lists`` ({"OpcodeList2": bytes, …})."""
+    pattern for a CFA, ``opcode_lists`` ({"OpcodeList2": bytes, …}), and a
+    BlackLevel tag when ``black_level`` is not 0."""
     tags = MetadataTags()
     tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
     tags.add_tag("UniqueCameraModel", "Synthetic Test Camera")
+    if black_level:
+        tags.add_tag("BlackLevel", [black_level])
     for name, value in (opcode_lists or {}).items():
         tags.add_tag(name, value)
     write_dng_from_array(

@@ -26,6 +26,7 @@ from synthetic_dng import (
     core_image_available,
     coreimage_render,
     fix_vignette_radial,
+    gain_map,
     map_polynomial,
     mu_render,
     mu_stage,
@@ -37,6 +38,7 @@ from synthetic_dng import (
     stored_samples,
     write_synthetic_dng,
 )
+from test_apply_gain_map import _reference as _gain_map_reference
 from test_fix_vignette import _reference as _fix_vignette_reference
 from test_map_polynomial import _COEFFICIENTS, _PER_PLANE_SETS, _reference
 from tifffile import COMPRESSION
@@ -160,6 +162,81 @@ class FixVignetteRadial:
 
 
 @dataclass(frozen=True)
+class GainMap:
+    """A GainMap opcode with a table of ``points`` (points_v, points_h,
+    map_planes) gains drawn from ``low`` .. ``high``. ``origin`` and
+    ``spacing`` are (vertical, horizontal) fractions of the image; with no
+    spacing the map's first and last samples sit at the image's edges."""
+
+    points: tuple
+    origin: tuple = (0.0, 0.0)
+    spacing: tuple | None = None
+    low: float = 0.6
+    high: float = 1.8
+    seed: int = 7
+    area: tuple = FULL
+    plane: int = 0
+    planes: int = 3
+    row_pitch: int = 1
+    col_pitch: int = 1
+
+    section = "GainMap"
+    coreimage_issue = None
+    sdk_gain_tolerance = 0.0
+
+    @property
+    def gains(self):
+        rng = np.random.default_rng(self.seed)
+        return rng.uniform(self.low, self.high, self.points).astype(np.float32)
+
+    def _spacing(self):
+        if self.spacing is not None:
+            return self.spacing
+        return tuple(1.0 / max(points - 1, 1) for points in self.points[:2])
+
+    def encode(self):
+        return gain_map(
+            self.gains,
+            self.area,
+            self.origin,
+            self._spacing(),
+            self.plane,
+            self.planes,
+            self.row_pitch,
+            self.col_pitch,
+        )
+
+    def reference(self, x):
+        """GainMap as the spec places it: map sample (i, j) at origin +
+        spacing * index, in fractions of the image measured from pixel
+        centers, and each product capped at 1."""
+        height, width = x.shape[:2]
+        spacing_v, spacing_h = self._spacing()
+        top, left, bottom, right = self.area
+        return _gain_map_reference(
+            x,
+            self.gains,
+            map_x0=self.origin[1] * width - 0.5,
+            map_y0=self.origin[0] * height - 0.5,
+            map_spacing_x=spacing_h * width,
+            map_spacing_y=spacing_v * height,
+            top=top,
+            left=left,
+            bottom=bottom,
+            right=right,
+            start_plane=self.plane,
+            num_planes=self.planes,
+            row_pitch=self.row_pitch,
+            col_pitch=self.col_pitch,
+            clamp="max_one",
+        )
+
+    def mu_reference(self, x):
+        """What mu-image computes by design: the spec."""
+        return self.reference(x)
+
+
+@dataclass(frozen=True)
 class Case:
     name: str
     photometric: str
@@ -168,6 +245,12 @@ class Case:
     opcodes: tuple
     sdk_issue: str | None = None
     shape: tuple = (HEIGHT, WIDTH)
+    # A uint16 BlackLevel tag; the stored codes are black_level + value *
+    # (65535 - black_level).
+    black_level: int = 0
+    # What Core Image does on this case, when it is not what it does on
+    # every case of the opcode.
+    coreimage_issue: str | None = None
 
     @property
     def stage(self):
@@ -182,18 +265,32 @@ class Case:
         unit = rgb_ramp(*self.shape)
         if self.photometric == "CFA":
             unit = rggb(unit)
+        if self.black_level:
+            codes = self.black_level + unit * (65535 - self.black_level)
+            return np.round(codes).astype(np.uint16)
         return stored_samples(unit, dtype or self.dtype)
 
     def write(self, path, dtype=None):
         blob = opcode_list(*(op.encode() for op in self.opcodes))
+        return self.write_plain(path, dtype, {self.opcode_list: blob})
+
+    def write_plain(self, path, dtype=None, opcode_lists=None):
+        """The case's DNG with ``opcode_lists``, none by default."""
         return write_synthetic_dng(
-            path, self.stored(dtype), self.photometric, {self.opcode_list: blob}
+            path,
+            self.stored(dtype),
+            self.photometric,
+            opcode_lists,
+            black_level=self.black_level,
         )
 
     def unit_input(self):
+        """The linearized samples: a uint16 code less the black level, over
+        65535 less the black level."""
         stored = self.stored()
         if stored.dtype == np.uint16:
-            return (stored / np.float32(65535)).astype(np.float32)
+            black = np.float32(self.black_level)
+            return ((stored - black) / (np.float32(65535) - black)).astype(np.float32)
         return stored.astype(np.float32)
 
     def reference(self, mu=False):
@@ -336,6 +433,163 @@ CASES += [
 ]
 
 
+def _bayer_phases(**kwargs):
+    """One GainMap per Bayer phase, as cameras write: row and column pitch
+    2 from an area offset by the phase, a one-plane map each."""
+    return tuple(
+        GainMap(
+            (5, 6, 1),
+            seed=11 + 2 * row + col,
+            area=(row, col, HEIGHT, WIDTH),
+            planes=1,
+            row_pitch=2,
+            col_pitch=2,
+            **kwargs,
+        )
+        for row in (0, 1)
+        for col in (0, 1)
+    )
+
+
+COREIMAGE_GAIN_MAP_PLANES = (
+    "Core Image returns no image for a GainMap that starts at plane 1, or "
+    "that has fewer map planes than planes (one map plane for three); it "
+    "reads one that starts at plane 0 with as many map planes as planes."
+)
+COREIMAGE_GAIN_MAP_PER_PLANE = (
+    "With a different gain on each of three planes, the change Core Image's "
+    "render makes follows mu-image's less closely (correlation 0.84 to 0.90) "
+    "than with the same gain on every plane (0.96, measured outside this "
+    "table); what it does differently with the planes is not known."
+)
+COREIMAGE_GAIN_MAP_PITCH = (
+    "Core Image applies a GainMap to every sample of its area, whatever the "
+    "row and column pitch: its render changes as much with column pitch 2 "
+    "as with 1, and on a CFA as much for the red sites alone as for the "
+    "whole mosaic."
+)
+COREIMAGE_GAIN_MAP_LISTS = (
+    "Core Image ignores every GainMap of an opcode list that holds more than "
+    "one, logging 'Gain Map will be ignored because of Unexpected size of "
+    "gainmap parameters'. It therefore ignores the four Bayer phases cameras "
+    "write, one GainMap each."
+)
+
+
+def _rgb_gain_map(name, op, **kwargs):
+    """A float32 LINEAR_RAW case with ``op`` in OpcodeList2."""
+    return Case(name, "LINEAR_RAW", "float32", "OpcodeList2", (op,), **kwargs)
+
+
+_THREE_PLANES = GainMap((5, 6, 3))
+
+CASES += [
+    _rgb_gain_map(
+        "one map plane",
+        GainMap((5, 6, 1)),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PLANES,
+    ),
+    _rgb_gain_map(
+        "three map planes",
+        _THREE_PLANES,
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    _rgb_gain_map(
+        "planes 1 and 2 (G and B), three map planes",
+        GainMap((5, 6, 3), plane=1, planes=2),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PLANES,
+    ),
+    _rgb_gain_map(
+        "area 10..70 x 17..101",
+        GainMap((5, 6, 3), area=(10, 17, 70, 101)),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    _rgb_gain_map(
+        "row pitch 2, column pitch 3",
+        GainMap((5, 6, 3), row_pitch=2, col_pitch=3),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PITCH,
+    ),
+    _rgb_gain_map(
+        "7 x 9 grid, origin 0.1, spacing 0.12, edges held",
+        GainMap((7, 9, 3), origin=(0.1, 0.1), spacing=(0.12, 0.12)),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    _rgb_gain_map(
+        "gains of 1.2 to 2.5, products capped at 1",
+        GainMap((5, 6, 3), low=1.2, high=2.5),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    # The spec caps a product at 1 only; a negative gain gives a negative
+    # sample.
+    _rgb_gain_map(
+        "gains of -0.8 to 1.0, negative products kept",
+        GainMap((5, 6, 3), low=-0.8, high=1.0),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    Case(
+        "three map planes",
+        "LINEAR_RAW",
+        "float32",
+        "OpcodeList3",
+        (_THREE_PLANES,),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    Case(
+        "three map planes",
+        "LINEAR_RAW",
+        "uint16",
+        "OpcodeList2",
+        (_THREE_PLANES,),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PER_PLANE,
+    ),
+    Case(
+        "pitch 1, area 10..70 x 17..101",
+        "CFA",
+        "uint16",
+        "OpcodeList2",
+        (GainMap((5, 6, 1), area=(10, 17, 70, 101), planes=1),),
+    ),
+    *(
+        Case(
+            "four Bayer phases",
+            "CFA",
+            "uint16",
+            opcode_list_name,
+            _bayer_phases(),
+            coreimage_issue=COREIMAGE_GAIN_MAP_LISTS,
+        )
+        for opcode_list_name in ("OpcodeList2", "OpcodeList1")
+    ),
+    Case(
+        "four Bayer phases, black level 1024",
+        "CFA",
+        "uint16",
+        "OpcodeList2",
+        _bayer_phases(),
+        black_level=1024,
+        coreimage_issue=COREIMAGE_GAIN_MAP_LISTS,
+    ),
+    # The pitch counts from the area's corner, before the image here, so
+    # rows and columns 1, 3, 5, … change: the blue sites.
+    Case(
+        "area from row and column -1 at pitch 2",
+        "CFA",
+        "uint16",
+        "OpcodeList2",
+        (
+            GainMap(
+                (5, 6, 1),
+                area=(-1, -1, HEIGHT, WIDTH),
+                planes=1,
+                row_pitch=2,
+                col_pitch=2,
+            ),
+        ),
+        coreimage_issue=COREIMAGE_GAIN_MAP_PITCH,
+    ),
+]
+
+
 def _label(case):
     return f"{case.photometric} {case.dtype} {case.opcode_list}: {case.name}"
 
@@ -347,9 +601,14 @@ def _sdk_param(case):
     return pytest.param(case, id=_label(case), marks=marks)
 
 
+def _coreimage_issue(case):
+    return case.coreimage_issue or case.opcodes[0].coreimage_issue
+
+
 def _coreimage_param(case):
-    mark = pytest.mark.xfail(strict=True, reason=case.opcodes[0].coreimage_issue)
-    return pytest.param(case, id=_label(case), marks=[mark])
+    issue = _coreimage_issue(case)
+    marks = [] if issue is None else [pytest.mark.xfail(strict=True, reason=issue)]
+    return pytest.param(case, id=_label(case), marks=marks)
 
 
 SECTION_FILES = "Reading synthetic DNGs"
@@ -444,8 +703,13 @@ def _max_diff(got, want):
 
 
 def _sdk_tolerance(case):
-    """dng_validate writes an integer CFA's stage 2 in 16-bit codes."""
+    """dng_validate writes an integer CFA's stage 2 in 16-bit codes. With a
+    black level it also rounds the linearized samples to 16-bit codes
+    before the opcode list, and each gain scales that half code."""
     sample = SDK_UINT16_TOLERANCE if case.dtype == "uint16" else SDK_FLOAT_TOLERANCE
+    if case.black_level:
+        largest_gain = max(float(np.max(op.gains)) for op in case.opcodes)
+        sample += 0.5 / 65535 * largest_gain
     return sample + sum(op.sdk_gain_tolerance for op in case.opcodes)
 
 
@@ -495,12 +759,15 @@ def test_coreimage_applies_the_opcode(case, out_dir):
     """Core Image reads only 16-bit DNGs, so every case is written as
     uint16. The opcode applies when the change it makes to Core Image's
     render follows the change it makes to mu-image's."""
-    plain = write_synthetic_dng(
-        out_dir / "plain.dng", case.stored("uint16"), case.photometric
-    )
+    plain = case.write_plain(out_dir / "plain.dng", dtype="uint16")
     path = case.write(out_dir / "case.dng", dtype="uint16")
     mu_change = mu_render(path) - mu_render(plain)
-    ci_change = coreimage_render(path) - coreimage_render(plain)
+    issue = _coreimage_issue(case)
+    try:
+        ci_change = coreimage_render(path) - coreimage_render(plain)
+    except RendererError as error:
+        TABLE.record(case.section, _label(case), COLUMN_CI, str(error), note=issue)
+        raise
     ci_mean = float(np.mean(np.abs(ci_change)))
     mu_mean = float(np.mean(np.abs(mu_change)))
     if ci_mean < 1e-6:
@@ -518,7 +785,7 @@ def test_coreimage_applies_the_opcode(case, out_dir):
         _label(case),
         COLUMN_CI,
         text,
-        note=None if applies else case.opcodes[0].coreimage_issue,
+        note=None if applies else issue,
     )
     assert applies, f"Core Image {text}"
 
@@ -592,6 +859,27 @@ def test_fix_vignette_radial_encoder_round_trips():
     assert parsed["type"] == "FixVignetteRadial"
     np.testing.assert_array_equal(parsed["coefficients"], [0.6, -0.3, 0.2, 0.0, 0.0])
     assert (parsed["center_x"], parsed["center_y"]) == (0.45, 0.4)
+
+
+def test_gain_map_encoder_round_trips():
+    op = GainMap(
+        (3, 4, 2),
+        origin=(0.1, 0.2),
+        spacing=(0.3, 0.25),
+        area=(3, 5, 70, 90),
+        plane=1,
+        planes=2,
+        row_pitch=2,
+        col_pitch=3,
+    )
+    (parsed,) = parse_opcode_list(opcode_list(op.encode()))
+    assert parsed["type"] == "GainMap"
+    assert parsed["area"] == {"top": 3, "left": 5, "bottom": 70, "right": 90}
+    assert (parsed["plane"], parsed["planes"]) == (1, 2)
+    assert (parsed["row_pitch"], parsed["col_pitch"]) == (2, 3)
+    assert (parsed["origin_v"], parsed["origin_h"]) == (0.1, 0.2)
+    assert (parsed["spacing_v"], parsed["spacing_h"]) == (0.3, 0.25)
+    np.testing.assert_array_equal(parsed["gain_values"], op.gains)
 
 
 def _opcode_list_tags(path):
