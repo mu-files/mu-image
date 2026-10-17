@@ -35,10 +35,11 @@ except ImportError:
     core_image_available = False
 
 OPCODE_FIX_VIGNETTE_RADIAL = 3
+OPCODE_FIX_BAD_PIXELS_CONSTANT = 4
 OPCODE_MAP_POLYNOMIAL = 8
 OPCODE_GAIN_MAP = 9
 # Opcodes carry the oldest DNG version that reads them; FixVignetteRadial,
-# MapPolynomial and GainMap arrived in DNG 1.3.
+# FixBadPixelsConstant, MapPolynomial and GainMap arrived in DNG 1.3.
 DNG_VERSION_1_3 = 0x01030000
 
 
@@ -72,6 +73,14 @@ def fix_vignette_radial(params, center_x, center_y):
     padded = [*params, *[0.0] * (5 - len(params))]
     body = struct.pack(">7d", *padded, center_x, center_y)
     return opcode(OPCODE_FIX_VIGNETTE_RADIAL, body)
+
+
+def fix_bad_pixels_constant(constant, bayer_phase):
+    """A FixBadPixelsConstant opcode: the code that marks a bad sample and
+    the colour of the image's first sample (0 red, 1 green on a red row, 2
+    green on a blue row, 3 blue)."""
+    body = struct.pack(">II", constant, bayer_phase)
+    return opcode(OPCODE_FIX_BAD_PIXELS_CONSTANT, body)
 
 
 def gain_map(
@@ -120,20 +129,27 @@ def stored_samples(unit, dtype):
     return unit.astype(dtype)
 
 
-def rggb(rgb):
-    """The RGGB mosaic of an (H, W, 3) array."""
+def bayer_mosaic(rgb, pattern):
+    """The mosaic of an (H, W, 3) array for a Bayer ``pattern`` such as
+    "GRBG": the colours of the top-left 2 x 2 block, row by row."""
     cfa = np.empty(rgb.shape[:2], rgb.dtype)
-    cfa[0::2, 0::2] = rgb[0::2, 0::2, 0]
-    cfa[0::2, 1::2] = rgb[0::2, 1::2, 1]
-    cfa[1::2, 0::2] = rgb[1::2, 0::2, 1]
-    cfa[1::2, 1::2] = rgb[1::2, 1::2, 2]
+    for k, colour in enumerate(pattern):
+        row, col = divmod(k, 2)
+        cfa[row::2, col::2] = rgb[row::2, col::2, "RGB".index(colour)]
     return cfa
 
 
-def write_synthetic_dng(path, data, photometric, opcode_lists=None, black_level=0):
-    """Write ``data`` as a one-IFD DNG with an identity tone curve, an RGGB
-    pattern for a CFA, ``opcode_lists`` ({"OpcodeList2": bytes, …}), and a
-    BlackLevel tag when ``black_level`` is not 0."""
+def rggb(rgb):
+    """The RGGB mosaic of an (H, W, 3) array."""
+    return bayer_mosaic(rgb, "RGGB")
+
+
+def write_synthetic_dng(
+    path, data, photometric, opcode_lists=None, black_level=0, cfa_pattern="RGGB"
+):
+    """Write ``data`` as a one-IFD DNG with an identity tone curve,
+    ``cfa_pattern`` for a CFA, ``opcode_lists`` ({"OpcodeList2": bytes,
+    …}), and a BlackLevel tag when ``black_level`` is not 0."""
     tags = MetadataTags()
     tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
     tags.add_tag("UniqueCameraModel", "Synthetic Test Camera")
@@ -144,7 +160,7 @@ def write_synthetic_dng(path, data, photometric, opcode_lists=None, black_level=
     write_dng_from_array(
         destination_file=path,
         data_spec=IfdDataSpec(
-            data=data, photometric=photometric, cfa_pattern="RGGB", extratags=tags
+            data=data, photometric=photometric, cfa_pattern=cfa_pattern, extratags=tags
         ),
     )
     return path

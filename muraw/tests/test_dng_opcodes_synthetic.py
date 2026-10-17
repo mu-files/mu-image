@@ -23,8 +23,10 @@ from conftest import TEST_OUTPUTS_DIR
 from synthetic_dng import (
     ReferenceTable,
     RendererError,
+    bayer_mosaic,
     core_image_available,
     coreimage_render,
+    fix_bad_pixels_constant,
     fix_vignette_radial,
     gain_map,
     map_polynomial,
@@ -39,6 +41,7 @@ from synthetic_dng import (
     write_synthetic_dng,
 )
 from test_apply_gain_map import _reference as _gain_map_reference
+from test_fix_bad_pixels import _reference as _fix_bad_pixels_reference
 from test_fix_vignette import _reference as _fix_vignette_reference
 from test_map_polynomial import _COEFFICIENTS, _PER_PLANE_SETS, _reference
 from tifffile import COMPRESSION
@@ -236,6 +239,90 @@ class GainMap:
         return self.reference(x)
 
 
+# Where FixBadPixelsConstant cases plant bad samples in a 256 x 256 mosaic:
+# a 2 x 2 block, so one sample of each colour whatever the phase; samples
+# on and next to each edge, at both parities; and the four corners.
+_BAD_SITES = (
+    *((row, col) for row in (100, 101) for col in (100, 101)),
+    (0, 40),
+    (0, 41),
+    (1, 60),
+    (255, 70),
+    (255, 71),
+    (254, 90),
+    (40, 0),
+    (41, 0),
+    (60, 1),
+    (70, 255),
+    (71, 255),
+    (90, 254),
+    (0, 0),
+    (0, 255),
+    (255, 0),
+    (255, 255),
+)
+# A 5 x 5 block of bad samples: its centre has no good neighbour of either
+# colour, so it keeps the constant.
+_BAD_BLOCK = np.s_[200:205, 200:205]
+
+SDK_BAYER_PHASE = (
+    "dng_validate reads BayerPhase the other way round from the spec. The "
+    "spec gives the colour of the first sample: 0 red, 1 green on a red row, "
+    "2 green on a blue row, 3 blue (DNG 1.7.1, page 112). "
+    "`dng_opcode_FixBadPixelsConstant::IsGreen` (dng_bad_pixels.h) takes a "
+    "site as green when row + col + phase + (phase >> 1) is even, which is "
+    "a red or blue site by the spec. A bad red or blue sample therefore "
+    "becomes the mean of its diagonal neighbours, which are the other of red "
+    "and blue, so it takes the wrong colour. A bad green sample becomes the "
+    "mean of the green samples 2 away instead of its diagonal greens: the "
+    "right colour, from farther neighbours. With the phase swapped (0 with 1, 2 "
+    "with 3) its stage image equals the spec exactly, edges included."
+)
+COREIMAGE_NO_FIX_BAD_PIXELS = (
+    "Core Image does not apply FixBadPixelsConstant. Its render is the same "
+    "with and without the opcode and still shows the bad samples, which "
+    "change it by up to 0.96 from the same image without them."
+)
+
+
+@dataclass(frozen=True)
+class FixBadPixelsConstant:
+    """A FixBadPixelsConstant opcode, and the bad samples it fixes:
+    ``constant`` at ``_BAD_SITES`` and ``_BAD_BLOCK`` of the stored codes."""
+
+    constant: int
+    bayer_phase: int
+
+    section = "FixBadPixelsConstant"
+    coreimage_issue = COREIMAGE_NO_FIX_BAD_PIXELS
+    sdk_gain_tolerance = 0.0
+
+    def encode(self):
+        return fix_bad_pixels_constant(self.constant, self.bayer_phase)
+
+    def plant(self, codes):
+        """``codes`` with the bad samples set to the constant."""
+        assert not np.any(codes == self.constant), "the image holds the constant"
+        codes = codes.copy()
+        for row, col in _BAD_SITES:
+            codes[row, col] = self.constant
+        codes[_BAD_BLOCK] = self.constant
+        return codes
+
+    def reference(self, x):
+        """The opcode on the stored codes, with the phase as the spec
+        defines it. The spec does not say what replaces a neighbour past
+        the image; this follows the SDK, which repeats the two outer rows
+        and columns."""
+        codes = np.round(x * 65535).astype(np.uint16)
+        fixed = _fix_bad_pixels_reference(codes, self.constant, self.bayer_phase)
+        return fixed.astype(np.float64) / 65535
+
+    def mu_reference(self, x):
+        """What mu-image computes by design: the spec."""
+        return self.reference(x)
+
+
 @dataclass(frozen=True)
 class Case:
     name: str
@@ -251,6 +338,7 @@ class Case:
     # What Core Image does on this case, when it is not what it does on
     # every case of the opcode.
     coreimage_issue: str | None = None
+    cfa_pattern: str = "RGGB"
 
     @property
     def stage(self):
@@ -261,14 +349,20 @@ class Case:
         return self.opcodes[0].section
 
     def stored(self, dtype=None):
-        """The samples the DNG stores, in the case's dtype or ``dtype``."""
+        """The samples the DNG stores, in the case's dtype or ``dtype``,
+        with the bad samples of a FixBadPixelsConstant opcode."""
         unit = rgb_ramp(*self.shape)
         if self.photometric == "CFA":
-            unit = rggb(unit)
+            unit = bayer_mosaic(unit, self.cfa_pattern)
         if self.black_level:
             codes = self.black_level + unit * (65535 - self.black_level)
-            return np.round(codes).astype(np.uint16)
-        return stored_samples(unit, dtype or self.dtype)
+            stored = np.round(codes).astype(np.uint16)
+        else:
+            stored = stored_samples(unit, dtype or self.dtype)
+        for op in self.opcodes:
+            if isinstance(op, FixBadPixelsConstant):
+                stored = op.plant(stored)
+        return stored
 
     def write(self, path, dtype=None):
         blob = opcode_list(*(op.encode() for op in self.opcodes))
@@ -282,6 +376,7 @@ class Case:
             self.photometric,
             opcode_lists,
             black_level=self.black_level,
+            cfa_pattern=self.cfa_pattern,
         )
 
     def unit_input(self):
@@ -589,6 +684,32 @@ CASES += [
     ),
 ]
 
+# The CFA pattern whose first sample has the colour of each Bayer phase.
+_PHASE_PATTERNS = {0: "RGGB", 1: "GRBG", 2: "GBRG", 3: "BGGR"}
+
+CASES += [
+    *(
+        Case(
+            f"phase {phase} ({pattern}), constant 0",
+            "CFA",
+            "uint16",
+            "OpcodeList1",
+            (FixBadPixelsConstant(0, phase),),
+            sdk_issue=SDK_BAYER_PHASE,
+            cfa_pattern=pattern,
+        )
+        for phase, pattern in _PHASE_PATTERNS.items()
+    ),
+    Case(
+        "phase 0 (RGGB), constant 4095",
+        "CFA",
+        "uint16",
+        "OpcodeList1",
+        (FixBadPixelsConstant(4095, 0),),
+        sdk_issue=SDK_BAYER_PHASE,
+    ),
+]
+
 
 def _label(case):
     return f"{case.photometric} {case.dtype} {case.opcode_list}: {case.name}"
@@ -880,6 +1001,12 @@ def test_gain_map_encoder_round_trips():
     assert (parsed["origin_v"], parsed["origin_h"]) == (0.1, 0.2)
     assert (parsed["spacing_v"], parsed["spacing_h"]) == (0.3, 0.25)
     np.testing.assert_array_equal(parsed["gain_values"], op.gains)
+
+
+def test_fix_bad_pixels_constant_encoder_round_trips():
+    (parsed,) = parse_opcode_list(opcode_list(FixBadPixelsConstant(4095, 2).encode()))
+    assert parsed["type"] == "FixBadPixelsConstant"
+    assert (parsed["constant"], parsed["bayer_phase"]) == (4095, 2)
 
 
 def _opcode_list_tags(path):
