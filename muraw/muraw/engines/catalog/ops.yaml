@@ -1081,11 +1081,14 @@ ops:
   # diagonal ones of a green site, the four at distance 2 on the row and
   # column of a red or blue site. On uint16, as in the SDK, constant is cut
   # to 16 bits and the mean is rounded; on float32 constant is compared as
-  # given and the mean is not rounded. bayer_phase names the
-  # colour of the first sample of the array's canvas, so a crop that keeps
-  # its parent's canvas keeps its parent's phase. Neighbours past the array are
-  # read as for cfa_demosaic: an oob_valid view's parent pixels, else the
-  # array mirrored at its edge. A sample with no good neighbour keeps the
+  # given and the mean is not rounded. bayer_phase names the colour of the
+  # first sample of the array's canvas as the DNG spec defines it (0 red,
+  # 1 green on a red row, 2 green on a blue row, 3 blue; the SDK reads it
+  # the other way round), so a crop that keeps its parent's canvas keeps
+  # its parent's phase. The image edge is the array's readable rect: an
+  # oob_valid view's parent, else the array itself. A neighbour past it is
+  # replaced as the SDK does, by the sample of the same colour in the two
+  # outer rows or columns. A sample with no good neighbour keeps the
   # constant.
   - name: cfa_fix_bad_pixels_constant
     is_cfa: true

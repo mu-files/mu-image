@@ -34,6 +34,10 @@ Constraints when planning or changing API, scheduling, or kernels:
 - Ship a small native CPU catalog as the default. Optional JAX,
   Numba, or Halide backends consume the same IR; they do not replace
   the lightweight kernels.
+- This is a general-purpose composable library. One example render
+  does not cover what users will build with an op. Judge an op's
+  performance in isolation, against other designs of that op, not by
+  its share of one pipeline's run time.
 
 Public spelling: `import muimage as mi`, `mi.Array`, `.realize()`.
 Today the `muimage` top-level package ships from the muraw wheel.
