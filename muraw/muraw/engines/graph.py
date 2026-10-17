@@ -31,6 +31,7 @@ from numpy.typing import DTypeLike
 from ..array import (
     Array,
     ArrayMeta,
+    _as_shape,
     _empty_array,
     _meta_from_shape,
     _seal_ndarray,
@@ -159,7 +160,9 @@ class EngineOp:
     # The output dtype is still ``_out_dtype``.
     _infer_meta: Optional[GraphOutMetaFn] = None
 
-    def __call__(self, x: Array, /, *more: Array, **attrs: Any) -> Array:
+    def __call__(self, x: Any, /, *more: Array, **attrs: Any) -> Array:
+        if self._n_inputs == 0:
+            return self._from_shape(x, *more, **attrs)
         if self.meta.name == "orientation":
             code = int(attrs.get("orientation", 0))
             # TIFF orientation 1 is identity; skip the node.
@@ -168,6 +171,42 @@ class EngineOp:
             if code in (2, 3, 4) and not more:
                 return _orientation_flip(self, x, attrs)
         return emit(self, x, *more, **attrs)
+
+    def _from_shape(
+        self, shape: Any, /, *more: Any, dtype: DTypeLike = None, **attrs: Any
+    ) -> Array:
+        """An op with no inputs, called as ``np.zeros`` is: with the shape of
+        its output and a ``dtype``, float32 when not set. Where the catalog
+        fixes the output's channel count or dtype, ``shape`` and ``dtype``
+        must already have them."""
+        name = self.meta.name
+        if isinstance(shape, Array):
+            raise TypeError(
+                f"op {name!r} takes the shape of its output, such as x.shape, "
+                "not an array"
+            )
+        if more:
+            raise ValueError(f"op {name!r}: takes no inputs, got {1 + len(more)}")
+        requested = np.dtype(np.float32) if dtype is None else supported_dtype(dtype)
+        x = Array(_meta=_meta_from_shape(_as_shape(shape), requested))
+        if self.meta.requires_2d and x.meta.is_1d:
+            raise ValueError(f"op {name!r} writes a 2D array, got shape {x.shape}")
+        coerced = _validate_attrs(name, self._attr_specs, attrs)
+        out_meta = self.infer_out_meta(x, coerced)
+        if out_meta.shape != x.shape:
+            channels = out_meta.channels
+            example = (
+                "(height, width)" if channels == 1 else f"(height, width, {channels})"
+            )
+            raise ValueError(
+                f"op {name!r} writes {channels} channel(s); got shape {x.shape}. "
+                f"Pass a shape such as {example}"
+            )
+        if dtype is not None and out_meta.dtype != requested:
+            raise ValueError(
+                f"op {name!r} writes {out_meta.dtype}; got dtype {requested}"
+            )
+        return emit(self, Array(_meta=x.meta.copy(dtype=out_meta.dtype)), **attrs)
 
     def infer_out_meta(
         self, x: Array, attrs: Dict[str, Any], *more: Array
@@ -787,6 +826,8 @@ def emit(engine_op: EngineOp, x: Array, /, *more: Array, **attrs: Any) -> Array:
     if engine_op._n_inputs == 0:
         if more:
             raise ValueError(f"op {name!r}: takes no inputs, got {1 + len(more)}")
+        if engine_op.meta.requires_2d and x.meta.is_1d:
+            raise ValueError(f"op {name!r} writes a 2D array, got shape {x.shape}")
         inputs: Tuple[Array, ...] = ()
     else:
         inputs = (x, *more)

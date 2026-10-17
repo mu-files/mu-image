@@ -11,6 +11,7 @@ import pytest
 
 import muimage as mi
 from muraw.array import Array, fliplr, flipud
+from muraw.raw_render import _fix_vignette_opcode
 
 _MATRIX = np.eye(3, dtype=np.float32)[[1, 2, 0]]
 
@@ -160,9 +161,8 @@ def test_chw_fix_vignette_matches_channels_last():
     chw = _chw(40, 48)
 
     def run(x: Array) -> Array:
-        return mi.fix_vignette(
-            x, params=np.array([0.4, -0.2, 0.1]), center_x=0.3, center_y=0.6
-        )
+        opcode = {"coefficients": [0.4, -0.2, 0.1], "center_x": 0.3, "center_y": 0.6}
+        return _fix_vignette_opcode(x, opcode)
 
     got = run(Array(chw, channel_axis=0)).realize()
     channels_last = run(Array(np.moveaxis(chw, 0, -1))).realize()

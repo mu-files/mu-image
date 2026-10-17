@@ -283,6 +283,70 @@ ramp = EngineOp(
     _infer_meta=None,
 )
 
+radial_polynomial = EngineOp(
+    meta=OpMeta(name="radial_polynomial", requires_2d=True, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("float32"),
+    _out_channels=graph._out_channels_const(1),
+    _in_channels=(),
+    _n_inputs=0,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 0,
+    "key": "coefficients",
+    "type": "f64_array"
+  },
+  {
+    "count": 1,
+    "key": "center_x",
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "center_y",
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "radius",
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "x0",
+    "optional": true,
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "y0",
+    "optional": true,
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "spacing_x",
+    "optional": true,
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "spacing_y",
+    "optional": true,
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
+  }
+]""")
+    ),
+    _infer_meta=None,
+)
+
 view = EngineOp(
     meta=OpMeta(name="view", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1081,47 +1145,6 @@ rgb_apply_profile_gain_table_map = EngineOp(
     _infer_meta=None,
 )
 
-fix_vignette = EngineOp(
-    meta=OpMeta(name="fix_vignette", requires_2d=True, is_cfa=False, is_rgb=False),
-    _out_dtype=graph._out_dtype_same,
-    _out_channels=graph._out_channels_same,
-    _in_channels=(None,),
-    _n_inputs=1,
-    _variable_input=False,
-    _attr_specs=tuple(
-        json.loads(r"""[
-  {
-    "count": 0,
-    "key": "params",
-    "type": "f64_array"
-  },
-  {
-    "count": 1,
-    "key": "center_x",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "center_y",
-    "type": "f64"
-  },
-  {
-    "count": 1,
-    "key": "map_spacing",
-    "optional": true,
-    "type": "i32"
-  },
-  {
-    "count": 1,
-    "key": "engine_opts",
-    "optional": true,
-    "type": "string"
-  }
-]""")
-    ),
-    _infer_meta=None,
-)
-
 warp_rectilinear = EngineOp(
     meta=OpMeta(name="warp_rectilinear", requires_2d=True, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1385,6 +1408,7 @@ OPS_BY_NAME = {
     "composite": composite,
     "fill": fill,
     "ramp": ramp,
+    "radial_polynomial": radial_polynomial,
     "view": view,
     "pad": pad,
     "tile": tile,
@@ -1406,7 +1430,6 @@ OPS_BY_NAME = {
     "rgb_apply_hue_sat_map": rgb_apply_hue_sat_map,
     "rgb_apply_hue_sat_val_map": rgb_apply_hue_sat_val_map,
     "rgb_apply_profile_gain_table_map": rgb_apply_profile_gain_table_map,
-    "fix_vignette": fix_vignette,
     "warp_rectilinear": warp_rectilinear,
     "apply_gain_map": apply_gain_map,
     "map_polynomial": map_polynomial,
@@ -1427,7 +1450,6 @@ __all__ = [
     "div_scalar",
     "divide",
     "fill",
-    "fix_vignette",
     "lut",
     "map_polynomial",
     "matmul",
@@ -1436,6 +1458,7 @@ __all__ = [
     "multiply",
     "orientation",
     "pad",
+    "radial_polynomial",
     "ramp",
     "reshape",
     "rgb_apply_hue_sat_map",

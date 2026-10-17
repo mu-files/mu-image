@@ -1300,15 +1300,12 @@ def _fill_samples(fill_value: Any, channels: int) -> list[float]:
 
 
 def _emit_fill(meta: ArrayMeta, fill_value: Any) -> "Array":
-    import muimage as mi
+    from .engines.graph import op
 
     if meta.size == 0:
         _fill_samples(fill_value, meta.channels)
         return _empty_array(meta)
-    return mi.fill(
-        Array(_meta=meta),
-        value=_fill_samples(fill_value, meta.channels),
-    )
+    return op("fill", Array(_meta=meta), value=_fill_samples(fill_value, meta.channels))
 
 
 def zeros(shape: Any, dtype: DTypeLike = np.float32) -> "Array":

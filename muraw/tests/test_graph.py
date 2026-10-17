@@ -79,11 +79,11 @@ def test_variable_input_op_takes_one_or_more_of_its_last_input():
         sum_n(mono, mono, rgb)
 
 
-def test_op_with_no_inputs_takes_only_its_output_meta():
+def test_op_with_no_inputs_takes_only_its_output_shape():
     fill = OPS_BY_NAME["fill"]
     like = Array(np.zeros((2, 3), dtype=np.float32))
     with pytest.raises(ValueError, match="takes no inputs"):
-        fill(like, like, value=1.0)
+        fill((2, 3), like, value=1.0)
 
 
 def test_array_meta_origin_default():

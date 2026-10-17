@@ -49,7 +49,7 @@ from test_map_polynomial import _COEFFICIENTS, _PER_PLANE_SETS, _reference
 from tifffile import COMPRESSION
 
 from muraw.dngio import DngFile, IfdPageSpec, PageEncoding, write_dng_from_page
-from muraw.raw_render import parse_opcode_list
+from muraw.raw_render import VIGNETTE_MAP_SPACING, parse_opcode_list
 
 # Core Image returns an empty image below 256 x 256 pixels.
 HEIGHT = WIDTH = 256
@@ -131,10 +131,6 @@ class MapPolynomial:
         return self.reference(x)
 
 
-# mi.fix_vignette's default map_spacing, which raw_render uses.
-MU_VIGNETTE_MAP_SPACING = 8
-
-
 @dataclass(frozen=True)
 class FixVignetteRadial:
     params: tuple
@@ -163,8 +159,8 @@ class FixVignetteRadial:
 
     def mu_reference(self, x):
         """What mu-image computes by design: the gain interpolated from a
-        map at every ``MU_VIGNETTE_MAP_SPACING``-th column and row."""
-        return self.reference(x, map_spacing=MU_VIGNETTE_MAP_SPACING)
+        map at every ``VIGNETTE_MAP_SPACING``-th column and row."""
+        return self.reference(x, map_spacing=VIGNETTE_MAP_SPACING)
 
 
 @dataclass(frozen=True)
@@ -854,7 +850,7 @@ def test_mu_image_matches_the_spec(case, out_dir):
     )
     if matches and isinstance(case.opcodes[0], FixVignetteRadial):
         text = (
-            f"matches its spacing-{MU_VIGNETTE_MAP_SPACING} map (max {measured:.1e}); "
+            f"matches its spacing-{VIGNETTE_MAP_SPACING} map (max {measured:.1e}); "
             f"per-pixel spec max {_max_diff(got, case.reference()):.1e}"
         )
     TABLE.record(case.section, _label(case), COLUMN_MU, text)

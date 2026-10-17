@@ -1,5 +1,6 @@
-"""``fix_vignette`` (DNG FixVignetteRadial) against a NumPy port of the
-radial gain.
+"""DNG FixVignetteRadial, as the renderer builds it from
+``mi.radial_polynomial`` and ``mi.apply_gain_map``, against a NumPy port
+of the radial gain.
 
 NumPy has no such function, so each case compares ``mi`` with
 ``_reference``, at every spacing in ``_MAP_SPACINGS``. With
@@ -12,8 +13,8 @@ the kernels in float32, so the two agree to a few float32 ulps.
 import numpy as np
 import pytest
 
-import muimage as mi
 from muraw.array import Array
+from muraw.raw_render import VIGNETTE_MAP_SPACING, _fix_vignette_opcode
 
 _HEIGHT = 40
 _WIDTH = 53
@@ -78,14 +79,17 @@ def _assert_close(got, expect):
     np.testing.assert_allclose(got, expect, rtol=2e-6, atol=1e-7)
 
 
+def _opcode(attrs):
+    """The parsed FixVignetteRadial opcode with ``attrs``."""
+    return {
+        "coefficients": np.asarray(attrs["params"], dtype=np.float64),
+        "center_x": float(attrs["center_x"]),
+        "center_y": float(attrs["center_y"]),
+    }
+
+
 def _mi_fix_vignette(x, attrs, map_spacing):
-    return mi.fix_vignette(
-        x,
-        params=np.asarray(attrs["params"], dtype=np.float64),
-        center_x=float(attrs["center_x"]),
-        center_y=float(attrs["center_y"]),
-        map_spacing=map_spacing,
-    )
+    return _fix_vignette_opcode(x, _opcode(attrs), map_spacing=map_spacing)
 
 
 def _attrs(params=_FIVE, center_x=0.3, center_y=0.6):
@@ -268,11 +272,7 @@ def test_fix_vignette_on_16_bit_samples_matches_reference(name, map_spacing, dty
 
 
 def test_fix_vignette_default_map_spacing_is_8():
+    assert VIGNETTE_MAP_SPACING == 8
     src, attrs, _, _ = CASES["rgb_off_center_five_terms"]
-    got = mi.fix_vignette(
-        Array(src),
-        params=np.asarray(attrs["params"], dtype=np.float64),
-        center_x=float(attrs["center_x"]),
-        center_y=float(attrs["center_y"]),
-    ).realize()
+    got = _fix_vignette_opcode(Array(src), _opcode(attrs)).realize()
     np.testing.assert_array_equal(got, run_case("rgb_off_center_five_terms", 8))

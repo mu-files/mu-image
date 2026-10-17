@@ -300,6 +300,52 @@ ops:
         count: 0
         optional: true
 
+  # c0 + c1 r^2 + c2 r^4 + ..., computed in float32. No input; the output
+  # is float32 with one channel. coefficients holds c0, c1, ... (one to
+  # six). Sample (row, col) of the output sits at x0 + col * spacing_x,
+  # y0 + row * spacing_y (0 and 1 when not set), and r is its distance
+  # from (center_x, center_y) divided by radius.
+  # engine_opts {"core": {"neon": false}} forces the scalar loop.
+  - name: radial_polynomial
+    requires_2d: true
+    inputs: []
+    outputs:
+      - channels: 1
+        dtype: float32
+    attrs:
+      - key: coefficients
+        type: f64_array
+        count: 0
+      - key: center_x
+        type: f64
+        count: 1
+      - key: center_y
+        type: f64
+        count: 1
+      - key: radius
+        type: f64
+        count: 1
+      - key: x0
+        type: f64
+        count: 1
+        optional: true
+      - key: y0
+        type: f64
+        count: 1
+        optional: true
+      - key: spacing_x
+        type: f64
+        count: 1
+        optional: true
+      - key: spacing_y
+        type: f64
+        count: 1
+        optional: true
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
+
   # ROI view: emit meta via geometry: view (_out_meta_view); native span execute.
   - name: view
     needs_frame_index: true
@@ -867,42 +913,6 @@ ops:
       - key: exposure_weight_gain
         type: f32
         count: 1
-
-  # DNG FixVignetteRadial: every sample is multiplied by
-  # 1 + k0 r^2 + k1 r^4 + ... and clamped to [0, 1], with params holding
-  # k0, k1, ... (at most five are used). r is the distance from the optical
-  # center to the pixel's center, as the DNG SDK measures it, divided by
-  # the distance from the optical center to the farthest corner of the
-  # input's canvas. center_x and center_y are fractions of the
-  # canvas's width and height from its top-left corner, so on a crop they
-  # still place the center in the image the crop was cut from.
-  - name: fix_vignette
-    requires_2d: true
-    inputs:
-      - channels: any
-    outputs:
-      - channels: same
-    attrs:
-      - key: params
-        type: f64_array
-        count: 0
-      - key: center_x
-        type: f64
-        count: 1
-      - key: center_y
-        type: f64
-        count: 1
-      # The gain is computed at every map_spacing-th column and row of the
-      # canvas and interpolated in between; a power of 2, 8 when not set.
-      # 1 computes it at every pixel.
-      - key: map_spacing
-        type: i32
-        count: 1
-        optional: true
-      - key: engine_opts
-        type: string
-        count: 1
-        optional: true
 
   - name: warp_rectilinear
     needs_frame_index: true

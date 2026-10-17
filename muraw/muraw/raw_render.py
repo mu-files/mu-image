@@ -2737,6 +2737,89 @@ def _apply_gain_map_opcode(x: Array, opcode: dict[str, Any]) -> Array:
     )
 
 
+# The distance in pixels between the samples of the gain map that
+# FixVignetteRadial is interpolated from; 1 computes the gain at every pixel.
+VIGNETTE_MAP_SPACING = 8
+
+
+def _fix_vignette_opcode(
+    x: Array, opcode: dict[str, Any], map_spacing: int = VIGNETTE_MAP_SPACING
+) -> Array:
+    """A parsed FixVignetteRadial opcode as an ``mi.radial_polynomial`` gain
+    map and an ``mi.apply_gain_map`` node.
+
+    The gain is ``1 + k0 r^2 + k1 r^4 + ...``, with at most five ``k``, and
+    the result is clamped to [0, 1]. ``r`` is the distance from the optical
+    center to a pixel's center divided by the distance from the optical
+    center to the canvas's farthest corner, at least 1. The optical center
+    is ``(center_x * width, center_y * height)`` from the canvas's top-left
+    corner; the map measures from pixel indices, so its center is half a
+    pixel left of and above that.
+
+    The map covers the whole canvas, with a sample at every
+    ``map_spacing``-th canvas column and row from 0 to one past the last.
+    ``apply_gain_map`` reads only the part of it under ``x``, so the opcode
+    on a crop gives the crop of the opcode on the whole image.
+
+    SDK ref: dng_lens_correction.cpp dng_opcode_FixVignetteRadial
+    """
+    canvas_width, canvas_height = x.meta.canvas[2:]
+    center_col = float(opcode["center_x"]) * canvas_width
+    center_row = float(opcode["center_y"]) * canvas_height
+    to_left, to_right = center_col, canvas_width - center_col
+    to_top, to_bottom = center_row, canvas_height - center_row
+    radius = max(
+        np.sqrt(to_left * to_left + to_top * to_top),
+        np.sqrt(to_right * to_right + to_top * to_top),
+        np.sqrt(to_left * to_left + to_bottom * to_bottom),
+        np.sqrt(to_right * to_right + to_bottom * to_bottom),
+        1.0,
+    )
+    params = [float(k) for k in np.asarray(opcode["coefficients"]).reshape(-1)[:5]]
+
+    step = int(map_spacing)
+    map_width = (canvas_width - 1) // step + 2
+    map_height = (canvas_height - 1) // step + 2
+    gain_map = mi.radial_polynomial(
+        (map_height, map_width),
+        coefficients=[1.0, *params],
+        center_x=center_col - 0.5,
+        center_y=center_row - 0.5,
+        radius=float(radius),
+        spacing_x=float(step),
+        spacing_y=float(step),
+    )
+
+    # The map's samples can lie up to one spacing past the canvas, so the
+    # largest gain is bounded at the squared radius of its corner samples,
+    # measured as the kernel measures it, in float32 center and radius.
+    center_x32 = float(np.float32(center_col - 0.5))
+    center_y32 = float(np.float32(center_row - 0.5))
+    inv_radius32 = float(np.float32(1.0 / radius))
+    r_squared_max = 1.0
+    for col in (0, map_width - 1):
+        for row in (0, map_height - 1):
+            dx = (col * step - center_x32) * inv_radius32
+            dy = (row * step - center_y32) * inv_radius32
+            r_squared_max = max(r_squared_max, dx * dx + dy * dy)
+    max_gain = 1.0
+    power = r_squared_max
+    for k in params:
+        max_gain += max(k, 0.0) * power
+        power *= r_squared_max
+
+    return mi.apply_gain_map(
+        x,
+        gain_map,
+        map_x0=0.0,
+        map_y0=0.0,
+        map_spacing_x=float(step),
+        map_spacing_y=float(step),
+        clamp="zero_one",
+        max_gain=max_gain * (1.0 + 1e-4),
+    )
+
+
 def apply_opcodes(
     data: Array,
     opcodes: list[dict[str, Any]],
@@ -2823,12 +2906,7 @@ def apply_opcodes(
             )
 
         elif opcode_type == "FixVignetteRadial":
-            x = mi.fix_vignette(
-                x,
-                params=np.asarray(opcode["coefficients"], dtype=np.float64).reshape(-1),
-                center_x=float(opcode["center_x"]),
-                center_y=float(opcode["center_y"]),
-            )
+            x = _fix_vignette_opcode(x, opcode)
 
         elif opcode_type == "MapPolynomial":
             coefficients = opcode["coefficients"].astype(np.float32)
@@ -2978,12 +3056,7 @@ def apply_opcodes_cfa(
                 f"FixVignetteRadial CFA: center=({opcode['center_x']:.4f}, "
                 f"{opcode['center_y']:.4f}), coeffs={opcode['coefficients']}"
             )
-            x = mi.fix_vignette(
-                x,
-                params=np.asarray(opcode["coefficients"], dtype=np.float64).reshape(-1),
-                center_x=float(opcode["center_x"]),
-                center_y=float(opcode["center_y"]),
-            )
+            x = _fix_vignette_opcode(x, opcode)
 
         else:
             name = enum_display_name(DngOpcode, opcode["id"])
