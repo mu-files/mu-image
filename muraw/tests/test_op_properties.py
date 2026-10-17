@@ -116,3 +116,60 @@ def test_rgb_normalize_raw_rejects_one_channel():
         mi.rgb_normalize_raw(
             Array(np.zeros((2, 2), dtype=np.uint16)), **_normalize_attrs(3)
         )
+
+
+# The ops that set their output's placement themselves. Each one moves,
+# resizes or reorders the rows and columns, or, for the broadcast ops,
+# picks one of several inputs. Every other op keeps its input's.
+_OPS_WITH_OWN_PLACEMENT = {
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "view",
+    "pad",
+    "tile",
+    "take",
+    "orientation",
+    "transpose",
+    "reshape",
+}
+
+
+def test_only_the_listed_ops_set_their_own_placement():
+    """An op added with its own output meta has to be added to the list,
+    after checking that it means to change the placement."""
+    own = {name for name, op in OPS_BY_NAME.items() if op._infer_meta is not None}
+    assert own == _OPS_WITH_OWN_PLACEMENT
+
+
+def _offset_inputs(channels):
+    """An odd-offset slice and an odd-offset view of a larger image, with
+    ``channels`` channels."""
+    shape = (40, 60) if channels == 1 else (40, 60, channels)
+    x = Array(np.zeros(shape, np.float32))
+    return {
+        "slice": x[5:31, 7:51],
+        "view": x.view(np.s_[5:31, 7:51], mode="crop_oob_valid"),
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(
+        name
+        for name, op in OPS_BY_NAME.items()
+        if op._infer_meta is None and op._n_inputs >= 1
+    ),
+)
+def test_an_op_without_its_own_placement_keeps_its_inputs(name):
+    """The output of an op that does not move the rows and columns has its
+    input's origin, canvas and ``oob_valid``, so a later op that reads
+    pixel positions measures them as on the input."""
+    op = OPS_BY_NAME[name]
+    channels = op._in_channels[0] or 3
+    attrs = {"dest_dtype": "float32", "columns": 3}
+    for kind, x in _offset_inputs(channels).items():
+        out = op.infer_out_meta(x, attrs)
+        placement = (out.origin, out.canvas, out.oob_valid)
+        assert placement == (x.meta.origin, x.meta.canvas, x.meta.oob_valid), kind

@@ -506,7 +506,9 @@ ops:
   #   ea_fast   OpenCV EA: axis-pick green and bilinear chroma, halo 1.
   #             RGB clamped to [0, 1].
   # engine_opts {"core": {"neon": false}} forces the scalar loops of ea and
-  # ea_fast.
+  # ea_fast. cfa_pattern names the colours of the 2×2 block at the first
+  # sample of the input's canvas, so a crop that keeps its parent's canvas
+  # keeps its parent's pattern.
   - name: cfa_demosaic
     is_cfa: true
     requires_2d: true
@@ -680,7 +682,9 @@ ops:
   # rgb_normalize_raw take the same attrs and share one kernel.
   # rgb_normalize_raw is for three-channel LinearRaw; monochrome LinearRaw
   # uses cfa_normalize_raw, whose kernel does not depend on the CFA
-  # pattern.
+  # pattern. The black pattern and the deltas start at the first sample of
+  # the input's canvas, so a crop that keeps its parent's canvas keeps its
+  # parent's black.
   - name: cfa_normalize_raw
     is_cfa: true
     requires_2d: true

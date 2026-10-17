@@ -408,6 +408,9 @@ def _demosaic_vng_rcd_opencv(
     For ``BILINEAR``, ``EA`` and ``EA_FAST`` use the engine op
     ``mi.cfa_demosaic``. ``OPENCV_EA`` stays here for quality comparison
     against the engine's EA.
+
+    ``cfa_pattern`` is at the first sample of ``cfa``'s canvas, as for
+    ``mi.cfa_demosaic``.
     """
     if algorithm in ("BILINEAR", "EA", "EA_FAST"):
         raise ValueError(
@@ -415,6 +418,17 @@ def _demosaic_vng_rcd_opencv(
             f"use mi.cfa_demosaic(algorithm={algorithm.lower()!r})"
         )
 
+    if isinstance(cfa, Array):
+        # The kernels read a realized copy, whose first sample starts its
+        # pattern.
+        origin_row, origin_col = cfa.meta.origin
+        canvas_col, canvas_row = cfa.meta.canvas[:2]
+        row, col = origin_row - canvas_row, origin_col - canvas_col
+        cfa_pattern = "".join(
+            cfa_pattern[((row + r) % 2) * 2 + (col + c) % 2]
+            for r in (0, 1)
+            for c in (0, 1)
+        )
     arr = np.asarray(cfa)
     if arr.ndim == 3 and arr.shape[2] == 1:
         arr = arr[:, :, 0]
@@ -488,7 +502,9 @@ def demosaic(
 
     Args:
         image_data: CFA Array (uint8, uint16, float16, float32)
-        cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG)
+        cfa_pattern: Bayer pattern string (RGGB, BGGR, GRBG, or GBRG) at
+            the first sample of ``image_data``'s canvas, so a slice keeps
+            its parent's pattern
         algorithm: Demosaic algorithm selector (``EA`` is Hamilton–Adams;
             ``EA_FAST`` is the single-pass axis-pick path;
             ``OPENCV_EA`` is OpenCV's edge-aware demosaic, kept for quality comparison)

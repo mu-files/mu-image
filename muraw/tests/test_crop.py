@@ -7,6 +7,7 @@ import pytest
 
 import muimage as mi
 from muraw.array import Array
+from muraw.raw_render import DemosaicAlgorithm, demosaic
 from muraw.tiff_metadata import Orientation
 
 
@@ -453,4 +454,43 @@ def test_demosaic_of_a_slice_pads_at_the_slice_edge():
     np.testing.assert_array_equal(_demosaiced(x[key]), copy)
     np.testing.assert_array_equal(
         _demosaiced(x.view(key, mode="crop_oob_valid")), _demosaiced(x)[key]
+    )
+
+
+@pytest.mark.parametrize(
+    "algorithm", [a for a in DemosaicAlgorithm if a != DemosaicAlgorithm.RCD]
+)
+def test_demosaic_of_an_odd_slice_keeps_the_parents_pattern(algorithm):
+    """``cfa_pattern`` is at the first sample of the canvas, so a slice at an
+    odd offset takes its parent's pattern and demosaics as a copy of it
+    with the pattern at the copy's first sample."""
+    src = np.random.default_rng(2).integers(0, 65535, (40, 60), dtype=np.uint16)
+    key = np.s_[5:31, 7:51]
+    copy = Array(np.ascontiguousarray(src[key]))
+    np.testing.assert_array_equal(
+        demosaic(Array(src)[key], "RGGB", algorithm=algorithm).realize(),
+        demosaic(copy, "BGGR", algorithm=algorithm).realize(),
+    )
+
+
+def test_normalize_of_a_slice_keeps_the_parents_black():
+    """The black pattern and the deltas start at the first sample of the
+    canvas, so normalizing a slice gives that slice of the normalized
+    parent."""
+    src = np.random.default_rng(3).integers(300, 4000, (40, 60), dtype=np.uint16)
+    key = np.s_[5:31, 7:51]
+
+    def normalized(x):
+        return mi.cfa_normalize_raw(
+            x,
+            black_level=np.array([100, 120, 140, 160, 180, 200], np.float32),
+            black_repeat_rows=3,
+            black_repeat_cols=2,
+            white_level=np.array([4100], np.float32),
+            black_delta_h=np.arange(7, dtype=np.float32),
+            black_delta_v=np.arange(5, dtype=np.float32) * 10,
+        ).realize()
+
+    np.testing.assert_array_equal(
+        normalized(Array(src)[key]), normalized(Array(src))[key]
     )
