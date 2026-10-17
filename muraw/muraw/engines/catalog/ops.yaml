@@ -1066,6 +1066,15 @@ ops:
         count: 1
         optional: true
 
+  # DNG FixBadPixelsConstant on a uint16 Bayer mosaic: a sample equal to
+  # constant becomes the rounded mean of its same-colour neighbours that
+  # are not: the four diagonal ones of a green site, the four at distance
+  # 2 on the row and column of a red or blue site. bayer_phase names the
+  # colour of the first sample of the array's canvas, so a crop that keeps
+  # its parent's canvas keeps its parent's phase. Neighbours past the array are
+  # read as for cfa_demosaic: an oob_valid view's parent pixels, else the
+  # array mirrored at its edge. A sample with no good neighbour keeps the
+  # constant.
   - name: cfa_fix_bad_pixels_constant
     is_cfa: true
     requires_2d: true
