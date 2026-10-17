@@ -1167,6 +1167,20 @@ def test_strided_numpy_crop_ported_and_image_op():
     np.testing.assert_array_equal(identity, codes)
 
 
+def test_fix_bad_pixels_on_float32_keeps_the_dtype_and_does_not_round():
+    """The bad green sample at (2, 2) becomes the mean of its diagonal
+    neighbours, 1, 2, 8 and 8."""
+    x = np.full((5, 5), 8.0, np.float32)
+    x[2, 2] = 0.0
+    x[1, 1] = 1.0
+    x[1, 3] = 2.0
+    out = mi.cfa_fix_bad_pixels_constant(Array(x), constant=0, bayer_phase=0).realize()
+    assert out.dtype == np.float32
+    expected = x.copy()
+    expected[2, 2] = 4.75
+    np.testing.assert_array_equal(out, expected)
+
+
 def _op_chain(t: Array) -> list[str]:
     """Op names from ``t`` back to its source, following input 0."""
     names = []

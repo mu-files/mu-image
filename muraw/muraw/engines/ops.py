@@ -1351,7 +1351,7 @@ cfa_fix_bad_pixels_constant = EngineOp(
     meta=OpMeta(
         name="cfa_fix_bad_pixels_constant", requires_2d=True, is_cfa=True, is_rgb=False
     ),
-    _out_dtype=graph._out_dtype_const("uint16"),
+    _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(1),
     _in_channels=(1,),
     _n_inputs=1,
