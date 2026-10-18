@@ -4563,19 +4563,17 @@ def _render_camera_rgb(
                     byteorder=system_byteorder,
                 )
                 pgtm_step.close()
-                rgb_t = mi.rgb_apply_profile_gain_table_map(
+                rgb_t = mi.rgb_apply_gain_table_map(
                     rgb_t,
-                    gains=pgtm["gains"],
-                    points_v=int(pgtm["points_v"]),
-                    points_h=int(pgtm["points_h"]),
-                    spacing_v=float(pgtm["spacing_v"]),
-                    spacing_h=float(pgtm["spacing_h"]),
-                    origin_v=float(pgtm["origin_v"]),
-                    origin_h=float(pgtm["origin_h"]),
-                    num_table_points=int(pgtm["num_table_points"]),
+                    mi.Array(pgtm["gains"]),
+                    origin_x=float(pgtm["origin_h"]),
+                    origin_y=float(pgtm["origin_v"]),
+                    spacing_x=float(pgtm["spacing_h"]),
+                    spacing_y=float(pgtm["spacing_v"]),
                     weights=pgtm["weights"],
                     gamma=float(pgtm["gamma"]),
                     exposure_weight_gain=float(2.0**total_baseline_exposure),
+                    clamp="zero_one",
                 )
             except Exception as e:
                 logger.warning(

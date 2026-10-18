@@ -872,47 +872,58 @@ ops:
         count: 1
         optional: true
 
-  - name: rgb_apply_profile_gain_table_map
+  # DNG ProfileGainTableMap: each RGB pixel times a gain looked up in a
+  # gain table, input 1, of shape (points_v, points_h, table_points),
+  # float32. The table's rows and columns are a grid over x's canvas; its
+  # third axis is indexed by the pixel's weight,
+  # weights[0] * r + weights[1] * g + weights[2] * b
+  #   + weights[3] * min(r, g, b) + weights[4] * max(r, g, b),
+  # times exposure_weight_gain, clamped to [0, 1], and raised to gamma.
+  # The gain is the table interpolated trilinearly at the pixel's grid
+  # position and weight. A pixel's position is its center as a fraction
+  # of the canvas, (col + 0.5) / canvas_width and (row + 0.5) /
+  # canvas_height; table sample (0, 0) is at origin_x, origin_y and its
+  # neighbors spacing_x and spacing_y on, in the same fractions, as DNG
+  # gives them. Past the grid's first or last column or row a pixel takes
+  # that column's or row's gains. On a crop the op gives the crop of the
+  # op on the image the crop was cut from. clamp is none, max_one or
+  # zero_one (DNG without overrange support clamps to [0, 1]).
+  - name: rgb_apply_gain_table_map
     is_rgb: true
+    requires_2d: true
     inputs:
       - channels: 3
+      - channels: any
     outputs:
       - channels: 3
         dtype: float32
     attrs:
-      - key: gains
-        type: f32_array
-        count: 0
-      - key: points_v
-        type: i32
+      - key: origin_x
+        type: f64
         count: 1
-      - key: points_h
-        type: i32
+      - key: origin_y
+        type: f64
         count: 1
-      - key: spacing_v
-        type: f32
+      - key: spacing_x
+        type: f64
         count: 1
-      - key: spacing_h
-        type: f32
-        count: 1
-      - key: origin_v
-        type: f32
-        count: 1
-      - key: origin_h
-        type: f32
-        count: 1
-      - key: num_table_points
-        type: i32
+      - key: spacing_y
+        type: f64
         count: 1
       - key: weights
         type: f32_array
         count: 5
       - key: gamma
-        type: f32
+        type: f64
         count: 1
       - key: exposure_weight_gain
-        type: f32
+        type: f64
         count: 1
+      - key: clamp
+        type: string
+        count: 1
+        optional: true
+        enum: gain_clamp
 
   - name: warp_rectilinear
     needs_frame_index: true

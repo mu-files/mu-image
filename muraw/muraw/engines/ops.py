@@ -1071,59 +1071,36 @@ rgb_apply_hue_sat_val_map = EngineOp(
     _infer_meta=None,
 )
 
-rgb_apply_profile_gain_table_map = EngineOp(
+rgb_apply_gain_table_map = EngineOp(
     meta=OpMeta(
-        name="rgb_apply_profile_gain_table_map",
-        requires_2d=False,
-        is_cfa=False,
-        is_rgb=True,
+        name="rgb_apply_gain_table_map", requires_2d=True, is_cfa=False, is_rgb=True
     ),
     _out_dtype=graph._out_dtype_const("float32"),
     _out_channels=graph._out_channels_const(3),
-    _in_channels=(3,),
-    _n_inputs=1,
+    _in_channels=(3, None),
+    _n_inputs=2,
     _variable_input=False,
     _attr_specs=tuple(
         json.loads(r"""[
   {
-    "count": 0,
-    "key": "gains",
-    "type": "f32_array"
+    "count": 1,
+    "key": "origin_x",
+    "type": "f64"
   },
   {
     "count": 1,
-    "key": "points_v",
-    "type": "i32"
+    "key": "origin_y",
+    "type": "f64"
   },
   {
     "count": 1,
-    "key": "points_h",
-    "type": "i32"
+    "key": "spacing_x",
+    "type": "f64"
   },
   {
     "count": 1,
-    "key": "spacing_v",
-    "type": "f32"
-  },
-  {
-    "count": 1,
-    "key": "spacing_h",
-    "type": "f32"
-  },
-  {
-    "count": 1,
-    "key": "origin_v",
-    "type": "f32"
-  },
-  {
-    "count": 1,
-    "key": "origin_h",
-    "type": "f32"
-  },
-  {
-    "count": 1,
-    "key": "num_table_points",
-    "type": "i32"
+    "key": "spacing_y",
+    "type": "f64"
   },
   {
     "count": 5,
@@ -1133,12 +1110,23 @@ rgb_apply_profile_gain_table_map = EngineOp(
   {
     "count": 1,
     "key": "gamma",
-    "type": "f32"
+    "type": "f64"
   },
   {
     "count": 1,
     "key": "exposure_weight_gain",
-    "type": "f32"
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "clamp",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "none",
+      "max_one",
+      "zero_one"
+    ]
   }
 ]""")
     ),
@@ -1429,7 +1417,7 @@ OPS_BY_NAME = {
     "rgb_normalize_raw": rgb_normalize_raw,
     "rgb_apply_hue_sat_map": rgb_apply_hue_sat_map,
     "rgb_apply_hue_sat_val_map": rgb_apply_hue_sat_val_map,
-    "rgb_apply_profile_gain_table_map": rgb_apply_profile_gain_table_map,
+    "rgb_apply_gain_table_map": rgb_apply_gain_table_map,
     "warp_rectilinear": warp_rectilinear,
     "apply_gain_map": apply_gain_map,
     "map_polynomial": map_polynomial,
@@ -1461,9 +1449,9 @@ __all__ = [
     "radial_polynomial",
     "ramp",
     "reshape",
+    "rgb_apply_gain_table_map",
     "rgb_apply_hue_sat_map",
     "rgb_apply_hue_sat_val_map",
-    "rgb_apply_profile_gain_table_map",
     "rgb_clip_and_transform",
     "rgb_matrix_3x3",
     "rgb_normalize_raw",

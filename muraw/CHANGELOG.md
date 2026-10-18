@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Changed
+- **`rgb_apply_gain_table_map` (breaking, no aliases)**: `rgb_apply_profile_gain_table_map` is renamed `rgb_apply_gain_table_map(x, table, ...)`. The gain table is the second input, an array of shape `(points_v, points_h, table_points)`, in place of the `gains`, `points_v`, `points_h` and `num_table_points` attrs. The grid attrs are `origin_x`, `origin_y`, `spacing_x` and `spacing_y`, still fractions of the canvas as DNG gives them. A pixel's position is measured on its canvas, so on a crop the op gives the crop of the op on the whole image. `clamp` (`none`, the default, `max_one` or `zero_one`) replaces the fixed clamp to [0, 1]; the renderer passes `zero_one`. The op now runs one row at a time instead of on the whole frame.
 - **One demosaic op (breaking, no aliases)**: `cfa_bilinear_demosaic` and `cfa_ea_demosaic` are replaced by `cfa_demosaic(x, cfa_pattern=..., algorithm=...)`. `algorithm` is `"bilinear"`, `"ea"` (Hamilton–Adams, the default) or `"ea_fast"`; it replaces the `fast` attr. The output pixels are unchanged. The `--timing ops` row is named for the algorithm, for example `cfa_demosaic (ea)`.
 - **Op names (breaking, no aliases)**: Ops that need one-channel CFA input start with `cfa_`, and ops that need three-channel RGB input start with `rgb_`. The redundant `_color` suffix is dropped. Renamed:
   - `bilinear_demosaic` → `cfa_bilinear_demosaic`, `ea_demosaic` → `cfa_ea_demosaic`, `demosaic_op` → `cfa_demosaic_op`
