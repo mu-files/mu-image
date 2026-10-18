@@ -22,6 +22,19 @@ def _table(points_y, points_x, table_points):
     return gains.reshape(points_y, points_x, table_points).astype(np.float32)
 
 
+def _smooth_table(points_y, points_x, table_points):
+    """Gains from 0.6 to 1.4 that change smoothly along every axis, as a
+    real gain table does."""
+    y, x, k = np.meshgrid(
+        np.arange(points_y),
+        np.arange(points_x),
+        np.arange(table_points) / max(table_points - 1, 1),
+        indexing="ij",
+    )
+    gains = 1.0 + 0.4 * np.sin(1.5 * np.pi * k + 0.3 * y + 0.2 * x)
+    return gains.astype(np.float32)
+
+
 def _image(shape, seed=3):
     """RGB from -0.25 to 1.25, so every clamp changes some samples."""
     rng = np.random.default_rng(seed)
@@ -160,6 +173,43 @@ _ATTRS = dict(
     exposure_weight_gain=1.2,
     clamp="zero_one",
 )
+
+
+@pytest.mark.parametrize("clamp", ["none", "zero_one"])
+@pytest.mark.parametrize("table_name", list(_TABLES))
+@pytest.mark.parametrize("dtype", [np.uint16, np.float16])
+def test_rgb_apply_gain_table_map_on_16_bits_is_close_to_float32(
+    dtype, table_name, clamp
+):
+    """A uint16 or float16 image gives a result of its dtype, close to the
+    float32 op on the same values: the 16-bit paths trade precision for
+    speed. The weight is computed in float16, so a pixel's position on
+    the table points axis is off by up to table_points / 2048; the table
+    is smooth, as a real one is, so that costs little gain. The uint16
+    codes cover 0 to 65535 and gains above 1 saturate some, so the float32
+    result is clipped to [0, 1] for them."""
+    points, grid = _TABLES[table_name]
+    floats = _image((12, 301, 3))
+    if dtype == np.uint16:
+        pixels = np.round(np.clip(floats, 0, 1) * 65535).astype(np.uint16)
+        scale = 65535.0
+    else:
+        pixels = floats.astype(np.float16)
+        scale = 1.0
+    table = mi.Array(_smooth_table(*points))
+    attrs = dict(
+        grid, weights=_WEIGHTS, gamma=0.6, exposure_weight_gain=1.41, clamp=clamp
+    )
+    got = mi.rgb_apply_gain_table_map(mi.Array(pixels), table, **attrs).realize()
+    assert got.dtype == dtype and got.shape == floats.shape
+    expect = mi.rgb_apply_gain_table_map(
+        mi.Array(pixels.astype(np.float32) / np.float32(scale)), table, **attrs
+    ).realize()
+    if dtype == np.uint16:
+        expect = np.clip(expect, 0, 1)
+    np.testing.assert_allclose(
+        got.astype(np.float32) / np.float32(scale), expect, rtol=5e-3, atol=1e-4
+    )
 
 
 def test_rgb_apply_gain_table_map_on_a_slice_matches_the_slice_of_the_whole():

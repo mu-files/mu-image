@@ -887,8 +887,14 @@ ops:
   # gives them. Past the grid's first or last column or row a pixel takes
   # that column's or row's gains. On a crop the op gives the crop of the
   # op on the image the crop was cut from. clamp is none, max_one or
-  # zero_one (DNG without overrange support clamps to [0, 1]).
-  # engine_opts {"core": {"neon": false}} forces the scalar loop.
+  # zero_one (DNG without overrange support clamps to [0, 1]). x is
+  # uint16, float16 or float32 and the result has its dtype. A 16-bit x
+  # trades precision for speed: with NEON float16 arithmetic the weight
+  # and the gain are computed in float16, within about 2e-3 relative of
+  # the float32 result, and a uint16 pixel is multiplied by a gain with
+  # 12 fraction bits, so a gain of 16 or more acts as 16. Elsewhere, x is
+  # converted to float32 and the result back. engine_opts
+  # {"core": {"neon": false}} forces the scalar loop.
   - name: rgb_apply_gain_table_map
     is_rgb: true
     requires_2d: true
@@ -897,7 +903,6 @@ ops:
       - channels: any
     outputs:
       - channels: 3
-        dtype: float32
     attrs:
       - key: origin_x
         type: f64

@@ -1075,7 +1075,7 @@ rgb_apply_gain_table_map = EngineOp(
     meta=OpMeta(
         name="rgb_apply_gain_table_map", requires_2d=True, is_cfa=False, is_rgb=True
     ),
-    _out_dtype=graph._out_dtype_const("float32"),
+    _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_const(3),
     _in_channels=(3, None),
     _n_inputs=2,
