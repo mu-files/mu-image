@@ -1127,6 +1127,12 @@ rgb_apply_gain_table_map = EngineOp(
       "max_one",
       "zero_one"
     ]
+  },
+  {
+    "count": 1,
+    "key": "engine_opts",
+    "optional": true,
+    "type": "string"
   }
 ]""")
     ),

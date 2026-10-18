@@ -888,6 +888,7 @@ ops:
   # that column's or row's gains. On a crop the op gives the crop of the
   # op on the image the crop was cut from. clamp is none, max_one or
   # zero_one (DNG without overrange support clamps to [0, 1]).
+  # engine_opts {"core": {"neon": false}} forces the scalar loop.
   - name: rgb_apply_gain_table_map
     is_rgb: true
     requires_2d: true
@@ -924,6 +925,10 @@ ops:
         count: 1
         optional: true
         enum: gain_clamp
+      - key: engine_opts
+        type: string
+        count: 1
+        optional: true
 
   - name: warp_rectilinear
     needs_frame_index: true

@@ -108,6 +108,7 @@ _TABLES = {
     "one_point": ((1, 1, 1), _covering(1, 1)),
     "one_row": ((1, 4, 5), _covering(1, 4)),
     "many_table_points": ((6, 2, 257), _covering(6, 2)),
+    "over_blend_limit": ((3, 4, 1100), _covering(3, 4)),
 }
 
 
@@ -131,6 +132,25 @@ def test_rgb_apply_gain_table_map_matches_reference(table_name, gamma, clamp):
     np.testing.assert_allclose(
         got, _reference(src, table, **attrs), rtol=tolerance, atol=tolerance
     )
+
+
+@pytest.mark.parametrize("gamma", [1.0, 0.6])
+@pytest.mark.parametrize("table_name", list(_TABLES))
+def test_rgb_apply_gain_table_map_neon_matches_scalar(table_name, gamma):
+    """``engine_opts {"core": {"neon": false}}`` forces the scalar loop,
+    which gives the same bits as the NEON loop. The image is wide enough
+    that each grid cell holds several groups of four pixels."""
+    points, grid = _TABLES[table_name]
+    src = mi.Array(_image((12, 301, 3)))
+    table = mi.Array(_table(*points))
+    attrs = dict(
+        grid, weights=_WEIGHTS, gamma=gamma, exposure_weight_gain=1.41, clamp="zero_one"
+    )
+    neon = mi.rgb_apply_gain_table_map(src, table, **attrs).realize()
+    scalar = mi.rgb_apply_gain_table_map(
+        src, table, **attrs, engine_opts='{"core": {"neon": false}}'
+    ).realize()
+    np.testing.assert_array_equal(neon, scalar)
 
 
 _ATTRS = dict(
