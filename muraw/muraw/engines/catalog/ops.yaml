@@ -1,9 +1,17 @@
-# The master copy of this file lives in mu-image-engine/kernels/portable_ops.yaml.
-# Edit that file. copy_to_public.sh installs this copy.
+# This file is generated; do not edit it here.
 
 # Regenerate the public Python API:
 #   python -m muraw.engines.tools.gen_ops
 #   (writes muraw/engines/ops.py)
+#
+# A comment on an op says what the op computes, as any engine must
+# compute it. How one engine runs it (its loops and SIMD paths, the
+# precision of a reduced-depth path, its limits, its engine_opts keys)
+# is documented with that engine.
+#
+# engine_opts, an optional string attr of some ops, is a JSON object
+# keyed by engine name. An engine ignores the keys of other engines and
+# strictly validates its own.
 #
 # inputs/outputs: one output. Any number of inputs (fill has none), one
 #   entry per input, in node order.
@@ -305,7 +313,6 @@ ops:
   # six). Sample (row, col) of the output sits at x0 + col * spacing_x,
   # y0 + row * spacing_y (0 and 1 when not set), and r is its distance
   # from (center_x, center_y) divided by radius.
-  # engine_opts {"core": {"neon": false}} forces the scalar loop.
   - name: radial_polynomial
     requires_2d: true
     inputs: []
@@ -346,7 +353,7 @@ ops:
         count: 1
         optional: true
 
-  # ROI view: emit meta via geometry: view (_out_meta_view); native span execute.
+  # ROI view: emit meta via geometry: view (_out_meta_view).
   - name: view
     needs_frame_index: true
     inputs:
@@ -540,8 +547,6 @@ ops:
   # np.reshape(x, shape). shape is the output's buffer shape: 1 to 3 axes
   # (count 0 is variable), with the same sample count as the input. The
   # dtype does not change.
-  # The engine does not copy for this op: the output is the input's
-  # storage read as the new shape. The node is a chain boundary.
   - name: reshape
     inputs:
       - channels: any
@@ -557,10 +562,9 @@ ops:
   #   ea        Hamilton–Adams, halo 3. RGB clamped to [0, 1].
   #   ea_fast   OpenCV EA: axis-pick green and bilinear chroma, halo 1.
   #             RGB clamped to [0, 1].
-  # engine_opts {"core": {"neon": false}} forces the scalar loops of ea and
-  # ea_fast. cfa_pattern names the colours of the 2×2 block at the first
-  # sample of the input's canvas, so a crop that keeps its parent's canvas
-  # keeps its parent's pattern.
+  # cfa_pattern names the colours of the 2×2 block at the first sample of
+  # the input's canvas, so a crop that keeps its parent's canvas keeps its
+  # parent's pattern.
   - name: cfa_demosaic
     is_cfa: true
     requires_2d: true
@@ -828,11 +832,6 @@ ops:
       - key: sat_divs
         type: i32
         count: 1
-      # Engine-specific options: JSON object keyed by engine name; engines
-      # ignore namespaces they don't own and strictly validate their own.
-      # CoreEngine: {"core": {"chroma_lut": false}} forces the bit-faithful
-      # DNG bilinear path instead of the default (approximate, ~1.4x faster)
-      # chroma-face LUT.
       - key: engine_opts
         type: string
         count: 1
@@ -864,18 +863,14 @@ ops:
       - key: val_divs
         type: i32
         count: 1
-      # CoreEngine: {"core": {"prism_lut": false}} forces the bit-faithful DNG
-      # trilinear path instead of the default (approximate, ~1.5x faster)
-      # chroma-face-plus-value prism LUT.
       - key: engine_opts
         type: string
         count: 1
         optional: true
 
   # DNG ProfileGainTableMap: each RGB pixel times a gain looked up in a
-  # gain table, input 1, of shape (points_v, points_h, table_points),
-  # float32 or float16. The table's rows and columns are a grid over x's canvas; its
-  # third axis is indexed by the pixel's weight,
+  # gain table, input 1, of shape (points_v, points_h, table_points).
+  # The table's rows and columns are a grid over x's canvas; its third axis is indexed by the pixel's weight,
   # weights[0] * r + weights[1] * g + weights[2] * b
   #   + weights[3] * min(r, g, b) + weights[4] * max(r, g, b),
   # times exposure_weight_gain, clamped to [0, 1], and raised to gamma.
@@ -887,17 +882,8 @@ ops:
   # gives them. Past the grid's first or last column or row a pixel takes
   # that column's or row's gains. On a crop the op gives the crop of the
   # op on the image the crop was cut from. clamp is none, max_one or
-  # zero_one (DNG without overrange support clamps to [0, 1]). x is
-  # uint16, float16 or float32 and the result has its dtype. A 16-bit x
-  # trades precision for speed: with NEON float16 arithmetic the weight
-  # and the gain are computed in float16, within about 2e-3 relative of
-  # the float32 result, and a uint16 pixel is multiplied by a gain with
-  # 12 fraction bits, so a gain of 16 or more acts as 16. Elsewhere, x is
-  # converted to float32 and the result back. A float16 table is blended
-  # and interpolated in float16, while the work on the pixels stays in x's
-  # dtype; it runs on the float16 NEON loop only, with up to 1024 table
-  # points. engine_opts
-  # {"core": {"neon": false}} forces the scalar loop.
+  # zero_one (DNG without overrange support clamps to [0, 1]). The result
+  # has x's dtype.
   - name: rgb_apply_gain_table_map
     is_rgb: true
     requires_2d: true
@@ -984,10 +970,9 @@ ops:
   # col_pitch from its top-left corner, on planes start_plane ..
   # start_plane + num_planes - 1 (every plane when not set) change; the
   # rest are copied. clamp is none, max_one (at most 1, as DNG GainMap
-  # clamps) or zero_one. x is uint16, float16 or float32, and the result
-  # has its dtype: a uint16 code is multiplied by the gain, rounded, and
-  # saturated at 65535 whatever clamp is; float16 is multiplied in
-  # float16. engine_opts {"core": {"neon": false}} forces the scalar loop.
+  # clamps) or zero_one. The result has x's dtype: a uint16 code is
+  # multiplied by the gain, rounded, and saturated at 65535 whatever clamp
+  # is.
   - name: apply_gain_map
     needs_frame_index: true
     requires_2d: true
@@ -1046,8 +1031,8 @@ ops:
         count: 1
         optional: true
         enum: gain_clamp
-      # At least the largest gain the map holds; a uint16 input then
-      # multiplies by a fixed-point gain instead of in float32.
+      # At least the largest gain the map holds. An engine may use the
+      # bound to pick a faster path.
       - key: max_gain
         type: f64
         count: 1
@@ -1063,10 +1048,7 @@ ops:
   # c0 + c1 x + ... + c_degree x^degree clamped to [-1, 1]. coefficients
   # holds degree + 1 values for every plane, or num_planes * (degree + 1),
   # one set per plane. A plane is a channel, or a frame of a (C, H, W)
-  # array. float16 is mapped in float16; uint16 and float32 in float32.
-  # engine_opts {"core": {"neon": false}} forces the scalar loops, and
-  # {"core": {"force_float16": true}} maps uint16 and float32 in float16
-  # too.
+  # array.
   - name: map_polynomial
     needs_frame_index: true
     requires_2d: true
