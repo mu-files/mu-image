@@ -874,7 +874,7 @@ ops:
 
   # DNG ProfileGainTableMap: each RGB pixel times a gain looked up in a
   # gain table, input 1, of shape (points_v, points_h, table_points),
-  # float32. The table's rows and columns are a grid over x's canvas; its
+  # float32 or float16. The table's rows and columns are a grid over x's canvas; its
   # third axis is indexed by the pixel's weight,
   # weights[0] * r + weights[1] * g + weights[2] * b
   #   + weights[3] * min(r, g, b) + weights[4] * max(r, g, b),
@@ -893,7 +893,10 @@ ops:
   # and the gain are computed in float16, within about 2e-3 relative of
   # the float32 result, and a uint16 pixel is multiplied by a gain with
   # 12 fraction bits, so a gain of 16 or more acts as 16. Elsewhere, x is
-  # converted to float32 and the result back. engine_opts
+  # converted to float32 and the result back. A float16 table is blended
+  # and interpolated in float16, while the work on the pixels stays in x's
+  # dtype; it runs on the float16 NEON loop only, with up to 1024 table
+  # points. engine_opts
   # {"core": {"neon": false}} forces the scalar loop.
   - name: rgb_apply_gain_table_map
     is_rgb: true
