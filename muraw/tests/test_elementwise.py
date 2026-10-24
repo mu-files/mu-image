@@ -78,7 +78,9 @@ def test_integer_results_saturate_on_rows_wider_than_a_vector(
     rng = np.random.default_rng(3)
     top = np.iinfo(dtype).max
     first = rng.integers(0, top + 1, (3, 40, channels)).astype(dtype)
-    second_shape = {"full": first.shape, 1: (3, 40, 1), "one sample": (1, 1, 1)}[second_channels]
+    second_shape = {"full": first.shape, 1: (3, 40, 1), "one sample": (1, 1, 1)}[
+        second_channels
+    ]
     second = rng.choice([0, 1, 2, 3, top // 2, top], second_shape).astype(dtype)
     fn = _OPS[name]
     _check(fn(mi.Array(first), mi.Array(second)), _expected(fn, first, second, False))

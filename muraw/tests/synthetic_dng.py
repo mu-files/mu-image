@@ -109,7 +109,9 @@ def gain_map(
 PGTM2_DATA_TYPES = {"uint8": 0, "uint16": 1, "float16": 2, "float32": 3}
 
 
-def profile_gain_table_map2(gains, origin, spacing, weights, gamma, data_type="float32"):
+def profile_gain_table_map2(
+    gains, origin, spacing, weights, gamma, data_type="float32"
+):
     """The ProfileGainTableMap2 tag value. ``gains`` is (points_v,
     points_h, table_points); ``origin`` and ``spacing`` are (vertical,
     horizontal) fractions of the image; ``weights`` are the five weights
@@ -267,7 +269,9 @@ def mu_stage(path, stage):
 
 def mu_render(path, rendering_params=None):
     with DngFile(path) as dng:
-        rendered = dng.render_raw(output_dtype=np.uint16, rendering_params=rendering_params)
+        rendered = dng.render_raw(
+            output_dtype=np.uint16, rendering_params=rendering_params
+        )
         return _unit(rendered.realize())
 
 

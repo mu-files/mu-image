@@ -800,11 +800,16 @@ class TableCase:
             path,
             stored_samples(unit, dtype or self.dtype),
             self.photometric,
-            extra_tags={"BaselineExposure": PGTM_BASELINE_EXPOSURE, **(extra_tags or {})},
+            extra_tags={
+                "BaselineExposure": PGTM_BASELINE_EXPOSURE,
+                **(extra_tags or {}),
+            },
         )
 
     def write(self, path, dtype=None):
-        return self.write_plain(path, dtype, {"ProfileGainTableMap2": self.table.encode()})
+        return self.write_plain(
+            path, dtype, {"ProfileGainTableMap2": self.table.encode()}
+        )
 
 
 TABLE_CASES = [
@@ -1141,7 +1146,9 @@ def test_gain_map_encoder_round_trips():
 def test_profile_gain_table_map2_encoder_round_trips(data_type):
     table = ProfileGainTableMap2(0.6, data_type, points=(3, 4, 5))
     byteorder = "<" if sys.byteorder == "little" else ">"
-    parsed = parse_profile_gain_table_map(table.encode(), is_version2=True, byteorder=byteorder)
+    parsed = parse_profile_gain_table_map(
+        table.encode(), is_version2=True, byteorder=byteorder
+    )
     assert (parsed["points_v"], parsed["points_h"]) == (3, 4)
     assert parsed["num_table_points"] == 5
     assert (parsed["spacing_v"], parsed["spacing_h"]) == (0.5, 1 / 3)
