@@ -38,8 +38,9 @@ def _host_tagged_name() -> str:
             raise ImportError(f"Android {machine} is not a supported CoreEngine target")
         return "_core_engine.android-aarch64.abi3.so"
     if system == "Windows":
-        tag = "windows-arm64" if machine in ("arm64", "aarch64") else "windows-amd64"
-        return f"_core_engine.{tag}.abi3.pyd"
+        if machine in ("arm64", "aarch64"):
+            raise ImportError("Windows on ARM is not a supported CoreEngine target")
+        return "_core_engine.windows-amd64.abi3.pyd"
     if system == "Darwin":
         tag = "macos-arm64" if machine in ("arm64", "aarch64") else "macos-x86_64"
         return f"_core_engine.{tag}.abi3.so"

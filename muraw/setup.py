@@ -30,9 +30,8 @@ def host_core_binaries():
         name = "_core_engine.android-aarch64.abi3.so"
     elif system == "Windows":
         if machine in ("arm64", "aarch64"):
-            name = "_core_engine.windows-arm64.abi3.pyd"
-        else:
-            name = "_core_engine.windows-amd64.abi3.pyd"
+            raise RuntimeError("Windows on ARM is not a supported CoreEngine target")
+        name = "_core_engine.windows-amd64.abi3.pyd"
     elif system == "Darwin":
         if machine in ("arm64", "aarch64"):
             name = "_core_engine.macos-arm64.abi3.so"
