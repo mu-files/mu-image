@@ -922,7 +922,7 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     ),  # 51181 (0xC7ED)
     "EnhanceParams": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 51182 (0xC7EE)
     "ProfileGainTableMap": TagSpec(
-        TiffType.BYTE, None, dng_ifd="dng_raw"
+        TiffType.UNDEFINED, None, dng_ifd="dng_raw"
     ),  # 52525 (0xCD2D)
     "SemanticName": TagSpec(TiffType.ASCII, None, dng_ifd="any"),  # 52526 (0xCD2E)
     "SemanticInstanceID": TagSpec(
@@ -958,7 +958,7 @@ TIFF_TAG_TYPE_REGISTRY: dict[str, TagSpec] = {
     ),  # 52538 (0xCD3A)
     "RGBTables": TagSpec(TiffType.BYTE, None, dng_ifd="dng_profile"),  # 52543 (0xCD3F)
     "ProfileGainTableMap2": TagSpec(
-        TiffType.BYTE, None, dng_ifd="dng_profile"
+        TiffType.UNDEFINED, None, dng_ifd="dng_profile"
     ),  # 52544 (0xCD40)
     "ColumnInterleaveFactor": TagSpec(
         TiffType.SHORT, 1, dng_ifd="dng_raw"

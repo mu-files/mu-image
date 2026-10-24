@@ -15,6 +15,7 @@ until they are published. A partial run, a machine without the reference
 renderers, or a machine without that folder leaves the document as it is.
 """
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,9 +36,11 @@ from synthetic_dng import (
     mu_render,
     mu_stage,
     opcode_list,
+    profile_gain_table_map2,
     rgb_ramp,
     rggb,
     sdk_available,
+    sdk_render,
     sdk_stage,
     stored_samples,
     write_synthetic_dng,
@@ -49,7 +52,11 @@ from test_map_polynomial import _COEFFICIENTS, _PER_PLANE_SETS, _reference
 from tifffile import COMPRESSION
 
 from muraw.dngio import DngFile, IfdPageSpec, PageEncoding, write_dng_from_page
-from muraw.raw_render import VIGNETTE_MAP_SPACING, parse_opcode_list
+from muraw.raw_render import (
+    VIGNETTE_MAP_SPACING,
+    parse_opcode_list,
+    parse_profile_gain_table_map,
+)
 
 # Core Image returns an empty image below 256 x 256 pixels.
 HEIGHT = WIDTH = 256
@@ -710,6 +717,109 @@ CASES += [
 ]
 
 
+@dataclass(frozen=True)
+class ProfileGainTableMap2:
+    """A ProfileGainTableMap2 tag: a smooth table of ``points``
+    (points_v, points_h, table_points) gains of 1 ± 0.3 whose grid covers
+    the image, stored as ``data_type``."""
+
+    gamma: float
+    data_type: str = "float32"
+    points: tuple = (5, 7, 9)
+    weights: tuple = (0.3, 0.4, 0.15, 0.05, 0.1)
+    seed: int = 5
+
+    section = "ProfileGainTableMap2"
+    coreimage_issue = None
+
+    @property
+    def gains(self):
+        rng = np.random.default_rng(self.seed)
+        points_v, points_h, table_points = self.points
+        phase = rng.uniform(0, 2 * np.pi, (points_v, points_h, 1))
+        position = np.linspace(0, 1, table_points)[None, None, :]
+        return (1 + 0.3 * np.sin(2 * np.pi * position + phase)).astype(np.float32)
+
+    def encode(self):
+        spacing = tuple(1.0 / (points - 1) for points in self.points[:2])
+        return profile_gain_table_map2(
+            self.gains, (0.0, 0.0), spacing, self.weights, self.gamma, self.data_type
+        )
+
+
+# The gain table applies inside the render, so its cases compare final
+# renders. A BaselineExposure of 0.5 makes the weight's exposure gain
+# 2^0.5. The samples are the ramp at half its level: the brightest, times
+# a gain of 1.3 and 2^0.5, stays below white, where the two renderers
+# clip out-of-range colours differently with or without a gain table.
+PGTM_BASELINE_EXPOSURE = 0.5
+PGTM_LEVEL = 0.5
+# The largest difference measured between mu-image's and dng_validate's
+# 16-bit renders, 2.0e-4, times 1.1.
+PGTM_TOLERANCE = 2.2e-4
+# The renderers' exposure ramp for a positive exposure is the SDK's
+# linear one only with this mu-image render parameter.
+SDK_RENDERING_PARAMS = {"highlight_preserving_exposure": False}
+
+
+COREIMAGE_PGTM_GAMMA = (
+    "With a gamma of 0.6, the change Core Image's render makes follows "
+    "mu-image's less closely (correlation 0.87) than with a gamma of 1, "
+    "where it applies the table as mu-image does. mu-image matches "
+    "dng_validate on both."
+)
+COREIMAGE_PGTM_FLOAT16 = (
+    "With the table stored as float16, the change Core Image's render makes "
+    "hardly follows mu-image's (correlation 0.19), against 0.87 for the same "
+    "table stored as float32. mu-image matches dng_validate on both."
+)
+
+
+@dataclass(frozen=True)
+class TableCase:
+    """A LINEAR_RAW DNG with a ProfileGainTableMap2 tag in IFD0."""
+
+    name: str
+    dtype: str
+    table: ProfileGainTableMap2
+    coreimage_issue: str | None = None
+    photometric = "LINEAR_RAW"
+    opcode_list = "IFD0"
+
+    @property
+    def section(self):
+        return self.table.section
+
+    @property
+    def opcodes(self):
+        return (self.table,)
+
+    def write_plain(self, path, dtype=None, extra_tags=None):
+        unit = PGTM_LEVEL * rgb_ramp(HEIGHT, WIDTH)
+        return write_synthetic_dng(
+            path,
+            stored_samples(unit, dtype or self.dtype),
+            self.photometric,
+            extra_tags={"BaselineExposure": PGTM_BASELINE_EXPOSURE, **(extra_tags or {})},
+        )
+
+    def write(self, path, dtype=None):
+        return self.write_plain(path, dtype, {"ProfileGainTableMap2": self.table.encode()})
+
+
+TABLE_CASES = [
+    TableCase("gamma 0.6", "float32", ProfileGainTableMap2(0.6), COREIMAGE_PGTM_GAMMA),
+    TableCase("gamma 1", "float32", ProfileGainTableMap2(1.0)),
+    TableCase(
+        "gamma 0.6, float16 table",
+        "float32",
+        ProfileGainTableMap2(0.6, "float16"),
+        COREIMAGE_PGTM_FLOAT16,
+    ),
+    TableCase("gamma 0.6", "uint16", ProfileGainTableMap2(0.6), COREIMAGE_PGTM_GAMMA),
+]
+
+
 def _label(case):
     return f"{case.photometric} {case.dtype} {case.opcode_list}: {case.name}"
 
@@ -735,6 +845,7 @@ SECTION_FILES = "Reading synthetic DNGs"
 COLUMN_MU = "mu-image"
 COLUMN_SDK = "dng_validate"
 COLUMN_CI = "Core Image"
+COLUMN_MU_SDK = "mu-image against dng_validate"
 
 
 @dataclass(frozen=True)
@@ -787,13 +898,17 @@ TABLE = ReferenceTable(
         "and compares each renderer with a NumPy port of the DNG spec. "
         "mu-image and dng_validate are compared at the stage right after the "
         "opcode list; Core Image gives only a final render, so its cell says "
-        "whether the opcode changes that render the way it changes mu-image's."
+        "whether the opcode changes that render the way it changes mu-image's. "
+        "A ProfileGainTableMap2 applies inside the render, so its section "
+        "compares mu-image's final render with dng_validate's instead of a "
+        "NumPy port."
     ),
     sections={
         **{
             section: [COLUMN_MU, COLUMN_SDK, COLUMN_CI]
             for section in dict.fromkeys(case.section for case in CASES)
         },
+        ProfileGainTableMap2.section: [COLUMN_MU_SDK, COLUMN_CI],
         SECTION_FILES: ["Result"],
     },
 )
@@ -804,7 +919,7 @@ def reference_table():
     yield TABLE
     TABLE.write(TEST_OUTPUTS_DIR / "test_dng_opcodes_synthetic" / DOC_PATH.name)
     expected = {section: [] for section in TABLE.sections}
-    for case in CASES:
+    for case in [*CASES, *TABLE_CASES]:
         expected[case.section].append(_label(case))
     expected[SECTION_FILES] = [f"Core Image: {case.name}" for case in FILE_CASES] + [
         EMPTY_AREA_CASE
@@ -873,8 +988,28 @@ def test_dng_validate_matches_the_spec(case, out_dir):
     assert matches, f"dng_validate differs from the spec by {measured}"
 
 
+@pytest.mark.skipif(not sdk_available(), reason="dng_validate not available")
+@pytest.mark.parametrize("case", [pytest.param(c, id=_label(c)) for c in TABLE_CASES])
+def test_mu_image_matches_dng_validate_on_a_gain_table(case, out_dir):
+    """mu-image's 16-bit render of a DNG with the table matches
+    dng_validate's, and the table changes dng_validate's render clearly."""
+    plain = case.write_plain(out_dir / "plain.dng")
+    path = case.write(out_dir / "case.dng")
+    sdk = sdk_render(path)
+    assert _max_diff(sdk, sdk_render(plain)) > 0.05, "the table changes nothing"
+    measured = _max_diff(mu_render(path, SDK_RENDERING_PARAMS), sdk)
+    matches = measured <= PGTM_TOLERANCE
+    TABLE.record(
+        case.section,
+        _label(case),
+        COLUMN_MU_SDK,
+        f"matches (max {measured:.1e})" if matches else f"differs: max {measured:.3g}",
+    )
+    assert matches, f"mu-image differs from dng_validate by {measured}"
+
+
 @pytest.mark.skipif(not core_image_available, reason="Core Image not available")
-@pytest.mark.parametrize("case", [_coreimage_param(c) for c in CASES])
+@pytest.mark.parametrize("case", [_coreimage_param(c) for c in [*CASES, *TABLE_CASES]])
 def test_coreimage_applies_the_opcode(case, out_dir):
     """Core Image reads only 16-bit DNGs, so every case is written as
     uint16. The opcode applies when the change it makes to Core Image's
@@ -1000,6 +1135,22 @@ def test_gain_map_encoder_round_trips():
     assert (parsed["origin_v"], parsed["origin_h"]) == (0.1, 0.2)
     assert (parsed["spacing_v"], parsed["spacing_h"]) == (0.3, 0.25)
     np.testing.assert_array_equal(parsed["gain_values"], op.gains)
+
+
+@pytest.mark.parametrize("data_type", ["float32", "float16"])
+def test_profile_gain_table_map2_encoder_round_trips(data_type):
+    table = ProfileGainTableMap2(0.6, data_type, points=(3, 4, 5))
+    byteorder = "<" if sys.byteorder == "little" else ">"
+    parsed = parse_profile_gain_table_map(table.encode(), is_version2=True, byteorder=byteorder)
+    assert (parsed["points_v"], parsed["points_h"]) == (3, 4)
+    assert parsed["num_table_points"] == 5
+    assert (parsed["spacing_v"], parsed["spacing_h"]) == (0.5, 1 / 3)
+    assert (parsed["origin_v"], parsed["origin_h"]) == (0.0, 0.0)
+    np.testing.assert_array_equal(parsed["weights"], np.float32(table.weights))
+    assert parsed["gamma"] == np.float32(0.6)
+    np.testing.assert_array_equal(
+        parsed["gains"], table.gains.astype(data_type).astype(np.float32)
+    )
 
 
 def test_fix_bad_pixels_constant_encoder_round_trips():

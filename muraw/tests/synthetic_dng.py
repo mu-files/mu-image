@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 mu-files
 
-"""Small DNGs written at test time, with the opcode under test, and the
+"""Small DNGs written at test time, with the opcode or tag under test, and the
 three renderers that read them: Adobe's ``dng_validate``, Apple's Core
 Image, and mu-image.
 
@@ -105,6 +105,26 @@ def gain_map(
     return opcode(OPCODE_GAIN_MAP, body)
 
 
+# The PGTM2 data type of each table dtype the tag can store.
+PGTM2_DATA_TYPES = {"uint8": 0, "uint16": 1, "float16": 2, "float32": 3}
+
+
+def profile_gain_table_map2(gains, origin, spacing, weights, gamma, data_type="float32"):
+    """The ProfileGainTableMap2 tag value. ``gains`` is (points_v,
+    points_h, table_points); ``origin`` and ``spacing`` are (vertical,
+    horizontal) fractions of the image; ``weights`` are the five weights
+    of r, g, b, min and max. The table is stored as ``data_type``, float16
+    or float32; a gain_min and gain_max of 1 leave it unscaled. The value
+    is in this machine's byte order, which the DNG writer converts to the
+    file's."""
+    points_v, points_h, table_points = gains.shape
+    body = struct.pack("=II", points_v, points_h)
+    body += struct.pack("=dddd", spacing[0], spacing[1], origin[0], origin[1])
+    body += struct.pack("=I5f", table_points, *weights)
+    body += struct.pack("=I3f", PGTM2_DATA_TYPES[data_type], gamma, 1.0, 1.0)
+    return body + np.asarray(gains, data_type).tobytes()
+
+
 def opcode_list(*opcodes):
     """The OpcodeList1/2/3 tag value: a count, then each opcode."""
     return struct.pack(">I", len(opcodes)) + b"".join(opcodes)
@@ -145,17 +165,24 @@ def rggb(rgb):
 
 
 def write_synthetic_dng(
-    path, data, photometric, opcode_lists=None, black_level=0, cfa_pattern="RGGB"
+    path,
+    data,
+    photometric,
+    opcode_lists=None,
+    black_level=0,
+    cfa_pattern="RGGB",
+    extra_tags=None,
 ):
     """Write ``data`` as a one-IFD DNG with an identity tone curve,
     ``cfa_pattern`` for a CFA, ``opcode_lists`` ({"OpcodeList2": bytes,
-    …}), and a BlackLevel tag when ``black_level`` is not 0."""
+    …}), a BlackLevel tag when ``black_level`` is not 0, and
+    ``extra_tags`` ({name: value})."""
     tags = MetadataTags()
     tags.add_tag("ProfileToneCurve", [0.0, 0.0, 1.0, 1.0])
     tags.add_tag("UniqueCameraModel", "Synthetic Test Camera")
     if black_level:
         tags.add_tag("BlackLevel", [black_level])
-    for name, value in (opcode_lists or {}).items():
+    for name, value in {**(opcode_lists or {}), **(extra_tags or {})}.items():
         tags.add_tag(name, value)
     write_dng_from_array(
         destination_file=path,
@@ -238,9 +265,10 @@ def mu_stage(path, stage):
         return np.squeeze(_unit(stage2.realize()))
 
 
-def mu_render(path):
+def mu_render(path, rendering_params=None):
     with DngFile(path) as dng:
-        return _unit(dng.render_raw(output_dtype=np.uint16).realize())
+        rendered = dng.render_raw(output_dtype=np.uint16, rendering_params=rendering_params)
+        return _unit(rendered.realize())
 
 
 def coreimage_render(path):
