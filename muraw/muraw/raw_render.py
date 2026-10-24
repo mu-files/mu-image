@@ -2789,25 +2789,6 @@ def _fix_vignette_opcode(
         spacing_x=float(step),
         spacing_y=float(step),
     )
-
-    # The map's samples can lie up to one spacing past the canvas, so the
-    # largest gain is bounded at the squared radius of its corner samples,
-    # measured as the kernel measures it, in float32 center and radius.
-    center_x32 = float(np.float32(center_col - 0.5))
-    center_y32 = float(np.float32(center_row - 0.5))
-    inv_radius32 = float(np.float32(1.0 / radius))
-    r_squared_max = 1.0
-    for col in (0, map_width - 1):
-        for row in (0, map_height - 1):
-            dx = (col * step - center_x32) * inv_radius32
-            dy = (row * step - center_y32) * inv_radius32
-            r_squared_max = max(r_squared_max, dx * dx + dy * dy)
-    max_gain = 1.0
-    power = r_squared_max
-    for k in params:
-        max_gain += max(k, 0.0) * power
-        power *= r_squared_max
-
     return mi.apply_gain_map(
         x,
         gain_map,
@@ -2816,7 +2797,6 @@ def _fix_vignette_opcode(
         map_spacing_x=float(step),
         map_spacing_y=float(step),
         clamp="zero_one",
-        max_gain=max_gain * (1.0 + 1e-4),
     )
 
 

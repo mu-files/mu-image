@@ -92,7 +92,8 @@ ops:
   # value holds one number for every sample, or one per channel. With
   # per_frame: true it holds one number per frame instead, used for every
   # channel of that frame. Integer results are rounded to the nearest
-  # integer and saturate to the dtype's range, except that div_scalar
+  # integer and saturate to the dtype's range, where NumPy wraps them;
+  # every engine saturates. The exception is that div_scalar
   # writes float32 for an integer input. reverse: true computes value - x
   # and value / x.
   - name: add_scalar
@@ -168,8 +169,9 @@ ops:
   # a / b. The inputs broadcast as in NumPy: each input's frames, rows,
   # columns, and channels match the output's, or are 1 and are read at
   # index 0 for every output index. Integer results are rounded to the
-  # nearest integer and saturate to the dtype's range. divide writes
-  # float32 for integer inputs.
+  # nearest integer and saturate to the dtype's range, where NumPy wraps
+  # them; every engine saturates. divide writes float32 for integer
+  # inputs.
   - name: add
     needs_frame_index: true
     inputs:
@@ -956,7 +958,7 @@ ops:
         count: 1
 
   # DNG GainMap: samples of x times a low-resolution gain map, input 1,
-  # interpolated bilinearly to each pixel. The map is float32,
+  # interpolated bilinearly to each pixel. The map is
   # (points_v, points_h) or (points_v, points_h, map_planes); plane p, a
   # channel or the frame of a (C, H, W) array, reads map plane
   # min(p, map_planes - 1). Every position is on x's canvas, so on a crop
@@ -1031,12 +1033,6 @@ ops:
         count: 1
         optional: true
         enum: gain_clamp
-      # At least the largest gain the map holds. An engine may use the
-      # bound to pick a faster path.
-      - key: max_gain
-        type: f64
-        count: 1
-        optional: true
       - key: engine_opts
         type: string
         count: 1

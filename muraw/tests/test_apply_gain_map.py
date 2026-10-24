@@ -63,14 +63,11 @@ def _reference(
     row_pitch=1,
     col_pitch=1,
     clamp="none",
-    max_gain=None,
 ):
     """DNG GainMap on an (H, W) or (H, W, C) array whose first pixel is
     canvas (0, 0). Plane p, a channel, reads map plane min(p, map_planes -
     1). An area of none, or with bottom <= top or right <= left, is the
-    whole image. ``max_gain`` changes only how the kernel computes and is
-    ignored here."""
-    del max_gain
+    whole image."""
     height, width = x.shape[:2]
     channels = 1 if x.ndim == 2 else x.shape[2]
     table = np.asarray(gains, np.float64)
@@ -281,17 +278,13 @@ CASES = {
 }
 
 
-def run_case(name, dtype=np.float32, max_gain=False, engine_opts=None):
-    """The case's ``mi`` result, realized, on its source as ``dtype``. With
-    ``max_gain`` each op gets the largest gain of its table, so a uint16
-    source multiplies by a fixed-point gain."""
+def run_case(name, dtype=np.float32, engine_opts=None):
+    """The case's ``mi`` result, realized, on its source as ``dtype``."""
     src, ops, before, after = CASES[name]
     x = Array(_as_dtype(src, dtype))
     if before is not None:
         x = x[before]
     for gains, attrs in ops:
-        if max_gain:
-            attrs = {**attrs, "max_gain": float(np.max(gains))}
         if engine_opts is not None:
             attrs = {**attrs, "engine_opts": engine_opts}
         x = _apply(x, gains, attrs)
@@ -335,9 +328,21 @@ def test_apply_gain_map_matches_reference(name):
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_apply_gain_map_neon_matches_scalar(name, dtype):
     """``engine_opts {"core": {"neon": false}}`` forces the scalar loops,
-    which give the same bits as the NEON loops."""
+    which compute in float32. On float32 they give the same bits as the
+    NEON loops. With float16 NEON arithmetic a 16-bit sample is
+    multiplied in float16, within 2^-9 of the scalar result, relative,
+    and a uint16 code also within 1."""
     scalar = run_case(name, dtype, engine_opts='{"core": {"neon": false}}')
-    np.testing.assert_array_equal(run_case(name, dtype), scalar)
+    got = run_case(name, dtype)
+    if dtype == np.float32:
+        np.testing.assert_array_equal(got, scalar)
+    else:
+        np.testing.assert_allclose(
+            got.astype(np.float64),
+            scalar.astype(np.float64),
+            rtol=2.0**-9,
+            atol=1.0 if dtype == np.uint16 else 0.0,
+        )
 
 
 def test_apply_gain_map_changes_only_the_area_at_its_pitch():
@@ -407,22 +412,16 @@ _SIXTEEN_BIT_CASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "max_gain", [False, True], ids=["float_gain", "fixed_point_gain"]
-)
 @pytest.mark.parametrize("name", _SIXTEEN_BIT_CASES)
-def test_apply_gain_map_on_uint16_matches_reference(name, max_gain):
-    """A uint16 source keeps its dtype. Without ``max_gain`` each code is
-    multiplied by the float32 gain and rounded; with it, by a fixed-point
-    gain with at least 14 fraction bits for these gains, so a result is
-    within one code of the reference plus half a fixed-point step times
-    the code. A code saturates at 65535."""
-    got = run_case(name, np.uint16, max_gain)
+def test_apply_gain_map_on_uint16_matches_reference(name):
+    """A uint16 source keeps its dtype. With float16 NEON arithmetic each
+    code is multiplied by the gain in float16, so a result is within 2^-9
+    of the reference, relative, and one code; elsewhere in float32 and
+    rounded, within one code. A code saturates at 65535."""
+    got = run_case(name, np.uint16)
     assert got.dtype == np.uint16
     expect = np.clip(reference_case(name, np.uint16) * 65535.0, 0.0, 65535.0)
-    np.testing.assert_allclose(
-        got.astype(np.float64), expect, rtol=0, atol=1.0 + 65535 * 2.0**-15
-    )
+    np.testing.assert_allclose(got.astype(np.float64), expect, rtol=2.0**-9, atol=1.0)
 
 
 @pytest.mark.parametrize("name", _SIXTEEN_BIT_CASES)

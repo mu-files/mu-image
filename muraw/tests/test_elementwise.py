@@ -66,6 +66,37 @@ def test_each_operator_matches_numpy_for_every_dtype_pair(
     _check(got, _expected(fn, first, second, name == "div"), divide=name == "div")
 
 
+@pytest.mark.parametrize("second_channels", ["full", 1, "one sample"])
+@pytest.mark.parametrize("channels", [3, 4])
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+@pytest.mark.parametrize("name", ["add", "sub", "mul"])
+def test_integer_results_saturate_on_rows_wider_than_a_vector(
+    name, dtype, channels, second_channels
+):
+    """Rows of 40 pixels, with second values that keep some results in
+    range and saturate others."""
+    rng = np.random.default_rng(3)
+    top = np.iinfo(dtype).max
+    first = rng.integers(0, top + 1, (3, 40, channels)).astype(dtype)
+    second_shape = {"full": first.shape, 1: (3, 40, 1), "one sample": (1, 1, 1)}[second_channels]
+    second = rng.choice([0, 1, 2, 3, top // 2, top], second_shape).astype(dtype)
+    fn = _OPS[name]
+    _check(fn(mi.Array(first), mi.Array(second)), _expected(fn, first, second, False))
+    _check(fn(mi.Array(second), mi.Array(first)), _expected(fn, second, first, False))
+
+
+@pytest.mark.parametrize("value", [0, 3, 200])
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+@pytest.mark.parametrize("name", ["add", "sub", "mul"])
+def test_integer_constants_saturate_on_rows_wider_than_a_vector(name, dtype, value):
+    rng = np.random.default_rng(4)
+    first = rng.integers(0, np.iinfo(dtype).max + 1, (3, 40, 3)).astype(dtype)
+    constant = np.asarray(value, dtype=dtype)
+    fn = _OPS[name]
+    _check(fn(mi.Array(first), value), _expected(fn, first, constant, False))
+    _check(fn(value, mi.Array(first)), _expected(fn, constant, first, False))
+
+
 _BROADCAST_SHAPES = [
     ((5, 7), (1, 7)),
     ((5, 7), (5, 1)),

@@ -22,6 +22,13 @@ different exception.
   NumPy accepts float counts in `np.repeat` and float indices in
   `np.take`.
 
+Deliberate differences, documented where the user reads about the op:
+
+- Integer arithmetic (`+`, `-`, `*`, scalar or array, and `matmul`)
+  saturates to the dtype's range, and rounds a fractional result to
+  nearest, where NumPy wraps. Wrapping is not useful on images; a flag
+  may come later if someone needs it. Do not "fix" this toward NumPy.
+
 ```python
 # ❌ BAD: NumPy returns an empty array; mi raises a different exception
 raise ValueError("rows: slice results in an empty dimension")

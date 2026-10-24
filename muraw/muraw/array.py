@@ -293,17 +293,20 @@ def _arithmetic_function(
 
 
 def add(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
-    """NumPy's ``add``: ``x1 + x2``, broadcast. Integer results saturate."""
+    """NumPy's ``add``: ``x1 + x2``, broadcast. Integer results saturate,
+    where NumPy's wrap."""
     return _arithmetic_function(operator.add, x1, x2)
 
 
 def subtract(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
-    """NumPy's ``subtract``: ``x1 - x2``, broadcast. Integer results saturate."""
+    """NumPy's ``subtract``: ``x1 - x2``, broadcast. Integer results
+    saturate, where NumPy's wrap."""
     return _arithmetic_function(operator.sub, x1, x2)
 
 
 def multiply(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
-    """NumPy's ``multiply``: ``x1 * x2``, broadcast. Integer results saturate."""
+    """NumPy's ``multiply``: ``x1 * x2``, broadcast. Integer results
+    saturate, where NumPy's wrap."""
     return _arithmetic_function(operator.mul, x1, x2)
 
 

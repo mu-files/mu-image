@@ -237,11 +237,12 @@ def _as_unit(x):
 @pytest.mark.parametrize("name", _SIXTEEN_BIT_CASES)
 def test_fix_vignette_on_16_bit_samples_matches_reference(name, map_spacing, dtype):
     """A uint16 or float16 source keeps its dtype. The gain is float32 and
-    each sample is multiplied by it at its dtype. A uint16 code is
-    multiplied by a fixed-point gain with at least 14 fraction bits for
-    these gains, so a result is within one code of the reference plus half
-    a fixed-point step times the code. A float16 result is within about two
-    float16 roundings (one of the gain, one of the product)."""
+    each sample is multiplied by it at its dtype. With float16 NEON
+    arithmetic a uint16 code is multiplied by the gain in float16, so a
+    result is within 2^-9 of the reference, relative, and one code;
+    elsewhere in float32 and rounded, within one code. A float16 result
+    is within about two float16 roundings (one of the gain, one of the
+    product)."""
     src, attrs, before, after = CASES[name]
     source = _as_dtype(src, dtype)
     x = Array(source)
@@ -260,10 +261,7 @@ def test_fix_vignette_on_16_bit_samples_matches_reference(name, map_spacing, dty
         expect = expect[after]
     if dtype == np.uint16:
         np.testing.assert_allclose(
-            got.astype(np.float64),
-            expect * 65535.0,
-            rtol=0,
-            atol=1.0 + 65535 * 2.0**-15,
+            got.astype(np.float64), expect * 65535.0, rtol=2.0**-9, atol=1.0
         )
     else:
         np.testing.assert_allclose(
