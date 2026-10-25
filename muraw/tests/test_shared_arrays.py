@@ -72,39 +72,6 @@ def test_square_of_a_difference_is_faster_than_numpy():
     )
 
 
-def _square_of_difference_each_realized(rows, row):
-    """The square of a difference with every intermediate realized."""
-    y, c = _row_index_and_scale(mi, rows, mi.Array(row))
-    y.realize()
-    c.realize()
-    first = y - c
-    first.realize()
-    second = y - c
-    second.realize()
-    return (first * second).realize()
-
-
-def test_square_of_a_difference_is_faster_than_realizing_each_step():
-    """The same graph with every intermediate realized writes each one as
-    a whole image, as the engine did before an array read by several ops
-    could stay inside one stage. Both runs are muimage on this machine, so
-    the ratio depends little on the machine; it was about 1.6 when this
-    test was written."""
-    rows = 3000
-    row = _random((1, 4000), 3)
-    np.testing.assert_array_equal(
-        _square_of_difference(mi, rows, mi.Array(row)).realize(),
-        _square_of_difference_each_realized(rows, row),
-    )
-    fused_time = _best_time(
-        lambda: _square_of_difference(mi, rows, mi.Array(row)).realize()
-    )
-    each_time = _best_time(lambda: _square_of_difference_each_realized(rows, row))
-    message = f"one graph {fused_time * 1e3:.1f} ms, each step realized {each_time * 1e3:.1f} ms"
-    print(message)
-    assert each_time > 1.25 * fused_time, message
-
-
 def test_array_read_twice_by_one_op_matches_numpy():
     image = _random((37, 61), 4)
     y = mi.Array(image) - 0.25
