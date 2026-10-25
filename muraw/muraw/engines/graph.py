@@ -903,9 +903,11 @@ def realize(
     ``out`` must have ``root``'s shape and be writeable. For a different
     dtype the result is ``root.astype(out.dtype)``, which must be a
     ``same_kind`` cast; a ``root`` realized earlier is cast that way too.
-    When the engine runs, ``out`` cannot share memory with a buffer it
-    reads. The engine writes ``out`` when it can bind that buffer, and when
-    ``out`` flips or permutes the axes of a buffer it can bind: ``root``
+    ``out`` may share memory with a buffer the graph reads, as NumPy's
+    ``out=`` may; the engine then writes its own buffer and copies it into
+    ``out`` after the run. The engine writes ``out`` when it can bind that
+    buffer, and when ``out`` flips or permutes the axes of a buffer it can
+    bind: ``root``
     gets the same flip and transpose, and the engine writes that buffer.
     Anything else is copied into
     ``out``, including a negative stride that skips elements, such as
@@ -991,8 +993,6 @@ def realize(
     if not op_arrays:
         return _result(_as_numpy_shape(root), out)
 
-    if out is not None and any(np.shares_memory(out, buf) for buf in values.values()):
-        raise ValueError("realize out= cannot be an input of the graph")
     _run_op_arrays(op_arrays, values, root, output=bound)
 
     root_pixels = values.get(id(root))

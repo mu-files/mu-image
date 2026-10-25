@@ -153,27 +153,58 @@ def test_out_must_be_an_ndarray():
         image.realize(out=Array(src))
 
 
-def test_an_input_cannot_be_out():
-    """A writeable view of an input is rejected, not written."""
-    parent = np.arange(3 * 8, dtype=np.float32).reshape(3, 8).copy()
+def _flipped_scaled(lib, image):
+    """``image`` with its rows reversed, times two, plus one. The first
+    output row reads the last input row, so a result written straight
+    into the input's memory would overwrite rows later output rows read."""
+    return image[::-1] * np.float32(2) + np.float32(1)
+
+
+def test_an_input_can_be_out():
+    """``out`` may be the input itself, as with NumPy's ``out=``."""
+    src = np.arange(5 * 6, dtype=np.float32).reshape(5, 6).copy()
+    expected = _flipped_scaled(np, src.copy())
+    image = _flipped_scaled(mi, Array(src))
+    src.setflags(write=True)
+    assert image.realize(out=src) is src
+    np.testing.assert_array_equal(src, expected)
+
+
+def test_a_view_that_overlaps_an_input_can_be_out():
+    """``out`` may share some of an input's memory, here half its columns."""
+    parent = np.arange(5 * 8, dtype=np.float32).reshape(5, 8).copy()
     src = parent[:, :4]
-    image = _scaled(Array(src))
+    expected = _flipped_scaled(np, src.copy())
+    image = _flipped_scaled(mi, Array(src))
     parent.setflags(write=True)
-    overlap = parent[:, 2:6]
-    overlap.setflags(write=True)
-    with pytest.raises(ValueError, match="input of the graph"):
-        image.realize(out=overlap)
+    out = parent[:, 2:6]
+    assert image.realize(out=out) is out
+    np.testing.assert_array_equal(out, expected)
 
 
-def test_a_realized_input_cannot_be_out():
-    """Pixels an earlier realize cached are an input of the graph that reads them."""
-    src = np.arange(12, dtype=np.float32).reshape(3, 4)
+def test_an_input_with_channels_first_can_be_out():
+    """A ``(C, H, W)`` input, held one frame per channel, can be ``out``.
+    Reversing axis 0 reverses the frames, so the first output frame reads
+    the last input frame."""
+    src = np.arange(3 * 5 * 6, dtype=np.float32).reshape(3, 5, 6).copy()
+    expected = _flipped_scaled(np, src.copy())
+    image = _flipped_scaled(mi, Array(src, channel_axis=0))
+    src.setflags(write=True)
+    assert image.realize(out=src) is src
+    np.testing.assert_array_equal(src, expected)
+
+
+def test_a_realized_input_can_be_out():
+    """Pixels an earlier realize cached are an input of the graph that
+    reads them, and can be its ``out``."""
+    src = np.arange(5 * 6, dtype=np.float32).reshape(5, 6)
     earlier = _scaled(Array(src))
     cached = earlier.realize()
-    later = earlier + np.float32(1)
+    expected = _flipped_scaled(np, cached.copy())
+    later = _flipped_scaled(mi, earlier)
     cached.setflags(write=True)
-    with pytest.raises(ValueError, match="input of the graph"):
-        later.realize(out=cached)
+    assert later.realize(out=cached) is cached
+    np.testing.assert_array_equal(cached, expected)
 
 
 def _assert_layout_write(image, out, expected, monkeypatch):

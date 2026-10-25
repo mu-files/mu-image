@@ -2715,8 +2715,8 @@ class Array:
         Without ``out``, the returned array is read-only and kept on this
         handle. With ``out``, the pixels are written into that array and
         ``out`` is returned. ``out`` must have this array's shape and be
-        writeable, and it cannot share memory with a buffer the graph
-        reads. A different dtype is ``self.astype(out.dtype)``, which must
+        writeable. It may share memory with a buffer the graph reads, as
+        NumPy's ``out=`` may, and gets the same pixels. A different dtype is ``self.astype(out.dtype)``, which must
         be a ``same_kind`` cast. The engine writes ``out`` when it can bind
         it, or the buffer under it when ``out`` flips or permutes that
         buffer's axes. Any other ``out``, such as ``[:, ::-2]``, is filled
