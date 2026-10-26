@@ -86,6 +86,11 @@ enums:
     - none
     - max_one
     - zero_one
+  resize_interpolation:
+    - auto
+    - nearest
+    - area
+    - bilinear
 
 ops:
   # Arithmetic with a constant: x + value, x - value, x * value, x / value.
@@ -522,6 +527,73 @@ ops:
         optional: true
       - key: col_indices
         type: i32_array
+        count: 0
+        optional: true
+
+  # Resample the rows and columns of a 2D image to out_rows x out_cols.
+  # Each channel and each frame is resampled the same way.
+  #
+  # scale_rows and scale_cols are output pixels per input pixel. Both are
+  # set or neither is; without them the scale of an axis is its output
+  # length over its input length. An output pixel is placed by its center:
+  # source row (dest_row + 0.5) / scale_rows - 0.5, and the same for
+  # columns. With scale set the inverse map may pass the edge of the input.
+  #
+  # interpolation, auto when absent:
+  #   nearest   the source sample nearest that point; a point halfway
+  #             between two samples takes the later one. So dest row y
+  #             reads source row floor((y + 0.5) / scale_rows), computed
+  #             exactly from the float64 scale, with no rounding of the
+  #             division.
+  #   bilinear  the 2 x 2 interpolant.
+  #   area      on an axis that shrinks, output pixel col covers source
+  #             columns [col / scale_cols, (col + 1) / scale_cols); each
+  #             source pixel contributes its overlap, and the sum is divided
+  #             by the window's length. The same for rows. On an axis that
+  #             grows it is nearest.
+  #   auto      per axis: area when the scale is below 1, bilinear when it
+  #             is above 1, and a copy of the axis when it is exactly 1.
+  #
+  # A sample read outside the source's readable rect (its canvas when its
+  # oob_valid is true, else the source itself) takes the pad in mode,
+  # reflect when absent, as the pad op computes it; constant fills with
+  # constant_values, one value or one per channel (one per frame on a
+  # (C, H, W) array), 0 when absent. The result has the source's dtype; an
+  # integer result is rounded to nearest and saturated.
+  - name: resize
+    requires_2d: true
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: resize
+    attrs:
+      - key: out_rows
+        type: i32
+        count: 1
+      - key: out_cols
+        type: i32
+        count: 1
+      - key: scale_rows
+        type: f64
+        count: 1
+        optional: true
+      - key: scale_cols
+        type: f64
+        count: 1
+        optional: true
+      - key: interpolation
+        type: string
+        count: 1
+        optional: true
+        enum: resize_interpolation
+      - key: mode
+        type: string
+        count: 1
+        optional: true
+        enum: pad_mode
+      - key: constant_values
+        type: f32_array
         count: 0
         optional: true
 

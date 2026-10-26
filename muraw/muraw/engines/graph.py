@@ -539,6 +539,50 @@ def _out_meta_take(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     )
 
 
+def _out_meta_resize(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
+    """Geometry policy ``resize``: the rows and columns are ``out_rows`` and
+    ``out_cols``. The result is its own canvas at origin ``(0, 0)``.
+
+    The core engine runs only a resize that picks the nearest sample on
+    both axes: ``nearest``, ``area`` on axes that do not shrink, and
+    ``auto`` when the scale of both axes is 1. The other cases raise
+    ``NotImplementedError``.
+    """
+    out_rows = int(attrs["out_rows"])
+    out_cols = int(attrs["out_cols"])
+    if min(out_rows, out_cols) < 1:
+        raise ValueError(
+            f"resize: the output size {(out_rows, out_cols)} must be at least 1 "
+            "on each axis"
+        )
+    scale_rows = attrs.get("scale_rows")
+    scale_cols = attrs.get("scale_cols")
+    if (scale_rows is None) != (scale_cols is None):
+        raise ValueError("resize: set both scale_rows and scale_cols, or neither")
+    if scale_rows is None:
+        scales = (out_rows / x.meta.height, out_cols / x.meta.width)
+    else:
+        scales = (float(scale_rows), float(scale_cols))
+    interpolation = attrs.get("interpolation", "auto")
+    for axis, scale in zip(("rows", "columns"), scales):
+        nearest = (
+            interpolation == "nearest"
+            or (interpolation == "area" and scale >= 1)
+            or (interpolation == "auto" and scale == 1)
+        )
+        if not nearest:
+            raise NotImplementedError(
+                f"resize: interpolation {interpolation!r} at a scale of {scale:g} "
+                f"on the {axis} is not supported yet; interpolation='nearest' is"
+            )
+    return x.meta.with_size(
+        height=out_rows,
+        width=out_cols,
+        origin=(0, 0),
+        canvas=(0, 0, out_cols, out_rows),
+    )
+
+
 # TIFF orientation code → (swap H and W, flip x, flip y) of the map from
 # dest to source.
 _ORIENTATION = {

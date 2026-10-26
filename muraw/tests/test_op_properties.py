@@ -130,6 +130,7 @@ _OPS_WITH_OWN_PLACEMENT = {
     "pad",
     "tile",
     "take",
+    "resize",
     "orientation",
     "transpose",
     "reshape",

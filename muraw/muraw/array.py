@@ -1777,6 +1777,101 @@ def _take_spatial(
     return op("take", a, row_indices=row_indices, col_indices=col_indices)
 
 
+def resize(
+    image: ArrayLike,
+    size: Any = None,
+    *,
+    scale: Any = None,
+    interpolation: str = "auto",
+    mode: str = "reflect",
+    constant_values: Any = 0,
+) -> "Array":
+    """Resample the rows and columns of a 2D image.
+
+    ``size`` is ``(out_rows, out_cols)``. ``scale`` is output pixels per
+    input pixel, one number for both axes or ``(scale_rows, scale_cols)``.
+    Set one of them, or both:
+
+    - ``size`` alone maps the whole input onto the whole output.
+    - ``scale`` alone makes each output length the integer part of the
+      input length times the scale, then maps as ``size`` does.
+    - Both give the output ``size`` and map each output pixel back with
+      ``scale``, so a pixel may read past the edge of the input.
+
+    An output pixel is placed by its center: source row
+    ``(row + 0.5) / scale_rows - 0.5``, and the same for columns.
+    ``interpolation`` is
+
+    - ``"nearest"``: the nearest source sample, the later one at a tie;
+    - ``"bilinear"``: the 2 x 2 interpolant;
+    - ``"area"``: on an axis that shrinks, the average of the source
+      pixels each output pixel covers, weighted by their overlap; on an
+      axis that grows, nearest;
+    - ``"auto"``: per axis, area when it shrinks, bilinear when it grows,
+      and a copy when its scale is exactly 1.
+
+    A read past the edge of the image takes the pad ``mode``, as
+    ``np.pad`` computes it: ``"reflect"``, ``"symmetric"``, ``"edge"`` or
+    ``"constant"``. A crop that keeps its parent's canvas, such as an
+    ``mi.view``, reads the parent's pixels past its edge and pads past
+    the canvas. ``constant_values`` is one value or one per channel.
+
+    Each channel and each frame is resampled the same way. The result has
+    the input's dtype; an integer result is rounded and saturated.
+
+    Differences from ``cv2.resize``: ``size`` is ``(rows, cols)``, not
+    ``(width, height)``. ``"nearest"`` is ``INTER_NEAREST_EXACT``, not
+    ``INTER_NEAREST``. OpenCV reads past the edge as ``"edge"``. With
+    ``fx`` and ``fy`` alone OpenCV rounds the output size to nearest and
+    keeps the factors for the mapping, and with ``dsize`` set it ignores
+    them. Its ``INTER_AREA`` on a growing axis is a two-tap filter, not
+    nearest.
+
+    ``bilinear``, ``area`` on a shrinking axis, and ``auto`` at a scale
+    other than 1 raise ``NotImplementedError`` for now.
+    """
+    from .engines.graph import op
+
+    image = Array(image)
+    meta = image.meta
+    if size is None and scale is None:
+        raise TypeError("resize: pass size, scale, or both")
+    scale_rows = scale_cols = None
+    if scale is not None:
+        scales = np.broadcast_to(np.asarray(scale, dtype=np.float64), (2,))
+        if not (np.isfinite(scales).all() and (scales > 0).all()):
+            raise ValueError(f"resize: scale {scale!r} must be finite and positive")
+        scale_rows, scale_cols = (float(value) for value in scales)
+    if size is not None:
+        if len(size) != 2:
+            raise ValueError(f"resize: size must be (out_rows, out_cols), got {size!r}")
+        out_rows, out_cols = (operator.index(length) for length in size)
+    else:
+        out_rows = int(meta.height * scale_rows)
+        out_cols = int(meta.width * scale_cols)
+        scale_rows = scale_cols = None
+    fill_values = None
+    if mode == "constant":
+        fill_values = [float(value) for value in np.ravel(constant_values)]
+        channels = meta.channels if meta.channel_axis is not None else 1
+        if len(fill_values) not in (1, channels):
+            raise ValueError(
+                f"resize: constant_values must be one value or one per channel "
+                f"({channels}), got {len(fill_values)}"
+            )
+    return op(
+        "resize",
+        image,
+        out_rows=out_rows,
+        out_cols=out_cols,
+        scale_rows=scale_rows,
+        scale_cols=scale_cols,
+        interpolation=interpolation,
+        mode=mode,
+        constant_values=fill_values,
+    )
+
+
 def broadcast_to(array: ArrayLike, shape: Any) -> "Array":
     """Stretch size-1 axes to ``shape``, like ``numpy.broadcast_to``.
 

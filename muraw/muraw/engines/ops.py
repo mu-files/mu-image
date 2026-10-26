@@ -571,6 +571,72 @@ take = EngineOp(
     _infer_meta=graph._out_meta_take,
 )
 
+resize = EngineOp(
+    meta=OpMeta(name="resize", requires_2d=True, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 1,
+    "key": "out_rows",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "out_cols",
+    "type": "i32"
+  },
+  {
+    "count": 1,
+    "key": "scale_rows",
+    "optional": true,
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "scale_cols",
+    "optional": true,
+    "type": "f64"
+  },
+  {
+    "count": 1,
+    "key": "interpolation",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "auto",
+      "nearest",
+      "area",
+      "bilinear"
+    ]
+  },
+  {
+    "count": 1,
+    "key": "mode",
+    "optional": true,
+    "type": "string",
+    "values": [
+      "constant",
+      "edge",
+      "symmetric",
+      "reflect"
+    ]
+  },
+  {
+    "count": 0,
+    "key": "constant_values",
+    "optional": true,
+    "type": "f32_array"
+  }
+]""")
+    ),
+    _infer_meta=graph._out_meta_resize,
+)
+
 orientation = EngineOp(
     meta=OpMeta(name="orientation", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1407,6 +1473,7 @@ OPS_BY_NAME = {
     "pad": pad,
     "tile": tile,
     "take": take,
+    "resize": resize,
     "orientation": orientation,
     "transpose": transpose,
     "reshape": reshape,
@@ -1455,6 +1522,7 @@ __all__ = [
     "radial_polynomial",
     "ramp",
     "reshape",
+    "resize",
     "rgb_apply_gain_table_map",
     "rgb_apply_hue_sat_map",
     "rgb_apply_hue_sat_val_map",
