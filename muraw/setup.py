@@ -23,12 +23,8 @@ def host_core_binaries():
     system = platform.system()
     machine = platform.machine().lower()
     if _is_android():
-        if machine not in ("arm64", "aarch64"):
-            raise RuntimeError(
-                f"Android {machine} is not a supported CoreEngine target"
-            )
-        name = "_core_engine.android-aarch64.abi3.so"
-    elif system == "Windows":
+        raise RuntimeError("Android is not a published CoreEngine target")
+    if system == "Windows":
         if machine in ("arm64", "aarch64"):
             raise RuntimeError("Windows on ARM is not a supported CoreEngine target")
         name = "_core_engine.windows-amd64.abi3.pyd"

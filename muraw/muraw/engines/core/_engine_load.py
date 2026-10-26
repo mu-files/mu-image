@@ -34,9 +34,7 @@ def _host_tagged_name() -> str:
     system = platform.system()
     machine = platform.machine().lower()
     if _is_android():
-        if machine not in ("arm64", "aarch64"):
-            raise ImportError(f"Android {machine} is not a supported CoreEngine target")
-        return "_core_engine.android-aarch64.abi3.so"
+        raise ImportError("Android is not a published CoreEngine target")
     if system == "Windows":
         if machine in ("arm64", "aarch64"):
             raise ImportError("Windows on ARM is not a supported CoreEngine target")
