@@ -486,6 +486,12 @@ pad = EngineOp(
     "key": "constant_values",
     "optional": true,
     "type": "f32_array"
+  },
+  {
+    "count": 0,
+    "key": "fill_values",
+    "optional": true,
+    "type": "f32_array"
   }
 ]""")
     ),

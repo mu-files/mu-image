@@ -554,6 +554,22 @@ def _expand_pad(
     return sides
 
 
+def _per_channel_fill(
+    meta: "ArrayMeta", mode: str, constant_values: Any
+) -> list[float] | None:
+    """``constant_values`` as one fill per channel, or ``None`` when it is
+    NumPy's form. Only a flat list of one value per channel on 3 or more
+    channels is the per-channel form: NumPy rejects it, and reads one or
+    two values as pairs on every axis."""
+    if mode != "constant" or meta.channel_axis is None:
+        return None
+    channels = meta.shape[meta.channel_axis]
+    values = np.asarray(constant_values)
+    if channels < 3 or values.shape != (channels,):
+        return None
+    return [float(value) for value in values]
+
+
 def _slice_span(slc: slice, length: int, name: str) -> Tuple[int, int, int]:
     """Return ``(start, size, step)`` for a 1-d slice on an axis of ``length``.
 
@@ -2559,14 +2575,44 @@ class Array:
         channels. On a CHW array that pad works in any ``mode``; with
         the channels on another axis it requires ``mode="constant"``. The
         pair on axis 0 of a 4-axis stack adds frames, in any ``mode``.
+
+        Unlike NumPy, ``constant_values`` may also be one value per channel,
+        on an array of 3 or more channels: ``x.pad(((1, 1), (1, 1), (0, 0)),
+        constant_values=(255, 0, 0))`` pads an RGB image with red. Every
+        padded sample of channel ``c`` is ``constant_values[c]``. NumPy
+        rejects that call. One or two values keep NumPy's meaning: two
+        are ``(before, after)`` on every axis, also on 2 channels. A
+        per-channel fill cannot fill added channels, so it needs a
+        ``(0, 0)`` pair on the channel axis.
         """
         import muimage as mi
 
+        fill_values = _per_channel_fill(self._meta, mode, constant_values)
+        if fill_values is not None:
+            channel_axis = self._meta.channel_axis
+            channel_pad = _expand_pad(
+                pad_width, "pad_width", self._meta.ndim, nonneg=True
+            )
+            if any(channel_pad[2 * channel_axis : 2 * channel_axis + 2]):
+                raise ValueError(
+                    "constant_values: one value per channel cannot fill added "
+                    "channels; pad the channel axis in a separate call"
+                )
         if self._meta.size == 0:
             # The result holds only constants, which NumPy places from the
             # shape alone. NumPy rejects a mode that reads pixels.
-            kwargs = {"constant_values": constant_values} if mode == "constant" else {}
-            padded = np.pad(np.empty(self.shape, self.dtype), pad_width, mode, **kwargs)
+            if fill_values is not None:
+                padded = np.pad(np.empty(self.shape, self.dtype), pad_width, mode)
+                fill_shape = [1] * padded.ndim
+                fill_shape[self._meta.channel_axis] = len(fill_values)
+                padded[...] = np.reshape(fill_values, fill_shape)
+            else:
+                kwargs = (
+                    {"constant_values": constant_values} if mode == "constant" else {}
+                )
+                padded = np.pad(
+                    np.empty(self.shape, self.dtype), pad_width, mode, **kwargs
+                )
             if padded.size == 0:
                 return _empty_with_shape(self, padded.shape)
             axis = self._meta.channel_axis
@@ -2599,9 +2645,7 @@ class Array:
 
         ndim = self._meta.ndim
         all_sides = _expand_pad(pad_width, "pad_width", ndim, nonneg=True)
-        all_consts = _expand_pad(constant_values, "constant_values", ndim)
         sides = [int(v) for v in by_engine_side(all_sides)]
-        consts = [float(v) for v in by_engine_side(all_consts)]
         attrs: dict[str, Any] = dict(zip(("top", "bottom", "left", "right"), sides))
         if ndim >= 3:
             attrs["channel_before"], attrs["channel_after"] = sides[4:]
@@ -2609,6 +2653,11 @@ class Array:
             attrs["frame_before"], attrs["frame_after"] = (
                 int(v) for v in all_sides[:2]
             )
+        if fill_values is not None:
+            return mi.pad(self, mode=mode, fill_values=fill_values, **attrs)
+        all_consts = _expand_pad(constant_values, "constant_values", ndim)
+        consts = [float(v) for v in by_engine_side(all_consts)]
+        if "frame_before" in attrs:
             consts += [float(v) for v in all_consts[:2]]
         return mi.pad(self, mode=mode, constant_values=consts, **attrs)
 

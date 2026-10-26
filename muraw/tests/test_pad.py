@@ -149,6 +149,82 @@ def test_pad_channel_width_rejected_on_mono():
         Array(src).pad(((0, 0), (0, 0), (0, 1)))
 
 
+def _pad_each_channel(src, pad_width, channel_axis, values):
+    """``src`` padded with ``values[c]`` around channel ``c``; NumPy's
+    ``pad_width`` with ``(0, 0)`` on the channel axis."""
+    widths = [w for axis, w in enumerate(pad_width) if axis != channel_axis]
+    channels = [
+        np.pad(src.take(c, axis=channel_axis), widths, constant_values=value)
+        for c, value in enumerate(values)
+    ]
+    return np.stack(channels, axis=channel_axis)
+
+
+@pytest.mark.parametrize(
+    "shape,channel_axis,pad_width,values,dtype",
+    [
+        ((4, 5, 3), 2, ((1, 2), (3, 0), (0, 0)), (0.25, -1.0, 2.5), np.float32),
+        ((4, 5, 3), 2, ((1, 1), (1, 1), (0, 0)), (255, 0, 7), np.uint8),
+        ((4, 5, 4), 2, ((0, 1), (2, 2), (0, 0)), (1.0, 2.0, 3.0, 4.0), np.float32),
+        ((3, 4, 5), 0, ((0, 0), (1, 1), (2, 0)), (9, 8, 7), np.uint16),
+        (
+            (2, 3, 4, 3),
+            3,
+            ((1, 0), (1, 1), (0, 2), (0, 0)),
+            (5.0, 6.0, 7.0),
+            np.float32,
+        ),
+        ((0, 4, 3), 2, ((1, 1), (0, 0), (0, 0)), (1.0, 2.0, 3.0), np.float32),
+    ],
+    ids=["rgb", "rgb_uint8", "rgba", "chw", "stack_with_frames", "empty"],
+)
+def test_pad_one_constant_per_channel_fills_each_channel(
+    shape, channel_axis, pad_width, values, dtype
+):
+    rng = np.random.default_rng(5)
+    src = (rng.random(shape) * 100).astype(dtype)
+    out = Array(src, channel_axis=channel_axis).pad(pad_width, constant_values=values)
+    expect = _pad_each_channel(src, pad_width, channel_axis, values)
+    np.testing.assert_array_equal(np.asarray(out), expect)
+
+
+@pytest.mark.parametrize(
+    "shape,pad_width,constant_values",
+    [
+        ((4, 5, 2), ((1, 1), (2, 0), (0, 0)), (3.0, 4.0)),
+        ((4, 5, 3), ((1, 1), (2, 0), (0, 0)), (3.0, 4.0)),
+        ((4, 5, 3), 1, (3.0,)),
+    ],
+    ids=["two_channels_pair", "rgb_pair", "rgb_one_value"],
+)
+def test_pad_one_or_two_constants_keep_numpys_meaning(
+    shape, pad_width, constant_values
+):
+    src = np.random.default_rng(6).random(shape, dtype=np.float32)
+    out = Array(src).pad(pad_width, constant_values=constant_values)
+    expect = np.pad(src, pad_width, constant_values=constant_values)
+    np.testing.assert_array_equal(out.realize(), expect)
+
+
+@pytest.mark.parametrize(
+    "shape,pad_width",
+    [
+        ((4, 5, 3), ((1, 1), (0, 0), (0, 1))),
+        ((4, 3), 1),
+        ((3,), 1),
+    ],
+    ids=["channel_pad", "no_channel_axis", "one_axis"],
+)
+def test_pad_one_constant_per_channel_is_rejected_where_numpy_rejects_it(
+    shape, pad_width
+):
+    src = np.zeros(shape, dtype=np.float32)
+    with pytest.raises(ValueError):
+        Array(src).pad(pad_width, constant_values=(1.0, 2.0, 3.0))
+    with pytest.raises(ValueError):
+        np.pad(src, pad_width, constant_values=(1.0, 2.0, 3.0))
+
+
 def test_pad_then_interior_view():
     src = np.arange(12, dtype=np.float32).reshape(3, 4)
     t = Array(src, origin=(5, 7)).pad(((1, 1), (2, 2)))
