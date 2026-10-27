@@ -213,17 +213,35 @@ def test_area_on_growing_axes_is_nearest():
     np.testing.assert_array_equal(area, nearest)
 
 
-def test_auto_at_scale_one_copies():
+@pytest.mark.parametrize("interpolation", ["auto", "nearest", "area", "bilinear"])
+@pytest.mark.parametrize(
+    "size, scale", [((6, 7), None), (None, 1), ((6, 7), 1.0), ((6, 7), (1, 1))]
+)
+def test_a_copy_is_the_input_itself(interpolation, size, scale):
+    x = Array(_image((6, 7, 3)))
+    assert mi.resize(x, size, scale=scale, interpolation=interpolation) is x
+
+
+def test_a_copy_checks_its_arguments():
+    x = Array(_image((6, 7, 3)))
+    with pytest.raises(ValueError):
+        mi.resize(x, (6, 7), interpolation="cubic")
+    with pytest.raises(ValueError):
+        mi.resize(x, (6, 7), mode="wrap")
+
+
+def test_the_same_size_at_another_scale_is_not_a_copy():
     x = _image((6, 7, 3))
-    np.testing.assert_array_equal(mi.resize(Array(x), (6, 7)).realize(), x)
-    np.testing.assert_array_equal(mi.resize(Array(x), scale=1).realize(), x)
+    got = mi.resize(Array(x), (6, 7), scale=0.5, interpolation="nearest").realize()
+    np.testing.assert_array_equal(got, _reference(x, (6, 7), (0.5, 0.5)))
+    assert not np.array_equal(got, x)
 
 
 @pytest.mark.parametrize(
     "size, scale, interpolation",
     [
         ((12, 14), None, "bilinear"),
-        ((6, 7), None, "bilinear"),
+        ((6, 7), (1.0, 0.5), "bilinear"),
         ((3, 7), None, "area"),
         ((12, 7), None, "auto"),
         ((3, 7), None, "auto"),

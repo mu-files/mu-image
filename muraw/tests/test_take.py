@@ -79,6 +79,56 @@ def test_take_matches_numpy(shape, axis, indices, dtype):
     np.testing.assert_array_equal(got.realize(), _take(np, x, indices, axis))
 
 
+def _long_lists(width):
+    """Index lists into ``width`` columns, long enough for the kernel's
+    copies, its runs of one load and its gathered groups, in every order."""
+    rng = np.random.default_rng(9)
+    columns = np.arange(width)
+    return {
+        "random": rng.integers(0, width, width + 37),
+        "flip": columns[::-1],
+        "uneven_repeat": np.repeat(columns, rng.integers(1, 4, width))[: 2 * width],
+        "slices": np.concatenate(
+            [columns[40:140], columns[10:30][::-1], [7, 7, 7], columns[200:260]]
+        ),
+        "one_and_a_half": columns[(2 * np.arange(3 * width // 2)) // 3],
+    }
+
+
+# (dtype, channels) for pixels of 1, 2, 3, 4, 6, 8, 12 and 16 bytes.
+PIXELS = [
+    (np.uint8, 1),
+    (np.uint8, 2),
+    (np.uint8, 3),
+    (np.float32, 1),
+    (np.uint16, 3),
+    (np.uint16, 4),
+    (np.float32, 3),
+    (np.float32, 4),
+]
+
+
+@pytest.mark.parametrize("dtype, channels", PIXELS)
+@pytest.mark.parametrize(
+    "kind", ["random", "flip", "uneven_repeat", "slices", "one_and_a_half"]
+)
+@pytest.mark.parametrize("axis", [0, 1])
+def test_take_of_long_lists_matches_numpy(axis, kind, dtype, channels):
+    x = _image((300, 300, channels), dtype)
+    indices = _long_lists(300)[kind]
+    got = _take(mi, mi.Array(x), indices, axis)
+    np.testing.assert_array_equal(got.realize(), _take(np, x, indices, axis))
+
+
+@pytest.mark.parametrize("dtype, channels", PIXELS)
+@pytest.mark.parametrize("mode", ["clip", "wrap"])
+def test_take_of_long_out_of_range_lists_matches_numpy(mode, dtype, channels):
+    x = _image((40, 300, channels), dtype)
+    indices = np.random.default_rng(4).integers(-600, 900, 500)
+    got = _take(mi, mi.Array(x), indices, 1, mode)
+    np.testing.assert_array_equal(got.realize(), _take(np, x, indices, 1, mode))
+
+
 @pytest.mark.parametrize("axis", [0, 1, 2])
 def test_take_on_chw_matches_numpy(axis):
     x = _image((4, 5, 6), np.float32)

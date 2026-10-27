@@ -544,8 +544,8 @@ def _out_meta_resize(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     ``out_cols``. The result is its own canvas at origin ``(0, 0)``.
 
     The core engine runs only a resize that picks the nearest sample on
-    both axes: ``nearest``, ``area`` on axes that do not shrink, and
-    ``auto`` when the scale of both axes is 1. The other cases raise
+    both axes: ``nearest``, ``area`` on axes that do not shrink, and any
+    interpolation when the scale of both axes is 1. The other cases raise
     ``NotImplementedError``.
     """
     out_rows = int(attrs["out_rows"])
@@ -564,9 +564,11 @@ def _out_meta_resize(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     else:
         scales = (float(scale_rows), float(scale_cols))
     interpolation = attrs.get("interpolation", "auto")
+    copy = scales == (1.0, 1.0)
     for axis, scale in zip(("rows", "columns"), scales):
         nearest = (
-            interpolation == "nearest"
+            copy
+            or interpolation == "nearest"
             or (interpolation == "area" and scale >= 1)
             or (interpolation == "auto" and scale == 1)
         )

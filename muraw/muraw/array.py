@@ -1940,6 +1940,10 @@ def resize(
     - ``"auto"``: per axis, area when it shrinks, bilinear when it grows,
       and a copy when its scale is exactly 1.
 
+    When the output has the input's size and each scale is ``None`` or
+    exactly 1, every interpolation gives the input, and the result is
+    ``image`` itself.
+
     A read past the edge of the image takes the pad ``mode``, as
     ``np.pad`` computes it: ``"reflect"``, ``"symmetric"``, ``"edge"`` or
     ``"constant"``. A crop that keeps its parent's canvas, such as an
@@ -1957,8 +1961,8 @@ def resize(
     them. Its ``INTER_AREA`` on a growing axis is a two-tap filter, not
     nearest.
 
-    ``bilinear``, ``area`` on a shrinking axis, and ``auto`` at a scale
-    other than 1 raise ``NotImplementedError`` for now.
+    Other than that copy, ``bilinear``, ``area`` on a shrinking axis, and
+    ``auto`` at a scale other than 1 raise ``NotImplementedError`` for now.
     """
     from .engines.graph import op
 
@@ -1989,7 +1993,9 @@ def resize(
                 f"resize: constant_values must be one value or one per channel "
                 f"({channels}), got {len(fill_values)}"
             )
-    return op(
+    # Built even for a copy, so that a copy checks its arguments as any
+    # resize does.
+    resized = op(
         "resize",
         image,
         out_rows=out_rows,
@@ -2000,6 +2006,13 @@ def resize(
         mode=mode,
         constant_values=fill_values,
     )
+    if (
+        (out_rows, out_cols) == (meta.height, meta.width)
+        and scale_rows in (None, 1.0)
+        and scale_cols in (None, 1.0)
+    ):
+        return image
+    return resized
 
 
 def broadcast_to(array: ArrayLike, shape: Any) -> "Array":
