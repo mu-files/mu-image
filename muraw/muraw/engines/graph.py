@@ -543,9 +543,9 @@ def _out_meta_resize(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     """Geometry policy ``resize``: the rows and columns are ``out_rows`` and
     ``out_cols``. The result is its own canvas at origin ``(0, 0)``.
 
-    The core engine runs only a resize that picks the nearest sample on
-    both axes: ``nearest``, ``area`` on axes that do not shrink, and any
-    interpolation when the scale of both axes is 1. The other cases raise
+    The core engine runs ``nearest``, ``bilinear``, ``area`` and ``auto``
+    when no axis shrinks, and any interpolation when the scale of both
+    axes is 1. ``area`` and ``auto`` on a shrinking axis raise
     ``NotImplementedError``.
     """
     out_rows = int(attrs["out_rows"])
@@ -564,18 +564,12 @@ def _out_meta_resize(x: Array, attrs: Dict[str, Any]) -> ArrayMeta:
     else:
         scales = (float(scale_rows), float(scale_cols))
     interpolation = attrs.get("interpolation", "auto")
-    copy = scales == (1.0, 1.0)
     for axis, scale in zip(("rows", "columns"), scales):
-        nearest = (
-            copy
-            or interpolation == "nearest"
-            or (interpolation == "area" and scale >= 1)
-            or (interpolation == "auto" and scale == 1)
-        )
-        if not nearest:
+        if interpolation in ("area", "auto") and scale < 1:
             raise NotImplementedError(
                 f"resize: interpolation {interpolation!r} at a scale of {scale:g} "
-                f"on the {axis} is not supported yet; interpolation='nearest' is"
+                f"on the {axis} is not supported yet; interpolation='bilinear' "
+                "or 'nearest' is"
             )
     return x.meta.with_size(
         height=out_rows,

@@ -1963,10 +1963,10 @@ def resize(
     ``fx`` and ``fy`` alone OpenCV rounds the output size to nearest and
     keeps the factors for the mapping, and with ``dsize`` set it ignores
     them. Its ``INTER_AREA`` on a growing axis is a two-tap filter, not
-    nearest.
+    nearest. ``"bilinear"`` with ``mode="edge"`` is ``INTER_LINEAR``.
 
-    Other than that copy, ``bilinear``, ``area`` on a shrinking axis, and
-    ``auto`` at a scale other than 1 raise ``NotImplementedError`` for now.
+    ``area`` and ``auto`` on a shrinking axis raise
+    ``NotImplementedError`` for now.
     """
     from .engines.graph import op
 
