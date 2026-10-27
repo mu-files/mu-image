@@ -1860,6 +1860,10 @@ def take(
         a = reshape(a, -1)
         axis = 0
     axis = normalize_axis_index(operator.index(axis), a.meta.ndim, "take axis")
+    if isinstance(indices, Array):
+        # NumPy casts the indices of an array-like that is not an ndarray,
+        # floats included, and rejects a float ndarray.
+        indices = indices.realize()
     src_indices = np.take(np.arange(a.meta.shape[axis]), indices, mode=mode)
     if src_indices.ndim > 1:
         raise NotImplementedError(
