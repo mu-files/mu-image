@@ -542,9 +542,9 @@ ops:
   # interpolation, auto when absent:
   #   nearest   the source sample nearest that point; a point halfway
   #             between two samples takes the later one. So dest row y
-  #             reads source row floor((y + 0.5) / scale_rows), computed
-  #             exactly from the float64 scale, with no rounding of the
-  #             division.
+  #             reads source row floor((y + 0.5) / scale_rows), which
+  #             with size alone is floor((2 y + 1) in_rows /
+  #             (2 out_rows)).
   #   bilinear  the 2 x 2 interpolant.
   #   area      on an axis that shrinks, output pixel col covers source
   #             columns [col / scale_cols, (col + 1) / scale_cols); each
