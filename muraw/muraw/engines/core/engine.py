@@ -177,28 +177,25 @@ class CoreEngine:
         if record_ops and timings:
             timer = PerfTimer.current()
             assert timer is not None
-            op_by_id = {n["id"]: n["op"] for n in graph_nodes}
             steps = [
-                (
-                    _timing_row_name(row, op_by_id),
-                    row["exclusive_ns"] * 1e-9,
-                )
+                (_timing_row_name(row), row["exclusive_ns"] * 1e-9)
                 for row in timings
             ]
             timer.add_completed_steps(steps)
 
 
-def _timing_row_name(row: Dict, op_by_id: Dict[int, str]) -> str:
-    """Name for ``--timing ops``: the label the op's prepare chose, else the
-    op name, then ``(engine)``. It is ``(engine, not run)`` when the engine
-    never called the op's kernel, and ``(engine, not sampled)`` when the
-    kernel ran but none of its calls was timed, so its time is unknown."""
-    if "label" in row:
-        name = row["label"]
-    else:
-        name = op_by_id.get(row["node_id"], f"node_{row['node_id']}")
-    if row.get("calls") == 0:
+def _timing_row_name(row: Dict) -> str:
+    """Name for ``--timing ops``: the engine's label for the row, then
+    ``(engine)``. The label names every op the engine fused into the row.
+    It is ``(engine, passed through)`` when the engine called no kernel
+    and passed the input through, ``(engine, not run)`` when it did
+    neither, and ``(engine, not sampled)`` when the kernel ran but none of
+    its calls was timed, so its time is unknown."""
+    name = row["label"]
+    if row["calls"] == 0:
+        if row["passed_through"]:
+            return f"{name} (engine, passed through)"
         return f"{name} (engine, not run)"
-    if row.get("timed_calls") == 0:
+    if row["timed_calls"] == 0:
         return f"{name} (engine, not sampled)"
     return f"{name} (engine)"
