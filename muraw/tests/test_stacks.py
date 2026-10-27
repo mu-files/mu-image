@@ -229,7 +229,7 @@ def test_pad_of_a_stack_matches_numpy(pad_width, mode, constant_values):
     stack = _stack(2, 3, 4, 3)
     kwargs = {"constant_values": constant_values} if mode == "constant" else {}
     expected = np.pad(stack, pad_width, mode=mode, **kwargs)
-    out = Array(stack).pad(pad_width, mode=mode, **kwargs)
+    out = mi.pad(Array(stack), pad_width, mode=mode, **kwargs)
     assert out.shape == expected.shape
     np.testing.assert_array_equal(out.realize(), expected)
 

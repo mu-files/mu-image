@@ -22,7 +22,7 @@ UPSTREAM = {
     "demosaic": lambda a: mi.cfa_demosaic(
         a.convert_type(np.float32), cfa_pattern="RGGB", algorithm="bilinear"
     ),
-    "pad": lambda a: (a * 2).pad(3, mode="reflect"),
+    "pad": lambda a: mi.pad(a * 2, 3, mode="reflect"),
     "tile": lambda a: mi.tile(a * 2, (2, 1)),
     "orientation": lambda a: (a * 2).T,
 }

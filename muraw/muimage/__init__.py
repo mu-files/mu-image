@@ -21,7 +21,7 @@ execute the graph; pipeline code calls ``mi.<op>``, not ``engines.*``.
 from __future__ import annotations
 
 # Catalog first, then array. The star import defines every catalog op;
-# the array names that follow (tile, take, matmul, …) are wrappers and
+# the array names that follow (pad, tile, take, matmul, …) are wrappers and
 # must win. isort would reverse that (I001 is ignored for this file).
 from muraw.engines import ops as _catalog
 from muraw.engines.graph import emit, flush, op
@@ -51,6 +51,7 @@ from muraw.array import (
     multiply,
     ones,
     ones_like,
+    pad,
     permute_dims,
     repeat,
     reshape,
@@ -91,6 +92,7 @@ __all__ = [
     "ones",
     "ones_like",
     "op",
+    "pad",
     "permute_dims",
     "broadcast_to",
     "composite",

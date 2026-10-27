@@ -1676,6 +1676,136 @@ def tile(array: ArrayLike, reps: Any) -> "Array":
     )
 
 
+# The keyword arguments numpy.pad accepts with each mode.
+_NUMPY_PAD_KWARGS: dict[str, tuple[str, ...]] = {
+    "constant": ("constant_values",),
+    "edge": (),
+    "reflect": ("reflect_type",),
+    "symmetric": ("reflect_type",),
+    "wrap": (),
+    "empty": (),
+    "linear_ramp": ("end_values",),
+    "maximum": ("stat_length",),
+    "mean": ("stat_length",),
+    "median": ("stat_length",),
+    "minimum": ("stat_length",),
+}
+
+
+def pad(
+    array: ArrayLike, pad_width: Any, mode: str = "constant", **kwargs: Any
+) -> "Array":
+    """Grow the array, like ``numpy.pad``.
+
+    As in NumPy, an int or a single ``(before, after)`` pair pads every
+    axis, channels included; ``((0, 0), (1, 1), (1, 1))`` pads only the
+    rows and columns of a CHW array. The pair on the channel axis adds
+    channels. On a CHW array that pad works in any ``mode``; with the
+    channels on another axis it requires ``mode="constant"``. The pair on
+    axis 0 of a 4-axis stack adds frames, in any ``mode``.
+
+    ``mode`` is ``"constant"``, ``"edge"``, ``"reflect"`` or
+    ``"symmetric"``; NumPy's other modes, and ``reflect_type="odd"``,
+    raise ``NotImplementedError``.
+
+    Unlike NumPy, ``constant_values`` may also be one value per channel,
+    on an array of 3 or more channels: ``mi.pad(x, ((1, 1), (1, 1), (0,
+    0)), constant_values=(255, 0, 0))`` pads an RGB image with red. Every
+    padded sample of channel ``c`` is ``constant_values[c]``. NumPy
+    rejects that call. One or two values keep NumPy's meaning: two are
+    ``(before, after)`` on every axis, also on 2 channels. A per-channel
+    fill cannot fill added channels, so it needs a ``(0, 0)`` pair on the
+    channel axis.
+    """
+    from .engines.graph import op
+
+    array = Array(array)
+    meta = array.meta
+    if callable(mode):
+        raise NotImplementedError("pad with a function as mode is not supported")
+    if mode not in _NUMPY_PAD_KWARGS:
+        raise ValueError(f"mode '{mode}' is not supported")
+    unsupported = set(kwargs) - set(_NUMPY_PAD_KWARGS[mode])
+    if unsupported:
+        raise ValueError(
+            f"unsupported keyword arguments for mode '{mode}': {unsupported}"
+        )
+    if mode not in ("constant", "edge", "reflect", "symmetric"):
+        raise NotImplementedError(
+            f"pad mode {mode!r} is not supported; constant, edge, reflect and "
+            "symmetric are"
+        )
+    if kwargs.get("reflect_type") == "odd":
+        raise NotImplementedError("pad with reflect_type 'odd' is not supported")
+    constant_values = kwargs.get("constant_values", 0)
+
+    fill_values = _per_channel_fill(meta, mode, constant_values)
+    if fill_values is not None:
+        channel_axis = meta.channel_axis
+        channel_pad = _expand_pad(pad_width, "pad_width", meta.ndim, nonneg=True)
+        if any(channel_pad[2 * channel_axis : 2 * channel_axis + 2]):
+            raise ValueError(
+                "constant_values: one value per channel cannot fill added "
+                "channels; pad the channel axis in a separate call"
+            )
+    if meta.size == 0:
+        # The result holds only constants, which NumPy places from the
+        # shape alone. NumPy rejects a mode that reads pixels.
+        if fill_values is not None:
+            padded = np.pad(np.empty(array.shape, array.dtype), pad_width, mode)
+            fill_shape = [1] * padded.ndim
+            fill_shape[meta.channel_axis] = len(fill_values)
+            padded[...] = np.reshape(fill_values, fill_shape)
+        else:
+            padded = np.pad(
+                np.empty(array.shape, array.dtype), pad_width, mode, **kwargs
+            )
+        if padded.size == 0:
+            return _empty_with_shape(array, padded.shape)
+        axis = meta.channel_axis
+        return Array(padded, channel_axis=-1 if axis is None else axis)
+    if meta.is_1d:
+        left, right = (
+            int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)
+        )
+        consts = [float(v) for v in _expand_pad(constant_values, "constant_values", 1)]
+        return op(
+            "pad",
+            array,
+            top=0,
+            bottom=0,
+            left=left,
+            right=right,
+            mode=mode,
+            constant_values=[0.0, 0.0] + consts,
+        )
+    # The engine takes the sides as rows, columns, then channels.
+    if meta.channel_axis is None:
+        axis_order: Tuple[int, ...] = (0, 1)
+    else:
+        rows_axis, cols_axis = meta.spatial_axes
+        axis_order = (rows_axis, cols_axis, meta.channel_axis)
+
+    def by_engine_side(values: list[Any]) -> list[Any]:
+        return [values[2 * axis + side] for axis in axis_order for side in (0, 1)]
+
+    ndim = meta.ndim
+    all_sides = _expand_pad(pad_width, "pad_width", ndim, nonneg=True)
+    sides = [int(v) for v in by_engine_side(all_sides)]
+    attrs: dict[str, Any] = dict(zip(("top", "bottom", "left", "right"), sides))
+    if ndim >= 3:
+        attrs["channel_before"], attrs["channel_after"] = sides[4:]
+    if ndim == 4 and any(all_sides[:2]):
+        attrs["frame_before"], attrs["frame_after"] = (int(v) for v in all_sides[:2])
+    if fill_values is not None:
+        return op("pad", array, mode=mode, fill_values=fill_values, **attrs)
+    all_consts = _expand_pad(constant_values, "constant_values", ndim)
+    consts = [float(v) for v in by_engine_side(all_consts)]
+    if "frame_before" in attrs:
+        consts += [float(v) for v in all_consts[:2]]
+    return op("pad", array, mode=mode, constant_values=consts, **attrs)
+
+
 def repeat(a: ArrayLike, repeats: Any, axis: Optional[int] = None) -> "Array":
     """Repeat each element of ``a`` along ``axis``, like ``numpy.repeat``.
 
@@ -2655,106 +2785,6 @@ class Array:
             height=height,
             mode="crop_oob_invalid",
         )
-
-    def pad(
-        self,
-        pad_width: Any,
-        mode: str = "constant",
-        constant_values: Any = 0,
-    ) -> "Array":
-        """Grow the array. ``pad_width`` and ``constant_values`` follow ``numpy.pad``.
-
-        As in NumPy, an int or a single ``(before, after)`` pair pads every
-        axis, channels included; ``((0, 0), (1, 1), (1, 1))`` pads only the
-        rows and columns of a CHW array. The pair on the channel axis adds
-        channels. On a CHW array that pad works in any ``mode``; with
-        the channels on another axis it requires ``mode="constant"``. The
-        pair on axis 0 of a 4-axis stack adds frames, in any ``mode``.
-
-        Unlike NumPy, ``constant_values`` may also be one value per channel,
-        on an array of 3 or more channels: ``x.pad(((1, 1), (1, 1), (0, 0)),
-        constant_values=(255, 0, 0))`` pads an RGB image with red. Every
-        padded sample of channel ``c`` is ``constant_values[c]``. NumPy
-        rejects that call. One or two values keep NumPy's meaning: two
-        are ``(before, after)`` on every axis, also on 2 channels. A
-        per-channel fill cannot fill added channels, so it needs a
-        ``(0, 0)`` pair on the channel axis.
-        """
-        import muimage as mi
-
-        fill_values = _per_channel_fill(self._meta, mode, constant_values)
-        if fill_values is not None:
-            channel_axis = self._meta.channel_axis
-            channel_pad = _expand_pad(
-                pad_width, "pad_width", self._meta.ndim, nonneg=True
-            )
-            if any(channel_pad[2 * channel_axis : 2 * channel_axis + 2]):
-                raise ValueError(
-                    "constant_values: one value per channel cannot fill added "
-                    "channels; pad the channel axis in a separate call"
-                )
-        if self._meta.size == 0:
-            # The result holds only constants, which NumPy places from the
-            # shape alone. NumPy rejects a mode that reads pixels.
-            if fill_values is not None:
-                padded = np.pad(np.empty(self.shape, self.dtype), pad_width, mode)
-                fill_shape = [1] * padded.ndim
-                fill_shape[self._meta.channel_axis] = len(fill_values)
-                padded[...] = np.reshape(fill_values, fill_shape)
-            else:
-                kwargs = (
-                    {"constant_values": constant_values} if mode == "constant" else {}
-                )
-                padded = np.pad(
-                    np.empty(self.shape, self.dtype), pad_width, mode, **kwargs
-                )
-            if padded.size == 0:
-                return _empty_with_shape(self, padded.shape)
-            axis = self._meta.channel_axis
-            return Array(padded, channel_axis=-1 if axis is None else axis)
-        if self._meta.is_1d:
-            left, right = (
-                int(v) for v in _expand_pad(pad_width, "pad_width", 1, nonneg=True)
-            )
-            consts = [
-                float(v) for v in _expand_pad(constant_values, "constant_values", 1)
-            ]
-            return mi.pad(
-                self,
-                top=0,
-                bottom=0,
-                left=left,
-                right=right,
-                mode=mode,
-                constant_values=[0.0, 0.0] + consts,
-            )
-        # The engine takes the sides as rows, columns, then channels.
-        if self._meta.channel_axis is None:
-            axis_order: Tuple[int, ...] = (0, 1)
-        else:
-            rows_axis, cols_axis = self._meta.spatial_axes
-            axis_order = (rows_axis, cols_axis, self._meta.channel_axis)
-
-        def by_engine_side(values: list[Any]) -> list[Any]:
-            return [values[2 * axis + side] for axis in axis_order for side in (0, 1)]
-
-        ndim = self._meta.ndim
-        all_sides = _expand_pad(pad_width, "pad_width", ndim, nonneg=True)
-        sides = [int(v) for v in by_engine_side(all_sides)]
-        attrs: dict[str, Any] = dict(zip(("top", "bottom", "left", "right"), sides))
-        if ndim >= 3:
-            attrs["channel_before"], attrs["channel_after"] = sides[4:]
-        if ndim == 4 and any(all_sides[:2]):
-            attrs["frame_before"], attrs["frame_after"] = (
-                int(v) for v in all_sides[:2]
-            )
-        if fill_values is not None:
-            return mi.pad(self, mode=mode, fill_values=fill_values, **attrs)
-        all_consts = _expand_pad(constant_values, "constant_values", ndim)
-        consts = [float(v) for v in by_engine_side(all_consts)]
-        if "frame_before" in attrs:
-            consts += [float(v) for v in all_consts[:2]]
-        return mi.pad(self, mode=mode, constant_values=consts, **attrs)
 
     def composite(self, *placements: tuple) -> "Array":
         """``composite(self, *placements)``."""

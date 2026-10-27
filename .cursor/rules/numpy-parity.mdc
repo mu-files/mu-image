@@ -28,6 +28,12 @@ Deliberate differences, documented where the user reads about the op:
   saturates to the dtype's range, and rounds a fractional result to
   nearest, where NumPy wraps. Wrapping is not useful on images; a flag
   may come later if someone needs it. Do not "fix" this toward NumPy.
+- `mi.pad` with `mode="constant"` takes one `constant_values` per
+  channel on an array of 3 or more channels, and fills each channel's
+  margin with its own value, such as red around an RGB image. NumPy
+  rejects that call. One or two values keep NumPy's meaning. It is an
+  extension of `np.pad`, not a separate function, because the
+  difference is too small to be worth one. Do not remove it for parity.
 
 ```python
 # ❌ BAD: NumPy returns an empty array; mi raises a different exception

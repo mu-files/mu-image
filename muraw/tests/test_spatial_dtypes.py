@@ -42,7 +42,7 @@ def test_view_all_dtypes(dtype, monkeypatch):
 def test_pad_all_dtypes(dtype, monkeypatch):
     src = _src(dtype)
     got, ops = _realize_ops(
-        monkeypatch, Array(src).pad(1, mode="constant", constant_values=9)
+        monkeypatch, mi.pad(Array(src), 1, mode="constant", constant_values=9)
     )
     assert ops == ["pad"]
     np.testing.assert_array_equal(

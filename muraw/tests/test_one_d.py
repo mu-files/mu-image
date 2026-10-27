@@ -129,7 +129,7 @@ def test_transpose_is_unchanged():
     ids=["int", "pair", "one_pair", "edge"],
 )
 def test_pad_matches_numpy(pad_width, kwargs):
-    out = Array(V).pad(pad_width, **kwargs)
+    out = mi.pad(Array(V), pad_width, **kwargs)
     expected = np.pad(V, pad_width, **kwargs)
     assert out.shape == expected.shape
     np.testing.assert_array_equal(out.realize(), expected)

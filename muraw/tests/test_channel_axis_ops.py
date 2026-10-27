@@ -94,7 +94,7 @@ def test_chw_pad_with_channel_widths_matches_numpy(mode):
     chw = _chw()
     pad_width = ((1, 2), (1, 0), (0, 2))
     kwargs = {"constant_values": 0.5} if mode == "constant" else {}
-    got = Array(chw, channel_axis=0).pad(pad_width, mode=mode, **kwargs)
+    got = mi.pad(Array(chw, channel_axis=0), pad_width, mode=mode, **kwargs)
     assert got.meta.channel_axis == 0
     np.testing.assert_array_equal(
         got.realize(), np.pad(chw, pad_width, mode=mode, **kwargs)
@@ -104,7 +104,7 @@ def test_chw_pad_with_channel_widths_matches_numpy(mode):
 @pytest.mark.parametrize("mode", ["edge", "reflect"])
 def test_chw_pad_shorthand_pads_channels_like_numpy(mode):
     chw = _chw()
-    got = Array(chw, channel_axis=0).pad(1, mode=mode)
+    got = mi.pad(Array(chw, channel_axis=0), 1, mode=mode)
     np.testing.assert_array_equal(got.realize(), np.pad(chw, 1, mode=mode))
 
 
@@ -112,7 +112,7 @@ def test_chw_pad_constants_per_axis_match_numpy():
     chw = _chw()
     pad_width = ((1, 1), (2, 2), (3, 3))
     constants = ((7, 8), (1, 2), (3, 4))
-    got = Array(chw, channel_axis=0).pad(pad_width, constant_values=constants)
+    got = mi.pad(Array(chw, channel_axis=0), pad_width, constant_values=constants)
     np.testing.assert_array_equal(
         got.realize(), np.pad(chw, pad_width, constant_values=constants)
     )

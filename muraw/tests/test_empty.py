@@ -29,11 +29,6 @@ EMPTY = {
 }
 
 
-def _pad(lib, x, width, **kwargs):
-    """``np.pad(x, width)``; an ``mi.Array`` pads with its method."""
-    return np.pad(x, width, **kwargs) if lib is np else x.pad(width, **kwargs)
-
-
 CALLS = {
     "add": lambda lib, x: x + 1,
     "multiply": lambda lib, x: x * x,
@@ -62,8 +57,8 @@ CALLS = {
     "broadcast_to": lambda lib, x: lib.broadcast_to(x, x.shape),
     "zeros_like": lambda lib, x: lib.zeros_like(x),
     "full_like": lambda lib, x: lib.full_like(x, 3),
-    "pad_constant": lambda lib, x: _pad(lib, x, 1, constant_values=4),
-    "pad_edge": lambda lib, x: _pad(lib, x, 1, mode="edge"),
+    "pad_constant": lambda lib, x: lib.pad(x, 1, constant_values=4),
+    "pad_edge": lambda lib, x: lib.pad(x, 1, mode="edge"),
     "matmul": lambda lib, x: x @ np.ones((x.shape[-1], 2), np.float32),
 }
 
@@ -155,14 +150,11 @@ def test_an_accumulator_that_starts_empty_matches_numpy():
 def test_a_constant_pad_of_an_empty_array_matches_numpy(shape, width, constant_values):
     x = np.zeros(shape, np.float32)
     channel_axis = 0 if len(shape) == 3 and shape[0] == 0 else -1
-    got = _pad(
-        mi,
-        mi.Array(x, channel_axis=channel_axis),
-        width,
-        constant_values=constant_values,
+    got = mi.pad(
+        mi.Array(x, channel_axis=channel_axis), width, constant_values=constant_values
     )
     np.testing.assert_array_equal(
-        got.realize(), _pad(np, x, width, constant_values=constant_values)
+        got.realize(), np.pad(x, width, constant_values=constant_values)
     )
 
 
@@ -170,7 +162,7 @@ def test_a_pad_that_reads_an_empty_axis_raises_what_numpy_raises():
     x = np.zeros((0, 3), np.float32)
     for lib, array in ((np, x), (mi, mi.Array(x))):
         with pytest.raises(ValueError):
-            _pad(lib, array, 1, mode="edge")
+            lib.pad(array, 1, mode="edge")
 
 
 def _matmul(lib, x, matrix):
@@ -195,7 +187,7 @@ def test_realize_into_an_empty_out_returns_it():
 def test_an_op_from_an_empty_input_to_a_full_result_raises():
     empty = mi.Array(np.zeros((0, 3), np.float32))
     with pytest.raises(NotImplementedError, match="is empty and the result"):
-        mi.pad(empty, top=1, bottom=1, left=0, right=0)
+        mi.op("pad", empty, top=1, bottom=1, left=0, right=0)
 
 
 def test_the_core_engine_rejects_an_empty_array():
