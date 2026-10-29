@@ -231,6 +231,52 @@ ops:
         dtype: float_holding_input
     attrs: []
 
+  # Each sample rounded to the nearest integer, and a half rounded to the
+  # even integer. A float16 or float32 input keeps its dtype. A uint8 input
+  # gives float16, and a uint16 input gives float32.
+  - name: rint
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # Each sample rounded toward negative infinity. The result has the
+  # input's dtype. An integer sample is unchanged.
+  - name: floor
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs: []
+
+  # Each sample rounded toward positive infinity. The result has the
+  # input's dtype. An integer sample is unchanged.
+  - name: ceil
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs: []
+
+  # Each sample rounded to `decimals` places after the decimal point, or
+  # to the left of it when `decimals` is negative. A half rounds to the
+  # even integer. The result has the input's dtype. A float16 or float32
+  # sample is scaled by a power of ten in that dtype. An integer sample
+  # with a negative `decimals` is scaled in float64, and a result that
+  # does not fit the dtype wraps. An integer sample with a non-negative
+  # `decimals` is unchanged.
+  - name: round
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: decimals
+        type: i32
+        count: 1
+
   # sqrt(x1*x1 + x2*x2) for each pair of samples, scaled so a finite pair
   # does not overflow. The inputs broadcast as add does. A float16 or
   # float32 input keeps its dtype. An integer input gives float32.

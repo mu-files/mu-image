@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass, replace
-from math import ceil, prod
+from math import ceil as math_ceil
+from math import prod
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple
 
 import numpy as np
@@ -329,6 +330,58 @@ def sqrt(x: ArrayLike) -> "Array":
     from .engines.graph import op
 
     return op("sqrt", x)
+
+
+def ceil(x: ArrayLike) -> "Array":
+    """NumPy's ``ceil``. Each sample rounds toward positive infinity. The
+    result has ``x``'s dtype. An integer array is returned unchanged."""
+    if not isinstance(x, Array):
+        x = Array(np.asarray(x))
+    if x.dtype.kind != "f":
+        return x
+    from .engines.graph import op
+
+    return op("ceil", x)
+
+
+def floor(x: ArrayLike) -> "Array":
+    """NumPy's ``floor``. Each sample rounds toward negative infinity. The
+    result has ``x``'s dtype. An integer array is returned unchanged."""
+    if not isinstance(x, Array):
+        x = Array(np.asarray(x))
+    if x.dtype.kind != "f":
+        return x
+    from .engines.graph import op
+
+    return op("floor", x)
+
+
+def rint(x: ArrayLike) -> "Array":
+    """NumPy's ``rint``. Each sample rounds to the nearest integer, and a
+    half rounds to the even integer. A float keeps its dtype. A uint8
+    input gives float16, and a uint16 input gives float32."""
+    if not isinstance(x, Array):
+        x = Array(np.asarray(x))
+    from .engines.graph import op
+
+    return op("rint", x)
+
+
+def round(x: ArrayLike, decimals: int = 0) -> "Array":
+    """NumPy's ``round``. ``decimals`` is how many digits to keep after
+    the decimal point, or to the left of it when negative. A half rounds
+    to the even integer. The result has ``x``'s dtype. An integer array
+    with a non-negative ``decimals`` is returned unchanged."""
+    decimals = operator.index(decimals)
+    if not isinstance(x, Array):
+        x = Array(np.asarray(x))
+    if x.dtype.kind != "f" and decimals >= 0:
+        return x
+    if decimals == 0:
+        return rint(x)
+    from .engines.graph import op
+
+    return op("round", x, decimals=decimals)
 
 
 def hypot(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
@@ -1432,7 +1485,7 @@ def arange(
     step_v = require_number(step, "step")
     if step_v == 0.0:
         raise ZeroDivisionError("arange step must not be 0")
-    count = max(ceil((stop_v - start_v) / step_v), 0)
+    count = max(math_ceil((stop_v - start_v) / step_v), 0)
     numpy_dtype = supported_dtype(dtype)
     if np.issubdtype(numpy_dtype, np.integer):
         # NumPy stores start and start + step as the integer dtype, then
