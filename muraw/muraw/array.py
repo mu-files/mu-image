@@ -310,6 +310,12 @@ def multiply(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     return _arithmetic_function(operator.mul, x1, x2)
 
 
+def square(x: ArrayLike) -> "Array":
+    """NumPy's ``square``: ``x * x``. Integer results saturate, where
+    NumPy's wrap."""
+    return multiply(x, x)
+
+
 def divide(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     """NumPy's ``divide``: ``x1 / x2``, broadcast. Integer inputs give float32."""
     return _arithmetic_function(operator.truediv, x1, x2)

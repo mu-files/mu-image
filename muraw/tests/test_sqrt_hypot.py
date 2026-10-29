@@ -1,4 +1,4 @@
-"""sqrt and hypot against NumPy."""
+"""sqrt, hypot, and square against NumPy."""
 
 from __future__ import annotations
 
@@ -95,3 +95,41 @@ def test_hypot_of_large_values_stays_finite():
     want = _hypot_large(np)
     np.testing.assert_allclose(got.realize(), want, rtol=1e-5, atol=0)
     assert np.isfinite(got.realize()).all()
+
+
+def _square(lib, src):
+    """``src`` squared."""
+    return lib.square(src)
+
+
+def _square_count(lib, dtype):
+    """Square of ``0 .. 15``."""
+    return lib.square(lib.arange(16, dtype=dtype).reshape(4, 4))
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float32"])
+def test_square_matches_numpy(dtype):
+    src = np.linspace(-3.0, 4.0, 40, dtype=dtype).reshape(2, 20)
+    got = _square(mi, mi.Array(src))
+    want = _square(np, src)
+    assert got.dtype == want.dtype
+    rtol = 1e-3 if dtype == "float16" else 1e-6
+    np.testing.assert_allclose(got.realize(), want, rtol=rtol, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+def test_square_of_integers_matches_numpy_when_it_fits(dtype):
+    """``0 .. 15`` squared fits both integer dtypes."""
+    got = _square_count(mi, dtype)
+    want = _square_count(np, dtype)
+    assert got.dtype == want.dtype
+    np.testing.assert_array_equal(got.realize(), want)
+
+
+@pytest.mark.parametrize("dtype,value", [("uint8", 16), ("uint16", 256)])
+def test_square_of_integers_saturates(dtype, value):
+    """A square past the dtype's range saturates. NumPy wraps."""
+    src = np.array([value, 1], dtype=dtype)
+    got = mi.square(mi.Array(src)).realize()
+    top = np.iinfo(dtype).max
+    np.testing.assert_array_equal(got, np.array([top, 1], dtype=dtype))
