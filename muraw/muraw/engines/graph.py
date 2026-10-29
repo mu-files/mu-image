@@ -238,6 +238,17 @@ def _out_dtype_float_of_input(x: Array, attrs: Dict[str, Any]) -> np.dtype:
     return np.dtype(np.float32)
 
 
+def _out_dtype_float_holding_input(x: Array, attrs: Dict[str, Any]) -> np.dtype:
+    """The narrowest float that holds every value of ``x`` exactly.
+    uint8 is float16, uint16 is float32, and a float stays itself.
+    NumPy's square root writes this dtype."""
+    if x.meta.dtype == np.dtype(np.uint8):
+        return np.dtype(np.float16)
+    if x.meta.dtype.kind == "f":
+        return x.meta.dtype
+    return np.dtype(np.float32)
+
+
 def _out_dtype_const(dtype: DTypeLike) -> OutMetaFn:
     resolved = supported_dtype(dtype)
 

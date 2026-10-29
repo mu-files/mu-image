@@ -163,6 +163,80 @@ divide = EngineOp(
     _infer_meta=graph._out_meta_broadcast,
 )
 
+sqrt = EngineOp(
+    meta=OpMeta(name="sqrt", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+rint = EngineOp(
+    meta=OpMeta(name="rint", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+floor = EngineOp(
+    meta=OpMeta(name="floor", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+ceil = EngineOp(
+    meta=OpMeta(name="ceil", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+round = EngineOp(
+    meta=OpMeta(name="round", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 1,
+    "key": "decimals",
+    "type": "i32"
+  }
+]""")
+    ),
+    _infer_meta=None,
+)
+
+hypot = EngineOp(
+    meta=OpMeta(name="hypot", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_of_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
 composite = EngineOp(
     meta=OpMeta(name="composite", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1465,6 +1539,12 @@ OPS_BY_NAME = {
     "subtract": subtract,
     "multiply": multiply,
     "divide": divide,
+    "sqrt": sqrt,
+    "rint": rint,
+    "floor": floor,
+    "ceil": ceil,
+    "round": round,
+    "hypot": hypot,
     "composite": composite,
     "fill": fill,
     "ramp": ramp,
@@ -1503,6 +1583,7 @@ __all__ = [
     "add_scalar",
     "apply_gain_map",
     "cast_dtype",
+    "ceil",
     "cfa_demosaic",
     "cfa_fix_bad_pixels_constant",
     "cfa_normalize_raw",
@@ -1511,6 +1592,8 @@ __all__ = [
     "div_scalar",
     "divide",
     "fill",
+    "floor",
+    "hypot",
     "lut",
     "map_polynomial",
     "matmul",
@@ -1530,6 +1613,9 @@ __all__ = [
     "rgb_matrix_3x3",
     "rgb_normalize_raw",
     "rgb_transform",
+    "rint",
+    "round",
+    "sqrt",
     "sub_scalar",
     "subtract",
     "take",
