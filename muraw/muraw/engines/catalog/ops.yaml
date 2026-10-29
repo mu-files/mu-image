@@ -23,9 +23,11 @@
 #     - outputs: int, same (same = copy input 0), or from_attr (the
 #       value of the i32 attr <key>)
 #   dtype matches input 0 unless outputs.dtype is set, also with a
-#     geometry: a dtype name, {from_attr: <key>}, or float_of_input (input
+#     geometry: a dtype name, {from_attr: <key>}, float_of_input (input
 #     0's dtype when it is a float, and float32 when it is an integer, as
-#     NumPy's true division writes a float).
+#     NumPy's true division writes a float), or float_holding_input (the
+#     narrowest float that holds every value of input 0 exactly: float16
+#     for uint8, float32 for uint16, and a float stays itself).
 #   height/width/origin match input 0 unless outputs.geometry is set.
 #   geometry: <policy> — named emit-meta policy (not attr inspection).
 #     Codegen wires geometry: foo → graph._out_meta_foo (implement the fn in graph.py).
@@ -208,6 +210,31 @@ ops:
     attrs: []
 
   - name: divide
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_of_input
+        geometry: broadcast
+    attrs: []
+
+  # The square root of each sample. A negative sample is NaN. A float16 or
+  # float32 input keeps its dtype. A uint8 input gives float16, and a uint16
+  # input gives float32.
+  - name: sqrt
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # sqrt(x1*x1 + x2*x2) for each pair of samples, scaled so a finite pair
+  # does not overflow. The inputs broadcast as add does. A float16 or
+  # float32 input keeps its dtype. An integer input gives float32.
+  - name: hypot
     needs_frame_index: true
     inputs:
       - channels: any

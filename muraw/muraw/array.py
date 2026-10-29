@@ -315,6 +315,26 @@ def divide(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     return _arithmetic_function(operator.truediv, x1, x2)
 
 
+def sqrt(x: ArrayLike) -> "Array":
+    """NumPy's ``sqrt``. A negative float is NaN. A uint8 input gives
+    float16, and a uint16 input gives float32."""
+    if not isinstance(x, Array):
+        x = Array(np.asarray(x))
+    from .engines.graph import op
+
+    return op("sqrt", x)
+
+
+def hypot(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
+    """NumPy's ``hypot``: ``sqrt(x1**2 + x2**2)`` without overflow, broadcast.
+    Integer inputs give float32."""
+    if not isinstance(x1, Array):
+        x1 = Array(np.asarray(x1))
+    if not isinstance(x2, Array):
+        x2 = Array(np.asarray(x2))
+    return _elementwise("hypot", x1, x2)
+
+
 # The most input channels, and the most output channels, of a matmul.
 _MATMUL_MAX_CHANNELS = 32
 

@@ -163,6 +163,28 @@ divide = EngineOp(
     _infer_meta=graph._out_meta_broadcast,
 )
 
+sqrt = EngineOp(
+    meta=OpMeta(name="sqrt", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+hypot = EngineOp(
+    meta=OpMeta(name="hypot", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_of_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
 composite = EngineOp(
     meta=OpMeta(name="composite", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1465,6 +1487,8 @@ OPS_BY_NAME = {
     "subtract": subtract,
     "multiply": multiply,
     "divide": divide,
+    "sqrt": sqrt,
+    "hypot": hypot,
     "composite": composite,
     "fill": fill,
     "ramp": ramp,
@@ -1511,6 +1535,7 @@ __all__ = [
     "div_scalar",
     "divide",
     "fill",
+    "hypot",
     "lut",
     "map_polynomial",
     "matmul",
@@ -1530,6 +1555,7 @@ __all__ = [
     "rgb_matrix_3x3",
     "rgb_normalize_raw",
     "rgb_transform",
+    "sqrt",
     "sub_scalar",
     "subtract",
     "take",
