@@ -10,9 +10,9 @@ def test_execute_graph_sub_mul():
     h = w = 2
     graph = {
         "array_descs": [
-            {"id": 0, "dtype": "float32", "shape": [h, w]},
-            {"id": 1, "dtype": "float32", "shape": [h, w]},
-            {"id": 2, "dtype": "float32", "shape": [h, w]},
+            {"id": 0, "dtype": np.dtype(np.float32).num, "shape": [h, w]},
+            {"id": 1, "dtype": np.dtype(np.float32).num, "shape": [h, w]},
+            {"id": 2, "dtype": np.dtype(np.float32).num, "shape": [h, w]},
         ],
         "inputs": [0],
         "output": 2,
@@ -44,8 +44,8 @@ def test_execute_graph_unknown_op():
 
     graph = {
         "array_descs": [
-            {"id": 0, "dtype": "float32", "shape": [1, 1]},
-            {"id": 1, "dtype": "float32", "shape": [1, 1]},
+            {"id": 0, "dtype": np.dtype(np.float32).num, "shape": [1, 1]},
+            {"id": 1, "dtype": np.dtype(np.float32).num, "shape": [1, 1]},
         ],
         "inputs": [0],
         "output": 1,
@@ -71,8 +71,8 @@ def test_execute_graph_rgb_matrix_3x3_identity():
     eye = np.eye(3, dtype=np.float32).reshape(-1)
     graph = {
         "array_descs": [
-            {"id": 0, "dtype": "float32", "shape": [1, 1, 3]},
-            {"id": 1, "dtype": "float32", "shape": [1, 1, 3]},
+            {"id": 0, "dtype": np.dtype(np.float32).num, "shape": [1, 1, 3]},
+            {"id": 1, "dtype": np.dtype(np.float32).num, "shape": [1, 1, 3]},
         ],
         "inputs": [0],
         "output": 1,

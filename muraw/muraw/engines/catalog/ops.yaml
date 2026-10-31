@@ -804,6 +804,17 @@ ops:
         count: 1
         optional: true
 
+  # Each sample stored in dest_dtype, as the same number. Unlike
+  # convert_dtype there is no range scale and no clip. A float stored as
+  # an integer is truncated toward zero, and a value outside the
+  # destination range saturates to it: NaN and a negative become 0, and
+  # an infinity becomes the destination maximum. An integer keeps its
+  # value, saturated when the destination is a narrower integer. A float
+  # stored as a float keeps its value in the destination precision,
+  # including NaN and inf. A numeric sample becomes bool when it is
+  # nonzero: 0 and float -0 are false, and every other value, including
+  # NaN and inf, is true. A bool sample becomes 0 or 1 in the destination
+  # dtype.
   - name: cast_dtype
     inputs:
       - channels: any

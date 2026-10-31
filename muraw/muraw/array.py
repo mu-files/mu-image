@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 # The dtypes an Array can hold. Their names match the native ``MuImgDType`` names.
 SUPPORTED_DTYPES = tuple(
-    np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16)
+    np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16, np.bool_)
 )
 
 
@@ -577,6 +577,54 @@ def _is_integer(dtype: np.dtype) -> bool:
     return dtype.kind == "u"
 
 
+def _is_bool(dtype: np.dtype) -> bool:
+    return dtype.kind == "b"
+
+
+def _operand_is_bool(other: Any) -> bool:
+    if isinstance(other, Array):
+        return _is_bool(other.dtype)
+    return np.asarray(other).dtype.kind == "b"
+
+
+def _bool_arithmetic(array: "Array", name: str, other: Any, reverse: bool) -> "Array":
+    """A bool and a numeric operand, promoted to that number's dtype.
+
+    Two bools are not this. ``-`` of two bools raises ``TypeError``.
+    ``+`` and ``*`` of two bools are ``logical_or`` and ``logical_and``.
+    A result dtype an Array does not store is ``NotImplementedError``.
+    """
+    other_is_bool = _operand_is_bool(other)
+    self_is_bool = _is_bool(array.dtype)
+    if self_is_bool and other_is_bool:
+        if name == "sub_scalar":
+            raise TypeError(
+                "boolean subtract, the `-` operator, is not supported, use "
+                "the bitwise_xor, the `^` operator, or the logical_xor "
+                "function instead"
+            )
+        raise NotImplementedError(
+            f"{name} of two bools is not supported; + and * of two bools "
+            "are logical_or and logical_and"
+        )
+    if self_is_bool:
+        result = np.result_type(array.dtype, np.asarray(other).dtype)
+        if not any(result == supported for supported in SUPPORTED_DTYPES) or _is_bool(
+            result
+        ):
+            raise NotImplementedError(
+                f"bool {name} {result.name} is not supported; muimage stores "
+                "bool, uint8, uint16, float16, and float32"
+            )
+        return array.astype(result)._scalar_op(name, other, reverse=reverse)
+    if isinstance(other, Array):
+        first, second = (other, array) if reverse else (array, other)
+        return _elementwise(_ELEMENTWISE_OPS[name], first, second)
+    return array._scalar_op(
+        name, np.asarray(other).astype(array.dtype), reverse=reverse
+    )
+
+
 def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
     """The op ``name`` between two arrays, with NumPy's broadcasting and
     dtype promotion. Integer division gives float32.
@@ -602,6 +650,17 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
             f"{name} of shape {first.shape} with channel_axis {first.meta.channel_axis} "
             f"and shape {second.shape} with channel_axis {second.meta.channel_axis} "
             "is not supported yet; give both arrays the same channel_axis"
+        )
+    if _is_bool(first.dtype) and _is_bool(second.dtype):
+        if name == "subtract":
+            raise TypeError(
+                "boolean subtract, the `-` operator, is not supported, use "
+                "the bitwise_xor, the `^` operator, or the logical_xor "
+                "function instead"
+            )
+        raise NotImplementedError(
+            f"{name} of two bools is not supported; + and * of two bools "
+            "are logical_or and logical_and"
         )
     dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
     return op(name, first.astype(dtype), second.astype(dtype))
@@ -1658,6 +1717,16 @@ def reshape(a: ArrayLike, /, shape: Any, order: str = "C") -> "Array":
     return _reshape_layout(a, _as_shape(shape, int(np.prod(a.shape))))
 
 
+def _bool_as_uint8(array: "Array") -> "Array":
+    """The same bytes as a realized bool ``array``, read as uint8."""
+    meta = array.meta.copy(dtype=np.dtype(np.uint8))
+    out = object.__new__(Array)
+    out._meta = meta
+    out._data = _seal_ndarray(array._data.view(np.uint8))
+    out._node = None
+    return out
+
+
 def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...]]]:
     """Strip axes that repeat one sample, or ``None`` when nothing does.
 
@@ -2667,6 +2736,9 @@ class Array:
         """
         from .engines.graph import op
 
+        if _is_bool(self.dtype) or _operand_is_bool(other):
+            return _bool_arithmetic(self, name, other, reverse)
+
         if not isinstance(other, Array):
             const = np.asarray(other)
             if const.dtype.kind not in "biuf":
@@ -2696,6 +2768,14 @@ class Array:
             )
         first, second = (other, self) if reverse else (self, other)
         return _elementwise(_ELEMENTWISE_OPS[name], first, second)
+
+    def __neg__(self) -> "Array":
+        if _is_bool(self.dtype):
+            raise TypeError(
+                "boolean negative, the `-` operator, is not supported, use "
+                "the `~` operator or the logical_not function instead"
+            )
+        return NotImplemented
 
     def __add__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("add_scalar", other)
@@ -2935,12 +3015,25 @@ class Array:
         return self.transpose()
 
     def astype(self, dtype: DTypeLike) -> "Array":
-        """Numeric cast. ``255`` uint8 becomes ``255.0`` float32."""
+        """Numeric cast. ``255`` uint8 becomes ``255.0`` float32.
+
+        ``0`` and float ``-0`` become false, and every other value,
+        including NaN and inf, becomes true. A bool becomes ``0`` or ``1``
+        in the destination dtype. ``bool`` to ``uint8`` of an array that
+        already has pixels is those same bytes. A lazy bool stays a
+        ``cast_dtype`` node until ``realize()``.
+        """
         import muimage as mi
 
         dest = supported_dtype(dtype)
         if dest is self.dtype:
             return self
+        if (
+            _is_bool(self.dtype)
+            and dest == np.dtype(np.uint8)
+            and self._data is not None
+        ):
+            return _bool_as_uint8(self)
         return mi.cast_dtype(self, dest_dtype=dest.name)
 
     def convert_type(
