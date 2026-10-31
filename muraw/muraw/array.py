@@ -2171,7 +2171,19 @@ def _placement_axis(
     index, as a NumPy index of an axis of ``dest_len``; a list of
     consecutive ascending indices is returned as its start."""
     if _is_int_index(entry):
-        return operator.index(entry), None
+        start = operator.index(entry)
+        placed = range(dest_len)[start : start + src_len]
+        if len(placed) == src_len:
+            return placed.start, None
+        if not placed and src_len == 1:
+            raise NotImplementedError(
+                f"composite source of length 1 at {axis} {start} lies past the edge of "
+                f"a base of length {dest_len} and writes nothing; drop the placement"
+            )
+        raise ValueError(
+            f"could not broadcast a source of length {src_len} on the {axis} axis "
+            f"into the {len(placed)} {axis}s from {start} of a base of length {dest_len}"
+        )
     if isinstance(entry, Array):
         raise NotImplementedError(
             f"composite {axis} index from an mi.Array is not supported; pass a list "
@@ -2307,9 +2319,11 @@ def composite(base: ArrayLike, *placements: tuple) -> "Array":
                 cols = list(range(left, left + source.meta.width))
             add_entry("by_row_col", rows + cols)
         if channels:
-            add_entry(
-                "dest_channels", [operator.index(channel) for channel in channels[0]]
-            )
+            dest_channels = [operator.index(channel) for channel in channels[0]]
+            if base.meta.channel_axis is not None:
+                # NumPy's own IndexError for a channel the base does not have.
+                dest_channels = np.arange(base.meta.channels)[dest_channels].tolist()
+            add_entry("dest_channels", dest_channels)
     if placements and not sources:
         return base
     attrs: dict[str, Any] = {}

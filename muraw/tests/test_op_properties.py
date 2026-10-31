@@ -126,6 +126,7 @@ _OPS_WITH_OWN_PLACEMENT = {
     "subtract",
     "multiply",
     "divide",
+    "hypot",
     "view",
     "pad",
     "tile",
