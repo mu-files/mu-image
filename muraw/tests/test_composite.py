@@ -162,14 +162,35 @@ def test_the_result_keeps_the_base_origin_and_leaves_the_base_unchanged():
     np.testing.assert_array_equal(raw, np.zeros((4, 5), np.float32))
 
 
-def test_a_source_past_the_edge_raises():
-    base = Array(np.zeros((4, 5, 3), np.float32))
+def test_a_source_past_the_edge_raises_numpys_error():
+    base = np.zeros((4, 5, 3), np.float32)
     patch = np.zeros((2, 2, 3), np.float32)
-    for origin in ((3, 0), (0, 4), (-1, 0)):
-        with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
-            base.composite((origin, patch)).realize()
-    with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
-        base.composite(((0, 0), patch, [1, 2, 3])).realize()
+    for row, col in ((3, 0), (0, 4), (-1, 0)):
+        with pytest.raises(ValueError):
+            base.copy()[row : row + 2, col : col + 2] = patch
+        with pytest.raises(ValueError):
+            mi.composite(base, ((row, col), patch))
+    with pytest.raises(IndexError):
+        base.copy()[0:2, 0:2, [1, 2, 3]] = patch
+    with pytest.raises(IndexError):
+        mi.composite(base, ((0, 0), patch, [1, 2, 3]))
+
+
+def test_a_negative_origin_that_fits_counts_from_the_end():
+    base = np.zeros((4, 5, 3), np.float32)
+    patch = _image((2, 2, 3), np.float32)
+    expected = base.copy()
+    expected[-4:-2, -5:-3, [-1, 0, 1]] = patch
+    got = mi.composite(base, ((-4, -5), patch, [-1, 0, 1])).realize()
+    np.testing.assert_array_equal(got, expected)
+
+
+def test_a_one_row_source_wholly_past_the_edge_is_not_supported():
+    base = np.zeros((4, 5), np.float32)
+    row = np.ones((1, 5), np.float32)
+    base.copy()[4:5, 0:5] = row
+    with pytest.raises(NotImplementedError):
+        mi.composite(base, ((4, 0), row))
 
 
 def _chw(samples):
