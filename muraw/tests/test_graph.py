@@ -1696,9 +1696,8 @@ def test_ingest_random_layouts_match_numpy():
         (">f4", r"big-endian >f4 is not supported.*newbyteorder"),
         (
             np.int32,
-            r"dtype int32 is not supported\. Supported dtypes: float32, float16, uint8, uint16",
+            r"dtype int32 is not supported\. Supported dtypes: float32, float16, uint8, uint16, bool",
         ),
-        (np.bool_, r"dtype bool is not supported\. Supported dtypes"),
     ],
     ids=[
         "float64",
@@ -1706,7 +1705,6 @@ def test_ingest_random_layouts_match_numpy():
         "uint16_big_endian",
         "float32_big_endian",
         "int32",
-        "bool",
     ],
 )
 def test_unsupported_dtype_ingest_names_the_fix(dtype, message):

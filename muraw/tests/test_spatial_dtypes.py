@@ -1,4 +1,4 @@
-"""view, pad, orientation, and fill run natively on every supported dtype."""
+"""view, pad, orientation, and fill run natively on every dtype they take."""
 
 from __future__ import annotations
 

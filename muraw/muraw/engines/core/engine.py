@@ -137,7 +137,7 @@ class CoreEngine:
             # other array with its channels last.
             desc = {
                 "id": id_of[id(t)],
-                "dtype": m.dtype.name,
+                "dtype": int(m.dtype.num),
                 "shape": list(m.buffer_shape),
                 "frame_axis": 0 if m.channel_axis == 0 or m.ndim == 4 else -1,
                 "origin_y": int(origin_row),

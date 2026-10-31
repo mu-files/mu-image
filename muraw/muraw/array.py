@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 # The dtypes an Array can hold. Their names match the native ``MuImgDType`` names.
 SUPPORTED_DTYPES = tuple(
-    np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16)
+    np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16, np.bool_)
 )
 
 
@@ -311,6 +311,87 @@ def multiply(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     return _arithmetic_function(operator.mul, x1, x2)
 
 
+def logical_and(x1: ArrayLike, x2: ArrayLike) -> "Array":
+    """NumPy's ``logical_and``. Nonzero is true, including NaN and inf.
+    ``+0`` and ``-0`` are false. The result is bool."""
+    return _logical_binary("logical_and", x1, x2)
+
+
+def logical_or(x1: ArrayLike, x2: ArrayLike) -> "Array":
+    """NumPy's ``logical_or``. Nonzero is true, including NaN and inf.
+    ``+0`` and ``-0`` are false. The result is bool."""
+    return _logical_binary("logical_or", x1, x2)
+
+
+def logical_xor(x1: ArrayLike, x2: ArrayLike) -> "Array":
+    """NumPy's ``logical_xor``. Nonzero is true, including NaN and inf.
+    ``+0`` and ``-0`` are false. The result is bool."""
+    return _logical_binary("logical_xor", x1, x2)
+
+
+def logical_not(x: ArrayLike) -> "Array":
+    """NumPy's ``logical_not``. Nonzero is false, including NaN and inf.
+    ``+0`` and ``-0`` are true. The result is bool."""
+    from .engines.graph import op
+
+    return op("logical_not", _logical_operand(x))
+
+
+def bitwise_and(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``bitwise_and``. The result has the promoted integer dtype.
+    A bool stays bool. A bool mixed with an integer is 0 or 1 in that
+    integer dtype."""
+    return _bitwise_binary("bitwise_and", np.bitwise_and, x1, x2)
+
+
+def bitwise_or(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``bitwise_or``. The result has the promoted integer dtype.
+    A bool stays bool. A bool mixed with an integer is 0 or 1 in that
+    integer dtype."""
+    return _bitwise_binary("bitwise_or", np.bitwise_or, x1, x2)
+
+
+def bitwise_xor(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``bitwise_xor``. The result has the promoted integer dtype.
+    A bool stays bool. A bool mixed with an integer is 0 or 1 in that
+    integer dtype."""
+    return _bitwise_binary("bitwise_xor", np.bitwise_xor, x1, x2)
+
+
+def bitwise_not(x: ArrayLike) -> "Array":
+    """NumPy's ``bitwise_not``. An integer complements every bit. A bool
+    exchanges 0 and 1. ``invert`` and ``bitwise_invert`` are this function."""
+    return _bitwise_unary("bitwise_not", np.bitwise_not, x)
+
+
+invert = bitwise_not
+bitwise_invert = bitwise_not
+
+
+def left_shift(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``left_shift``. Bits that leave the dtype are discarded. A
+    count at or past the width stores 0. ``bitwise_left_shift`` is this
+    function."""
+    return _bitwise_binary("left_shift", np.left_shift, x1, x2)
+
+
+def right_shift(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``right_shift``. Bits that leave the dtype are discarded. A
+    count at or past the width stores 0. ``bitwise_right_shift`` is this
+    function."""
+    return _bitwise_binary("right_shift", np.right_shift, x1, x2)
+
+
+bitwise_left_shift = left_shift
+bitwise_right_shift = right_shift
+
+
+def bitwise_count(x: ArrayLike) -> "Array":
+    """NumPy's ``bitwise_count``. The number of set bits in each sample,
+    written as uint8."""
+    return _bitwise_unary("bitwise_count", np.bitwise_count, x)
+
+
 def square(x: ArrayLike) -> "Array":
     """NumPy's ``square``: ``x * x``. Integer results saturate, where
     NumPy's wrap."""
@@ -577,20 +658,177 @@ def _is_integer(dtype: np.dtype) -> bool:
     return dtype.kind == "u"
 
 
-def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
-    """The op ``name`` between two arrays, with NumPy's broadcasting and
-    dtype promotion. Integer division gives float32.
+def _is_bool(dtype: np.dtype) -> bool:
+    return dtype.kind == "b"
 
-    Both arrays get the broadcast rank: a missing leading axis becomes
-    size 1. Both must be CHW, or both packed.
+
+def _operand_is_bool(other: Any) -> bool:
+    if isinstance(other, Array):
+        return _is_bool(other.dtype)
+    return np.asarray(other).dtype.kind == "b"
+
+
+def _logical_operand(value: Any) -> "Array":
+    """``value`` as an Array. A scalar gains one axis, since an Array has
+    at least one."""
+    if isinstance(value, Array):
+        return value
+    samples = np.asarray(value)
+    if samples.ndim == 0:
+        samples = samples.reshape(1)
+    return Array(samples)
+
+
+def _bitwise_dtype(value: Any, other: np.dtype | None) -> np.dtype:
+    """The dtype NumPy gives ``value`` beside an array of ``other``.
+
+    A Python int cast into an unsigned dtype raises ``OverflowError`` when
+    it does not fit. Beside a bool, or with no unsigned array beside it,
+    it stays int64.
+    """
+    if isinstance(value, Array):
+        return value.dtype
+    if type(value) is int:
+        if other is not None and other.kind == "u":
+            return np.array(value, dtype=other).dtype
+        return np.dtype(np.int64)
+    return np.asarray(value).dtype
+
+
+def _bitwise_binary(name: str, ufunc: Any, x1: Any, x2: Any) -> "Array":
+    """``name`` of ``x1`` and ``x2`` when the result is bool, uint8, or uint16.
+
+    A shift stores uint8 or uint16. A result NumPy types as a signed
+    integer or a float is ``NotImplementedError``. A float operand raises
+    ``TypeError``, NumPy's own. The result dtype is known before either
+    operand is stored, so an int64 operand is refused rather than ingested.
     """
     from .engines.graph import op
 
+    first_dtype = None if type(x1) is int else _bitwise_dtype(x1, None)
+    second_dtype = None if type(x2) is int else _bitwise_dtype(x2, None)
+    if first_dtype is None:
+        first_dtype = _bitwise_dtype(x1, second_dtype)
+    if second_dtype is None:
+        second_dtype = _bitwise_dtype(x2, first_dtype)
+    result = ufunc(np.empty(0, first_dtype), np.empty(0, second_dtype)).dtype
+    shift = ufunc in (np.left_shift, np.right_shift)
+    if shift:
+        stored = result in (np.dtype(np.uint8), np.dtype(np.uint16))
+        limit = "a shift stores uint8 or uint16"
+    else:
+        stored = result in (
+            np.dtype(np.bool_),
+            np.dtype(np.uint8),
+            np.dtype(np.uint16),
+        )
+        limit = "muimage stores bool, uint8, and uint16"
+    if not stored:
+        raise NotImplementedError(
+            f"{name} result dtype {result.name} is not supported; {limit}"
+        )
+    if type(x1) is int:
+        x1 = np.array(x1, dtype=result)
+    if type(x2) is int:
+        x2 = np.array(x2, dtype=result)
+    first, second = _broadcast_pair(
+        name,
+        _logical_operand(x1).astype(result),
+        _logical_operand(x2).astype(result),
+    )
+    return op(name, first, second)
+
+
+def _bitwise_unary(name: str, ufunc: Any, x: Any) -> "Array":
+    """``name`` of ``x`` when ``x`` is bool, uint8, or uint16.
+
+    A float raises ``TypeError``, NumPy's own. ``bitwise_count`` writes uint8.
+    """
+    from .engines.graph import op
+
+    dtype = _bitwise_dtype(x, None)
+    ufunc(np.empty(0, dtype))
+    if dtype not in (
+        np.dtype(np.bool_),
+        np.dtype(np.uint8),
+        np.dtype(np.uint16),
+    ):
+        raise NotImplementedError(
+            f"{name} of {dtype.name} is not supported; "
+            "muimage stores bool, uint8, and uint16"
+        )
+    return op(name, _logical_operand(x))
+
+
+def _logical_binary(name: str, x1: Any, x2: Any) -> "Array":
+    """``name`` of ``x1`` and ``x2``.
+
+    Both are read at the dtype ``np.result_type`` picks, so a nonzero test
+    of the stored values matches NumPy. The result is bool.
+    """
+    from .engines.graph import op
+
+    first = _logical_operand(x1)
+    second = _logical_operand(x2)
+    dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
+    first, second = _broadcast_pair(name, first.astype(dtype), second.astype(dtype))
+    return op(name, first, second)
+
+
+def _bool_arithmetic(array: "Array", name: str, other: Any, reverse: bool) -> "Array":
+    """A bool and a numeric operand, promoted to that number's dtype.
+
+    ``-`` of two bools raises ``TypeError``. ``+`` of two bools is
+    ``logical_or`` and ``*`` is ``logical_and``. A result dtype an Array
+    does not store is ``NotImplementedError``.
+    """
+    other_is_bool = _operand_is_bool(other)
+    self_is_bool = _is_bool(array.dtype)
+    if self_is_bool and other_is_bool:
+        if name == "sub_scalar":
+            raise TypeError(
+                "boolean subtract, the `-` operator, is not supported, use "
+                "the bitwise_xor, the `^` operator, or the logical_xor "
+                "function instead"
+            )
+        left, right = (other, array) if reverse else (array, other)
+        if name == "add_scalar":
+            return _logical_binary("logical_or", left, right)
+        if name == "mul_scalar":
+            return _logical_binary("logical_and", left, right)
+        raise NotImplementedError(f"{name} of two bools is not supported")
+    if self_is_bool:
+        result = np.result_type(array.dtype, np.asarray(other).dtype)
+        if not any(result == supported for supported in SUPPORTED_DTYPES) or _is_bool(
+            result
+        ):
+            raise NotImplementedError(
+                f"bool {name} {result.name} is not supported; muimage stores "
+                "bool, uint8, uint16, float16, and float32"
+            )
+        return array.astype(result)._scalar_op(name, other, reverse=reverse)
+    if isinstance(other, Array):
+        first, second = (other, array) if reverse else (array, other)
+        return _elementwise(_ELEMENTWISE_OPS[name], first, second)
+    return array._scalar_op(
+        name, np.asarray(other).astype(array.dtype), reverse=reverse
+    )
+
+
+def _broadcast_pair(
+    name: str, first: "Array", second: "Array"
+) -> tuple["Array", "Array"]:
+    """``first`` and ``second`` at NumPy's broadcast shape.
+
+    A missing leading axis becomes size 1. Both must be CHW, or both packed.
+    """
     shape = np.broadcast_shapes(first.shape, second.shape)
     channel_axis = None
     if len(shape) == 3:
         channel_axis = next(
-            a.meta.channel_axis for a in (first, second) if a.meta.ndim == 3
+            operand.meta.channel_axis
+            for operand in (first, second)
+            if operand.meta.ndim == 3
         )
     operands = []
     for operand in (first, second):
@@ -603,6 +841,28 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
             f"and shape {second.shape} with channel_axis {second.meta.channel_axis} "
             "is not supported yet; give both arrays the same channel_axis"
         )
+    return first, second
+
+
+def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
+    """The op ``name`` between two arrays, with NumPy's broadcasting and
+    dtype promotion. Integer division gives float32.
+    """
+    from .engines.graph import op
+
+    first, second = _broadcast_pair(name, first, second)
+    if _is_bool(first.dtype) and _is_bool(second.dtype):
+        if name == "subtract":
+            raise TypeError(
+                "boolean subtract, the `-` operator, is not supported, use "
+                "the bitwise_xor, the `^` operator, or the logical_xor "
+                "function instead"
+            )
+        if name == "add":
+            return op("logical_or", first, second)
+        if name == "multiply":
+            return op("logical_and", first, second)
+        raise NotImplementedError(f"{name} of two bools is not supported")
     dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
     return op(name, first.astype(dtype), second.astype(dtype))
 
@@ -1366,7 +1626,7 @@ def _empty_with_shape(
 def _dtype_from_fill(fill_value: Any) -> np.dtype:
     """Element type of ``fill_value`` when ``full(..., dtype=None)``."""
     if isinstance(fill_value, bool):
-        raise TypeError("unsupported fill_value dtype: bool")
+        return np.dtype(np.bool_)
     if isinstance(fill_value, np.generic) or (
         isinstance(fill_value, np.ndarray) and fill_value.ndim == 0
     ):
@@ -1656,6 +1916,16 @@ def reshape(a: ArrayLike, /, shape: Any, order: str = "C") -> "Array":
             f"reshape order {order!r} is not supported; use order='C'"
         )
     return _reshape_layout(a, _as_shape(shape, int(np.prod(a.shape))))
+
+
+def _bool_as_uint8(array: "Array") -> "Array":
+    """The same bytes as a realized bool ``array``, read as uint8."""
+    meta = array.meta.copy(dtype=np.dtype(np.uint8))
+    out = object.__new__(Array)
+    out._meta = meta
+    out._data = _seal_ndarray(array._data.view(np.uint8))
+    out._node = None
+    return out
 
 
 def _repeated_axes(arr: np.ndarray) -> Optional[Tuple[np.ndarray, Tuple[int, ...]]]:
@@ -2681,6 +2951,9 @@ class Array:
         """
         from .engines.graph import op
 
+        if _is_bool(self.dtype) or _operand_is_bool(other):
+            return _bool_arithmetic(self, name, other, reverse)
+
         if not isinstance(other, Array):
             const = np.asarray(other)
             if const.dtype.kind not in "biuf":
@@ -2711,6 +2984,14 @@ class Array:
         first, second = (other, self) if reverse else (self, other)
         return _elementwise(_ELEMENTWISE_OPS[name], first, second)
 
+    def __neg__(self) -> "Array":
+        if _is_bool(self.dtype):
+            raise TypeError(
+                "boolean negative, the `-` operator, is not supported, use "
+                "the `~` operator or the logical_not function instead"
+            )
+        return NotImplemented
+
     def __add__(self, other: ArithmeticOperand) -> "Array":
         return self._scalar_op("add_scalar", other)
 
@@ -2740,6 +3021,39 @@ class Array:
 
     def __rmatmul__(self, other: ArrayLike | Sequence[Any]) -> "Array":
         return matmul(other, self)
+
+    def __and__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_and(self, other)
+
+    def __rand__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_and(other, self)
+
+    def __or__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_or(self, other)
+
+    def __ror__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_or(other, self)
+
+    def __xor__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_xor(self, other)
+
+    def __rxor__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_xor(other, self)
+
+    def __invert__(self) -> "Array":
+        return bitwise_not(self)
+
+    def __lshift__(self, other: ArrayLike | int) -> "Array":
+        return left_shift(self, other)
+
+    def __rlshift__(self, other: ArrayLike | int) -> "Array":
+        return left_shift(other, self)
+
+    def __rshift__(self, other: ArrayLike | int) -> "Array":
+        return right_shift(self, other)
+
+    def __rrshift__(self, other: ArrayLike | int) -> "Array":
+        return right_shift(other, self)
 
     def view(
         self,
@@ -2949,12 +3263,25 @@ class Array:
         return self.transpose()
 
     def astype(self, dtype: DTypeLike) -> "Array":
-        """Numeric cast. ``255`` uint8 becomes ``255.0`` float32."""
+        """Numeric cast. ``255`` uint8 becomes ``255.0`` float32.
+
+        ``0`` and float ``-0`` become false, and every other value,
+        including NaN and inf, becomes true. A bool becomes ``0`` or ``1``
+        in the destination dtype. ``bool`` to ``uint8`` of an array that
+        already has pixels is those same bytes. A lazy bool stays a
+        ``cast_dtype`` node until ``realize()``.
+        """
         import muimage as mi
 
         dest = supported_dtype(dtype)
         if dest is self.dtype:
             return self
+        if (
+            _is_bool(self.dtype)
+            and dest == np.dtype(np.uint8)
+            and self._data is not None
+        ):
+            return _bool_as_uint8(self)
         return mi.cast_dtype(self, dest_dtype=dest.name)
 
     def convert_type(

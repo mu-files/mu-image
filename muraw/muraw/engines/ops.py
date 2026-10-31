@@ -163,6 +163,127 @@ divide = EngineOp(
     _infer_meta=graph._out_meta_broadcast,
 )
 
+logical_and = EngineOp(
+    meta=OpMeta(name="logical_and", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+logical_or = EngineOp(
+    meta=OpMeta(name="logical_or", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+logical_xor = EngineOp(
+    meta=OpMeta(name="logical_xor", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+logical_not = EngineOp(
+    meta=OpMeta(name="logical_not", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+bitwise_and = EngineOp(
+    meta=OpMeta(name="bitwise_and", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+bitwise_or = EngineOp(
+    meta=OpMeta(name="bitwise_or", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+bitwise_xor = EngineOp(
+    meta=OpMeta(name="bitwise_xor", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+bitwise_not = EngineOp(
+    meta=OpMeta(name="bitwise_not", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+left_shift = EngineOp(
+    meta=OpMeta(name="left_shift", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+right_shift = EngineOp(
+    meta=OpMeta(name="right_shift", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+bitwise_count = EngineOp(
+    meta=OpMeta(name="bitwise_count", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("uint8"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
 sqrt = EngineOp(
     meta=OpMeta(name="sqrt", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_float_holding_input,
@@ -1539,6 +1660,17 @@ OPS_BY_NAME = {
     "subtract": subtract,
     "multiply": multiply,
     "divide": divide,
+    "logical_and": logical_and,
+    "logical_or": logical_or,
+    "logical_xor": logical_xor,
+    "logical_not": logical_not,
+    "bitwise_and": bitwise_and,
+    "bitwise_or": bitwise_or,
+    "bitwise_xor": bitwise_xor,
+    "bitwise_not": bitwise_not,
+    "left_shift": left_shift,
+    "right_shift": right_shift,
+    "bitwise_count": bitwise_count,
     "sqrt": sqrt,
     "rint": rint,
     "floor": floor,
@@ -1582,6 +1714,11 @@ __all__ = [
     "add",
     "add_scalar",
     "apply_gain_map",
+    "bitwise_and",
+    "bitwise_count",
+    "bitwise_not",
+    "bitwise_or",
+    "bitwise_xor",
     "cast_dtype",
     "ceil",
     "cfa_demosaic",
@@ -1594,6 +1731,11 @@ __all__ = [
     "fill",
     "floor",
     "hypot",
+    "left_shift",
+    "logical_and",
+    "logical_not",
+    "logical_or",
+    "logical_xor",
     "lut",
     "map_polynomial",
     "matmul",
@@ -1613,6 +1755,7 @@ __all__ = [
     "rgb_matrix_3x3",
     "rgb_normalize_raw",
     "rgb_transform",
+    "right_shift",
     "rint",
     "round",
     "sqrt",
