@@ -311,6 +311,32 @@ def multiply(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     return _arithmetic_function(operator.mul, x1, x2)
 
 
+def logical_and(x1: ArrayLike, x2: ArrayLike) -> "Array":
+    """NumPy's ``logical_and``. Nonzero is true, including NaN and inf.
+    ``+0`` and ``-0`` are false. The result is bool."""
+    return _logical_binary("logical_and", x1, x2)
+
+
+def logical_or(x1: ArrayLike, x2: ArrayLike) -> "Array":
+    """NumPy's ``logical_or``. Nonzero is true, including NaN and inf.
+    ``+0`` and ``-0`` are false. The result is bool."""
+    return _logical_binary("logical_or", x1, x2)
+
+
+def logical_xor(x1: ArrayLike, x2: ArrayLike) -> "Array":
+    """NumPy's ``logical_xor``. Nonzero is true, including NaN and inf.
+    ``+0`` and ``-0`` are false. The result is bool."""
+    return _logical_binary("logical_xor", x1, x2)
+
+
+def logical_not(x: ArrayLike) -> "Array":
+    """NumPy's ``logical_not``. Nonzero is false, including NaN and inf.
+    ``+0`` and ``-0`` are true. The result is bool."""
+    from .engines.graph import op
+
+    return op("logical_not", _logical_operand(x))
+
+
 def square(x: ArrayLike) -> "Array":
     """NumPy's ``square``: ``x * x``. Integer results saturate, where
     NumPy's wrap."""
@@ -587,12 +613,38 @@ def _operand_is_bool(other: Any) -> bool:
     return np.asarray(other).dtype.kind == "b"
 
 
+def _logical_operand(value: Any) -> "Array":
+    """``value`` as an Array. A scalar gains one axis, since an Array has
+    at least one."""
+    if isinstance(value, Array):
+        return value
+    samples = np.asarray(value)
+    if samples.ndim == 0:
+        samples = samples.reshape(1)
+    return Array(samples)
+
+
+def _logical_binary(name: str, x1: Any, x2: Any) -> "Array":
+    """``name`` of ``x1`` and ``x2``.
+
+    Both are read at the dtype ``np.result_type`` picks, so a nonzero test
+    of the stored values matches NumPy. The result is bool.
+    """
+    from .engines.graph import op
+
+    first = _logical_operand(x1)
+    second = _logical_operand(x2)
+    dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
+    first, second = _broadcast_pair(name, first.astype(dtype), second.astype(dtype))
+    return op(name, first, second)
+
+
 def _bool_arithmetic(array: "Array", name: str, other: Any, reverse: bool) -> "Array":
     """A bool and a numeric operand, promoted to that number's dtype.
 
-    Two bools are not this. ``-`` of two bools raises ``TypeError``.
-    ``+`` and ``*`` of two bools are ``logical_or`` and ``logical_and``.
-    A result dtype an Array does not store is ``NotImplementedError``.
+    ``-`` of two bools raises ``TypeError``. ``+`` of two bools is
+    ``logical_or`` and ``*`` is ``logical_and``. A result dtype an Array
+    does not store is ``NotImplementedError``.
     """
     other_is_bool = _operand_is_bool(other)
     self_is_bool = _is_bool(array.dtype)
@@ -603,10 +655,12 @@ def _bool_arithmetic(array: "Array", name: str, other: Any, reverse: bool) -> "A
                 "the bitwise_xor, the `^` operator, or the logical_xor "
                 "function instead"
             )
-        raise NotImplementedError(
-            f"{name} of two bools is not supported; + and * of two bools "
-            "are logical_or and logical_and"
-        )
+        left, right = (other, array) if reverse else (array, other)
+        if name == "add_scalar":
+            return _logical_binary("logical_or", left, right)
+        if name == "mul_scalar":
+            return _logical_binary("logical_and", left, right)
+        raise NotImplementedError(f"{name} of two bools is not supported")
     if self_is_bool:
         result = np.result_type(array.dtype, np.asarray(other).dtype)
         if not any(result == supported for supported in SUPPORTED_DTYPES) or _is_bool(
@@ -625,20 +679,20 @@ def _bool_arithmetic(array: "Array", name: str, other: Any, reverse: bool) -> "A
     )
 
 
-def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
-    """The op ``name`` between two arrays, with NumPy's broadcasting and
-    dtype promotion. Integer division gives float32.
+def _broadcast_pair(
+    name: str, first: "Array", second: "Array"
+) -> tuple["Array", "Array"]:
+    """``first`` and ``second`` at NumPy's broadcast shape.
 
-    Both arrays get the broadcast rank: a missing leading axis becomes
-    size 1. Both must be CHW, or both packed.
+    A missing leading axis becomes size 1. Both must be CHW, or both packed.
     """
-    from .engines.graph import op
-
     shape = np.broadcast_shapes(first.shape, second.shape)
     channel_axis = None
     if len(shape) == 3:
         channel_axis = next(
-            a.meta.channel_axis for a in (first, second) if a.meta.ndim == 3
+            operand.meta.channel_axis
+            for operand in (first, second)
+            if operand.meta.ndim == 3
         )
     operands = []
     for operand in (first, second):
@@ -651,6 +705,16 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
             f"and shape {second.shape} with channel_axis {second.meta.channel_axis} "
             "is not supported yet; give both arrays the same channel_axis"
         )
+    return first, second
+
+
+def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
+    """The op ``name`` between two arrays, with NumPy's broadcasting and
+    dtype promotion. Integer division gives float32.
+    """
+    from .engines.graph import op
+
+    first, second = _broadcast_pair(name, first, second)
     if _is_bool(first.dtype) and _is_bool(second.dtype):
         if name == "subtract":
             raise TypeError(
@@ -658,10 +722,11 @@ def _elementwise(name: str, first: "Array", second: "Array") -> "Array":
                 "the bitwise_xor, the `^` operator, or the logical_xor "
                 "function instead"
             )
-        raise NotImplementedError(
-            f"{name} of two bools is not supported; + and * of two bools "
-            "are logical_or and logical_and"
-        )
+        if name == "add":
+            return op("logical_or", first, second)
+        if name == "multiply":
+            return op("logical_and", first, second)
+        raise NotImplementedError(f"{name} of two bools is not supported")
     dtype = supported_dtype(np.result_type(first.dtype, second.dtype))
     return op(name, first.astype(dtype), second.astype(dtype))
 

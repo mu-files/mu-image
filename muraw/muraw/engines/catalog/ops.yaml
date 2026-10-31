@@ -220,6 +220,53 @@ ops:
         geometry: broadcast
     attrs: []
 
+  # Nonzero is true, including NaN and inf. +0 and -0 are false. The
+  # result is bool. The inputs broadcast as in NumPy: each input's
+  # frames, rows, columns, and channels match the output's, or are 1
+  # and are read at index 0 for every output index.
+  - name: logical_and
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: bool
+        geometry: broadcast
+    attrs: []
+
+  - name: logical_or
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: bool
+        geometry: broadcast
+    attrs: []
+
+  - name: logical_xor
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: bool
+        geometry: broadcast
+    attrs: []
+
+  # Nonzero is false, including NaN and inf. +0 and -0 are true. The
+  # result is bool.
+  - name: logical_not
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: bool
+    attrs: []
+
   # The square root of each sample. A negative sample is NaN. A float16 or
   # float32 input keeps its dtype. A uint8 input gives float16, and a uint16
   # input gives float32.

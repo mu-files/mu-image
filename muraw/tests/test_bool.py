@@ -69,10 +69,13 @@ def test_bool_times_uint8_matches_numpy():
     np.testing.assert_array_equal((factor * mi.Array(src)).realize(), exp)
 
 
-def test_bool_times_bool_is_not_multiply():
-    src = np.array([False, True])
-    with pytest.raises(NotImplementedError):
-        _times(mi, mi.Array(src), mi.Array(src))
+def test_bool_times_bool_matches_numpy():
+    src = np.array([False, True, True, False])
+    other = np.array([True, False, True, False])
+    got = _times(mi, mi.Array(src), mi.Array(other))
+    exp = _times(np, src, other)
+    np.testing.assert_array_equal(got.realize(), exp)
+    assert got.dtype == np.dtype(np.bool_)
 
 
 def test_bool_times_float32_matches_numpy():
@@ -148,10 +151,13 @@ def test_bool_negative_is_type_error():
         _neg(np, src)
 
 
-def test_bool_plus_bool_is_not_implemented():
-    src = np.array([False, True])
-    with pytest.raises(NotImplementedError):
-        _add(mi, mi.Array(src), mi.Array(src))
+def test_bool_plus_bool_matches_numpy():
+    src = np.array([False, True, True, False])
+    other = np.array([True, False, True, False])
+    got = _add(mi, mi.Array(src), mi.Array(other))
+    exp = _add(np, src, other)
+    np.testing.assert_array_equal(got.realize(), exp)
+    assert got.dtype == np.dtype(np.bool_)
 
 
 def _mask():

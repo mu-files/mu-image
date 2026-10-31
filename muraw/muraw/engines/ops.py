@@ -163,6 +163,50 @@ divide = EngineOp(
     _infer_meta=graph._out_meta_broadcast,
 )
 
+logical_and = EngineOp(
+    meta=OpMeta(name="logical_and", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+logical_or = EngineOp(
+    meta=OpMeta(name="logical_or", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+logical_xor = EngineOp(
+    meta=OpMeta(name="logical_xor", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+logical_not = EngineOp(
+    meta=OpMeta(name="logical_not", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_const("bool"),
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
 sqrt = EngineOp(
     meta=OpMeta(name="sqrt", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_float_holding_input,
@@ -1539,6 +1583,10 @@ OPS_BY_NAME = {
     "subtract": subtract,
     "multiply": multiply,
     "divide": divide,
+    "logical_and": logical_and,
+    "logical_or": logical_or,
+    "logical_xor": logical_xor,
+    "logical_not": logical_not,
     "sqrt": sqrt,
     "rint": rint,
     "floor": floor,
@@ -1594,6 +1642,10 @@ __all__ = [
     "fill",
     "floor",
     "hypot",
+    "logical_and",
+    "logical_not",
+    "logical_or",
+    "logical_xor",
     "lut",
     "map_polynomial",
     "matmul",
