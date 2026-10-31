@@ -9,8 +9,12 @@ import muimage as mi
 
 
 def _sqrt_line(lib, src):
-    """Square root of a two-row line."""
-    return lib.sqrt(src)
+    """Square root of a two-row line.
+
+    A negative is NaN. NumPy warns on that square root; the value is still NaN.
+    """
+    with np.errstate(invalid="ignore"):
+        return lib.sqrt(src)
 
 
 def _sqrt_count(lib, dtype):

@@ -27,8 +27,13 @@ def _round(lib, src):
 
 
 def _round_at(lib, src, decimals):
-    """``src`` rounded at ``decimals``."""
-    return lib.round(src, decimals=decimals)
+    """``src`` rounded at ``decimals``.
+
+    NumPy warns when ``10**decimals`` does not fit in ``src``'s dtype.
+    The rounded values are unchanged.
+    """
+    with np.errstate(over="ignore", invalid="ignore"):
+        return lib.round(src, decimals=decimals)
 
 
 def _floor(lib, src):
