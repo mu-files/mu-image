@@ -267,6 +267,81 @@ ops:
         dtype: bool
     attrs: []
 
+  # The bits of the two inputs, which have one dtype. The result has
+  # that dtype. A bool is 0 or 1. The inputs broadcast as in NumPy: each
+  # input's frames, rows, columns, and channels match the output's, or
+  # are 1 and are read at index 0 for every output index.
+  - name: bitwise_and
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  - name: bitwise_or
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  - name: bitwise_xor
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  # The complement of an integer: every bit flips, and the result has
+  # the input's dtype. A bool exchanges 0 and 1.
+  - name: bitwise_not
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs: []
+
+  # Bits that leave the dtype are discarded. A count greater than or
+  # equal to the width stores 0. Both inputs have the result's dtype.
+  # The inputs broadcast as bitwise_and does.
+  - name: left_shift
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  - name: right_shift
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  # The number of set bits in each sample, written as uint8.
+  - name: bitwise_count
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: uint8
+    attrs: []
+
   # The square root of each sample. A negative sample is NaN. A float16 or
   # float32 input keeps its dtype. A uint8 input gives float16, and a uint16
   # input gives float32.

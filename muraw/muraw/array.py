@@ -337,6 +337,61 @@ def logical_not(x: ArrayLike) -> "Array":
     return op("logical_not", _logical_operand(x))
 
 
+def bitwise_and(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``bitwise_and``. The result has the promoted integer dtype.
+    A bool stays bool. A bool mixed with an integer is 0 or 1 in that
+    integer dtype."""
+    return _bitwise_binary("bitwise_and", np.bitwise_and, x1, x2)
+
+
+def bitwise_or(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``bitwise_or``. The result has the promoted integer dtype.
+    A bool stays bool. A bool mixed with an integer is 0 or 1 in that
+    integer dtype."""
+    return _bitwise_binary("bitwise_or", np.bitwise_or, x1, x2)
+
+
+def bitwise_xor(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``bitwise_xor``. The result has the promoted integer dtype.
+    A bool stays bool. A bool mixed with an integer is 0 or 1 in that
+    integer dtype."""
+    return _bitwise_binary("bitwise_xor", np.bitwise_xor, x1, x2)
+
+
+def bitwise_not(x: ArrayLike) -> "Array":
+    """NumPy's ``bitwise_not``. An integer complements every bit. A bool
+    exchanges 0 and 1. ``invert`` and ``bitwise_invert`` are this function."""
+    return _bitwise_unary("bitwise_not", np.bitwise_not, x)
+
+
+invert = bitwise_not
+bitwise_invert = bitwise_not
+
+
+def left_shift(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``left_shift``. Bits that leave the dtype are discarded. A
+    count at or past the width stores 0. ``bitwise_left_shift`` is this
+    function."""
+    return _bitwise_binary("left_shift", np.left_shift, x1, x2)
+
+
+def right_shift(x1: ArrayLike | int, x2: ArrayLike | int) -> "Array":
+    """NumPy's ``right_shift``. Bits that leave the dtype are discarded. A
+    count at or past the width stores 0. ``bitwise_right_shift`` is this
+    function."""
+    return _bitwise_binary("right_shift", np.right_shift, x1, x2)
+
+
+bitwise_left_shift = left_shift
+bitwise_right_shift = right_shift
+
+
+def bitwise_count(x: ArrayLike) -> "Array":
+    """NumPy's ``bitwise_count``. The number of set bits in each sample,
+    written as uint8."""
+    return _bitwise_unary("bitwise_count", np.bitwise_count, x)
+
+
 def square(x: ArrayLike) -> "Array":
     """NumPy's ``square``: ``x * x``. Integer results saturate, where
     NumPy's wrap."""
@@ -622,6 +677,87 @@ def _logical_operand(value: Any) -> "Array":
     if samples.ndim == 0:
         samples = samples.reshape(1)
     return Array(samples)
+
+
+def _bitwise_dtype(value: Any, other: np.dtype | None) -> np.dtype:
+    """The dtype NumPy gives ``value`` beside an array of ``other``.
+
+    A Python int cast into an unsigned dtype raises ``OverflowError`` when
+    it does not fit. Beside a bool, or with no unsigned array beside it,
+    it stays int64.
+    """
+    if isinstance(value, Array):
+        return value.dtype
+    if type(value) is int:
+        if other is not None and other.kind == "u":
+            return np.array(value, dtype=other).dtype
+        return np.dtype(np.int64)
+    return np.asarray(value).dtype
+
+
+def _bitwise_binary(name: str, ufunc: Any, x1: Any, x2: Any) -> "Array":
+    """``name`` of ``x1`` and ``x2`` when the result is bool, uint8, or uint16.
+
+    A shift stores uint8 or uint16. A result NumPy types as a signed
+    integer or a float is ``NotImplementedError``. A float operand raises
+    ``TypeError``, NumPy's own. The result dtype is known before either
+    operand is stored, so an int64 operand is refused rather than ingested.
+    """
+    from .engines.graph import op
+
+    first_dtype = None if type(x1) is int else _bitwise_dtype(x1, None)
+    second_dtype = None if type(x2) is int else _bitwise_dtype(x2, None)
+    if first_dtype is None:
+        first_dtype = _bitwise_dtype(x1, second_dtype)
+    if second_dtype is None:
+        second_dtype = _bitwise_dtype(x2, first_dtype)
+    result = ufunc(np.empty(0, first_dtype), np.empty(0, second_dtype)).dtype
+    shift = ufunc in (np.left_shift, np.right_shift)
+    if shift:
+        stored = result in (np.dtype(np.uint8), np.dtype(np.uint16))
+        limit = "a shift stores uint8 or uint16"
+    else:
+        stored = result in (
+            np.dtype(np.bool_),
+            np.dtype(np.uint8),
+            np.dtype(np.uint16),
+        )
+        limit = "muimage stores bool, uint8, and uint16"
+    if not stored:
+        raise NotImplementedError(
+            f"{name} result dtype {result.name} is not supported; {limit}"
+        )
+    if type(x1) is int:
+        x1 = np.array(x1, dtype=result)
+    if type(x2) is int:
+        x2 = np.array(x2, dtype=result)
+    first, second = _broadcast_pair(
+        name,
+        _logical_operand(x1).astype(result),
+        _logical_operand(x2).astype(result),
+    )
+    return op(name, first, second)
+
+
+def _bitwise_unary(name: str, ufunc: Any, x: Any) -> "Array":
+    """``name`` of ``x`` when ``x`` is bool, uint8, or uint16.
+
+    A float raises ``TypeError``, NumPy's own. ``bitwise_count`` writes uint8.
+    """
+    from .engines.graph import op
+
+    dtype = _bitwise_dtype(x, None)
+    ufunc(np.empty(0, dtype))
+    if dtype not in (
+        np.dtype(np.bool_),
+        np.dtype(np.uint8),
+        np.dtype(np.uint16),
+    ):
+        raise NotImplementedError(
+            f"{name} of {dtype.name} is not supported; "
+            "muimage stores bool, uint8, and uint16"
+        )
+    return op(name, _logical_operand(x))
 
 
 def _logical_binary(name: str, x1: Any, x2: Any) -> "Array":
@@ -2885,6 +3021,39 @@ class Array:
 
     def __rmatmul__(self, other: ArrayLike | Sequence[Any]) -> "Array":
         return matmul(other, self)
+
+    def __and__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_and(self, other)
+
+    def __rand__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_and(other, self)
+
+    def __or__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_or(self, other)
+
+    def __ror__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_or(other, self)
+
+    def __xor__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_xor(self, other)
+
+    def __rxor__(self, other: ArrayLike | int) -> "Array":
+        return bitwise_xor(other, self)
+
+    def __invert__(self) -> "Array":
+        return bitwise_not(self)
+
+    def __lshift__(self, other: ArrayLike | int) -> "Array":
+        return left_shift(self, other)
+
+    def __rlshift__(self, other: ArrayLike | int) -> "Array":
+        return left_shift(other, self)
+
+    def __rshift__(self, other: ArrayLike | int) -> "Array":
+        return right_shift(self, other)
+
+    def __rrshift__(self, other: ArrayLike | int) -> "Array":
+        return right_shift(other, self)
 
     def view(
         self,
