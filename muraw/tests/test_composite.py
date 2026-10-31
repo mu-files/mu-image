@@ -23,7 +23,7 @@ def _image(shape, dtype):
 
 
 def test_mono_and_rgb_match_slice_assignment():
-    for dtype in (np.uint8, np.float32):
+    for dtype in (np.uint8, np.float32, np.bool_):
         mono_base = _image((6, 8), dtype)
         mono_src = _image((3, 4), dtype)
         mono = mono_base.copy()
@@ -198,7 +198,7 @@ def _chw(samples):
 
 
 def test_a_chw_base_matches_slice_assignment():
-    for dtype in (np.uint8, np.float32):
+    for dtype in (np.uint8, np.float32, np.bool_):
         base = _image((3, 6, 8), dtype)
         rgb = _image((3, 2, 3), dtype)
         mono = _image((2, 3), dtype)

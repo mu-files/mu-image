@@ -1425,7 +1425,7 @@ def _empty_with_shape(
 def _dtype_from_fill(fill_value: Any) -> np.dtype:
     """Element type of ``fill_value`` when ``full(..., dtype=None)``."""
     if isinstance(fill_value, bool):
-        raise TypeError("unsupported fill_value dtype: bool")
+        return np.dtype(np.bool_)
     if isinstance(fill_value, np.generic) or (
         isinstance(fill_value, np.ndarray) and fill_value.ndim == 0
     ):

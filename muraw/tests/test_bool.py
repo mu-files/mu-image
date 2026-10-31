@@ -1,4 +1,4 @@
-"""bool arrays, cast_dtype, and multiply of a bool by a numeric value."""
+"""bool arrays, cast, arithmetic with a number, and the structural ops."""
 
 import numpy as np
 import pytest
@@ -152,3 +152,154 @@ def test_bool_plus_bool_is_not_implemented():
     src = np.array([False, True])
     with pytest.raises(NotImplementedError):
         _add(mi, mi.Array(src), mi.Array(src))
+
+
+def _mask():
+    """A 3 by 4 bool mask."""
+    return np.array(
+        [
+            [False, True, False, True],
+            [True, False, True, False],
+            [False, False, True, True],
+        ]
+    )
+
+
+def _planes():
+    """A bool ``(H, W, C)`` mask."""
+    return np.arange(3 * 4 * 3).reshape(3, 4, 3).astype(bool)
+
+
+def _window(lib, src):
+    """Rows from 1 and columns 1 through 3."""
+    return src[1:, 1:4]
+
+
+def _stepped(lib, src):
+    """Every other column."""
+    return src[:, ::2]
+
+
+def _reshaped(lib, src):
+    """``src`` as two rows of six."""
+    return lib.reshape(src, (2, 6))
+
+
+def _transposed(lib, src):
+    """Channels moved in front of the rows."""
+    return lib.transpose(src, (2, 0, 1))
+
+
+def _swapped(lib, src):
+    """Rows and columns exchanged."""
+    return lib.transpose(src, (1, 0))
+
+
+def _turned(lib, src):
+    """``src`` turned a quarter turn counterclockwise."""
+    return lib.rot90(src)
+
+
+def _packed(lib, src):
+    """Frames on axis 0 packed into channels."""
+    return lib.transpose(src, (1, 2, 0))
+
+
+def _taken(lib, src):
+    """Columns 2, 0, and 2."""
+    return lib.take(src, [2, 0, 2], axis=1)
+
+
+def _tiled(lib, src):
+    """``src`` repeated twice down and three times across."""
+    return lib.tile(src, (2, 3))
+
+
+def _padded(lib, src, value):
+    """``src`` with a one-sample constant margin."""
+    return lib.pad(src, 1, constant_values=value)
+
+
+def _filled(lib, value):
+    """A 2 by 3 bool array filled with ``value``."""
+    return lib.full((2, 3), value, dtype=np.bool_)
+
+
+def _filled_as_value(lib, value):
+    """A 2 by 3 array filled with ``value``, dtype taken from it."""
+    return lib.full((2, 3), value)
+
+
+def test_bool_slice_matches_numpy():
+    src = _mask()
+    got = _window(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _window(np, src))
+
+
+def test_bool_stepped_slice_matches_numpy():
+    src = _mask()
+    got = _stepped(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _stepped(np, src))
+
+
+def test_bool_reshape_matches_numpy():
+    src = _mask()
+    got = _reshaped(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _reshaped(np, src))
+
+
+def test_bool_transpose_matches_numpy():
+    src = _planes()
+    got = _transposed(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _transposed(np, src))
+
+
+def test_bool_swap_matches_numpy():
+    src = _mask()
+    got = _swapped(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _swapped(np, src))
+
+
+def test_bool_rot90_matches_numpy():
+    src = _mask()
+    got = _turned(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _turned(np, src))
+
+
+def test_bool_chw_transpose_matches_numpy():
+    src = _planes()
+    got = _packed(mi, mi.Array(src, channel_axis=0))
+    np.testing.assert_array_equal(got.realize(), _packed(np, src))
+
+
+def test_bool_take_matches_numpy():
+    src = _mask()
+    got = _taken(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _taken(np, src))
+
+
+def test_bool_tile_matches_numpy():
+    src = _mask()
+    got = _tiled(mi, mi.Array(src))
+    np.testing.assert_array_equal(got.realize(), _tiled(np, src))
+
+
+@pytest.mark.parametrize("value", [0, 1])
+def test_bool_pad_constant_matches_numpy(value):
+    src = _mask()
+    got = _padded(mi, mi.Array(src), value)
+    np.testing.assert_array_equal(got.realize(), _padded(np, src, value))
+
+
+@pytest.mark.parametrize("value", [0, 1, 7])
+def test_bool_fill_matches_numpy(value):
+    got = _filled(mi, value)
+    np.testing.assert_array_equal(got.realize(), _filled(np, value))
+
+
+@pytest.mark.parametrize("value", [False, True])
+def test_full_of_a_python_bool_matches_numpy(value):
+    got = _filled_as_value(mi, value)
+    want = _filled_as_value(np, value)
+    assert got.dtype == want.dtype
+    np.testing.assert_array_equal(got.realize(), want)
