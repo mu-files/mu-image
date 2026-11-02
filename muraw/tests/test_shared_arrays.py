@@ -14,27 +14,44 @@ def _random(shape, seed):
     return np.random.default_rng(seed).random(shape, dtype=np.float32)
 
 
-def _row_index_and_scale(lib, rows, row):
-    """The row index, scaled, and ``row`` scaled.
+def _unchanged(array):
+    return array
+
+
+def _realized(array):
+    """``array`` computed now, as NumPy computes each step."""
+    return mi.Array(array.realize())
+
+
+def _grid_and_scale(lib, rows, row, step):
+    """The column and row index grids, scaled, and ``row`` scaled.
+
+    The row index is scaled before ``meshgrid`` stretches it, so only a
+    subtract reads the stretched ``y``, and it broadcasts the column
+    itself. The column index is scaled after ``meshgrid`` stretches it, so
+    the scale reads the stretched ``x``.
 
     ``row`` is an ``Array`` when ``lib`` is muimage, and the source ndarray
-    when ``lib`` is NumPy.
+    when ``lib`` is NumPy. ``step`` is applied to each intermediate.
     """
-    _, y = lib.meshgrid(
-        lib.arange(row.shape[1], dtype=np.float32),
-        lib.arange(rows, dtype=np.float32),
+    x, y = lib.meshgrid(
+        step(lib.arange(row.shape[1], dtype=np.float32)),
+        step(step(lib.arange(rows, dtype=np.float32)) * np.float32(1.5)),
     )
-    return y * np.float32(1.5), row * np.float32(0.5)
+    return step(step(x) * np.float32(0.25)), step(y), step(row * np.float32(0.5))
 
 
-def _square_of_difference(lib, rows, row):
-    """``(y - c) * (y - c)`` from ``_row_index_and_scale``."""
-    y, c = _row_index_and_scale(lib, rows, row)
-    return (y - c) * (y - c)
+def _square_of_difference(lib, rows, row, step=_unchanged):
+    """``(y - c) * (x - c)`` from ``_grid_and_scale``. ``step`` is applied
+    to each intermediate and to the result: ``_realized`` computes each
+    step of ``mi`` before the next is built, as NumPy does."""
+    x, y, c = _grid_and_scale(lib, rows, row, step)
+    return step(step(y - c) * step(x - c))
 
 
 def test_square_of_a_difference_matches_numpy():
-    """`y` is each pixel's row index, computed in the graph."""
+    """`x` and `y` are each pixel's column and row index, computed in the
+    graph."""
     row = _random((1, 61), 1)
     got = _square_of_difference(mi, 37, mi.Array(row))
     expected = _square_of_difference(np, 37, row)
@@ -53,20 +70,32 @@ def _best_time(run, repeats=5):
 
 
 def test_square_of_a_difference_is_faster_than_numpy():
-    """Both time computing `y` from the row index as well as the
-    arithmetic. The graph runs as one engine stage, so `y` and `c` stay in
-    row buffers; NumPy writes `y` and each intermediate as a whole image."""
+    """Both time computing `x` and `y` from the indices as well as the
+    arithmetic. The graph runs as one engine stage, so `x`, `y` and `c`
+    stay in row buffers; NumPy writes `x`, `y` and each intermediate as a
+    whole image. Also prints the time of muimage realizing each step, as
+    NumPy does."""
     rows = 3000
     row = _random((1, 4000), 3)
+    expected = _square_of_difference(np, rows, row)
     np.testing.assert_array_equal(
-        _square_of_difference(mi, rows, mi.Array(row)).realize(),
-        _square_of_difference(np, rows, row),
+        _square_of_difference(mi, rows, mi.Array(row)).realize(), expected
+    )
+    np.testing.assert_array_equal(
+        _square_of_difference(mi, rows, mi.Array(row), _realized).realize(),
+        expected,
     )
     mi_time = _best_time(
         lambda: _square_of_difference(mi, rows, mi.Array(row)).realize()
     )
+    step_time = _best_time(
+        lambda: _square_of_difference(mi, rows, mi.Array(row), _realized)
+    )
     np_time = _best_time(lambda: _square_of_difference(np, rows, row))
-    print(f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms")
+    print(
+        f"muimage {mi_time * 1e3:.1f} ms, muimage realizing each step "
+        f"{step_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
+    )
     assert mi_time < np_time, (
         f"muimage {mi_time * 1e3:.1f} ms, numpy {np_time * 1e3:.1f} ms"
     )
