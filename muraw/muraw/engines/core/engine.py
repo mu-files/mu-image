@@ -178,8 +178,7 @@ class CoreEngine:
             timer = PerfTimer.current()
             assert timer is not None
             steps = [
-                (_timing_row_name(row), row["exclusive_ns"] * 1e-9)
-                for row in timings
+                (_timing_row_name(row), row["exclusive_ns"] * 1e-9) for row in timings
             ]
             timer.add_completed_steps(steps)
 

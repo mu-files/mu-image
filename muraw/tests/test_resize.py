@@ -383,9 +383,7 @@ def test_bilinear_of_a_view_reads_its_parent_past_its_edge():
         got = mi.resize(
             view, (9, 13), scale=(2.5, 0.5), interpolation="bilinear", mode=mode
         ).realize()
-        expected = _bilinear_reference(
-            parent, (9, 13), (2.5, 0.5), mode, window=window
-        )
+        expected = _bilinear_reference(parent, (9, 13), (2.5, 0.5), mode, window=window)
         _assert_bilinear_close(got, expected)
 
 

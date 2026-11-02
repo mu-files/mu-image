@@ -1,0 +1,20 @@
+---
+description: Run CI's ruff checks, at CI's pinned version, before every push of mu-image
+alwaysApply: true
+---
+
+# Before a push
+
+CI's Ruff job (`.github/workflows/publish.yml`) installs a pinned ruff
+and fails on any lint or formatting difference. Before every push of
+mu-image, run from the repo root, with the version the workflow pins:
+
+```sh
+python3 -m venv /tmp/ruff-ci
+/tmp/ruff-ci/bin/pip install "ruff==<version in publish.yml>"
+/tmp/ruff-ci/bin/ruff check
+/tmp/ruff-ci/bin/ruff format --check
+```
+
+Apply what `ruff format --check` reports with the edit tools, not with
+`ruff format`, which rewrites tracked files outside the review pane.
