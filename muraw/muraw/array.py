@@ -475,6 +475,46 @@ def hypot(x1: ArithmeticOperand, x2: ArithmeticOperand) -> "Array":
     return _elementwise("hypot", x1, x2)
 
 
+def power(
+    base: ArithmeticOperand, exponent: ArithmeticOperand, *, fast: bool = False
+) -> "Array":
+    """NumPy's ``power`` and ``pow``: ``base ** exponent``, broadcast.
+
+    ``fast`` defaults to false, the real power. ``fast=True`` is faster
+    and less accurate. A float power then computes
+    ``exp2(exponent * log2(base))`` in float32, and a negative base is
+    NaN, including when the exponent is an integer.
+
+    An integer power ignores ``fast`` and wraps in the dtype. A Python
+    ``float`` beside an integer gives float32, where NumPy gives float64,
+    the same difference as ``uint8 * 2.0``.
+    """
+    from .engines.graph import op
+
+    dtype = _binary_result_dtype(np.power, base, exponent)
+    if dtype == np.float64 and float in (type(base), type(exponent)):
+        dtype = np.dtype(np.float32)
+    if dtype not in _POWER_DTYPES:
+        raise NotImplementedError(
+            f"power result dtype {dtype.name} is not supported; "
+            "muimage stores uint8, uint16, float16, and float32"
+        )
+    first, second = _broadcast_pair(
+        "power", _operand_array(base, dtype), _operand_array(exponent, dtype)
+    )
+    return op("power", first, second, fast=bool(fast))
+
+
+pow = power
+
+_POWER_DTYPES = (
+    np.dtype(np.uint8),
+    np.dtype(np.uint16),
+    np.dtype(np.float16),
+    np.dtype(np.float32),
+)
+
+
 # The most input channels, and the most output channels, of a matmul.
 _MATMUL_MAX_CHANNELS = 32
 
@@ -679,20 +719,48 @@ def _logical_operand(value: Any) -> "Array":
     return Array(samples)
 
 
-def _bitwise_dtype(value: Any, other: np.dtype | None) -> np.dtype:
+def _operand_dtype(value: Any, other: np.dtype | None) -> np.dtype:
     """The dtype NumPy gives ``value`` beside an array of ``other``.
 
-    A Python int cast into an unsigned dtype raises ``OverflowError`` when
-    it does not fit. Beside a bool, or with no unsigned array beside it,
-    it stays int64.
+    A Python int beside an unsigned array takes its dtype, and raises
+    ``OverflowError`` when it does not fit. A Python int or float beside
+    a float array takes its dtype. Otherwise a Python int is int64 and a
+    float is float64.
     """
     if isinstance(value, Array):
         return value.dtype
     if type(value) is int:
         if other is not None and other.kind == "u":
             return np.array(value, dtype=other).dtype
+        if other is not None and other.kind == "f":
+            return other
         return np.dtype(np.int64)
+    if type(value) is float and other is not None and other.kind == "f":
+        return other
     return np.asarray(value).dtype
+
+
+def _binary_result_dtype(ufunc: Any, x1: Any, x2: Any) -> np.dtype:
+    """The dtype ``ufunc`` gives ``x1`` and ``x2``. A Python scalar takes
+    its dtype from the other operand, so it is typed after that one. An
+    operand NumPy rejects raises NumPy's own ``TypeError``."""
+    scalar = (int, float)
+    first = None if type(x1) in scalar else _operand_dtype(x1, None)
+    second = None if type(x2) in scalar else _operand_dtype(x2, None)
+    if first is None:
+        first = _operand_dtype(x1, second)
+    if second is None:
+        second = _operand_dtype(x2, first)
+    with np.errstate(all="ignore"):
+        return ufunc(np.empty(0, first), np.empty(0, second)).dtype
+
+
+def _operand_array(value: Any, dtype: np.dtype) -> "Array":
+    """``value`` as an Array of ``dtype``. A Python scalar is cast to
+    ``dtype`` first and gains one axis."""
+    if type(value) in (int, float):
+        value = np.array(value, dtype=dtype)
+    return _logical_operand(value).astype(dtype)
 
 
 def _bitwise_binary(name: str, ufunc: Any, x1: Any, x2: Any) -> "Array":
@@ -705,13 +773,7 @@ def _bitwise_binary(name: str, ufunc: Any, x1: Any, x2: Any) -> "Array":
     """
     from .engines.graph import op
 
-    first_dtype = None if type(x1) is int else _bitwise_dtype(x1, None)
-    second_dtype = None if type(x2) is int else _bitwise_dtype(x2, None)
-    if first_dtype is None:
-        first_dtype = _bitwise_dtype(x1, second_dtype)
-    if second_dtype is None:
-        second_dtype = _bitwise_dtype(x2, first_dtype)
-    result = ufunc(np.empty(0, first_dtype), np.empty(0, second_dtype)).dtype
+    result = _binary_result_dtype(ufunc, x1, x2)
     shift = ufunc in (np.left_shift, np.right_shift)
     if shift:
         stored = result in (np.dtype(np.uint8), np.dtype(np.uint16))
@@ -727,14 +789,8 @@ def _bitwise_binary(name: str, ufunc: Any, x1: Any, x2: Any) -> "Array":
         raise NotImplementedError(
             f"{name} result dtype {result.name} is not supported; {limit}"
         )
-    if type(x1) is int:
-        x1 = np.array(x1, dtype=result)
-    if type(x2) is int:
-        x2 = np.array(x2, dtype=result)
     first, second = _broadcast_pair(
-        name,
-        _logical_operand(x1).astype(result),
-        _logical_operand(x2).astype(result),
+        name, _operand_array(x1, result), _operand_array(x2, result)
     )
     return op(name, first, second)
 
@@ -746,7 +802,7 @@ def _bitwise_unary(name: str, ufunc: Any, x: Any) -> "Array":
     """
     from .engines.graph import op
 
-    dtype = _bitwise_dtype(x, None)
+    dtype = _operand_dtype(x, None)
     ufunc(np.empty(0, dtype))
     if dtype not in (
         np.dtype(np.bool_),
@@ -3021,6 +3077,14 @@ class Array:
 
     def __rmatmul__(self, other: ArrayLike | Sequence[Any]) -> "Array":
         return matmul(other, self)
+
+    def __pow__(self, other: Any, modulo: Any = None) -> "Array":
+        if modulo is not None:
+            raise NotImplementedError("power with a modulus is not supported")
+        return power(self, other)
+
+    def __rpow__(self, other: Any) -> "Array":
+        return power(other, self)
 
     def __and__(self, other: ArrayLike | int) -> "Array":
         return bitwise_and(self, other)

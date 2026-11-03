@@ -358,6 +358,26 @@ hypot = EngineOp(
     _infer_meta=graph._out_meta_broadcast,
 )
 
+power = EngineOp(
+    meta=OpMeta(name="power", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 1,
+    "key": "fast",
+    "optional": true,
+    "type": "bool"
+  }
+]""")
+    ),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
 composite = EngineOp(
     meta=OpMeta(name="composite", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -1677,6 +1697,7 @@ OPS_BY_NAME = {
     "ceil": ceil,
     "round": round,
     "hypot": hypot,
+    "power": power,
     "composite": composite,
     "fill": fill,
     "ramp": ramp,
@@ -1744,6 +1765,7 @@ __all__ = [
     "multiply",
     "orientation",
     "pad",
+    "power",
     "radial_polynomial",
     "ramp",
     "reshape",

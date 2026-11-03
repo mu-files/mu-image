@@ -127,6 +127,7 @@ _OPS_WITH_OWN_PLACEMENT = {
     "multiply",
     "divide",
     "hypot",
+    "power",
     "logical_and",
     "logical_or",
     "logical_xor",

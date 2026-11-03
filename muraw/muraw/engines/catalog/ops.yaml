@@ -413,6 +413,42 @@ ops:
         geometry: broadcast
     attrs: []
 
+  # base ** exponent for each pair of samples. The two inputs have one
+  # dtype, and the result has that dtype. The inputs broadcast as in
+  # NumPy: each input's frames, rows, columns, and channels match the
+  # output's, or are 1 and are read at index 0 for every output index.
+  #
+  # An integer power ignores fast and wraps in the dtype. 0 ** 0 is 1,
+  # and an exponent of 0 is 1 for every base.
+  #
+  # fast defaults to false, the real power. An exponent of 0 is 1 for
+  # every base, including NaN and infinity, and a base of 1 is 1 for
+  # every exponent. A negative base raised to a value that is not an
+  # integer is NaN. A negative base raised to an integer-valued exponent
+  # keeps the sign of an odd exponent. A zero raised to a negative
+  # exponent is infinity, and a negative zero keeps the sign when the
+  # exponent is an odd integer.
+  #
+  # fast true is faster and less accurate. A float power then is
+  # exp2(exponent * log2(base)), computed in float32. It does not support
+  # a negative base: the result is NaN, including when the exponent is an
+  # integer. An exponent of 0 is 1 for a positive finite base and NaN
+  # otherwise. A base of 1 raised to a non-finite exponent is NaN, and a
+  # negative zero loses its sign.
+  - name: power
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs:
+      - key: fast
+        type: bool
+        count: 1
+        optional: true
+
   # The base (input 0) with sources written over it, in input order, so a
   # later source overwrites an earlier one. Source i is input i + 1.
   #
