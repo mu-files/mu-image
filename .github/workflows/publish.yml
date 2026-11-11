@@ -40,9 +40,17 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      # setuptools prints a deprecation as BuildBackendWarning and still
+      # exits 0. Fail the job so that warning is not only in the log.
       - name: Build sdist
-        run: python -m build --sdist
         working-directory: muraw
+        run: |
+          set -o pipefail
+          python -m build --sdist 2>&1 | tee "$RUNNER_TEMP/sdist-build.log"
+          if grep -q BuildBackendWarning "$RUNNER_TEMP/sdist-build.log"; then
+            echo "The sdist build printed a BuildBackendWarning." >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

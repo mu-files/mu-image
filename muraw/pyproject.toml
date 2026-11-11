@@ -2,7 +2,7 @@
 # Copyright (c) 2026 mu-files
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "numpy>=2"]
+requires = ["setuptools>=77", "wheel", "numpy>=2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,7 +12,8 @@ description = "DNG and raw image processing utilities"
 authors = [{name = "mu-files", email = "info@mu-files.com"}]
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "BSD-3-Clause"}
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "LICENSES/*"]
 keywords = [
     "dng", "dng-files", "dng-format",
     "raw-image", "raw-processing",
@@ -24,7 +25,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Topic :: Multimedia :: Graphics",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Programming Language :: Python :: 3.12",
