@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 SUPPORTED_DTYPES = tuple(
     np.dtype(t) for t in (np.float32, np.float16, np.uint8, np.uint16, np.bool_)
 )
+_SUPPORTED_DTYPE_NAMES = ", ".join(dtype.name for dtype in SUPPORTED_DTYPES)
 
 
 def supported_dtype(value: DTypeLike) -> np.dtype:
@@ -53,7 +54,11 @@ def supported_dtype(value: DTypeLike) -> np.dtype:
     An unsupported dtype raises ``ValueError`` with a message that says how
     to convert the input. No input is converted automatically.
     """
-    supported = ", ".join(dtype.name for dtype in SUPPORTED_DTYPES)
+    # Identity, not ==: ``==`` converts a string or a type to a dtype
+    # first, which is the slow path below.
+    for supported_type in SUPPORTED_DTYPES:
+        if value is supported_type:
+            return supported_type
     dtype = None
     if value is not None:
         try:
@@ -61,7 +66,9 @@ def supported_dtype(value: DTypeLike) -> np.dtype:
         except TypeError:
             pass
     if dtype is None:
-        raise ValueError(f"{value!r} is not a dtype. Supported dtypes: {supported}.")
+        raise ValueError(
+            f"{value!r} is not a dtype. Supported dtypes: {_SUPPORTED_DTYPE_NAMES}."
+        )
     for supported_type in SUPPORTED_DTYPES:
         if dtype == supported_type:
             return supported_type
@@ -75,7 +82,9 @@ def supported_dtype(value: DTypeLike) -> np.dtype:
             f"big-endian {dtype.str} is not supported. Convert to native byte order "
             'with arr.astype(arr.dtype.newbyteorder("=")).'
         )
-    raise ValueError(f"dtype {dtype} is not supported. Supported dtypes: {supported}.")
+    raise ValueError(
+        f"dtype {dtype} is not supported. Supported dtypes: {_SUPPORTED_DTYPE_NAMES}."
+    )
 
 
 # An array argument: an ``Array``, or an ndarray that is ingested with ``Array(...)``.
