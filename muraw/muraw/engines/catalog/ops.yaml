@@ -27,7 +27,7 @@
 #     0's dtype when it is a float, and float32 when it is an integer, as
 #     NumPy's true division writes a float), or float_holding_input (the
 #     narrowest float that holds every value of input 0 exactly: float16
-#     for uint8, float32 for uint16, and a float stays itself).
+#     for bool or uint8, float32 for uint16, and a float stays itself).
 #   height/width/origin match input 0 unless outputs.geometry is set.
 #   geometry: <policy> — named emit-meta policy (not attr inspection).
 #     Codegen wires geometry: foo → graph._out_meta_foo (implement the fn in graph.py).
@@ -343,8 +343,8 @@ ops:
     attrs: []
 
   # The square root of each sample. A negative sample is NaN. A float16 or
-  # float32 input keeps its dtype. A uint8 input gives float16, and a uint16
-  # input gives float32.
+  # float32 input keeps its dtype. A bool or uint8 input gives float16, and
+  # a uint16 input gives float32.
   - name: sqrt
     inputs:
       - channels: any
@@ -353,9 +353,76 @@ ops:
         dtype: float_holding_input
     attrs: []
 
+  # The sine of each sample, with the angle in radians. An infinite sample
+  # is NaN. A float16 or float32 input keeps its dtype. A bool or uint8
+  # input gives float16, and a uint16 input gives float32.
+  - name: sin
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The cosine of each sample, with the angle in radians. An infinite
+  # sample is NaN. A float16 or float32 input keeps its dtype. A bool or
+  # uint8 input gives float16, and a uint16 input gives float32.
+  - name: cos
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The tangent of each sample, with the angle in radians. An infinite
+  # sample is NaN. A float16 or float32 input keeps its dtype. A bool or
+  # uint8 input gives float16, and a uint16 input gives float32.
+  - name: tan
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The inverse sine of each sample, in radians in [-pi/2, pi/2]. A sample
+  # outside [-1, 1] is NaN. A float16 or float32 input keeps its dtype. A
+  # bool or uint8 input gives float16, and a uint16 input gives float32.
+  - name: arcsin
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The inverse cosine of each sample, in radians in [0, pi]. A sample
+  # outside [-1, 1] is NaN. A float16 or float32 input keeps its dtype. A
+  # bool or uint8 input gives float16, and a uint16 input gives float32.
+  - name: arccos
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The inverse tangent of each sample, in radians in [-pi/2, pi/2]. +inf
+  # gives pi/2 and -inf gives -pi/2. A float16 or float32 input keeps its
+  # dtype. A bool or uint8 input gives float16, and a uint16 input gives
+  # float32.
+  - name: arctan
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
   # Each sample rounded to the nearest integer, and a half rounded to the
-  # even integer. A float16 or float32 input keeps its dtype. A uint8 input
-  # gives float16, and a uint16 input gives float32.
+  # even integer. A float16 or float32 input keeps its dtype. A bool or
+  # uint8 input gives float16, and a uint16 input gives float32.
   - name: rint
     inputs:
       - channels: any
@@ -365,7 +432,7 @@ ops:
     attrs: []
 
   # Each sample rounded toward negative infinity. The result has the
-  # input's dtype. An integer sample is unchanged.
+  # input's dtype. A bool or integer sample is unchanged.
   - name: floor
     inputs:
       - channels: any
@@ -374,7 +441,7 @@ ops:
     attrs: []
 
   # Each sample rounded toward positive infinity. The result has the
-  # input's dtype. An integer sample is unchanged.
+  # input's dtype. A bool or integer sample is unchanged.
   - name: ceil
     inputs:
       - channels: any
@@ -448,6 +515,22 @@ ops:
         type: bool
         count: 1
         optional: true
+
+  # The signed angle in radians, in [-pi, pi], from the positive x-axis to
+  # (input 1, input 0), as NumPy's arctan2(x1, x2). Both inputs have one
+  # dtype. The inputs broadcast as add does. A float16 or float32 input
+  # keeps its dtype. A bool or uint8 input gives float16, and a uint16
+  # input gives float32.
+  - name: arctan2
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+        geometry: broadcast
+    attrs: []
 
   # The base (input 0) with sources written over it, in input order, so a
   # later source overwrites an earlier one. Source i is input i + 1.

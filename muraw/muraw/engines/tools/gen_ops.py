@@ -12,6 +12,12 @@ Writes:
 Run from anywhere (stdlib only, no PyYAML):
   python -m muraw.engines.tools.gen_ops
 
+The output goes through ``ruff format`` before it is written, so CI's
+``ruff format --check`` passes on it: the ruff named by ``$RUFF``, else
+the one on ``PATH``. Without one the file is written unformatted, with a
+warning. Use the ruff version CI pins, since another version may format
+differently.
+
 Catalog YAML is a constrained subset: top-level maps, list-of-maps,
 scalar string/int values, ``#`` comments.
 """
@@ -19,7 +25,10 @@ scalar string/int values, ``#`` comments.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -369,6 +378,27 @@ def _validate_op_properties(op: dict[str, Any]) -> None:
         raise ValueError(f"op {name!r}: is_rgb requires inputs[0].channels: 3")
 
 
+def ruff_formatted(text: str) -> str:
+    """``text`` as ``ruff format`` writes ``OPS_OUT``, or ``text`` itself,
+    with a warning, when no ruff is found."""
+    ruff = os.environ.get("RUFF") or shutil.which("ruff")
+    if ruff is None:
+        print(
+            f"warning: no ruff found; {OPS_OUT.name} is unformatted and CI's "
+            "ruff format --check will fail on it. Set RUFF to CI's ruff.",
+            file=sys.stderr,
+        )
+        return text
+    result = subprocess.run(
+        [ruff, "format", "--stdin-filename", str(OPS_OUT), "-"],
+        input=text,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
 def main() -> int:
     if not YAML_PATH.is_file():
         print(f"Missing catalog: {YAML_PATH}", file=sys.stderr)
@@ -382,7 +412,7 @@ def main() -> int:
         print(str(e), file=sys.stderr)
         return 1
 
-    OPS_OUT.write_text(text)
+    OPS_OUT.write_text(ruff_formatted(text))
     print(f"Wrote {OPS_OUT}")
     return 0
 

@@ -295,6 +295,72 @@ sqrt = EngineOp(
     _infer_meta=None,
 )
 
+sin = EngineOp(
+    meta=OpMeta(name="sin", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+cos = EngineOp(
+    meta=OpMeta(name="cos", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+tan = EngineOp(
+    meta=OpMeta(name="tan", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+arcsin = EngineOp(
+    meta=OpMeta(name="arcsin", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+arccos = EngineOp(
+    meta=OpMeta(name="arccos", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+arctan = EngineOp(
+    meta=OpMeta(name="arctan", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
 rint = EngineOp(
     meta=OpMeta(name="rint", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_float_holding_input,
@@ -375,6 +441,17 @@ power = EngineOp(
   }
 ]""")
     ),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+arctan2 = EngineOp(
+    meta=OpMeta(name="arctan2", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
     _infer_meta=graph._out_meta_broadcast,
 )
 
@@ -1692,12 +1769,19 @@ OPS_BY_NAME = {
     "right_shift": right_shift,
     "bitwise_count": bitwise_count,
     "sqrt": sqrt,
+    "sin": sin,
+    "cos": cos,
+    "tan": tan,
+    "arcsin": arcsin,
+    "arccos": arccos,
+    "arctan": arctan,
     "rint": rint,
     "floor": floor,
     "ceil": ceil,
     "round": round,
     "hypot": hypot,
     "power": power,
+    "arctan2": arctan2,
     "composite": composite,
     "fill": fill,
     "ramp": ramp,
@@ -1735,6 +1819,10 @@ __all__ = [
     "add",
     "add_scalar",
     "apply_gain_map",
+    "arccos",
+    "arcsin",
+    "arctan",
+    "arctan2",
     "bitwise_and",
     "bitwise_count",
     "bitwise_not",
@@ -1747,6 +1835,7 @@ __all__ = [
     "cfa_normalize_raw",
     "composite",
     "convert_dtype",
+    "cos",
     "div_scalar",
     "divide",
     "fill",
@@ -1780,10 +1869,12 @@ __all__ = [
     "right_shift",
     "rint",
     "round",
+    "sin",
     "sqrt",
     "sub_scalar",
     "subtract",
     "take",
+    "tan",
     "tile",
     "transpose",
     "view",

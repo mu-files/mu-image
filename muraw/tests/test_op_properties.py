@@ -128,6 +128,7 @@ _OPS_WITH_OWN_PLACEMENT = {
     "divide",
     "hypot",
     "power",
+    "arctan2",
     "logical_and",
     "logical_or",
     "logical_xor",
