@@ -7,7 +7,7 @@ from __future__ import annotations
 import operator
 from dataclasses import dataclass, replace
 from math import ceil as math_ceil
-from math import prod
+from math import isfinite, prod
 from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Tuple
 
 import numpy as np
@@ -2325,6 +2325,30 @@ def _take_spatial(
     return op("take", a, row_indices=row_indices, col_indices=col_indices)
 
 
+def _resize_scales(scale: Any) -> Tuple[float, float]:
+    """``resize``'s ``scale``, one number or ``(scale_rows, scale_cols)``,
+    as two floats. A Python number or a pair of them is read without
+    NumPy, which is slow on so few values; any other value goes through
+    ``np.broadcast_to``, which raises for a shape that is not one value
+    or two."""
+    number = (int, float)
+    if isinstance(scale, number):
+        scales = (float(scale), float(scale))
+    elif (
+        isinstance(scale, (tuple, list))
+        and len(scale) == 2
+        and isinstance(scale[0], number)
+        and isinstance(scale[1], number)
+    ):
+        scales = (float(scale[0]), float(scale[1]))
+    else:
+        values = np.broadcast_to(np.asarray(scale, dtype=np.float64), (2,))
+        scales = (float(values[0]), float(values[1]))
+    if not all(isfinite(value) and value > 0 for value in scales):
+        raise ValueError(f"resize: scale {scale!r} must be finite and positive")
+    return scales
+
+
 def resize(
     image: ArrayLike,
     size: Any = None,
@@ -2390,10 +2414,7 @@ def resize(
         raise TypeError("resize: pass size, scale, or both")
     scale_rows = scale_cols = None
     if scale is not None:
-        scales = np.broadcast_to(np.asarray(scale, dtype=np.float64), (2,))
-        if not (np.isfinite(scales).all() and (scales > 0).all()):
-            raise ValueError(f"resize: scale {scale!r} must be finite and positive")
-        scale_rows, scale_cols = (float(value) for value in scales)
+        scale_rows, scale_cols = _resize_scales(scale)
     if size is not None:
         if len(size) != 2:
             raise ValueError(f"resize: size must be (out_rows, out_cols), got {size!r}")
