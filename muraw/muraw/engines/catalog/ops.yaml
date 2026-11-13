@@ -172,6 +172,63 @@ ops:
         count: 1
         optional: true
 
+  # x // value, the quotient toward negative infinity. The result has the
+  # input's dtype. An integer division by zero writes 0. A float division
+  # by zero writes a signed infinity, 0/0 and an infinite dividend over a
+  # finite divisor are NaN, and -0 keeps its sign. reverse puts value first.
+  - name: floor_div_scalar
+    needs_frame_index: true
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32_array
+        count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
+      - key: reverse
+        type: bool
+        count: 1
+        optional: true
+
+  # The smaller of each sample and value. The result has the input's dtype.
+  # A NaN on either side gives NaN. The minimum of +0 and -0 is -0.
+  - name: minimum_scalar
+    needs_frame_index: true
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32_array
+        count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
+
+  # The larger of each sample and value. The result has the input's dtype.
+  # A NaN on either side gives NaN. The maximum of +0 and -0 is +0.
+  - name: maximum_scalar
+    needs_frame_index: true
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs:
+      - key: value
+        type: f32_array
+        count: 0
+      - key: per_frame
+        type: bool
+        count: 1
+        optional: true
+
   # Arithmetic between two arrays of one dtype: a + b, a - b, a * b,
   # a / b. The inputs broadcast as in NumPy: each input's frames, rows,
   # columns, and channels match the output's, or are 1 and are read at
@@ -217,6 +274,47 @@ ops:
     outputs:
       - channels: same
         dtype: float_of_input
+        geometry: broadcast
+    attrs: []
+
+  # x1 // x2, the quotient toward negative infinity, broadcast as divide
+  # is. The result has the inputs' dtype. An integer division by zero
+  # writes 0. A float division by zero writes a signed infinity, 0/0 and
+  # an infinite dividend over a finite divisor are NaN, and -0 keeps its
+  # sign.
+  - name: floor_divide
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  # The smaller of each pair, broadcast as add is. The result has the
+  # inputs' dtype. A NaN on either side gives NaN. The minimum of +0 and
+  # -0 is -0.
+  - name: minimum
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
+        geometry: broadcast
+    attrs: []
+
+  # The larger of each pair, broadcast as add is. The result has the
+  # inputs' dtype. A NaN on either side gives NaN. The maximum of +0 and
+  # -0 is +0.
+  - name: maximum
+    needs_frame_index: true
+    inputs:
+      - channels: any
+      - channels: any
+    outputs:
+      - channels: same
         geometry: broadcast
     attrs: []
 
@@ -353,6 +451,18 @@ ops:
         dtype: float_holding_input
     attrs: []
 
+  # The cube root of each sample. A negative sample keeps its sign, so
+  # the cube root of -8 is -2. -0 gives -0. An infinity keeps its sign,
+  # and a NaN stays NaN. A float16 or float32 input keeps its dtype. A
+  # bool or uint8 input gives float16, and a uint16 input gives float32.
+  - name: cbrt
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
   # The sine of each sample, with the angle in radians. An infinite sample
   # is NaN. A float16 or float32 input keeps its dtype. A bool or uint8
   # input gives float16, and a uint16 input gives float32.
@@ -420,6 +530,91 @@ ops:
         dtype: float_holding_input
     attrs: []
 
+  # e raised to each sample. +inf gives inf, -inf gives 0, and a NaN stays
+  # NaN. A large positive overflows to inf, and a large negative underflows
+  # to 0. A float16 or float32 input keeps its dtype. A bool or uint8 input
+  # gives float16, and a uint16 input gives float32.
+  - name: exp
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # 2 raised to each sample. An integer sample is that power of two, until
+  # it overflows. +inf gives inf, -inf gives 0, and a NaN stays NaN. A
+  # float16 or float32 input keeps its dtype. A bool or uint8 input gives
+  # float16, and a uint16 input gives float32.
+  - name: exp2
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # e raised to each sample, minus one. 0 and -0 give 0 with the same sign.
+  # +inf gives inf, -inf gives -1, and a NaN stays NaN. A float16 or float32
+  # input keeps its dtype. A bool or uint8 input gives float16, and a uint16
+  # input gives float32.
+  - name: expm1
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The natural logarithm of each sample. A negative sample and -inf are
+  # NaN. 0 and -0 give -inf. +inf gives inf, and a NaN stays NaN. A float16
+  # or float32 input keeps its dtype. A bool or uint8 input gives float16,
+  # and a uint16 input gives float32.
+  - name: log
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The base-2 logarithm of each sample. A positive power of two is that
+  # integer. A negative sample and -inf are NaN. 0 and -0 give -inf. +inf
+  # gives inf, and a NaN stays NaN. A float16 or float32 input keeps its
+  # dtype. A bool or uint8 input gives float16, and a uint16 input gives
+  # float32.
+  - name: log2
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The base-10 logarithm of each sample. A negative sample and -inf are
+  # NaN. 0 and -0 give -inf. +inf gives inf, and a NaN stays NaN. A float16
+  # or float32 input keeps its dtype. A bool or uint8 input gives float16,
+  # and a uint16 input gives float32.
+  - name: log10
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
+  # The natural logarithm of one plus each sample. 0 and -0 give 0 with the
+  # same sign. -1 gives -inf. A sample below -1 is NaN. +inf gives inf, and
+  # a NaN stays NaN. A float16 or float32 input keeps its dtype. A bool or
+  # uint8 input gives float16, and a uint16 input gives float32.
+  - name: log1p
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+        dtype: float_holding_input
+    attrs: []
+
   # Each sample rounded to the nearest integer, and a half rounded to the
   # even integer. A float16 or float32 input keeps its dtype. A bool or
   # uint8 input gives float16, and a uint16 input gives float32.
@@ -443,6 +638,35 @@ ops:
   # Each sample rounded toward positive infinity. The result has the
   # input's dtype. A bool or integer sample is unchanged.
   - name: ceil
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs: []
+
+  # Each sample rounded toward zero. The result has the input's dtype. A
+  # bool or integer sample is unchanged, and trunc of -0 is -0.
+  - name: trunc
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs: []
+
+  # The absolute value of each sample. The result has the input's dtype.
+  # A bool or integer sample is unchanged. -0 becomes +0, and a NaN stays
+  # a NaN.
+  - name: abs
+    inputs:
+      - channels: any
+    outputs:
+      - channels: same
+    attrs: []
+
+  # Each sample with its sign flipped. The result has the input's dtype.
+  # +0 becomes -0 and -0 becomes +0. A NaN keeps a flipped sign bit. An
+  # integer result saturates, so a uint8 or uint16 sample becomes 0.
+  - name: negative
     inputs:
       - channels: any
     outputs:

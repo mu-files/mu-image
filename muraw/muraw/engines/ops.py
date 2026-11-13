@@ -119,6 +119,87 @@ div_scalar = EngineOp(
     _infer_meta=None,
 )
 
+floor_div_scalar = EngineOp(
+    meta=OpMeta(name="floor_div_scalar", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 0,
+    "key": "value",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
+  },
+  {
+    "count": 1,
+    "key": "reverse",
+    "optional": true,
+    "type": "bool"
+  }
+]""")
+    ),
+    _infer_meta=None,
+)
+
+minimum_scalar = EngineOp(
+    meta=OpMeta(name="minimum_scalar", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 0,
+    "key": "value",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
+  }
+]""")
+    ),
+    _infer_meta=None,
+)
+
+maximum_scalar = EngineOp(
+    meta=OpMeta(name="maximum_scalar", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(
+        json.loads(r"""[
+  {
+    "count": 0,
+    "key": "value",
+    "type": "f32_array"
+  },
+  {
+    "count": 1,
+    "key": "per_frame",
+    "optional": true,
+    "type": "bool"
+  }
+]""")
+    ),
+    _infer_meta=None,
+)
+
 add = EngineOp(
     meta=OpMeta(name="add", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
@@ -155,6 +236,39 @@ multiply = EngineOp(
 divide = EngineOp(
     meta=OpMeta(name="divide", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_float_of_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+floor_divide = EngineOp(
+    meta=OpMeta(name="floor_divide", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+minimum = EngineOp(
+    meta=OpMeta(name="minimum", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None, None),
+    _n_inputs=2,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=graph._out_meta_broadcast,
+)
+
+maximum = EngineOp(
+    meta=OpMeta(name="maximum", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=(None, None),
     _n_inputs=2,
@@ -295,6 +409,17 @@ sqrt = EngineOp(
     _infer_meta=None,
 )
 
+cbrt = EngineOp(
+    meta=OpMeta(name="cbrt", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
 sin = EngineOp(
     meta=OpMeta(name="sin", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_float_holding_input,
@@ -361,6 +486,83 @@ arctan = EngineOp(
     _infer_meta=None,
 )
 
+exp = EngineOp(
+    meta=OpMeta(name="exp", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+exp2 = EngineOp(
+    meta=OpMeta(name="exp2", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+expm1 = EngineOp(
+    meta=OpMeta(name="expm1", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+log = EngineOp(
+    meta=OpMeta(name="log", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+log2 = EngineOp(
+    meta=OpMeta(name="log2", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+log10 = EngineOp(
+    meta=OpMeta(name="log10", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+log1p = EngineOp(
+    meta=OpMeta(name="log1p", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_float_holding_input,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
 rint = EngineOp(
     meta=OpMeta(name="rint", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_float_holding_input,
@@ -385,6 +587,39 @@ floor = EngineOp(
 
 ceil = EngineOp(
     meta=OpMeta(name="ceil", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+trunc = EngineOp(
+    meta=OpMeta(name="trunc", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+abs = EngineOp(
+    meta=OpMeta(name="abs", requires_2d=False, is_cfa=False, is_rgb=False),
+    _out_dtype=graph._out_dtype_same,
+    _out_channels=graph._out_channels_same,
+    _in_channels=(None,),
+    _n_inputs=1,
+    _variable_input=False,
+    _attr_specs=tuple(json.loads(r"""[]""")),
+    _infer_meta=None,
+)
+
+negative = EngineOp(
+    meta=OpMeta(name="negative", requires_2d=False, is_cfa=False, is_rgb=False),
     _out_dtype=graph._out_dtype_same,
     _out_channels=graph._out_channels_same,
     _in_channels=(None,),
@@ -1753,10 +1988,16 @@ OPS_BY_NAME = {
     "sub_scalar": sub_scalar,
     "mul_scalar": mul_scalar,
     "div_scalar": div_scalar,
+    "floor_div_scalar": floor_div_scalar,
+    "minimum_scalar": minimum_scalar,
+    "maximum_scalar": maximum_scalar,
     "add": add,
     "subtract": subtract,
     "multiply": multiply,
     "divide": divide,
+    "floor_divide": floor_divide,
+    "minimum": minimum,
+    "maximum": maximum,
     "logical_and": logical_and,
     "logical_or": logical_or,
     "logical_xor": logical_xor,
@@ -1769,15 +2010,26 @@ OPS_BY_NAME = {
     "right_shift": right_shift,
     "bitwise_count": bitwise_count,
     "sqrt": sqrt,
+    "cbrt": cbrt,
     "sin": sin,
     "cos": cos,
     "tan": tan,
     "arcsin": arcsin,
     "arccos": arccos,
     "arctan": arctan,
+    "exp": exp,
+    "exp2": exp2,
+    "expm1": expm1,
+    "log": log,
+    "log2": log2,
+    "log10": log10,
+    "log1p": log1p,
     "rint": rint,
     "floor": floor,
     "ceil": ceil,
+    "trunc": trunc,
+    "abs": abs,
+    "negative": negative,
     "round": round,
     "hypot": hypot,
     "power": power,
@@ -1816,6 +2068,7 @@ OPS_BY_NAME = {
 
 __all__ = [
     "OPS_BY_NAME",
+    "abs",
     "add",
     "add_scalar",
     "apply_gain_map",
@@ -1829,6 +2082,7 @@ __all__ = [
     "bitwise_or",
     "bitwise_xor",
     "cast_dtype",
+    "cbrt",
     "ceil",
     "cfa_demosaic",
     "cfa_fix_bad_pixels_constant",
@@ -1838,10 +2092,19 @@ __all__ = [
     "cos",
     "div_scalar",
     "divide",
+    "exp",
+    "exp2",
+    "expm1",
     "fill",
     "floor",
+    "floor_div_scalar",
+    "floor_divide",
     "hypot",
     "left_shift",
+    "log",
+    "log10",
+    "log1p",
+    "log2",
     "logical_and",
     "logical_not",
     "logical_or",
@@ -1849,9 +2112,14 @@ __all__ = [
     "lut",
     "map_polynomial",
     "matmul",
+    "maximum",
+    "maximum_scalar",
+    "minimum",
+    "minimum_scalar",
     "mono_lut",
     "mul_scalar",
     "multiply",
+    "negative",
     "orientation",
     "pad",
     "power",
@@ -1877,6 +2145,7 @@ __all__ = [
     "tan",
     "tile",
     "transpose",
+    "trunc",
     "view",
     "warp_rectilinear",
 ]
