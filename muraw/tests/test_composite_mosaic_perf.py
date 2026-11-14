@@ -10,9 +10,11 @@ full before a transpose.
 
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
+import pytest
 
 import muimage as mi
 
@@ -54,6 +56,10 @@ def _median_time(run, repeats=5):
     return samples[len(samples) // 2]
 
 
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="a shared CI runner's timings vary too much for a 2x bound",
+)
 def test_a_four_image_mosaic_against_numpy_assignment():
     for chw in (False, True):
         quarters = _quarters(chw)
